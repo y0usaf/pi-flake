@@ -19,6 +19,7 @@ nix build .#pi
 
 Extension package outputs:
 - `.#pi-agents`
+- `.#pi-adversary-flake`
 - `.#pi-codex-fast-flake`
 - `.#pi-gecko-websearch`
 - `.#pi-rtk-flake`
