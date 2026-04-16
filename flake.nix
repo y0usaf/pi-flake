@@ -15,6 +15,9 @@
     piCodexFastFlake.url = "path:./packages/pi-codex-fast-flake";
     piCodexFastFlake.inputs.nixpkgs.follows = "nixpkgs";
 
+    piAdversaryFlake.url = "path:./packages/pi-adversary-flake";
+    piAdversaryFlake.inputs.nixpkgs.follows = "nixpkgs";
+
     piGeckoWebsearch.url = "path:./packages/pi-gecko-websearch";
     piGeckoWebsearch.inputs.nixpkgs.follows = "nixpkgs";
 
@@ -31,6 +34,7 @@
     piSrc,
     piAgents,
     piCodexFastFlake,
+    piAdversaryFlake,
     piGeckoWebsearch,
     piRtkFlake,
     piWebfetch,
@@ -99,6 +103,7 @@
 
       "pi-agents" = piAgents.packages.${system}.default;
       "pi-codex-fast-flake" = piCodexFastFlake.packages.${system}.default;
+      "pi-adversary-flake" = piAdversaryFlake.packages.${system}.default;
       "pi-gecko-websearch" = piGeckoWebsearch.packages.${system}.default;
       "pi-rtk-flake" = piRtkFlake.packages.${system}.default;
       "pi-webfetch" = piWebfetch.packages.${system}.default;
