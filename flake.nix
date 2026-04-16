@@ -65,6 +65,7 @@
         patches = [
           ./patches/disable-install-telemetry.patch
           ./patches/avoid-network-model-regeneration.patch
+          ./patches/use-package-dir-for-bun-assets.patch
         ];
         npmWorkspace = "packages/coding-agent";
         npmBuildScript = "build:binary";

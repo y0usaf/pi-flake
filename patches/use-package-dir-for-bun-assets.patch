@@ -1,0 +1,29 @@
+--- a/packages/coding-agent/src/config.ts
++++ b/packages/coding-agent/src/config.ts
+@@ -109,7 +109,7 @@ export function getPackageDir(): string {
+  */
+ export function getThemesDir(): string {
+ 	if (isBunBinary) {
+-		return join(dirname(process.execPath), "theme");
++		return join(getPackageDir(), "theme");
+ 	}
+ 	// Theme is in modes/interactive/theme/ relative to src/ or dist/
+ 	const packageDir = getPackageDir();
+@@ -123,7 +123,7 @@ export function getThemesDir(): string {
+  */
+ export function getExportTemplateDir(): string {
+ 	if (isBunBinary) {
+-		return join(dirname(process.execPath), "export-html");
++		return join(getPackageDir(), "export-html");
+ 	}
+ 	const packageDir = getPackageDir();
+ 	const srcOrDist = existsSync(join(packageDir, "src")) ? "src" : "dist";
+@@ -167,7 +167,7 @@ export function getChangelogPath(): string {
+  */
+ export function getInteractiveAssetsDir(): string {
+ 	if (isBunBinary) {
+-		return join(dirname(process.execPath), "assets");
++		return join(getPackageDir(), "assets");
+ 	}
+ 	const packageDir = getPackageDir();
+ 	const srcOrDist = existsSync(join(packageDir, "src")) ? "src" : "dist";
