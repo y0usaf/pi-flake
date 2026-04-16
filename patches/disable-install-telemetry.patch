@@ -1,0 +1,26 @@
+--- a/packages/coding-agent/src/modes/interactive/interactive-mode.ts	2026-04-16 13:45:26.539233031 -0400
++++ b/packages/coding-agent/src/modes/interactive/interactive-mode.ts	2026-04-16 13:45:26.553778124 -0400
+@@ -795,22 +795,7 @@
+ 	}
+ 
+ 	private reportInstallTelemetry(version: string): void {
+-		if (process.env.PI_OFFLINE) {
+-			return;
+-		}
+-
+-		const telemetryEnv = process.env.PI_TELEMETRY;
+-		const telemetryEnabled =
+-			telemetryEnv !== undefined ? isTruthyEnvFlag(telemetryEnv) : this.settingsManager.getEnableInstallTelemetry();
+-		if (!telemetryEnabled) {
+-			return;
+-		}
+-
+-		void fetch(`https://pi.dev/install?version=${encodeURIComponent(version)}`, {
+-			signal: AbortSignal.timeout(5000),
+-		})
+-			.then(() => undefined)
+-			.catch(() => undefined);
++		return;
+ 	}
+ 
+ 	private getMarkdownThemeWithSettings(): MarkdownTheme {

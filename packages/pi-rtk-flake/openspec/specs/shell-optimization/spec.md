@@ -1,0 +1,84 @@
+# Shell Optimization Specification
+
+## Purpose
+
+Define how `pi-rtk` optimizes shell command execution to reduce LLM token consumption while preserving normal shell behavior when optimization cannot be applied.
+
+## Requirements
+
+### Requirement: Pre-Execution Optimization Attempt
+
+The system MUST attempt to optimize shell commands before execution.
+
+#### Scenario: Optimization succeeds
+
+- GIVEN a command submitted to the `bash` tool
+- WHEN the optimization layer successfully produces an optimized command
+- THEN the `bash` tool MUST execute the optimized command
+- AND the original execution context, including working directory and environment, MUST be preserved
+
+#### Scenario: Optimization cannot be applied
+
+- GIVEN a command submitted to the `bash` tool
+- WHEN the optimization layer cannot produce an optimized command
+- THEN the `bash` tool MUST execute the original command unchanged
+- AND command execution MUST continue without requiring agent intervention
+
+### Requirement: `rtk`-Based Optimization
+
+The system MUST perform shell optimization using the `rtk` rewrite mechanism.
+
+#### Scenario: Rewrite delegation
+
+- GIVEN a command submitted to the `bash` tool
+- WHEN the system attempts shell optimization
+- THEN the system MUST delegate rewrite generation to `rtk`
+- AND the command executed by the `bash` tool MUST be the rewrite output when that rewrite succeeds
+
+### Requirement: Bounded Optimization Latency
+
+The optimization step MUST NOT materially degrade shell tool responsiveness.
+
+#### Scenario: Optimization exceeds time budget
+
+- GIVEN a command submitted for optimization
+- WHEN the optimization attempt exceeds its allowed time budget
+- THEN the optimization attempt MUST be abandoned
+- AND the original command MUST be executed unchanged
+
+### Requirement: Context-Visible User Bash Optimization
+
+The system MUST attempt shell optimization for user-issued shell commands whose output is intended to be included in LLM context, using Pi's exported local bash operations helper.
+
+#### Scenario: Supported context-visible user bash command
+
+- **WHEN** a user executes a supported shell command using Pi's `!<cmd>` syntax while `pi-rtk` is loaded on Pi v0.60.0 or later
+- **THEN** the system MUST attempt to optimize the command before execution
+- **AND** the command MUST execute through the optimized path when optimization succeeds
+- **AND** the optimized execution MUST delegate local bash operations to Pi's exported `createLocalBashOperations()` helper
+
+### Requirement: Non-Disruptive Fallback For User Bash Optimization
+
+The system MUST preserve normal Pi shell behavior when optimization cannot be applied to a context-visible user shell command.
+
+#### Scenario: Unsupported context-visible user bash command
+
+- **WHEN** a user executes an unsupported shell command using Pi's `!<cmd>` syntax while `pi-rtk` is loaded
+- **THEN** the command MUST still execute using normal Pi shell behavior
+- **AND** execution MUST continue without requiring user intervention
+
+#### Scenario: Optimization infrastructure unavailable for context-visible user bash command
+
+- **WHEN** a user executes a shell command using Pi's `!<cmd>` syntax and the optimization layer cannot be used because `rtk` is unavailable, errors, or exceeds its time budget
+- **THEN** the command MUST still execute using normal Pi shell behavior
+- **AND** the optimization failure MUST NOT block, crash, or disable user shell execution
+
+### Requirement: Context-Excluded User Bash Bypass
+
+The system MUST NOT apply `pi-rtk` optimization to user shell commands whose output is explicitly excluded from LLM context.
+
+#### Scenario: Context-excluded user bash command
+
+- **WHEN** a user executes a shell command using Pi's `!!<cmd>` syntax while `pi-rtk` is loaded
+- **THEN** `pi-rtk` MUST NOT intercept the command for optimization
+- **AND** Pi MUST handle execution using its normal context-excluded shell behavior
