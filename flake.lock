@@ -48,6 +48,22 @@
       },
       "parent": []
     },
+    "piCompactTools": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-compact-tools",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-compact-tools",
+        "type": "path"
+      },
+      "parent": []
+    },
     "piGeckoWebsearch": {
       "inputs": {
         "nixpkgs": [
@@ -80,30 +96,14 @@
       },
       "parent": []
     },
-    "piCompactTools": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-compact-tools",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-compact-tools",
-        "type": "path"
-      },
-      "parent": []
-    },
     "piSrc": {
       "flake": false,
       "locked": {
-        "lastModified": 1776355015,
-        "narHash": "sha256-hl1+zBBJMc3l8wJwzobkkaORtB39AfSOOWYkRtbf1Js=",
+        "lastModified": 1776581352,
+        "narHash": "sha256-ChcIvdEm7KS29V/v7oNKo3V5D+6PrkMF77xJ0TXe5nA=",
         "owner": "badlogic",
         "repo": "pi-mono",
-        "rev": "72619e92466fd2f181d660eb4e3f5eff630ad8f5",
+        "rev": "9b28e185dbb36f1e60ed267c5401937ebab99cb3",
         "type": "github"
       },
       "original": {
@@ -134,9 +134,9 @@
         "nixpkgs": "nixpkgs",
         "piAgents": "piAgents",
         "piCodexFast": "piCodexFast",
+        "piCompactTools": "piCompactTools",
         "piGeckoWebsearch": "piGeckoWebsearch",
         "piRtk": "piRtk",
-        "piCompactTools": "piCompactTools",
         "piSrc": "piSrc",
         "piWebfetch": "piWebfetch"
       }
