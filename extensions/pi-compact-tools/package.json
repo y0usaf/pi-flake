@@ -1,15 +1,16 @@
 {
-  "name": "pi-codex-fast-flake",
+  "name": "pi-compact-tools",
   "private": true,
-  "version": "1.0.0",
+  "version": "0.1.0",
   "type": "module",
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-ai": "*",
-    "@sinclair/typebox": "*"
+    "@mariozechner/pi-tui": "*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0"

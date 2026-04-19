@@ -9,22 +9,22 @@
       flake = false;
     };
 
-    piAgents.url = "path:./packages/pi-agents";
+    piAgents.url = "path:./extensions/pi-agents";
     piAgents.inputs.nixpkgs.follows = "nixpkgs";
 
-    piCodexFastFlake.url = "path:./packages/pi-codex-fast-flake";
-    piCodexFastFlake.inputs.nixpkgs.follows = "nixpkgs";
+    piCodexFast.url = "path:./extensions/pi-codex-fast";
+    piCodexFast.inputs.nixpkgs.follows = "nixpkgs";
 
-    piAdversaryFlake.url = "path:./packages/pi-adversary-flake";
-    piAdversaryFlake.inputs.nixpkgs.follows = "nixpkgs";
-
-    piGeckoWebsearch.url = "path:./packages/pi-gecko-websearch";
+    piGeckoWebsearch.url = "path:./extensions/pi-gecko-websearch";
     piGeckoWebsearch.inputs.nixpkgs.follows = "nixpkgs";
 
-    piRtkFlake.url = "path:./packages/pi-rtk-flake";
-    piRtkFlake.inputs.nixpkgs.follows = "nixpkgs";
+    piRtk.url = "path:./extensions/pi-rtk";
+    piRtk.inputs.nixpkgs.follows = "nixpkgs";
 
-    piWebfetch.url = "path:./packages/pi-webfetch";
+    piCompactTools.url = "path:./extensions/pi-compact-tools";
+    piCompactTools.inputs.nixpkgs.follows = "nixpkgs";
+
+    piWebfetch.url = "path:./extensions/pi-webfetch";
     piWebfetch.inputs.nixpkgs.follows = "nixpkgs";
   };
 
@@ -33,10 +33,10 @@
     nixpkgs,
     piSrc,
     piAgents,
-    piCodexFastFlake,
-    piAdversaryFlake,
+    piCodexFast,
     piGeckoWebsearch,
-    piRtkFlake,
+    piRtk,
+    piCompactTools,
     piWebfetch,
     ...
   }: let
@@ -89,7 +89,9 @@
           rm -f $out/share/pi/pi
 
           install -Dm755 packages/coding-agent/dist/pi $out/bin/pi
-          wrapProgram $out/bin/pi --set PI_PACKAGE_DIR $out/share/pi
+          wrapProgram $out/bin/pi \
+            --set PI_PACKAGE_DIR $out/share/pi \
+            --set PI_SKIP_VERSION_CHECK 1
 
           runHook postInstall
         '';
@@ -103,10 +105,10 @@
       };
 
       "pi-agents" = piAgents.packages.${system}.default;
-      "pi-codex-fast-flake" = piCodexFastFlake.packages.${system}.default;
-      "pi-adversary-flake" = piAdversaryFlake.packages.${system}.default;
+      "pi-codex-fast" = piCodexFast.packages.${system}.default;
       "pi-gecko-websearch" = piGeckoWebsearch.packages.${system}.default;
-      "pi-rtk-flake" = piRtkFlake.packages.${system}.default;
+      "pi-rtk" = piRtk.packages.${system}.default;
+      "pi-compact-tools" = piCompactTools.packages.${system}.default;
       "pi-webfetch" = piWebfetch.packages.${system}.default;
 
       default = self.packages.${system}.pi;

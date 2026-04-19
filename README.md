@@ -4,7 +4,7 @@ Thin flake wrapper around upstream `badlogic/pi-mono`.
 
 Includes:
 - upstream `pi` built from source (`inputs.piSrc`, `flake = false`)
-- local extension packages from `packages/`
+- local extensions from `extensions/`
 - local patches from `patches/`
 
 Current patch set:
@@ -19,8 +19,16 @@ nix build .#pi
 
 Extension package outputs:
 - `.#pi-agents`
-- `.#pi-adversary-flake`
-- `.#pi-codex-fast-flake`
+- `.#pi-codex-fast`
 - `.#pi-gecko-websearch`
-- `.#pi-rtk-flake`
+- `.#pi-rtk`
+- `.#pi-compact-tools`
 - `.#pi-webfetch`
+
+Automation:
+- `.github/dependabot.yml` — weekly Nix lock updates for root + extension flakes
+- `.github/workflows/ci.yml` — builds root + extension outputs on PRs/pushes
+- `.github/workflows/dependabot-smoke.yml` — scheduled/manual smoke test of temporary lock refreshes
+
+Note:
+- Dependabot can update lock files, but upstream `piSrc` bumps may still require a manual `npmDepsHash` and/or patch refresh in `flake.nix`.

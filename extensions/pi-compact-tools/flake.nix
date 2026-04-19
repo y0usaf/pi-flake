@@ -1,5 +1,5 @@
 {
-  description = "Nix flake for pi-codex-fast";
+  description = "Nix flake for pi-compact-tools";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -24,8 +24,8 @@
       lib = pkgs.lib;
       packageJson = builtins.fromJSON (builtins.readFile ./package.json);
     in {
-      pi-codex-fast-flake = pkgs.stdenvNoCC.mkDerivation {
-        pname = "pi-codex-fast-flake";
+      pi-compact-tools = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-compact-tools";
         version = packageJson.version;
         src = lib.cleanSource ./.;
 
@@ -33,8 +33,10 @@
 
         installPhase = ''
           runHook preInstall
+
           mkdir -p "$out"
           cp -r . "$out"
+
           runHook postInstall
         '';
 
@@ -43,12 +45,13 @@
         };
 
         meta = with lib; {
-          description = "Pi extension that enables Codex fast mode via extension-settings.json";
+          description = "Pi extension that compacts all collapsed tool rows to one summary line";
+          license = licenses.mit;
           platforms = platforms.all;
         };
       };
 
-      default = self.packages.${system}.pi-codex-fast-flake;
+      default = self.packages.${system}.pi-compact-tools;
     });
 
     devShells = forAllSystems (system: let
@@ -60,7 +63,7 @@
         ];
 
         shellHook = ''
-          echo "pi-codex-fast-flake dev shell — node $(node --version)"
+          echo "pi-compact-tools dev shell — node $(node --version)"
         '';
       };
     });

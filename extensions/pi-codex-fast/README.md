@@ -1,4 +1,4 @@
-# pi-codex-fast-flake
+# pi-codex-fast
 
 A pi coding agent extension that enables Codex fast mode from `extension-settings.json`.
 
@@ -49,10 +49,10 @@ Advanced form:
 
 ```bash
 # Load directly from this repo
-pi -e ./packages/pi-codex-fast-flake/src/index.ts
+pi -e ./extensions/pi-codex-fast/src/index.ts
 
 # Or install/load as a pi package path
-pi -e ./packages/pi-codex-fast-flake
+pi -e ./extensions/pi-codex-fast
 ```
 
 The extension also adds a `/codex-fast` command that shows whether fast mode is currently active for the selected model.
