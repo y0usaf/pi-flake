@@ -1,21 +1,12 @@
 {
-  "name": "pi-adversary-flake",
+  "name": "pi-codex-fast",
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "keywords": [
-    "pi-package",
-    "pi-extension",
-    "adversary",
-    "reviewer",
-    "actor-critic"
-  ],
   "pi": {
     "extensions": ["./src/index.ts"]
   },
   "peerDependencies": {
-    "@mariozechner/pi-agent-core": "*",
-    "@mariozechner/pi-ai": "*",
     "@mariozechner/pi-coding-agent": "*"
   },
   "devDependencies": {

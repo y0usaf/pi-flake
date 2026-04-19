@@ -1,0 +1,71 @@
+name: dependabot-smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 8 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  root-lock-refresh:
+    name: smoke/root-lock-refresh
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Refresh root temp lock
+        run: nix flake update nixpkgs piSrc --output-lock-file "$RUNNER_TEMP/flake.lock"
+
+      - name: Show root lock diff
+        run: diff -u flake.lock "$RUNNER_TEMP/flake.lock" || true
+
+      - name: Build root pi against temp lock
+        run: nix build .#pi --reference-lock-file "$RUNNER_TEMP/flake.lock" -L
+
+  extension-lock-refresh:
+    name: smoke/${{ matrix.dir }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        dir:
+          - extensions/pi-agents
+          - extensions/pi-codex-fast
+          - extensions/pi-gecko-websearch
+          - extensions/pi-rtk
+          - extensions/pi-compact-tools
+          - extensions/pi-webfetch
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Refresh extension temp lock
+        working-directory: ${{ matrix.dir }}
+        run: nix flake update nixpkgs --output-lock-file "$RUNNER_TEMP/flake.lock"
+
+      - name: Show extension lock diff
+        working-directory: ${{ matrix.dir }}
+        run: diff -u flake.lock "$RUNNER_TEMP/flake.lock" || true
+
+      - name: Build extension against temp lock
+        working-directory: ${{ matrix.dir }}
+        run: nix build .#default --reference-lock-file "$RUNNER_TEMP/flake.lock" -L

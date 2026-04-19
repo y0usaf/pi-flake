@@ -16,22 +16,6 @@
         "type": "github"
       }
     },
-    "piAdversaryFlake": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./packages/pi-adversary-flake",
-        "type": "path"
-      },
-      "original": {
-        "path": "./packages/pi-adversary-flake",
-        "type": "path"
-      },
-      "parent": []
-    },
     "piAgents": {
       "inputs": {
         "nixpkgs": [
@@ -39,27 +23,27 @@
         ]
       },
       "locked": {
-        "path": "./packages/pi-agents",
+        "path": "./extensions/pi-agents",
         "type": "path"
       },
       "original": {
-        "path": "./packages/pi-agents",
+        "path": "./extensions/pi-agents",
         "type": "path"
       },
       "parent": []
     },
-    "piCodexFastFlake": {
+    "piCodexFast": {
       "inputs": {
         "nixpkgs": [
           "nixpkgs"
         ]
       },
       "locked": {
-        "path": "./packages/pi-codex-fast-flake",
+        "path": "./extensions/pi-codex-fast",
         "type": "path"
       },
       "original": {
-        "path": "./packages/pi-codex-fast-flake",
+        "path": "./extensions/pi-codex-fast",
         "type": "path"
       },
       "parent": []
@@ -71,27 +55,43 @@
         ]
       },
       "locked": {
-        "path": "./packages/pi-gecko-websearch",
+        "path": "./extensions/pi-gecko-websearch",
         "type": "path"
       },
       "original": {
-        "path": "./packages/pi-gecko-websearch",
+        "path": "./extensions/pi-gecko-websearch",
         "type": "path"
       },
       "parent": []
     },
-    "piRtkFlake": {
+    "piRtk": {
       "inputs": {
         "nixpkgs": [
           "nixpkgs"
         ]
       },
       "locked": {
-        "path": "./packages/pi-rtk-flake",
+        "path": "./extensions/pi-rtk",
         "type": "path"
       },
       "original": {
-        "path": "./packages/pi-rtk-flake",
+        "path": "./extensions/pi-rtk",
+        "type": "path"
+      },
+      "parent": []
+    },
+    "piCompactTools": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-compact-tools",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-compact-tools",
         "type": "path"
       },
       "parent": []
@@ -120,11 +120,11 @@
         ]
       },
       "locked": {
-        "path": "./packages/pi-webfetch",
+        "path": "./extensions/pi-webfetch",
         "type": "path"
       },
       "original": {
-        "path": "./packages/pi-webfetch",
+        "path": "./extensions/pi-webfetch",
         "type": "path"
       },
       "parent": []
@@ -132,11 +132,11 @@
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
-        "piAdversaryFlake": "piAdversaryFlake",
         "piAgents": "piAgents",
-        "piCodexFastFlake": "piCodexFastFlake",
+        "piCodexFast": "piCodexFast",
         "piGeckoWebsearch": "piGeckoWebsearch",
-        "piRtkFlake": "piRtkFlake",
+        "piRtk": "piRtk",
+        "piCompactTools": "piCompactTools",
         "piSrc": "piSrc",
         "piWebfetch": "piWebfetch"
       }

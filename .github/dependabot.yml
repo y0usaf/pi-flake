@@ -1,0 +1,79 @@
+version: 2
+updates:
+  - package-ecosystem: "nix"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "nix"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "nix"
+    directory: "/extensions/pi-agents"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "nix"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+
+  - package-ecosystem: "nix"
+    directory: "/extensions/pi-codex-fast"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "nix"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+
+  - package-ecosystem: "nix"
+    directory: "/extensions/pi-gecko-websearch"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "nix"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+
+  - package-ecosystem: "nix"
+    directory: "/extensions/pi-rtk"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "nix"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+
+  - package-ecosystem: "nix"
+    directory: "/extensions/pi-compact-tools"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "nix"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+
+  - package-ecosystem: "nix"
+    directory: "/extensions/pi-webfetch"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "nix"
+    commit-message:
+      prefix: "chore"
+      include: "scope"

@@ -1,5 +1,5 @@
 {
-  description = "Nix flake for pi-adversary";
+  description = "Nix flake for pi-codex-fast";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -24,8 +24,8 @@
       lib = pkgs.lib;
       packageJson = builtins.fromJSON (builtins.readFile ./package.json);
     in {
-      pi-adversary-flake = pkgs.stdenvNoCC.mkDerivation {
-        pname = "pi-adversary-flake";
+      pi-codex-fast = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-codex-fast";
         version = packageJson.version;
         src = lib.cleanSource ./.;
 
@@ -43,12 +43,13 @@
         };
 
         meta = with lib; {
-          description = "Pi extension that runs an always-on read-only reviewer";
+          description = "Pi extension that enables Codex fast mode via extension-settings.json";
+          license = licenses.mit;
           platforms = platforms.all;
         };
       };
 
-      default = self.packages.${system}.pi-adversary-flake;
+      default = self.packages.${system}.pi-codex-fast;
     });
 
     devShells = forAllSystems (system: let
@@ -60,7 +61,7 @@
         ];
 
         shellHook = ''
-          echo "pi-adversary-flake dev shell — node $(node --version)"
+          echo "pi-codex-fast dev shell — node $(node --version)"
         '';
       };
     });

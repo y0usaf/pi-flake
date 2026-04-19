@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build root pi
+        run: nix build .#pi -L
+
+      - name: Build extension packages
+        run: nix build .#pi-agents .#pi-codex-fast .#pi-gecko-websearch .#pi-rtk .#pi-compact-tools .#pi-webfetch -L

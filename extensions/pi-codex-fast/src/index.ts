@@ -3,23 +3,12 @@ import { join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@mariozechner/pi-coding-agent";
 
 interface CodexFastSettings {
-	enabled?: boolean;
-	supportedModels?: string[];
-	showStatus?: boolean;
-}
-
-interface ExtensionSettingsFile {
-	"codex-fast"?: boolean | CodexFastSettings;
-	codexFast?: boolean | CodexFastSettings;
-}
-
-interface ResolvedCodexFastSettings {
 	enabled: boolean;
 	supportedModels: string[];
 	showStatus: boolean;
 }
 
-const DEFAULT_SETTINGS: ResolvedCodexFastSettings = {
+const DEFAULT_SETTINGS: CodexFastSettings = {
 	enabled: false,
 	supportedModels: ["gpt-5.4"],
 	showStatus: true,
@@ -29,46 +18,35 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
 
-function readCodexFastSettings(path: string): CodexFastSettings {
+function readCodexFastSettings(path: string): Partial<CodexFastSettings> {
 	if (!existsSync(path)) return {};
 
 	try {
 		const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown;
 		if (!isRecord(parsed)) return {};
 
-		const file = parsed as ExtensionSettingsFile;
-		const settings = file["codex-fast"] ?? file.codexFast;
+		const settings = parsed["codex-fast"] ?? parsed.codexFast;
 		if (typeof settings === "boolean") {
 			return { enabled: settings };
 		}
-		return settings ?? {};
+		return isRecord(settings) ? (settings as Partial<CodexFastSettings>) : {};
 	} catch (error) {
 		console.error(`[codex-fast] Failed to load ${path}: ${error instanceof Error ? error.message : String(error)}`);
 		return {};
 	}
 }
 
-function mergeSettings(base: ResolvedCodexFastSettings, overrides: CodexFastSettings): ResolvedCodexFastSettings {
+function loadSettings(cwd: string): CodexFastSettings {
 	return {
-		enabled: overrides.enabled ?? base.enabled,
-		supportedModels: overrides.supportedModels ?? base.supportedModels,
-		showStatus: overrides.showStatus ?? base.showStatus,
+		...DEFAULT_SETTINGS,
+		...readCodexFastSettings(join(getAgentDir(), "extension-settings.json")),
+		...readCodexFastSettings(join(cwd, ".pi", "extension-settings.json")),
 	};
 }
 
-function loadSettings(cwd: string): ResolvedCodexFastSettings {
-	const globalSettings = readCodexFastSettings(join(getAgentDir(), "extension-settings.json"));
-	const projectSettings = readCodexFastSettings(join(cwd, ".pi", "extension-settings.json"));
-	return mergeSettings(mergeSettings(DEFAULT_SETTINGS, globalSettings), projectSettings);
-}
-
-function supportsFastMode(modelId: string, settings: ResolvedCodexFastSettings): boolean {
-	return settings.supportedModels.includes(modelId);
-}
-
-function isCodexFastActive(ctx: ExtensionContext, settings: ResolvedCodexFastSettings): boolean {
+function isCodexFastActive(ctx: ExtensionContext, settings: CodexFastSettings): boolean {
 	const model = ctx.model;
-	return model?.provider === "openai-codex" && settings.enabled && supportsFastMode(model.id, settings);
+	return model?.provider === "openai-codex" && settings.enabled && settings.supportedModels.includes(model.id);
 }
 
 function updateStatus(ctx: ExtensionContext): void {
@@ -79,7 +57,7 @@ function updateStatus(ctx: ExtensionContext): void {
 	}
 
 	if (isCodexFastActive(ctx, settings)) {
-		ctx.ui.setStatus("codex-fast", ctx.ui.theme.fg("accent", "codex-fast"));
+		ctx.ui.setStatus("codex-fast", ctx.ui.theme.fg("accent", "⚡"));
 		return;
 	}
 
