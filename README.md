@@ -23,6 +23,7 @@ Extension package outputs:
 - `.#pi-gecko-websearch`
 - `.#pi-rtk`
 - `.#pi-compact-tools`
+- `.#pi-tool-management`
 - `.#pi-webfetch`
 
 Automation:
