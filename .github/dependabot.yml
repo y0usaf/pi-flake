@@ -68,6 +68,17 @@ updates:
       include: "scope"
 
   - package-ecosystem: "nix"
+    directory: "/extensions/pi-tool-management"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "nix"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+
+  - package-ecosystem: "nix"
     directory: "/extensions/pi-webfetch"
     schedule:
       interval: "weekly"

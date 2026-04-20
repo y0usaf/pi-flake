@@ -96,6 +96,22 @@
       },
       "parent": []
     },
+    "piToolManagement": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-tool-management",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-tool-management",
+        "type": "path"
+      },
+      "parent": []
+    },
     "piSrc": {
       "flake": false,
       "locked": {
@@ -137,6 +153,7 @@
         "piGeckoWebsearch": "piGeckoWebsearch",
         "piRtk": "piRtk",
         "piCompactTools": "piCompactTools",
+        "piToolManagement": "piToolManagement",
         "piSrc": "piSrc",
         "piWebfetch": "piWebfetch"
       }
