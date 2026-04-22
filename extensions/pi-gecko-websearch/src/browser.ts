@@ -20,6 +20,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
 
+function str(v: unknown): string | undefined {
+	return typeof v === "string" ? v.trim() || undefined : undefined;
+}
+
 function readSettings(filePath: string): GeckoWebsearchSettings {
 	if (!fs.existsSync(filePath)) return {};
 
@@ -32,9 +36,7 @@ function readSettings(filePath: string): GeckoWebsearchSettings {
 		if (!isRecord(settings)) return {};
 
 		return {
-			binary: typeof settings.binary === "string" ? settings.binary.trim() || undefined : undefined,
-			profile: typeof settings.profile === "string" ? settings.profile.trim() || undefined : undefined,
-			profileRoot: typeof settings.profileRoot === "string" ? settings.profileRoot.trim() || undefined : undefined,
+			binary: str(settings.binary), profile: str(settings.profile), profileRoot: str(settings.profileRoot),
 		};
 	} catch (error) {
 		console.error(
@@ -192,22 +194,12 @@ export class BrowserManager {
 		}
 
 		try {
-			const entries = fs.readdirSync(profileRoot, { withFileTypes: true });
+			const entries = fs.readdirSync(profileRoot, { withFileTypes: true })
+				.filter((e) => e.isDirectory())
+				.sort((a, b) => +b.name.includes(".default") - +a.name.includes(".default"));
 			for (const entry of entries) {
-				if (entry.isDirectory() && entry.name.includes(".default")) {
-					const candidate = path.join(profileRoot, entry.name);
-					if (fs.existsSync(path.join(candidate, "cookies.sqlite"))) {
-						return candidate;
-					}
-				}
-			}
-			for (const entry of entries) {
-				if (entry.isDirectory()) {
-					const candidate = path.join(profileRoot, entry.name);
-					if (fs.existsSync(path.join(candidate, "cookies.sqlite"))) {
-						return candidate;
-					}
-				}
+				const candidate = path.join(profileRoot, entry.name);
+				if (fs.existsSync(path.join(candidate, "cookies.sqlite"))) return candidate;
 			}
 		} catch {
 			// ignore
@@ -216,63 +208,30 @@ export class BrowserManager {
 		return null;
 	}
 
-	/**
-	 * Parse profiles.ini and return the default profile path.
-	 * Looks for the profile marked Default=1 or the first [Profile*] section.
-	 */
 	private parseProfilesIni(iniPath: string): string | null {
 		const content = fs.readFileSync(iniPath, "utf-8");
-		const lines = content.split("\n");
-
-		let currentSection = "";
-		let currentPath = "";
-		let currentIsRelative = true;
-		let defaultProfile: string | null = null;
-		let firstProfile: string | null = null;
-
 		const baseDir = path.dirname(iniPath);
+		const sections = content.split(/^\s*\[/m).slice(1);
 
-		const resolveProfilePath = (p: string, isRelative: boolean): string => {
-			return isRelative ? path.join(baseDir, p) : p;
-		};
+		let firstProfile: string | null = null;
+		let defaultProfile: string | null = null;
 
-		for (const rawLine of lines) {
-			const line = rawLine.trim();
-
-			if (line.startsWith("[")) {
-				// Flush previous section
-				if (currentSection.toLowerCase().startsWith("profile") && currentPath) {
-					const resolved = resolveProfilePath(currentPath, currentIsRelative);
-					if (!firstProfile) firstProfile = resolved;
-				}
-
-				currentSection = line.slice(1, -1);
-				currentPath = "";
-				currentIsRelative = true;
-				continue;
-			}
-
-			const eqIdx = line.indexOf("=");
-			if (eqIdx === -1) continue;
-
-			const key = line.substring(0, eqIdx).trim();
-			const value = line.substring(eqIdx + 1).trim();
-
-			if (key === "Path") currentPath = value;
-			if (key === "IsRelative") currentIsRelative = value === "1";
-			if (key === "Default" && value === "1" && currentPath) {
-				defaultProfile = resolveProfilePath(currentPath, currentIsRelative);
-			}
+		for (const section of sections) {
+			if (!/^profile/i.test(section)) continue;
+			const kv = Object.fromEntries(
+				section.split("\n").filter((l) => l.includes("=")).map((l) => {
+					const i = l.indexOf("=");
+					return [l.substring(0, i).trim(), l.substring(i + 1).trim()];
+				}),
+			);
+			if (!kv.Path) continue;
+			const resolved = kv.IsRelative === "0" ? kv.Path : path.join(baseDir, kv.Path);
+			firstProfile ??= resolved;
+			if (kv.Default === "1") defaultProfile = resolved;
 		}
 
-		// Flush last section
-		if (currentSection.toLowerCase().startsWith("profile") && currentPath && !firstProfile) {
-			firstProfile = resolveProfilePath(currentPath, currentIsRelative);
-		}
-
-		const chosen = defaultProfile || firstProfile;
-		if (chosen && fs.existsSync(chosen)) return chosen;
-		return null;
+		const chosen = defaultProfile ?? firstProfile;
+		return chosen && fs.existsSync(chosen) ? chosen : null;
 	}
 
 	/** Copy cookies.sqlite (and cert9.db if present) from source to dest profile. */
@@ -298,22 +257,19 @@ export class BrowserManager {
 			if (resolved) return resolved;
 		}
 
-		const candidates = [
-			"firefox",
-			"librewolf",
-			"/usr/bin/firefox",
-			"/usr/local/bin/firefox",
-			"/snap/bin/firefox",
-			"/var/lib/flatpak/exports/bin/org.mozilla.firefox",
-			path.join(os.homedir(), ".local/bin/firefox"),
-			"/usr/bin/librewolf",
-			"/usr/local/bin/librewolf",
-			"/snap/bin/librewolf",
-			"/var/lib/flatpak/exports/bin/io.gitlab.librewolf-community",
-			path.join(os.homedir(), ".local/bin/librewolf"),
-			"/Applications/Firefox.app/Contents/MacOS/firefox",
-			"/Applications/LibreWolf.app/Contents/MacOS/librewolf",
-		];
+		const names = ["firefox", "librewolf"];
+		const prefixes = ["/usr/bin", "/usr/local/bin", "/snap/bin"];
+		const flatpaks: Record<string, string> = {
+			firefox: "org.mozilla.firefox",
+			librewolf: "io.gitlab.librewolf-community",
+		};
+		const candidates = names.flatMap((n) => [
+			n,
+			...prefixes.map((p) => `${p}/${n}`),
+			`/var/lib/flatpak/exports/bin/${flatpaks[n]}`,
+			path.join(os.homedir(), `.local/bin/${n}`),
+			`/Applications/${n.charAt(0).toUpperCase() + n.slice(1)}.app/Contents/MacOS/${n}`,
+		]);
 
 		for (const candidate of candidates) {
 			const resolved = this.resolveBinaryCandidate(candidate);

@@ -1,286 +1,136 @@
-export interface SearchResult {
-	title: string;
-	url: string;
-	snippet: string;
+export interface SearchResult { title: string; url: string; snippet: string }
+
+function decode(s: string): string {
+	return s
+		.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+		.replace(/&quot;/g, '"').replace(/&#39;|&#x27;/g, "'").replace(/&#x2F;/g, "/")
+		.replace(/&nbsp;/g, " ").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(+n));
 }
 
-/**
- * Dispatch to the appropriate parser based on search engine.
- */
-export function parseSearchResults(html: string, engine: string): SearchResult[] {
-	switch (engine.toLowerCase()) {
-		case "google":
-			return parseGoogle(html);
-		case "duckduckgo":
-			return parseDuckDuckGo(html);
-		case "brave":
-			return parseBrave(html);
-		default:
-			return parseGeneric(html);
-	}
-}
+const clean = (s: string) => decode(s.replace(/<[^>]*>/g, "").trim());
 
-/**
- * Decode HTML entities in a string.
- */
-function decodeEntities(str: string): string {
-	return str
-		.replace(/&amp;/g, "&")
-		.replace(/&lt;/g, "<")
-		.replace(/&gt;/g, ">")
-		.replace(/&quot;/g, '"')
-		.replace(/&#39;/g, "'")
-		.replace(/&#x27;/g, "'")
-		.replace(/&#x2F;/g, "/")
-		.replace(/&nbsp;/g, " ")
-		.replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)));
-}
-
-/**
- * Strip all HTML tags from a string.
- */
-function stripTags(str: string): string {
-	return str.replace(/<[^>]*>/g, "").trim();
-}
-
-/**
- * Extract a clean URL from a Google redirect link or raw href.
- */
-function cleanGoogleUrl(rawUrl: string): string {
-	// Google wraps URLs: /url?q=https://example.com&sa=...
-	const match = rawUrl.match(/[?&]q=([^&]+)/);
-	if (match) {
-		return decodeURIComponent(match[1]);
-	}
-	return rawUrl;
-}
-
-// ---------------------------------------------------------------------------
-// Google
-// ---------------------------------------------------------------------------
-
-function parseGoogle(html: string): SearchResult[] {
-	const results: SearchResult[] = [];
-
-	// Strategy 1: Look for <a href="..."><h3>...</h3></a> patterns
-	// Google's organic results typically have an <a> wrapping an <h3>.
-	const linkH3Regex = /<a[^>]+href="([^"]*)"[^>]*>[\s\S]*?<h3[^>]*>([\s\S]*?)<\/h3>/gi;
-	let match: RegExpExecArray | null = linkH3Regex.exec(html);
-
-	while (match !== null) {
-		const rawUrl = decodeEntities(match[1]);
-		const url = cleanGoogleUrl(rawUrl);
-		const title = decodeEntities(stripTags(match[2]));
-
-		if (url.startsWith("http") && !url.includes("google.com/search")) {
-			// Try to grab a snippet: look for text in a nearby <span> or <div> after the </h3>
-			// We'll search in the next ~2000 chars after this match for snippet-like content.
-			const afterMatch = html.substring(match.index + match[0].length, match.index + match[0].length + 3000);
-
-			let snippet = "";
-
-			// Look for <span> blocks that contain the snippet text
-			// Google often uses <div class="VwiC3b ..."><span>...</span></div> or similar
-			const spanPatterns = [
-				/<div[^>]*class="[^"]*VwiC3b[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
-				/<span[^>]*class="[^"]*st[^"]*"[^>]*>([\s\S]*?)<\/span>/i,
-				/<div[^>]*data-sncf="[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
-			];
-
-			for (const pattern of spanPatterns) {
-				const snippetMatch = afterMatch.match(pattern);
-				if (snippetMatch) {
-					snippet = decodeEntities(stripTags(snippetMatch[1])).substring(0, 300);
-					break;
-				}
-			}
-
-			// Fallback: grab text from the first substantial <span> after </h3>
-			if (!snippet) {
-				const spanMatch = afterMatch.match(/<span[^>]*>([\s\S]{30,300}?)<\/span>/i);
-				if (spanMatch) {
-					snippet = decodeEntities(stripTags(spanMatch[1])).substring(0, 300);
-				}
-			}
-
-			if (title) {
-				results.push({ title, url, snippet });
-			}
-		}
-
-		match = linkH3Regex.exec(html);
-	}
-
-	// Deduplicate by URL
-	return dedup(results);
-}
-
-// ---------------------------------------------------------------------------
-// DuckDuckGo (HTML-only version)
-// ---------------------------------------------------------------------------
-
-function parseDuckDuckGo(html: string): SearchResult[] {
-	const results: SearchResult[] = [];
-
-	// The HTML-only DDG version uses <div class="result ..."> blocks.
-	// Each contains:
-	//   <a class="result__a" href="...">title</a>
-	//   <a class="result__snippet" href="...">snippet text</a>
-
-	const resultBlockRegex =
-		/<div[^>]*class="[^"]*result\b[^"]*"[^>]*>([\s\S]*?)<\/div>\s*(?=<div[^>]*class="[^"]*result\b|$)/gi;
-	let blockMatch: RegExpExecArray | null = resultBlockRegex.exec(html);
-
-	while (blockMatch !== null) {
-		const block = blockMatch[1];
-
-		// Extract title and URL
-		const titleMatch = block.match(/<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i);
-		if (titleMatch) {
-			const url = decodeEntities(titleMatch[1]);
-			const title = decodeEntities(stripTags(titleMatch[2]));
-
-			// Extract snippet
-			let snippet = "";
-			const snippetMatch = block.match(/<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/i);
-			if (snippetMatch) {
-				snippet = decodeEntities(stripTags(snippetMatch[1]));
-			}
-
-			if (title && url.startsWith("http")) {
-				results.push({ title, url, snippet });
-			}
-		}
-
-		blockMatch = resultBlockRegex.exec(html);
-	}
-
-	// Fallback: simpler link-based extraction if the block approach got nothing
-	if (results.length === 0) {
-		const linkRegex = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
-		let linkMatch: RegExpExecArray | null = linkRegex.exec(html);
-		while (linkMatch !== null) {
-			const url = decodeEntities(linkMatch[1]);
-			const title = decodeEntities(stripTags(linkMatch[2]));
-			if (title && url.startsWith("http")) {
-				results.push({ title, url, snippet: "" });
-			}
-			linkMatch = linkRegex.exec(html);
-		}
-	}
-
-	return dedup(results);
-}
-
-// ---------------------------------------------------------------------------
-// Brave Search
-// ---------------------------------------------------------------------------
-
-function parseBrave(html: string): SearchResult[] {
-	const results: SearchResult[] = [];
-
-	// Brave search results are in <div class="snippet ..."> blocks
-	// containing <a class="result-header" href="..."><span class="snippet-title">...</span></a>
-	// and <p class="snippet-description">...</p>
-
-	const snippetBlockRegex =
-		/<div[^>]*class="[^"]*snippet\b[^"]*"[^>]*>([\s\S]*?)(?=<div[^>]*class="[^"]*snippet\b|<footer|$)/gi;
-	let blockMatch: RegExpExecArray | null = snippetBlockRegex.exec(html);
-
-	while (blockMatch !== null) {
-		const block = blockMatch[1];
-
-		// Title and URL
-		const headerMatch = block.match(
-			/<a[^>]*class="[^"]*result-header[^"]*"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i,
-		);
-		if (!headerMatch) {
-			// Alternate: any <a> with an href containing http
-			const altMatch = block.match(/<a[^>]+href="(https?:\/\/[^"]*)"[^>]*>([\s\S]*?)<\/a>/i);
-			if (altMatch) {
-				const url = decodeEntities(altMatch[1]);
-				const title = decodeEntities(stripTags(altMatch[2]));
-
-				let snippet = "";
-				const descMatch = block.match(/<p[^>]*class="[^"]*snippet-description[^"]*"[^>]*>([\s\S]*?)<\/p>/i);
-				if (descMatch) snippet = decodeEntities(stripTags(descMatch[1]));
-
-				if (title && url.startsWith("http")) {
-					results.push({ title, url, snippet });
-				}
-			}
-
-			blockMatch = snippetBlockRegex.exec(html);
-			continue;
-		}
-
-		const url = decodeEntities(headerMatch[1]);
-		const title = decodeEntities(stripTags(headerMatch[2]));
-
-		// Snippet
-		let snippet = "";
-		const descMatch = block.match(/<p[^>]*class="[^"]*snippet-description[^"]*"[^>]*>([\s\S]*?)<\/p>/i);
-		if (descMatch) {
-			snippet = decodeEntities(stripTags(descMatch[1]));
-		}
-		// Fallback: description div
-		if (!snippet) {
-			const descDiv = block.match(/<div[^>]*class="[^"]*snippet-description[^"]*"[^>]*>([\s\S]*?)<\/div>/i);
-			if (descDiv) snippet = decodeEntities(stripTags(descDiv[1]));
-		}
-
-		if (title && url.startsWith("http")) {
-			results.push({ title, url, snippet });
-		}
-
-		blockMatch = snippetBlockRegex.exec(html);
-	}
-
-	// Fallback to generic if nothing found
-	if (results.length === 0) {
-		return parseGeneric(html);
-	}
-
-	return dedup(results);
-}
-
-// ---------------------------------------------------------------------------
-// Generic fallback
-// ---------------------------------------------------------------------------
-
-function parseGeneric(html: string): SearchResult[] {
-	const results: SearchResult[] = [];
-	const linkRegex = /<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
-	let match: RegExpExecArray | null = linkRegex.exec(html);
-
-	while (match !== null) {
-		const url = decodeEntities(match[1]);
-		const title = decodeEntities(stripTags(match[2]));
-
-		if (title && title.length >= 3 && !url.includes("google.com") && !url.includes("duckduckgo.com")) {
-			const contextStart = Math.max(0, match.index - 200);
-			const contextEnd = Math.min(html.length, match.index + match[0].length + 500);
-			const context = html.substring(contextStart, contextEnd);
-			const snippet = decodeEntities(stripTags(context)).substring(0, 200).trim();
-
-			results.push({ title, url, snippet });
-		}
-
-		match = linkRegex.exec(html);
-	}
-
-	return dedup(results).slice(0, 20);
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function dedup(results: SearchResult[]): SearchResult[] {
+function dedup(r: SearchResult[]): SearchResult[] {
 	const seen = new Set<string>();
-	return results.filter((r) => {
-		if (seen.has(r.url)) return false;
-		seen.add(r.url);
-		return true;
-	});
+	return r.filter((x) => !seen.has(x.url) && seen.add(x.url));
+}
+
+function firstMatch(html: string, pats: RegExp[]): string {
+	for (const p of pats) { const m = html.match(p); if (m) return clean(m[1]); }
+	return "";
+}
+
+function execAll(re: RegExp, html: string, fn: (m: RegExpExecArray) => void) {
+	const r = new RegExp(re.source, re.flags);
+	for (let m = r.exec(html); m; m = r.exec(html)) fn(m);
+}
+
+interface Engine {
+	blockRegex?: RegExp;           // splits html into blocks (block mode)
+	mainRegex?: RegExp;            // matches title+url directly (lookahead/generic mode)
+	titleUrlPatterns?: RegExp[];   // tried inside each block; group1=url, group2=title
+	snippetPatterns: RegExp[];     // group1=snippet; searched in block or lookahead window
+	lookaheadChars?: number;       // if set, snippet search uses chars after mainRegex match
+	cleanUrl?: (u: string) => string;
+	filterUrl?: (u: string) => boolean;
+	extractSnippet?: (html: string, m: RegExpExecArray) => string; // custom snippet logic (generic)
+	fallback?: (html: string) => SearchResult[];
+	maxResults?: number;
+}
+
+const httpFilter = (u: string) => u.startsWith("http");
+const googleUrl = (u: string) => { const m = u.match(/[?&]q=([^&]+)/); return m ? decodeURIComponent(m[1]) : u; };
+
+const engines: Record<string, Engine> = {
+	google: {
+		mainRegex: /<a[^>]+href="([^"]*)"[^>]*>[\s\S]*?<h3[^>]*>([\s\S]*?)<\/h3>/gi,
+		lookaheadChars: 3000,
+		snippetPatterns: [
+			/<div[^>]*class="[^"]*VwiC3b[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
+			/<span[^>]*class="[^"]*st[^"]*"[^>]*>([\s\S]*?)<\/span>/i,
+			/<div[^>]*data-sncf="[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
+			/<span[^>]*>([\s\S]{30,300}?)<\/span>/i,
+		],
+		cleanUrl: googleUrl,
+		filterUrl: (u) => u.startsWith("http") && !u.includes("google.com/search"),
+	},
+	duckduckgo: {
+		blockRegex: /<div[^>]*class="[^"]*result\b[^"]*"[^>]*>([\s\S]*?)<\/div>\s*(?=<div[^>]*class="[^"]*result\b|$)/gi,
+		titleUrlPatterns: [/<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i],
+		snippetPatterns: [/<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/i],
+		filterUrl: httpFilter,
+		fallback(html: string) {
+			const results: SearchResult[] = [];
+			execAll(/<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, html, (m) => {
+				const url = decode(m[1]), title = clean(m[2]);
+				if (title && url.startsWith("http")) results.push({ title, url, snippet: "" });
+			});
+			return results;
+		},
+	},
+	brave: {
+		blockRegex: /<div[^>]*class="[^"]*snippet\b[^"]*"[^>]*>([\s\S]*?)(?=<div[^>]*class="[^"]*snippet\b|<footer|$)/gi,
+		titleUrlPatterns: [
+			/<a[^>]*class="[^"]*result-header[^"]*"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i,
+			/<a[^>]+href="(https?:\/\/[^"]*)"[^>]*>([\s\S]*?)<\/a>/i,
+		],
+		snippetPatterns: [
+			/<p[^>]*class="[^"]*snippet-description[^"]*"[^>]*>([\s\S]*?)<\/p>/i,
+			/<div[^>]*class="[^"]*snippet-description[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
+		],
+		filterUrl: httpFilter,
+		fallback: (html: string) => parse(genericEngine, html),
+	},
+};
+
+const genericEngine: Engine = {
+	mainRegex: /<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi,
+	snippetPatterns: [],
+	filterUrl: (u) => !u.includes("google.com") && !u.includes("duckduckgo.com"),
+	extractSnippet(html, m) {
+		const ctx = html.substring(Math.max(0, m.index - 200), m.index + m[0].length + 500);
+		return clean(ctx).substring(0, 200).trim();
+	},
+	maxResults: 20,
+};
+
+function parse(cfg: Engine, html: string): SearchResult[] {
+	const results: SearchResult[] = [];
+
+	if (cfg.blockRegex) {
+		execAll(cfg.blockRegex, html, (bm) => {
+			const block = bm[1];
+			let url = "", title = "";
+			for (const p of cfg.titleUrlPatterns ?? []) {
+				const m = block.match(p);
+				if (m) { url = decode(m[1]); title = clean(m[2]); break; }
+			}
+			if (cfg.cleanUrl) url = cfg.cleanUrl(url);
+			if (title && (!cfg.filterUrl || cfg.filterUrl(url))) {
+				const snippet = firstMatch(block, cfg.snippetPatterns);
+				results.push({ title, url, snippet });
+			}
+		});
+	} else if (cfg.mainRegex) {
+		execAll(cfg.mainRegex, html, (m) => {
+			let url = decode(m[1]);
+			const title = clean(m[2]);
+			if (cfg.cleanUrl) url = cfg.cleanUrl(url);
+			if (!title || title.length < 3 || (cfg.filterUrl && !cfg.filterUrl(url))) return;
+			let snippet = "";
+			if (cfg.lookaheadChars) {
+				const after = html.substring(m.index + m[0].length, m.index + m[0].length + cfg.lookaheadChars);
+				snippet = firstMatch(after, cfg.snippetPatterns).substring(0, 300);
+			} else if (cfg.extractSnippet) {
+				snippet = cfg.extractSnippet(html, m);
+			}
+			results.push({ title, url, snippet });
+		});
+	}
+
+	if (results.length === 0 && cfg.fallback) return cfg.fallback(html);
+	return dedup(results).slice(0, cfg.maxResults ?? results.length);
+}
+
+export function parseSearchResults(html: string, engine: string): SearchResult[] {
+	return parse(engines[engine.toLowerCase()] ?? genericEngine, html);
 }
