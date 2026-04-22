@@ -30,19 +30,10 @@ function cacheGet(key: string): CacheEntry | undefined {
 		cache.delete(key);
 		return undefined;
 	}
-	// Promote to MRU
-	cache.delete(key);
-	cache.set(key, entry);
 	return entry;
 }
 
 function cacheSet(key: string, entry: CacheEntry): void {
-	// Evict expired
-	const now = Date.now();
-	for (const [k, v] of cache) {
-		if (now - v.timestamp > CACHE_TTL_MS) cache.delete(k);
-	}
-	// Evict oldest if at cap
 	while (cache.size >= CACHE_MAX) {
 		const oldest = cache.keys().next().value;
 		if (oldest !== undefined) cache.delete(oldest);
@@ -55,15 +46,9 @@ function cacheSet(key: string, entry: CacheEntry): void {
 // Turndown — lazy singleton
 // ---------------------------------------------------------------------------
 
-type TurndownCtor = typeof import("turndown");
-let turndownInstance: InstanceType<TurndownCtor> | undefined;
-
-async function getTurndown(): Promise<InstanceType<TurndownCtor>> {
-	if (turndownInstance) return turndownInstance;
-	const mod = await import("turndown");
-	const Ctor = (mod as unknown as { default: TurndownCtor }).default;
-	turndownInstance = new Ctor();
-	return turndownInstance;
+let td: any;
+async function getTurndown() {
+	return td ??= new (await import("turndown")).default();
 }
 
 // ---------------------------------------------------------------------------
@@ -73,13 +58,16 @@ async function getTurndown(): Promise<InstanceType<TurndownCtor>> {
 const MAX_REDIRECTS = 5;
 const FETCH_TIMEOUT_MS = 30_000;
 
-async function safeFetch(url: string, signal: AbortSignal): Promise<Response> {
+async function safeFetch(url: string, signal?: AbortSignal): Promise<Response> {
 	let current = url;
 
 	for (let i = 0; i <= MAX_REDIRECTS; i++) {
+		const signals = signal
+			? [signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]
+			: [AbortSignal.timeout(FETCH_TIMEOUT_MS)];
 		const res = await fetch(current, {
 			redirect: "manual",
-			signal: AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]),
+			signal: AbortSignal.any(signals),
 			headers: {
 				Accept: "text/html, text/markdown, text/plain, */*",
 				"User-Agent": "pi-webfetch/1.0",
@@ -119,11 +107,8 @@ export default function (pi: ExtensionAPI) {
 			"Fetch a URL and return its content as markdown. For HTML pages, converts to clean markdown. For other content types, returns raw text. Includes a 15-minute cache.",
 		promptSnippet: "Fetch a URL and return its content as markdown",
 		promptGuidelines: [
-			"Use web_fetch to read documentation pages, API references, blog posts, and other web content.",
-			"The URL must be a full URL starting with http:// or https:// (http is auto-upgraded to https).",
-			"HTML is converted to clean markdown. Non-HTML content is returned as-is.",
-			"For GitHub repos, prefer `gh` CLI via bash. For authenticated pages, this tool won't work.",
-			"Optionally pass a `prompt` parameter to indicate what you're looking for — it's prepended to the output for your reference.",
+			"Use web_fetch to read documentation, API references, or other web content. URL must start with http:// or https:// (http is auto-upgraded). HTML is converted to markdown; non-HTML is returned as-is.",
+			"For GitHub repos prefer `gh` CLI via bash. Authenticated pages won't work. Optionally pass `prompt` to indicate what you're looking for.",
 		],
 		parameters: Type.Object({
 			url: Type.String({ description: "Full URL to fetch (http/https)" }),
@@ -137,14 +122,13 @@ export default function (pi: ExtensionAPI) {
 		renderCall(args: { url: string; prompt?: string }, theme: any, context: any) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 			let s = theme.fg("toolTitle", theme.bold("web_fetch "));
-			s += theme.fg("muted", args.url ?? "");
+			s += theme.fg("muted", args.url);
 			text.setText(s);
 			return text;
 		},
 
 		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
 			const { url, prompt } = params;
-			const requestSignal = signal ?? new AbortController().signal;
 
 			// Validate
 			let parsed: URL;
@@ -172,7 +156,7 @@ export default function (pi: ExtensionAPI) {
 			onUpdate?.({ content: [{ type: "text", text: `Fetching ${fetchUrl}...` }], details: undefined });
 
 			try {
-				const res = await safeFetch(fetchUrl, requestSignal);
+				const res = await safeFetch(fetchUrl, signal);
 
 				if (!res.ok && ![301, 302, 307, 308].includes(res.status)) {
 					throw new Error(`HTTP ${res.status} ${res.statusText}`);
