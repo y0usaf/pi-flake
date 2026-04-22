@@ -18,20 +18,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
 
-function readCodexFastSettings(path: string): Partial<CodexFastSettings> {
-	if (!existsSync(path)) return {};
+function parseSettings(raw: unknown): Partial<CodexFastSettings> {
+	if (typeof raw === "boolean") return { enabled: raw };
+	if (!isRecord(raw)) return {};
+	return {
+		...(typeof raw.enabled === "boolean" ? { enabled: raw.enabled } : {}),
+		...(typeof raw.showStatus === "boolean" ? { showStatus: raw.showStatus } : {}),
+		...(Array.isArray(raw.supportedModels)
+			? { supportedModels: raw.supportedModels.filter((s): s is string => typeof s === "string" && s.trim().length > 0) }
+			: {}),
+	};
+}
 
+function readSettingsFile(path: string): Partial<CodexFastSettings> {
+	if (!existsSync(path)) return {};
 	try {
 		const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown;
 		if (!isRecord(parsed)) return {};
-
-		const settings = parsed["codex-fast"] ?? parsed.codexFast;
-		if (typeof settings === "boolean") {
-			return { enabled: settings };
-		}
-		return isRecord(settings) ? (settings as Partial<CodexFastSettings>) : {};
-	} catch (error) {
-		console.error(`[codex-fast] Failed to load ${path}: ${error instanceof Error ? error.message : String(error)}`);
+		return parseSettings(parsed["codex-fast"] ?? parsed.codexFast);
+	} catch {
 		return {};
 	}
 }
@@ -39,8 +44,8 @@ function readCodexFastSettings(path: string): Partial<CodexFastSettings> {
 function loadSettings(cwd: string): CodexFastSettings {
 	return {
 		...DEFAULT_SETTINGS,
-		...readCodexFastSettings(join(getAgentDir(), "extension-settings.json")),
-		...readCodexFastSettings(join(cwd, ".pi", "extension-settings.json")),
+		...readSettingsFile(join(getAgentDir(), "extension-settings.json")),
+		...readSettingsFile(join(cwd, ".pi", "extension-settings.json")),
 	};
 }
 
