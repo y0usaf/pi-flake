@@ -26,10 +26,6 @@ function normalizePath(path: unknown, fallback = "."): string {
   return shortenPath(clean);
 }
 
-function lineCount(value: unknown): number {
-  return typeof value === "string" && value.length > 0 ? value.split("\n").length : 0;
-}
-
 function formatScalar(value: unknown): string {
   if (typeof value === "string") return squash(value);
   if (typeof value === "number" || typeof value === "boolean") return String(value);
@@ -60,85 +56,31 @@ function textLineCount(result: any): number {
   return total;
 }
 
+function patchFailedMessage(): string {
+  return `pi-compact-tools: patch failed${lastPatchError ? `\n${lastPatchError}` : ""}`;
+}
+
+const argFormatters: Record<string, (args: any) => string> = {
+  read: (args) => { const p = normalizePath(args?.path, "?"); if (args?.offset === undefined && args?.limit === undefined) return p; const s = Number(args?.offset ?? 1); return args?.limit === undefined ? `${p}:${s}` : `${p}:${s}-${s + Number(args.limit) - 1}`; },
+  bash: (args) => `${squash(args?.command) || "…"}${args?.timeout !== undefined ? ` • timeout=${args.timeout}s` : ""}`,
+  edit: (args) => { const p = normalizePath(args?.path, "?"); const e = Array.isArray(args?.edits) ? args.edits.length : (args?.oldText !== undefined || args?.newText !== undefined ? 1 : 0); return e > 0 ? `${p} • ${e} edit${e === 1 ? "" : "s"}` : p; },
+  write: (args) => { const p = normalizePath(args?.path, "?"); const l = typeof args?.content === "string" && args.content.length > 0 ? args.content.split("\n").length : 0; return l > 0 ? `${p} • ${l} lines` : p; },
+  find: (args) => `${squash(args?.pattern) || "*"} @ ${normalizePath(args?.path, ".")}${args?.limit !== undefined ? ` • limit=${args.limit}` : ""}`,
+  grep: (args) => `/${squash(args?.pattern) || ".*"}/ @ ${normalizePath(args?.path, ".")}${squash(args?.glob) ? ` • ${squash(args.glob)}` : ""}${args?.limit !== undefined ? ` • limit=${args.limit}` : ""}`,
+  ls: (args) => `${normalizePath(args?.path, ".")}${args?.limit !== undefined ? ` • limit=${args.limit}` : ""}`,
+  spawn_agent: (args) => { const id = squash(args?.id) || "?"; const t = squash(args?.task); return t ? `${id} • ${clip(t, 64)}` : id; },
+  delegate: (args) => { const id = squash(args?.id) || "?"; const m = squash(args?.message); return m ? `${id} • ${clip(m, 64)}` : id; },
+  kill_agent: (args) => squash(args?.id) || "?",
+  list_agents: () => "active children",
+  report: (args) => clip(squash(args?.message) || "report", 80),
+  web_fetch: (args) => { const u = squash(args?.url) || "?"; const p = squash(args?.prompt); return p ? `${u} • ${clip(p, 48)}` : u; },
+  web_search: (args) => { const q = squash(args?.query) || "?"; const e = squash(args?.engine); return e ? `${q} • ${e}` : q; },
+  web_browse: (args) => { const u = squash(args?.url) || "?"; return args?.extract ? `${u} • extract` : u; },
+};
+
 function summarizeArgs(toolName: string, args: any): string {
-  switch (toolName) {
-    case "read": {
-      const path = normalizePath(args?.path, "?");
-      if (args?.offset === undefined && args?.limit === undefined) return path;
-      const start = Number(args?.offset ?? 1);
-      if (args?.limit === undefined) return `${path}:${start}`;
-      return `${path}:${start}-${start + Number(args.limit) - 1}`;
-    }
-    case "bash": {
-      const command = squash(args?.command) || "…";
-      const timeout = args?.timeout !== undefined ? ` • timeout=${args.timeout}s` : "";
-      return `${command}${timeout}`;
-    }
-    case "edit": {
-      const path = normalizePath(args?.path, "?");
-      const edits = Array.isArray(args?.edits)
-        ? args.edits.length
-        : args?.oldText !== undefined || args?.newText !== undefined
-          ? 1
-          : 0;
-      return edits > 0 ? `${path} • ${edits} edit${edits === 1 ? "" : "s"}` : path;
-    }
-    case "write": {
-      const path = normalizePath(args?.path, "?");
-      const lines = lineCount(args?.content);
-      return lines > 0 ? `${path} • ${lines} lines` : path;
-    }
-    case "find": {
-      const pattern = squash(args?.pattern) || "*";
-      const path = normalizePath(args?.path, ".");
-      const limit = args?.limit !== undefined ? ` • limit=${args.limit}` : "";
-      return `${pattern} @ ${path}${limit}`;
-    }
-    case "grep": {
-      const pattern = squash(args?.pattern) || ".*";
-      const path = normalizePath(args?.path, ".");
-      const glob = squash(args?.glob);
-      const limit = args?.limit !== undefined ? ` • limit=${args.limit}` : "";
-      return `/${pattern}/ @ ${path}${glob ? ` • ${glob}` : ""}${limit}`;
-    }
-    case "ls": {
-      const path = normalizePath(args?.path, ".");
-      const limit = args?.limit !== undefined ? ` • limit=${args.limit}` : "";
-      return `${path}${limit}`;
-    }
-    case "spawn_agent": {
-      const id = squash(args?.id) || "?";
-      const task = squash(args?.task);
-      return task ? `${id} • ${clip(task, 64)}` : id;
-    }
-    case "delegate": {
-      const id = squash(args?.id) || "?";
-      const message = squash(args?.message);
-      return message ? `${id} • ${clip(message, 64)}` : id;
-    }
-    case "kill_agent":
-      return squash(args?.id) || "?";
-    case "list_agents":
-      return "active children";
-    case "report":
-      return clip(squash(args?.message) || "report", 80);
-    case "web_fetch": {
-      const url = squash(args?.url) || "?";
-      const prompt = squash(args?.prompt);
-      return prompt ? `${url} • ${clip(prompt, 48)}` : url;
-    }
-    case "web_search": {
-      const query = squash(args?.query) || "?";
-      const engine = squash(args?.engine);
-      return engine ? `${query} • ${engine}` : query;
-    }
-    case "web_browse": {
-      const url = squash(args?.url) || "?";
-      return args?.extract ? `${url} • extract` : url;
-    }
-    default:
-      break;
-  }
+  const formatter = argFormatters[toolName];
+  if (formatter) return formatter(args);
 
   if (args === undefined || args === null) return "";
   if (typeof args !== "object") return formatScalar(args);
@@ -167,6 +109,20 @@ function summarizeArgs(toolName: string, args: any): string {
   return parts.join(" • ");
 }
 
+const resultFormatters: Record<string, (result: any, details: any) => string> = {
+  bash: (_r, d) => typeof d.exitCode === "number" && d.exitCode !== 0 ? ` → exit ${d.exitCode}` : "",
+  find: (r) => { const c = textLineCount(r); return c > 0 ? ` → ${c}` : ""; },
+  grep: (r) => { const c = textLineCount(r); return c > 0 ? ` → ${c}` : ""; },
+  ls: (r) => { const c = textLineCount(r); return c > 0 ? ` → ${c}` : ""; },
+  list_agents: (_r, d) => Array.isArray(d?.agents) ? ` → ${d.agents.length}` : "",
+  kill_agent: (_r, d) => Array.isArray(d?.killedIds) ? ` → ${d.killedIds.length} killed` : "",
+  spawn_agent: (_r, d) => d?.childId ? ` → ${d.childId}` : "",
+  delegate: (_r, d) => d?.childId ? ` → ${d.childId}` : "",
+  web_search: (_r, d) => typeof d?.resultCount === "number" ? ` → ${d.resultCount} results` : "",
+  web_browse: (_r, d) => typeof d?.contentLength === "number" ? ` → ${d.contentLength} chars` : "",
+  web_fetch: (_r, d) => d?.fromCache ? " → cache" : "",
+};
+
 function summarizeResult(toolName: string, result: any): string {
   if (!result) return "";
 
@@ -176,45 +132,10 @@ function summarizeResult(toolName: string, result: any): string {
   }
 
   const details = result?.details ?? {};
-
-  switch (toolName) {
-    case "bash":
-      if (typeof details.exitCode === "number") return details.exitCode === 0 ? "" : ` → exit ${details.exitCode}`;
-      break;
-    case "find":
-    case "grep":
-    case "ls": {
-      const count = textLineCount(result);
-      if (count > 0) return ` → ${count}`;
-      break;
-    }
-    case "list_agents": {
-      if (Array.isArray(details?.agents)) return ` → ${details.agents.length}`;
-      break;
-    }
-    case "kill_agent": {
-      if (Array.isArray(details?.killedIds)) return ` → ${details.killedIds.length} killed`;
-      break;
-    }
-    case "spawn_agent":
-    case "delegate": {
-      if (details?.childId) return ` → ${details.childId}`;
-      break;
-    }
-    case "web_search": {
-      if (typeof details?.resultCount === "number") return ` → ${details.resultCount} results`;
-      break;
-    }
-    case "web_browse": {
-      if (typeof details?.contentLength === "number") return ` → ${details.contentLength} chars`;
-      break;
-    }
-    case "web_fetch": {
-      if (details?.fromCache) return " → cache";
-      break;
-    }
-    default:
-      break;
+  const formatter = resultFormatters[toolName];
+  if (formatter) {
+    const out = formatter(result, details);
+    if (out) return out;
   }
 
   const line = firstTextLine(result);
@@ -254,7 +175,7 @@ async function patchToolExecutionComponent(): Promise<boolean> {
 
         originalUpdateDisplay.call(this);
 
-        const line = buildLine(undefined, this).replace(/\x1b\[[0-9;]*m/g, "");
+        const line = buildLine(undefined, this);
         clearImages(this);
         this.hideComponent = false;
 
@@ -294,7 +215,7 @@ export default function (pi: ExtensionAPI) {
     description: "Show pi-compact-tools patch status",
     handler: async (_args, ctx) => {
       const ok = await patchToolExecutionComponent();
-      const msg = ok ? "pi-compact-tools: active" : `pi-compact-tools: patch failed${lastPatchError ? `\n${lastPatchError}` : ""}`;
+      const msg = ok ? "pi-compact-tools: active" : patchFailedMessage();
       ctx.ui.notify(msg, ok ? "info" : "error");
     },
   });
@@ -302,6 +223,6 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     const ok = await patchToolExecutionComponent();
     if (!ctx.hasUI) return;
-    if (!ok) ctx.ui.notify(`pi-compact-tools: patch failed${lastPatchError ? `\n${lastPatchError}` : ""}`, "error");
+    if (!ok) ctx.ui.notify(patchFailedMessage(), "error");
   });
 }
