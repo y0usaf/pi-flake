@@ -52,12 +52,15 @@ const SAFE_ENV_KEYS: ReadonlySet<string> = new Set([
 	"NODE_EXTRA_CA_CERTS",
 ]);
 
+let _cachedSafeEnv: NodeJS.ProcessEnv | undefined;
 function buildSafeEnv(): NodeJS.ProcessEnv {
+	if (_cachedSafeEnv) return _cachedSafeEnv;
 	const safe: NodeJS.ProcessEnv = {};
 	for (const key of SAFE_ENV_KEYS) {
 		const value = process.env[key];
 		if (value !== undefined) safe[key] = value;
 	}
+	_cachedSafeEnv = safe;
 	return safe;
 }
 
@@ -105,16 +108,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function normalizeNonNegativeInteger(value: unknown, key: string, path: string): number {
-	if (!Number.isInteger(value) || (value as number) < 0) {
-		throw new Error(`${path}: "${key}" must be an integer ≥ 0`);
-	}
-	return value as number;
-}
-
-function normalizePositiveInteger(value: unknown, key: string, path: string): number {
-	if (!Number.isInteger(value) || (value as number) < 1) {
-		throw new Error(`${path}: "${key}" must be an integer ≥ 1`);
+function normalizeInt(value: unknown, key: string, path: string, min: number): number {
+	if (!Number.isInteger(value) || (value as number) < min) {
+		throw new Error(`${path}: "${key}" must be an integer >= ${min}`);
 	}
 	return value as number;
 }
@@ -146,10 +142,10 @@ async function readConfigFragment(path: string): Promise<Partial<PiAgentsConfig>
 
 	const config: Partial<PiAgentsConfig> = {};
 	if ("maxDepth" in parsed) {
-		config.maxDepth = normalizeNonNegativeInteger(parsed.maxDepth, "maxDepth", path);
+		config.maxDepth = normalizeInt(parsed.maxDepth, "maxDepth", path, 0);
 	}
 	if ("maxLiveAgents" in parsed) {
-		config.maxLiveAgents = normalizePositiveInteger(parsed.maxLiveAgents, "maxLiveAgents", path);
+		config.maxLiveAgents = normalizeInt(parsed.maxLiveAgents, "maxLiveAgents", path, 1);
 	}
 	return config;
 }
@@ -332,7 +328,8 @@ function createChildTools(cwd: string): AgentTool<any>[] {
 		}
 	};
 
-	const resolvePath = async (p: string): Promise<string> => {
+	const resolvePath = async (raw: string): Promise<string> => {
+		const p = raw.replace(/^@/, "");
 		const lexical = isAbsolute(p) ? p : resolve(cwd, p);
 		if (!isWithinDirectory(cwd, lexical)) {
 			throw new Error(`Path traversal denied: "${p}" resolves outside the working directory "${cwd}". Use bash if you need files outside this tree.`);
@@ -353,7 +350,7 @@ function createChildTools(cwd: string): AgentTool<any>[] {
 		description: "Read a file's contents. Use offset/limit for large files.",
 		parameters: readToolSchema,
 		execute: async (_id, params) => {
-			const filePath = await resolvePath(params.path.replace(/^@/, ""));
+			const filePath = await resolvePath(params.path);
 			let content: string;
 			try {
 				content = await readFile(filePath, "utf-8");
@@ -376,7 +373,7 @@ function createChildTools(cwd: string): AgentTool<any>[] {
 		description: "Write content to a file. Creates parent directories.",
 		parameters: writeToolSchema,
 		execute: async (_id, params) => {
-			const filePath = await resolvePath(params.path.replace(/^@/, ""));
+			const filePath = await resolvePath(params.path);
 			await mkdir(dirname(filePath), { recursive: true });
 			await writeFile(filePath, params.content, "utf-8");
 			return {
@@ -392,7 +389,7 @@ function createChildTools(cwd: string): AgentTool<any>[] {
 		description: "Edit a file using exact text replacement.",
 		parameters: editToolSchema,
 		execute: async (_id, params) => {
-			const filePath = await resolvePath(params.path.replace(/^@/, ""));
+			const filePath = await resolvePath(params.path);
 			let content: string;
 			try {
 				content = await readFile(filePath, "utf-8");
@@ -507,12 +504,7 @@ const DEFAULT_BASH_TIMEOUT_S = 120;
 		},
 	};
 
-	return [
-		readTool as AgentTool<any>,
-		writeTool as AgentTool<any>,
-		editTool as AgentTool<any>,
-		bashTool as AgentTool<any>,
-	];
+	return [readTool, writeTool, editTool, bashTool] as AgentTool<any>[];
 }
 
 // ---------------------------------------------------------------------------
@@ -567,6 +559,13 @@ function buildReportTool(childId: string, reports: string[]): AgentTool<typeof r
 	};
 }
 
+function pushActivity(state: ChildState, item: ActivityItem) {
+	state.activity.push(item);
+	if (state.activity.length > MAX_ACTIVITY_STORAGE) {
+		state.activity = state.activity.slice(-MAX_ACTIVITY_STORAGE);
+	}
+}
+
 /** Subscribe to child events, push activity + reports to onUpdate. */
 function subscribeChild(
 	child: Agent,
@@ -597,34 +596,28 @@ function subscribeChild(
 
 	const innerUnsub = child.subscribe((event: AgentEvent) => {
 		if (event.type === "tool_execution_start") {
-			state.activity.push({
+			pushActivity(state, {
 				type: "tool_start",
 				label: formatToolActivity(event.toolName, event.args),
 				timestamp: Date.now(),
 			});
-			if (state.activity.length > MAX_ACTIVITY_STORAGE) {
-				state.activity = state.activity.slice(-MAX_ACTIVITY_STORAGE);
-			}
 			emit();
 		} else if (event.type === "tool_execution_end") {
 			if (event.toolName === "report" && !event.isError) {
 				const latest = state.reports[state.reports.length - 1];
 				if (latest) {
-					state.activity.push({
+					pushActivity(state, {
 						type: "report",
 						label: `report "${latest.length > 50 ? latest.slice(0, 50) + "..." : latest}"`,
 						timestamp: Date.now(),
 					});
 				}
 			} else {
-				state.activity.push({
+				pushActivity(state, {
 					type: "tool_end",
 					label: `${event.toolName} ${event.isError ? "failed" : "done"}`,
 					timestamp: Date.now(),
 				});
-			}
-			if (state.activity.length > MAX_ACTIVITY_STORAGE) {
-				state.activity = state.activity.slice(-MAX_ACTIVITY_STORAGE);
 			}
 			emit();
 		} else if (event.type === "message_end" && event.message.role === "assistant") {
@@ -632,14 +625,11 @@ function subscribeChild(
 			const textParts = msg.content.filter((c): c is TextContent => c.type === "text");
 			if (textParts.length > 0) {
 				const preview = textParts[0].text.split("\n")[0];
-				state.activity.push({
+				pushActivity(state, {
 					type: "text",
 					label: preview.length > 60 ? preview.slice(0, 60) + "..." : preview,
 					timestamp: Date.now(),
 				});
-				if (state.activity.length > MAX_ACTIVITY_STORAGE) {
-					state.activity = state.activity.slice(-MAX_ACTIVITY_STORAGE);
-				}
 				emit();
 			}
 		}
@@ -686,6 +676,13 @@ function renderAgentCall(
 	return new Text(text, 0, 0);
 }
 
+function activityIcon(type: ActivityItem["type"], theme: any): string {
+	return type === "report" ? theme.fg("warning", "↑")
+		: type === "tool_start" ? theme.fg("accent", "→")
+		: type === "text" ? theme.fg("dim", "·")
+		: theme.fg("success", "✓");
+}
+
 function renderAgentResult(
 	result: { content: any[]; details?: unknown },
 	options: { expanded: boolean; isPartial: boolean },
@@ -726,15 +723,7 @@ function renderAgentResult(
 
 		if (skipped > 0) text += "\n  " + theme.fg("muted", `... ${skipped} earlier`);
 		for (const item of visible) {
-			const icon =
-				item.type === "report"
-					? theme.fg("warning", "↑")
-					: item.type === "tool_start"
-						? theme.fg("accent", "→")
-						: item.type === "text"
-							? theme.fg("dim", "·")
-							: theme.fg("success", "✓");
-			text += "\n  " + icon + " " + theme.fg("dim", item.label);
+			text += "\n  " + activityIcon(item.type, theme) + " " + theme.fg("dim", item.label);
 		}
 
 		// F2: use instanceof check instead of unsafe cast
@@ -772,15 +761,7 @@ function renderAgentResult(
 			container.addChild(new Spacer(1));
 			container.addChild(new Text(theme.fg("muted", "─── Activity ───"), 0, 0));
 			for (const item of activity) {
-				const itemIcon =
-					item.type === "report"
-						? theme.fg("warning", "↑")
-						: item.type === "tool_start"
-							? theme.fg("accent", "→")
-							: item.type === "text"
-								? theme.fg("dim", "·")
-								: theme.fg("success", "✓");
-				container.addChild(new Text(`  ${itemIcon} ${theme.fg("dim", item.label)}`, 0, 0));
+				container.addChild(new Text(`  ${activityIcon(item.type, theme)} ${theme.fg("dim", item.label)}`, 0, 0));
 			}
 		}
 
@@ -817,15 +798,7 @@ function renderAgentResult(
 		const skipped = activity.length - visible.length;
 		if (skipped > 0) text += "\n  " + theme.fg("muted", `... ${skipped} earlier`);
 		for (const item of visible) {
-			const itemIcon =
-				item.type === "report"
-					? theme.fg("warning", "↑")
-					: item.type === "tool_start"
-						? theme.fg("accent", "→")
-						: item.type === "text"
-							? theme.fg("dim", "·")
-							: theme.fg("success", "✓");
-			text += "\n  " + itemIcon + " " + theme.fg("dim", item.label);
+			text += "\n  " + activityIcon(item.type, theme) + " " + theme.fg("dim", item.label);
 		}
 	}
 
@@ -1056,7 +1029,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			execute: async () => listAgentsResult(callerId),
 		};
 
-		return [spawnTool as AgentTool<any>, delegateTool as AgentTool<any>, killTool as AgentTool<any>, listTool as AgentTool<any>];
+		return [spawnTool, delegateTool, killTool, listTool] as AgentTool<any>[];
 	}
 
 	function buildChildAgent(
@@ -1067,10 +1040,10 @@ export default function multiAgent(pi: ExtensionAPI) {
 		reports: string[],
 	): Agent {
 		const reportTool = buildReportTool(childId, reports);
-		const childTools = [
+		const childTools: AgentTool<any>[] = [
 			...createChildTools(cwd),
 			...createChildManagementTools(childId, cwd, model),
-			reportTool as AgentTool<any>,
+			reportTool,
 		];
 		return new Agent({
 			initialState: { systemPrompt, model, tools: childTools },
