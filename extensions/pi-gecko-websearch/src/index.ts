@@ -41,6 +41,17 @@ function formatResults(results: SearchResult[]): string {
 export default function (pi: ExtensionAPI) {
 	const browser = new BrowserManager();
 
+	const update = (onUpdate: any, msg: string) =>
+		onUpdate?.({ content: [{ type: "text", text: msg }], details: undefined });
+
+	const truncate = (content: string, prefix = "") => {
+		const t = truncateHead(content, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
+		let text = prefix + t.content;
+		if (t.truncated)
+			text += `\n\n[Truncated: ${t.outputLines}/${t.totalLines} lines, ${formatSize(t.outputBytes)}/${formatSize(t.totalBytes)}]`;
+		return text;
+	};
+
 	// -------------------------------------------------------------------
 	// web_search
 	// -------------------------------------------------------------------
@@ -82,31 +93,23 @@ export default function (pi: ExtensionAPI) {
 				throw new Error(`Unknown search engine: "${engine}". Use google, duckduckgo, or brave.`);
 			}
 
-			onUpdate?.({ content: [{ type: "text", text: "Starting browser..." }], details: undefined });
+			update(onUpdate, "Starting browser...");
 			const client = await browser.ensureRunning();
 			if (signal?.aborted) throw new Error("Aborted");
 
 			const url = buildUrl(params.query);
-			onUpdate?.({ content: [{ type: "text", text: `Searching ${engine}...` }], details: undefined });
+			update(onUpdate, `Searching ${engine}...`);
 			await client.navigate(url, 30_000);
 			if (signal?.aborted) throw new Error("Aborted");
 
-			onUpdate?.({ content: [{ type: "text", text: "Extracting results..." }], details: undefined });
+			update(onUpdate, "Extracting results...");
 			const html = await client.getPageSource(10_000);
 			const results = parseSearchResults(html, engine);
 
 			const formatted = formatResults(results);
 			const output = `Search results for "${params.query}" (${engine}, ${results.length} results):\n\n${formatted}`;
 
-			const truncation = truncateHead(output, {
-				maxLines: DEFAULT_MAX_LINES,
-				maxBytes: DEFAULT_MAX_BYTES,
-			});
-
-			let text = truncation.content;
-			if (truncation.truncated) {
-				text += `\n\n[Truncated: ${truncation.outputLines}/${truncation.totalLines} lines, ${formatSize(truncation.outputBytes)}/${formatSize(truncation.totalBytes)}]`;
-			}
+			const text = truncate(output);
 
 			return {
 				content: [{ type: "text" as const, text }],
@@ -151,25 +154,24 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
-			onUpdate?.({ content: [{ type: "text", text: "Starting browser..." }], details: undefined });
+			update(onUpdate, "Starting browser...");
 			const client = await browser.ensureRunning();
 			if (signal?.aborted) throw new Error("Aborted");
 
-			onUpdate?.({ content: [{ type: "text", text: `Navigating to ${params.url}...` }], details: undefined });
+			update(onUpdate, `Navigating to ${params.url}...`);
 			await client.navigate(params.url, 30_000);
 			if (signal?.aborted) throw new Error("Aborted");
 
 			let content: string;
 
 			if (params.extract) {
-				onUpdate?.({ content: [{ type: "text", text: "Running extraction script..." }], details: undefined });
+				update(onUpdate, "Running extraction script...");
 				let script = params.extract.trim();
 				if (!script.startsWith("return ")) script = `return ${script}`;
 				const result = await client.executeScript(script, [], 10_000);
 				content = typeof result === "string" ? result : JSON.stringify(result, null, 2);
 			} else {
-				onUpdate?.({ content: [{ type: "text", text: "Extracting page content..." }], details: undefined });
-				// Use JS to get clean text — much better than parsing HTML server-side
+				update(onUpdate, "Extracting page content...");
 				content = await client.executeScript(
 					`return document.body?.innerText || document.documentElement?.innerText || ""`,
 					[],
@@ -178,15 +180,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const header = `Content from ${params.url} (${formatSize(Buffer.byteLength(content, "utf-8"))}):\n\n`;
-			const truncation = truncateHead(content, {
-				maxLines: DEFAULT_MAX_LINES,
-				maxBytes: DEFAULT_MAX_BYTES,
-			});
-
-			let text = header + truncation.content;
-			if (truncation.truncated) {
-				text += `\n\n[Truncated: ${truncation.outputLines}/${truncation.totalLines} lines, ${formatSize(truncation.outputBytes)}/${formatSize(truncation.totalBytes)}]`;
-			}
+			const text = truncate(content, header);
 
 			return {
 				content: [{ type: "text" as const, text }],

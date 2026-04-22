@@ -187,22 +187,13 @@ export class MarionetteClient {
 		return result?.value ?? "";
 	}
 
-	/** Delete the session. */
-	async deleteSession(): Promise<void> {
-		try {
-			await this.send("WebDriver:DeleteSession", {}, 5000);
-		} catch {
-			// Best effort
-		}
-	}
-
 	/** Close session and disconnect. */
 	async close(): Promise<void> {
 		if (!this.connected) return;
 		try {
-			await this.deleteSession();
+			await this.send("WebDriver:DeleteSession", {}, 5000);
 		} catch {
-			// ignore
+			// Best effort
 		}
 		this.socket?.destroy();
 		this.socket = null;
