@@ -38,9 +38,7 @@ export default function (pi: ExtensionAPI) {
   const localBashOperations = createLocalBashOperations();
 
   const bashTool = createBashTool(cwd, {
-    spawnHook: ({ command, cwd, env }) => {
-      return { command: rtkRewriteCommand(command) ?? command, cwd, env };
-    },
+    spawnHook: (ctx) => ({ ...ctx, command: rtkRewriteCommand(ctx.command) ?? ctx.command }),
   });
 
   pi.registerTool(bashTool);
@@ -50,18 +48,15 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    if (!rtkRewriteCommand(event.command)) {
+    const rewritten = rtkRewriteCommand(event.command);
+    if (!rewritten) {
       return;
     }
 
     return {
       operations: {
-        exec: (command, cwd, options) => {
-          return localBashOperations.exec(
-            rtkRewriteCommand(command) ?? command,
-            cwd,
-            options,
-          );
+        exec: (_command, cwd, options) => {
+          return localBashOperations.exec(rewritten, cwd, options);
         },
       },
     };
