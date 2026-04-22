@@ -10,7 +10,7 @@ interface CodexFastSettings {
 
 const DEFAULT_SETTINGS: CodexFastSettings = {
 	enabled: false,
-	supportedModels: ["gpt-5.4"],
+	supportedModels: [],
 	showStatus: true,
 };
 
@@ -21,13 +21,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function parseSettings(raw: unknown): Partial<CodexFastSettings> {
 	if (typeof raw === "boolean") return { enabled: raw };
 	if (!isRecord(raw)) return {};
-	return {
-		...(typeof raw.enabled === "boolean" ? { enabled: raw.enabled } : {}),
-		...(typeof raw.showStatus === "boolean" ? { showStatus: raw.showStatus } : {}),
-		...(Array.isArray(raw.supportedModels)
-			? { supportedModels: raw.supportedModels.filter((s): s is string => typeof s === "string" && s.trim().length > 0) }
-			: {}),
-	};
+	const out: Partial<CodexFastSettings> = {};
+	if (typeof raw.enabled === "boolean") out.enabled = raw.enabled;
+	if (typeof raw.showStatus === "boolean") out.showStatus = raw.showStatus;
+	if (Array.isArray(raw.supportedModels))
+		out.supportedModels = raw.supportedModels.filter((s): s is string => typeof s === "string" && s.trim().length > 0);
+	return out;
 }
 
 function readSettingsFile(path: string): Partial<CodexFastSettings> {
@@ -56,17 +55,8 @@ function isCodexFastActive(ctx: ExtensionContext, settings: CodexFastSettings): 
 
 function updateStatus(ctx: ExtensionContext): void {
 	const settings = loadSettings(ctx.cwd);
-	if (!settings.showStatus) {
-		ctx.ui.setStatus("codex-fast", undefined);
-		return;
-	}
-
-	if (isCodexFastActive(ctx, settings)) {
-		ctx.ui.setStatus("codex-fast", ctx.ui.theme.fg("accent", "⚡"));
-		return;
-	}
-
-	ctx.ui.setStatus("codex-fast", undefined);
+	const active = settings.showStatus && isCodexFastActive(ctx, settings);
+	ctx.ui.setStatus("codex-fast", active ? ctx.ui.theme.fg("accent", "⚡") : undefined);
 }
 
 export default function codexFastExtension(pi: ExtensionAPI) {
@@ -98,8 +88,7 @@ export default function codexFastExtension(pi: ExtensionAPI) {
 	pi.on("before_provider_request", (event, ctx) => {
 		const settings = loadSettings(ctx.cwd);
 		if (!isCodexFastActive(ctx, settings)) return;
-		if (!isRecord(event.payload)) return;
-		if (event.payload.service_tier !== undefined) return;
+		if (!isRecord(event.payload) || event.payload.service_tier !== undefined) return;
 
 		return {
 			...event.payload,
