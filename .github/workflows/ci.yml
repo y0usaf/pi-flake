@@ -28,4 +28,4 @@ jobs:
         run: nix build .#pi -L
 
       - name: Build extension packages
-        run: nix build .#pi-agents .#pi-codex-fast .#pi-gecko-websearch .#pi-rtk .#pi-compact-tools .#pi-tool-management .#pi-webfetch -L
+        run: nix build .#pi-agents .#pi-codex-fast .#pi-gecko-websearch .#pi-rtk .#pi-compact .#pi-tool-management .#pi-webfetch -L

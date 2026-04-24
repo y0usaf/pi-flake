@@ -57,7 +57,7 @@ updates:
       include: "scope"
 
   - package-ecosystem: "nix"
-    directory: "/extensions/pi-compact-tools"
+    directory: "/extensions/pi-compact"
     schedule:
       interval: "weekly"
     labels:

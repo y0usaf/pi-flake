@@ -21,8 +21,8 @@
     piRtk.url = "path:./extensions/pi-rtk";
     piRtk.inputs.nixpkgs.follows = "nixpkgs";
 
-    piCompactTools.url = "path:./extensions/pi-compact-tools";
-    piCompactTools.inputs.nixpkgs.follows = "nixpkgs";
+    piCompact.url = "path:./extensions/pi-compact";
+    piCompact.inputs.nixpkgs.follows = "nixpkgs";
 
     piToolManagement.url = "path:./extensions/pi-tool-management";
     piToolManagement.inputs.nixpkgs.follows = "nixpkgs";
@@ -39,7 +39,7 @@
     piCodexFast,
     piGeckoWebsearch,
     piRtk,
-    piCompactTools,
+    piCompact,
     piToolManagement,
     piWebfetch,
     ...
@@ -111,7 +111,7 @@
       "pi-codex-fast" = piCodexFast.packages.${system}.default;
       "pi-gecko-websearch" = piGeckoWebsearch.packages.${system}.default;
       "pi-rtk" = piRtk.packages.${system}.default;
-      "pi-compact-tools" = piCompactTools.packages.${system}.default;
+      "pi-compact" = piCompact.packages.${system}.default;
       "pi-tool-management" = piToolManagement.packages.${system}.default;
       "pi-webfetch" = piWebfetch.packages.${system}.default;
 

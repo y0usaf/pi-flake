@@ -22,7 +22,7 @@ Extension package outputs:
 - `.#pi-codex-fast`
 - `.#pi-gecko-websearch`
 - `.#pi-rtk`
-- `.#pi-compact-tools`
+- `.#pi-compact`
 - `.#pi-tool-management`
 - `.#pi-webfetch`
 

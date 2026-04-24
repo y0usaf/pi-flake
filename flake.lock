@@ -48,18 +48,18 @@
       },
       "parent": []
     },
-    "piCompactTools": {
+    "piCompact": {
       "inputs": {
         "nixpkgs": [
           "nixpkgs"
         ]
       },
       "locked": {
-        "path": "./extensions/pi-compact-tools",
+        "path": "./extensions/pi-compact",
         "type": "path"
       },
       "original": {
-        "path": "./extensions/pi-compact-tools",
+        "path": "./extensions/pi-compact",
         "type": "path"
       },
       "parent": []
@@ -150,7 +150,7 @@
         "nixpkgs": "nixpkgs",
         "piAgents": "piAgents",
         "piCodexFast": "piCodexFast",
-        "piCompactTools": "piCompactTools",
+        "piCompact": "piCompact",
         "piGeckoWebsearch": "piGeckoWebsearch",
         "piRtk": "piRtk",
         "piSrc": "piSrc",
