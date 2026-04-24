@@ -1,5 +1,5 @@
 {
-  description = "Nix flake for pi-compact-tools";
+  description = "Nix flake for pi-compact";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -24,8 +24,8 @@
       lib = pkgs.lib;
       packageJson = builtins.fromJSON (builtins.readFile ./package.json);
     in {
-      pi-compact-tools = pkgs.stdenvNoCC.mkDerivation {
-        pname = "pi-compact-tools";
+      pi-compact = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-compact";
         version = packageJson.version;
         src = lib.cleanSource ./.;
 
@@ -45,13 +45,13 @@
         };
 
         meta = with lib; {
-          description = "Pi extension that compacts all collapsed tool rows to one summary line";
+          description = "Pi extension that compacts collapsed tools and optionally user inputs to one line";
           license = licenses.mit;
           platforms = platforms.all;
         };
       };
 
-      default = self.packages.${system}.pi-compact-tools;
+      default = self.packages.${system}.pi-compact;
     });
 
     devShells = forAllSystems (system: let
@@ -63,7 +63,7 @@
         ];
 
         shellHook = ''
-          echo "pi-compact-tools dev shell — node $(node --version)"
+          echo "pi-compact dev shell — node $(node --version)"
         '';
       };
     });
