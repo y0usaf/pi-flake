@@ -69,6 +69,7 @@
         patches = [
           ./patches/disable-install-telemetry.patch
           ./patches/avoid-network-model-regeneration.patch
+          ./patches/remove-tree-filter-backcycle.patch
         ];
         npmWorkspace = "packages/coding-agent";
         npmBuildScript = "build:binary";
