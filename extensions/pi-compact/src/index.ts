@@ -1,4 +1,6 @@
-import { SettingsManager, ToolExecutionComponent, UserMessageComponent, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { ToolExecutionComponent, UserMessageComponent, type ExtensionAPI, getAgentDir } from "@mariozechner/pi-coding-agent";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { homedir } from "node:os";
 
@@ -51,30 +53,47 @@ interface PiCompactSettings {
 
 type ResolvedPiCompactSettings = Required<Pick<PiCompactSettings, "user" | "tools">> & Pick<PiCompactSettings, "tool_colour" | "user_colour">;
 
-function objectValue(value: unknown): Record<string, unknown> | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-  return value as Record<string, unknown>;
+const DEFAULT_PI_COMPACT_SETTINGS: ResolvedPiCompactSettings = {
+  tools: DEFAULT_COMPACT_TOOLS,
+  user: DEFAULT_COMPACT_USER_INPUTS,
+  tool_colour: undefined,
+  user_colour: undefined,
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
-function extractPiCompactSettings(settings: Record<string, unknown>): PiCompactSettings {
-  const block = objectValue(settings["pi-compact"]);
-  if (!block) return {};
-
-  const result: PiCompactSettings = {};
-  if (typeof block.user === "boolean") result.user = block.user;
-  if (typeof block.tools === "boolean") result.tools = block.tools;
-  if (typeof block.tool_colour === "string") result.tool_colour = block.tool_colour;
-  if (typeof block.user_colour === "string") result.user_colour = block.user_colour;
-  return result;
+function parseSettings(raw: unknown): Partial<PiCompactSettings> {
+  if (typeof raw === "boolean") return { tools: raw };
+  if (!isRecord(raw)) return {};
+  const out: Partial<PiCompactSettings> = {};
+  if (typeof raw.user === "boolean") out.user = raw.user;
+  if (typeof raw.tools === "boolean") out.tools = raw.tools;
+  if (typeof raw.tool_colour === "string") out.tool_colour = raw.tool_colour;
+  if (typeof raw.user_colour === "string") out.user_colour = raw.user_colour;
+  return out;
 }
 
-function readPiCompactSettings(cwd: string): PiCompactSettings {
+function readSettingsFile(path: string): Partial<PiCompactSettings> {
+  if (!existsSync(path)) return {};
   try {
-    const settings = SettingsManager.create(cwd);
-    const globalSettings = extractPiCompactSettings(settings.getGlobalSettings() as unknown as Record<string, unknown>);
-    const projectSettings = extractPiCompactSettings(settings.getProjectSettings() as unknown as Record<string, unknown>);
+    const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown;
+    if (!isRecord(parsed)) return {};
+    return parseSettings(parsed["pi-compact"]);
+  } catch (error) {
+    lastConfigError = error instanceof Error ? error.stack ?? error.message : String(error);
+    return {};
+  }
+}
+
+function readPiCompactSettings(cwd: string): Partial<PiCompactSettings> {
+  try {
     lastConfigError = undefined;
-    return { ...globalSettings, ...projectSettings };
+    return {
+      ...readSettingsFile(join(getAgentDir(), "extension-settings.json")),
+      ...readSettingsFile(join(cwd, ".pi", "extension-settings.json")),
+    };
   } catch (error) {
     lastConfigError = error instanceof Error ? error.stack ?? error.message : String(error);
     return {};
@@ -86,10 +105,9 @@ function resolvePiCompactSettings(cwd: string, pi: ExtensionAPI): ResolvedPiComp
   const envUser = envBool(COMPACT_USER_INPUTS_ENV);
 
   return {
-    tools: settings.tools ?? DEFAULT_COMPACT_TOOLS,
+    ...DEFAULT_PI_COMPACT_SETTINGS,
+    ...settings,
     user: pi.getFlag(COMPACT_USER_INPUTS_FLAG) === true ? true : envUser ?? settings.user ?? DEFAULT_COMPACT_USER_INPUTS,
-    tool_colour: settings.tool_colour,
-    user_colour: settings.user_colour,
   };
 }
 
