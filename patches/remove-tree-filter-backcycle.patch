@@ -1,34 +1,28 @@
 --- a/packages/coding-agent/src/modes/interactive/components/tree-selector.ts
 +++ b/packages/coding-agent/src/modes/interactive/components/tree-selector.ts
-@@ -961,18 +961,11 @@ export class TreeList extends AbstractComponent {
- 		} else if (matchesKey(keyData, "ctrl+a")) {
- 			// Toggle filter: all ↔ default
+@@ -962,15 +962,8 @@
  			this.filterMode = this.filterMode === "all" ? "default" : "all";
  			this.foldedNodes.clear();
  			this.applyFilter();
--		} else if (matchesKey(keyData, "shift+ctrl+o")) {
+-		} else if (kb.matches(keyData, "app.tree.filter.cycleBackward")) {
 -			// Cycle filter backwards
 -			const modes: FilterMode[] = ["default", "no-tools", "user-only", "labeled-only", "all"];
 -			const currentIndex = modes.indexOf(this.filterMode);
 -			this.filterMode = modes[(currentIndex - 1 + modes.length) % modes.length];
 -			this.foldedNodes.clear();
 -			this.applyFilter();
- 		} else if (matchesKey(keyData, "ctrl+o")) {
+ 		} else if (kb.matches(keyData, "app.tree.filter.cycleForward")) {
 -			// Cycle filter forwards: default → no-tools → user-only → labeled-only → all → default
 +			// Cycle filter: default → no-tools → user-only → labeled-only → all → default
  			const modes: FilterMode[] = ["default", "no-tools", "user-only", "labeled-only", "all"];
  			const currentIndex = modes.indexOf(this.filterMode);
  			this.filterMode = modes[(currentIndex + 1) % modes.length];
- 			this.foldedNodes.clear();
- 			this.applyFilter();
-@@ -1180,7 +1173,7 @@ export class TreeSelectorComponent extends Box {
+@@ -1184,7 +1177,7 @@
+ 			keyText("app.tree.filter.labeledOnly"),
+ 			keyText("app.tree.filter.all"),
+ 		].join("/");
+-		const cycleKeys = `${keyText("app.tree.filter.cycleForward")}/${keyText("app.tree.filter.cycleBackward")}`;
++		const cycleKeys = keyText("app.tree.filter.cycleForward");
  		this.addChild(
  			new TruncatedText(
  				theme.fg(
- 					"muted",
--					`  ↑/↓: move. ←/→: page. ^←/^→ or Alt+←/Alt+→: fold/branch. ${keyText("app.tree.editLabel")}: label. ^D/^T/^U/^L/^A: filters (^O/⇧^O cycle). ${keyText("app.tree.toggleLabelTimestamp")}: label time`,
-+					`  ↑/↓: move. ←/→: page. ^←/^→ or Alt+←/Alt+→: fold/branch. ${keyText("app.tree.editLabel")}: label. ^D/^T/^U/^L/^A: filters (^O cycle). ${keyText("app.tree.toggleLabelTimestamp")}: label time`,
- 				),
- 				0,
- 				0,
- 			),

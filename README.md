@@ -10,6 +10,7 @@ Includes:
 Current patch set:
 - `disable-install-telemetry.patch` — disables install/update telemetry requests
 - `avoid-network-model-regeneration.patch` — uses the checked-in model registry during Nix builds instead of refetching models at build time
+- `remove-tree-filter-backcycle.patch` — drops the extra `Ctrl+Shift+O` tree-filter back-cycle shortcut
 
 Build:
 
