@@ -48,6 +48,22 @@
       },
       "parent": []
     },
+    "piCompactTools": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-compact-tools",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-compact-tools",
+        "type": "path"
+      },
+      "parent": []
+    },
     "piGeckoWebsearch": {
       "inputs": {
         "nixpkgs": [
@@ -80,21 +96,22 @@
       },
       "parent": []
     },
-    "piCompactTools": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
+    "piSrc": {
+      "flake": false,
       "locked": {
-        "path": "./extensions/pi-compact-tools",
-        "type": "path"
+        "lastModified": 1777033471,
+        "narHash": "sha256-KNpodvUvYr2sR9BI4Dgt8xyxHR4PsZ8d6g8IqwIq4Is=",
+        "owner": "badlogic",
+        "repo": "pi-mono",
+        "rev": "3e0ee69b5ead441e4669b123b2f98635fee7da30",
+        "type": "github"
       },
       "original": {
-        "path": "./extensions/pi-compact-tools",
-        "type": "path"
-      },
-      "parent": []
+        "owner": "badlogic",
+        "ref": "main",
+        "repo": "pi-mono",
+        "type": "github"
+      }
     },
     "piToolManagement": {
       "inputs": {
@@ -111,23 +128,6 @@
         "type": "path"
       },
       "parent": []
-    },
-    "piSrc": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1776355015,
-        "narHash": "sha256-hl1+zBBJMc3l8wJwzobkkaORtB39AfSOOWYkRtbf1Js=",
-        "owner": "badlogic",
-        "repo": "pi-mono",
-        "rev": "72619e92466fd2f181d660eb4e3f5eff630ad8f5",
-        "type": "github"
-      },
-      "original": {
-        "owner": "badlogic",
-        "ref": "main",
-        "repo": "pi-mono",
-        "type": "github"
-      }
     },
     "piWebfetch": {
       "inputs": {
@@ -150,11 +150,11 @@
         "nixpkgs": "nixpkgs",
         "piAgents": "piAgents",
         "piCodexFast": "piCodexFast",
+        "piCompactTools": "piCompactTools",
         "piGeckoWebsearch": "piGeckoWebsearch",
         "piRtk": "piRtk",
-        "piCompactTools": "piCompactTools",
-        "piToolManagement": "piToolManagement",
         "piSrc": "piSrc",
+        "piToolManagement": "piToolManagement",
         "piWebfetch": "piWebfetch"
       }
     }

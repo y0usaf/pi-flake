@@ -69,7 +69,6 @@
         patches = [
           ./patches/disable-install-telemetry.patch
           ./patches/avoid-network-model-regeneration.patch
-          ./patches/use-package-dir-for-bun-assets.patch
         ];
         npmWorkspace = "packages/coding-agent";
         npmBuildScript = "build:binary";
@@ -77,7 +76,7 @@
 
         # Regenerate after dependency changes:
         #   nix build .#pi 2>&1 | grep 'got:' | awk '{print $2}'
-        npmDepsHash = "sha256-kHKcxsCEU1vQ6Nw8i3+917r1qJdkinlgF+whaMLsqbU=";
+        npmDepsHash = "sha256-fE/kaSnvXPQczWoqPBZghb6SUQ+6fq65qhmblm1O6Y8=";
 
         nodejs = pkgs.nodejs_22;
 

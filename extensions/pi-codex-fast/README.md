@@ -14,7 +14,7 @@ When enabled, this extension patches outgoing provider payloads for `openai-code
 
 That matches how upstream Codex currently routes its fast mode.
 
-By default, the extension only enables fast mode for `gpt-5.4`, since that is the model currently advertising fast support in the upstream Codex model catalog.
+By default, the extension only enables fast mode for `gpt-5.5`, since that is the model currently advertising fast support in the upstream Codex model catalog.
 
 ## Configuration
 
@@ -39,7 +39,7 @@ Advanced form:
 {
   "codex-fast": {
     "enabled": true,
-    "supportedModels": ["gpt-5.4"],
+    "supportedModels": ["gpt-5.5"],
     "showStatus": true
   }
 }

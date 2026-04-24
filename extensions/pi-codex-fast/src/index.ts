@@ -10,7 +10,7 @@ interface CodexFastSettings {
 
 const DEFAULT_SETTINGS: CodexFastSettings = {
 	enabled: false,
-	supportedModels: [],
+	supportedModels: ["gpt-5.5"],
 	showStatus: true,
 };
 
