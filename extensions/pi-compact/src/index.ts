@@ -344,7 +344,7 @@ function buildToolLine(state: any): string {
 
 function getToolBgFn(state: any): ((text: string) => string) | undefined {
   const bgFn = state?.contentText?.customBgFn ?? state?.contentBox?.bgFn;
-  return toolColourBgFn ?? (typeof bgFn === "function" ? bgFn : undefined);
+  return toolColourBgFn ?? (typeof bgFn === "function" ? bgFn : ((text: string) => `\x1b[42m${text}\x1b[0m`));
 }
 
 function renderOneLine(rawLine: string, width: number, bgFn?: (text: string) => string): string[] {
