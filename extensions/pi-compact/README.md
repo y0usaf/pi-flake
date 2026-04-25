@@ -5,46 +5,62 @@ Pi extension: compact chat rendering for Pi's interactive TUI.
 ## What it does
 
 - patches Pi's interactive tool-row renderer
-- collapsed tool calls → one width-aware summary line
+- tool calls → configurable: Pi default, borderless, or one width-aware summary line
 - edit results → compact `+N -N` diff counts instead of success prose
 - expanded tool calls → original rendering/output
-- thinking blocks → compact elapsed-seconds + character-count row by default, or fully hidden
-- optional user inputs → one width-aware summary line
+- thinking blocks → compact elapsed-seconds + character-count row by default
+- user messages → configurable: Pi default, borderless markdown, or fully compact one-line summaries; optional plain gap line
 
 ## Configuration
 
-Defaults: `tools=true`, `thinking="compact"`, `user=true`.
+Defaults: `tools.mode="compact"`, `tools.gap=false`, `user.mode="borderless"`, `user.gap=true`, `thinking.mode="compact"`.
 
-Pi extension settings (`~/.pi/agent/extension-settings.json` or `.pi/extension-settings.json`):
+Pi settings (`~/.pi/agent/settings.json` or `.pi/settings.json`) under `extensionSettings`:
 
 ```json
 {
-  "pi-compact": {
-    "user": true,
-    "tools": true,
-    "thinking": "compact"
+  "extensionSettings": {
+    "pi-compact": {
+      "tools": {
+        "mode": "compact",
+        "gap": false
+      },
+      "user": {
+        "mode": "borderless",
+        "gap": true
+      },
+      "thinking": {
+        "mode": "compact"
+      }
+    }
   }
 }
 ```
 
-`thinking`: `compact`/`true` → one-line row (`thinking for N.N seconds, N characters` → `thought for N.N seconds, N characters`), `hidden` → no row, `normal`/`false` → Pi default rendering.
+`pi-compact` has exactly three optional config objects: `tools`, `user`, and `thinking`.
+
+Tool/user modes:
+
+| Value | Tool rendering | User rendering |
+|---|---|---|
+| `normal` | Pi default tool content rendering | Pi default user message content rendering |
+| `borderless` | Pi tool rendering with top/bottom background padding removed | Multi-line markdown with top/bottom background padding removed |
+| `compact` | One-line tool summary | One-line `› …` summary |
+
+`tools.gap=true` adds/preserves a plain separator line before tool rows. `user.gap=false` removes the plain gap line after borderless/compact user messages. Runtime aliases `borderless-tight` and `compact-tight` set `gap=false`.
+
+`thinking.mode="compact"` → one-line row (`thinking for N.N seconds, N characters` → `thought for N.N seconds, N characters`). `thinking.mode="normal"` → Pi default rendering.
 
 Colours come from the active Pi theme. Customize them with Pi themes, not this extension.
 
-Precedence for `user`: CLI flag → env → project settings → global settings → on.
-
-User compaction is on by default. Disable via settings/env or toggle at runtime:
-
-```bash
-PI_COMPACT_USER_INPUTS=0 pi -e ./extensions/pi-compact/src/index.ts
-```
+Project settings override global settings per nested option.
 
 Toggle at runtime:
 
 ```text
-/compact-user-inputs on|off|toggle|status
-/compact-tools on|off|toggle|status
-/compact-thinking compact|hidden|normal|toggle|status
+/compact-user normal|borderless|borderless-tight|compact|compact-tight|gap|no-gap|toggle|cycle|status
+/compact-tools normal|borderless|borderless-tight|compact|compact-tight|gap|no-gap|toggle|cycle|status
+/compact-thinking normal|compact|toggle|status
 /compact-status
 ```
 
@@ -53,7 +69,7 @@ Toggle at runtime:
 This is UI-only. Tool execution, user messages, and conversation context are unchanged.
 
 Tool compaction covers built-ins and extension tools such as:
-- `spawn_agent` / `delegate` / `kill_agent` / `list_agents`
+- `agent_task` / `report`
 - `web_fetch`
 - `web_search` / `web_browse`
 

@@ -35,7 +35,8 @@
           runHook preInstall
 
           mkdir -p "$out"
-          cp -r . "$out"
+          cp package.json README.md "$out"/
+          cp -r src "$out"/
 
           runHook postInstall
         '';
@@ -45,7 +46,7 @@
         };
 
         meta = with lib; {
-          description = "Pi extension that compacts collapsed tools and optionally user inputs to one line";
+          description = "Pi extension that compacts tools/thinking and configures user-message rendering";
           license = licenses.mit;
           platforms = platforms.all;
         };
