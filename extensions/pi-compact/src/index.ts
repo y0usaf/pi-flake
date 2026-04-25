@@ -6,68 +6,39 @@ import { homedir } from "node:os";
 
 const MAX_SUMMARY_LENGTH = 120;
 const MAX_RESULT_LENGTH = 72;
-const MAX_USER_INPUT_LENGTH = 512;
-
-const COMPACT_USER_INPUTS_FLAG = "compact-user-inputs";
-const COMPACT_USER_INPUTS_ENV = "PI_COMPACT_USER_INPUTS";
-
-type CompactThinkingMode = "normal" | "compact" | "hidden";
-
-const DEFAULT_COMPACT_TOOLS = true;
-const DEFAULT_COMPACT_USER_INPUTS = true;
-const DEFAULT_COMPACT_THINKING: CompactThinkingMode = "compact";
+const MAX_USER_MESSAGE_LENGTH = 512;
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 
-let patchPromise: Promise<boolean> | undefined;
-let lastToolPatchError: string | undefined;
-let lastUserPatchError: string | undefined;
-let lastAssistantPatchError: string | undefined;
-let lastConfigError: string | undefined;
-let compactTools = DEFAULT_COMPACT_TOOLS;
-let compactUserInputs = envBool(COMPACT_USER_INPUTS_ENV) ?? DEFAULT_COMPACT_USER_INPUTS;
-let compactThinking = DEFAULT_COMPACT_THINKING;
+type UserMessageMode = "normal" | "borderless" | "compact";
 type ToolBgToken = "toolPendingBg" | "toolSuccessBg" | "toolErrorBg";
 type ThemeFgToken = "toolDiffAdded" | "toolDiffRemoved" | "thinkingText";
 
-type ThemeWithCompactColours = {
-  bg(color: ToolBgToken, text: string): string;
-  fg(color: ThemeFgToken, text: string): string;
-};
+interface GapRendering {
+  mode: UserMessageMode;
+  gap: boolean;
+}
 
-let activeTheme: ThemeWithCompactColours | undefined;
+type ToolsSettings = GapRendering;
+type UserSettings = GapRendering;
 
-const TOOL_ORIGINAL_RENDER_KEY = "__piCompactOriginalToolRender";
-const USER_ORIGINAL_RENDER_KEY = "__piCompactOriginalUserRender";
-const ASSISTANT_ORIGINAL_RENDER_KEY = "__piCompactOriginalAssistantRender";
-const ASSISTANT_ORIGINAL_UPDATE_CONTENT_KEY = "__piCompactOriginalAssistantUpdateContent";
-const ASSISTANT_THINKING_STATE_KEY = "__piCompactThinkingState";
-const ASSISTANT_THINKING_APPLIED_MODE_KEY = "__piCompactThinkingAppliedMode";
-const ASSISTANT_THINKING_TIMING_KEY = "__piCompactThinkingTiming";
-const LEGACY_TOOL_ORIGINAL_RENDER_KEY = "__compactToolsPatchedOriginalRender";
-const LEGACY_ORIGINAL_UPDATE_DISPLAY_KEY = "__compactToolsPatchedOriginalUpdateDisplay";
-
-const ANSI_PATTERN = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|_[^\x07]*(?:\x07|\x1b\\))/g;
-
-function envBool(name: string): boolean | undefined {
-  const value = process.env[name];
-  if (value === undefined) return undefined;
-
-  const normalized = value.trim().toLowerCase();
-  if (["1", "true", "yes", "on"].includes(normalized)) return true;
-  if (["0", "false", "no", "off"].includes(normalized)) return false;
-  return undefined;
+interface ThinkingSettings {
+  mode: "normal" | "compact";
 }
 
 interface PiCompactSettings {
-  user?: boolean;
-  tools?: boolean;
-  thinking?: CompactThinkingMode;
+  tools?: Partial<ToolsSettings>;
+  user?: Partial<UserSettings>;
+  thinking?: Partial<ThinkingSettings>;
 }
 
-type ResolvedPiCompactSettings = Required<Pick<PiCompactSettings, "user" | "tools" | "thinking">>;
+interface ResolvedPiCompactSettings {
+  tools: ToolsSettings;
+  user: UserSettings;
+  thinking: ThinkingSettings;
+}
 
 interface CompactThinkingState {
   charCount: number;
@@ -81,13 +52,37 @@ interface CompactThinkingTiming {
   completedAtMs?: number;
 }
 
-const thinkingTimings = new Map<string, CompactThinkingTiming>();
+type ThemeWithCompactColours = {
+  bg(color: ToolBgToken, text: string): string;
+  fg(color: ThemeFgToken, text: string): string;
+};
 
 const DEFAULT_PI_COMPACT_SETTINGS: ResolvedPiCompactSettings = {
-  tools: DEFAULT_COMPACT_TOOLS,
-  user: DEFAULT_COMPACT_USER_INPUTS,
-  thinking: DEFAULT_COMPACT_THINKING,
+  tools: { mode: "compact", gap: false },
+  user: { mode: "borderless", gap: true },
+  thinking: { mode: "compact" },
 };
+
+let patchPromise: Promise<boolean> | undefined;
+let lastToolPatchError: string | undefined;
+let lastUserPatchError: string | undefined;
+let lastAssistantPatchError: string | undefined;
+let lastConfigError: string | undefined;
+let toolRendering = cloneGapRendering(DEFAULT_PI_COMPACT_SETTINGS.tools);
+let userRendering = cloneGapRendering(DEFAULT_PI_COMPACT_SETTINGS.user);
+let compactThinking = DEFAULT_PI_COMPACT_SETTINGS.thinking.mode === "compact";
+let activeTheme: ThemeWithCompactColours | undefined;
+
+const thinkingTimings = new Map<string, CompactThinkingTiming>();
+
+const TOOL_ORIGINAL_RENDER_KEY = "__piCompactOriginalToolRender";
+const USER_ORIGINAL_RENDER_KEY = "__piCompactOriginalUserRender";
+const ASSISTANT_ORIGINAL_RENDER_KEY = "__piCompactOriginalAssistantRender";
+const ASSISTANT_ORIGINAL_UPDATE_CONTENT_KEY = "__piCompactOriginalAssistantUpdateContent";
+const ASSISTANT_THINKING_STATE_KEY = "__piCompactThinkingState";
+const ASSISTANT_THINKING_APPLIED_MODE_KEY = "__piCompactThinkingAppliedMode";
+const ASSISTANT_THINKING_TIMING_KEY = "__piCompactThinkingTiming";
+const ANSI_PATTERN = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|_[^\x07]*(?:\x07|\x1b\\))/g;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -104,28 +99,89 @@ function isCompactThinkingTiming(value: unknown): value is CompactThinkingTiming
   );
 }
 
-function parseThinkingMode(value: unknown): CompactThinkingMode | undefined {
-  if (typeof value === "boolean") return value ? "compact" : "normal";
+function cloneGapRendering(value: GapRendering): GapRendering {
+  return { mode: value.mode, gap: value.gap };
+}
+
+function hasSettings(value: object): boolean {
+  return Object.keys(value).length > 0;
+}
+
+function parseUserMessageMode(value: unknown): UserMessageMode | undefined {
   if (typeof value !== "string") return undefined;
 
-  const normalized = value.trim().toLowerCase();
-  if (["1", "on", "true", "yes", "y", "enable", "enabled", "compact"].includes(normalized)) return "compact";
-  if (["0", "off", "false", "no", "n", "disable", "disabled", "normal"].includes(normalized)) return "normal";
-  if (["hide", "hidden", "none"].includes(normalized)) return "hidden";
-  return undefined;
+  switch (value.trim().toLowerCase()) {
+    case "normal":
+      return "normal";
+    case "borderless":
+      return "borderless";
+    case "compact":
+      return "compact";
+    default:
+      return undefined;
+  }
+}
+
+function parseCompactMode(value: unknown): "normal" | "compact" | undefined {
+  if (typeof value !== "string") return undefined;
+
+  switch (value.trim().toLowerCase()) {
+    case "normal":
+      return "normal";
+    case "compact":
+      return "compact";
+    default:
+      return undefined;
+  }
+}
+
+function parseToolsSettings(raw: unknown): Partial<ToolsSettings> | undefined {
+  if (!isRecord(raw)) return undefined;
+
+  const settings: Partial<ToolsSettings> = {};
+  const mode = parseUserMessageMode(raw.mode);
+  if (mode) settings.mode = mode;
+  if (typeof raw.gap === "boolean") settings.gap = raw.gap;
+  return hasSettings(settings) ? settings : undefined;
+}
+
+function parseUserSettings(raw: unknown): Partial<UserSettings> | undefined {
+  if (!isRecord(raw)) return undefined;
+
+  const settings: Partial<UserSettings> = {};
+  const mode = parseUserMessageMode(raw.mode);
+  if (mode) settings.mode = mode;
+  if (typeof raw.gap === "boolean") settings.gap = raw.gap;
+  return hasSettings(settings) ? settings : undefined;
+}
+
+function parseThinkingSettings(raw: unknown): Partial<ThinkingSettings> | undefined {
+  if (!isRecord(raw)) return undefined;
+
+  const settings: Partial<ThinkingSettings> = {};
+  const mode = parseCompactMode(raw.mode);
+  if (mode) settings.mode = mode;
+  return hasSettings(settings) ? settings : undefined;
 }
 
 function parseSettings(raw: unknown): Partial<PiCompactSettings> {
-  if (typeof raw === "boolean") return { tools: raw, thinking: raw ? "compact" : "normal" };
   if (!isRecord(raw)) return {};
-  const out: Partial<PiCompactSettings> = {};
-  if (typeof raw.user === "boolean") out.user = raw.user;
-  if (typeof raw.tools === "boolean") out.tools = raw.tools;
 
-  const thinking = parseThinkingMode(raw.thinking ?? raw.thinking_mode);
-  if (thinking !== undefined) out.thinking = thinking;
+  const settings: Partial<PiCompactSettings> = {};
+  const tools = parseToolsSettings(raw.tools);
+  const user = parseUserSettings(raw.user);
+  const thinking = parseThinkingSettings(raw.thinking);
 
-  return out;
+  if (tools) settings.tools = tools;
+  if (user) settings.user = user;
+  if (thinking) settings.thinking = thinking;
+  return settings;
+}
+
+function pickSettings(parsed: Record<string, unknown>): unknown {
+  const extensionSettings = parsed.extensionSettings;
+  if (!isRecord(extensionSettings)) return undefined;
+  return extensionSettings["pi-compact"];
 }
 
 function readSettingsFile(path: string): Partial<PiCompactSettings> {
@@ -133,34 +189,44 @@ function readSettingsFile(path: string): Partial<PiCompactSettings> {
   try {
     const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown;
     if (!isRecord(parsed)) return {};
-    return parseSettings(parsed["pi-compact"]);
+    return parseSettings(pickSettings(parsed));
   } catch (error) {
     lastConfigError = error instanceof Error ? error.stack ?? error.message : String(error);
     return {};
   }
+}
+
+function mergePiCompactSettings(...items: Partial<PiCompactSettings>[]): Partial<PiCompactSettings> {
+  const merged: Partial<PiCompactSettings> = {};
+
+  for (const item of items) {
+    if (item.tools) merged.tools = { ...merged.tools, ...item.tools };
+    if (item.user) merged.user = { ...merged.user, ...item.user };
+    if (item.thinking) merged.thinking = { ...merged.thinking, ...item.thinking };
+  }
+
+  return merged;
 }
 
 function readPiCompactSettings(cwd: string): Partial<PiCompactSettings> {
   try {
     lastConfigError = undefined;
-    return {
-      ...readSettingsFile(join(getAgentDir(), "extension-settings.json")),
-      ...readSettingsFile(join(cwd, ".pi", "extension-settings.json")),
-    };
+    return mergePiCompactSettings(
+      readSettingsFile(join(getAgentDir(), "settings.json")),
+      readSettingsFile(join(cwd, ".pi", "settings.json")),
+    );
   } catch (error) {
     lastConfigError = error instanceof Error ? error.stack ?? error.message : String(error);
     return {};
   }
 }
 
-function resolvePiCompactSettings(cwd: string, pi: ExtensionAPI): ResolvedPiCompactSettings {
+function resolvePiCompactSettings(cwd: string): ResolvedPiCompactSettings {
   const settings = readPiCompactSettings(cwd);
-  const envUser = envBool(COMPACT_USER_INPUTS_ENV);
-
   return {
-    ...DEFAULT_PI_COMPACT_SETTINGS,
-    ...settings,
-    user: pi.getFlag(COMPACT_USER_INPUTS_FLAG) === true ? true : envUser ?? settings.user ?? DEFAULT_COMPACT_USER_INPUTS,
+    tools: { ...DEFAULT_PI_COMPACT_SETTINGS.tools, ...settings.tools },
+    user: { ...DEFAULT_PI_COMPACT_SETTINGS.user, ...settings.user },
+    thinking: { ...DEFAULT_PI_COMPACT_SETTINGS.thinking, ...settings.thinking },
   };
 }
 
@@ -289,20 +355,16 @@ function summarizeArgs(toolName: string, args: any): string {
       const limit = args?.limit !== undefined ? ` • limit=${args.limit}` : "";
       return `${path}${limit}`;
     }
-    case "spawn_agent": {
-      const id = squash(args?.id) || "?";
+    case "agent_task": {
+      const action = squash(args?.action) || "?";
+      const id = squash(args?.id);
       const task = squash(args?.task);
-      return task ? `${id} • ${clip(task, 64)}` : id;
+      if (action === "start") {
+        const label = id ? `${id} • ` : "";
+        return task ? `start ${label}${clip(task, 64)}` : `start${id ? ` ${id}` : ""}`;
+      }
+      return id ? `${action} ${id}` : action;
     }
-    case "delegate": {
-      const id = squash(args?.id) || "?";
-      const message = squash(args?.message);
-      return message ? `${id} • ${clip(message, 64)}` : id;
-    }
-    case "kill_agent":
-      return squash(args?.id) || "?";
-    case "list_agents":
-      return "active children";
     case "report":
       return clip(squash(args?.message) || "report", 80);
     case "web_fetch": {
@@ -376,17 +438,10 @@ function summarizeResult(toolName: string, result: any): string {
       if (count > 0) return ` → ${count}`;
       break;
     }
-    case "list_agents": {
-      if (Array.isArray(details?.agents)) return ` → ${details.agents.length}`;
-      break;
-    }
-    case "kill_agent": {
-      if (Array.isArray(details?.killedIds)) return ` → ${details.killedIds.length} killed`;
-      break;
-    }
-    case "spawn_agent":
-    case "delegate": {
-      if (details?.childId) return ` → ${details.childId}`;
+    case "agent_task": {
+      if (typeof details?.status === "string") return ` → ${details.status}`;
+      if (Array.isArray(details?.tasks)) return ` → ${details.tasks.length}`;
+      if (Array.isArray(details?.cancelled)) return ` → ${details.cancelled.length} cancelled`;
       break;
     }
     case "web_search": {
@@ -447,8 +502,97 @@ function renderCompactToolLine(state: any, width: number): string[] {
   return renderOneLine(buildToolLine(state), width, getToolBgFn(state), true);
 }
 
-function getUserMessageTextFromComponent(component: any): string {
-  const children = component?.contentBox?.children;
+type UserMessageWithContentBox = {
+  contentBox?: unknown;
+};
+
+type BoxWithVerticalPadding = Record<string, unknown> & {
+  paddingY: number;
+  bgFn?: unknown;
+  children?: unknown;
+  cache?: unknown;
+  cachedText?: unknown;
+  cachedWidth?: unknown;
+  cachedLines?: unknown;
+};
+
+type ToolExecutionWithShells = {
+  contentBox?: unknown;
+  contentText?: unknown;
+  expanded?: boolean;
+};
+
+function getVerticalPaddingShell(value: unknown): BoxWithVerticalPadding | undefined {
+  return isRecord(value) && typeof value.paddingY === "number" ? (value as BoxWithVerticalPadding) : undefined;
+}
+
+function clearShellCache(shell: BoxWithVerticalPadding): void {
+  shell.cache = undefined;
+  shell.cachedText = undefined;
+  shell.cachedWidth = undefined;
+  shell.cachedLines = undefined;
+}
+
+function withPaddingY<T>(shells: BoxWithVerticalPadding[], paddingY: number, render: () => T): T {
+  const previous = shells.map((shell) => shell.paddingY);
+  for (const shell of shells) {
+    shell.paddingY = paddingY;
+    clearShellCache(shell);
+  }
+
+  try {
+    return render();
+  } finally {
+    shells.forEach((shell, index) => {
+      shell.paddingY = previous[index] ?? shell.paddingY;
+      clearShellCache(shell);
+    });
+  }
+}
+
+function isBlankRenderedLine(line: string): boolean {
+  return stripAnsi(line).trim().length === 0;
+}
+
+function withoutLeadingBlankLine(lines: string[]): string[] {
+  return lines.length > 0 && isBlankRenderedLine(lines[0]) ? lines.slice(1) : lines;
+}
+
+function withToolGap(lines: string[]): string[] {
+  const content = withoutLeadingBlankLine(lines);
+  return toolRendering.gap && content.length > 0 ? ["", ...content] : content;
+}
+
+function renderBorderlessTool(
+  component: ToolExecutionWithShells,
+  width: number,
+  originalRender: (width: number) => string[],
+): string[] {
+  const shells = [getVerticalPaddingShell(component.contentBox), getVerticalPaddingShell(component.contentText)].filter(
+    (shell): shell is BoxWithVerticalPadding => shell !== undefined,
+  );
+  return withPaddingY(shells, 0, () => withToolGap(originalRender.call(component, width)));
+}
+
+function renderConfiguredTool(component: ToolExecutionWithShells, width: number, originalRender: (width: number) => string[]): string[] {
+  if (!Number.isFinite(width) || width <= 0) return [];
+
+  if (toolRendering.mode === "compact" && !component.expanded) return withToolGap(renderCompactToolLine(component, width));
+  if (toolRendering.mode === "borderless") return renderBorderlessTool(component, width, originalRender);
+  return withToolGap(originalRender.call(component, width));
+}
+
+function getUserMessageContentBox(component: UserMessageWithContentBox): BoxWithVerticalPadding | undefined {
+  return getVerticalPaddingShell(component.contentBox);
+}
+
+function getUserBgFn(component: UserMessageWithContentBox): ((text: string) => string) | undefined {
+  const bgFn = getUserMessageContentBox(component)?.bgFn;
+  return typeof bgFn === "function" ? (bgFn as (text: string) => string) : undefined;
+}
+
+function getUserMessageTextFromComponent(component: UserMessageWithContentBox): string {
+  const children = getUserMessageContentBox(component)?.children;
   if (!Array.isArray(children)) return "";
 
   for (const child of children) {
@@ -462,11 +606,6 @@ function getUserMessageTextFromRendered(lines: string[]): string {
   return squash(stripAnsi(lines.join(" ")));
 }
 
-function getUserBgFn(component: any): ((text: string) => string) | undefined {
-  const bgFn = component?.contentBox?.bgFn;
-  return typeof bgFn === "function" ? bgFn : undefined;
-}
-
 function withUserZoneMarkers(lines: string[]): string[] {
   if (lines.length === 0) return lines;
 
@@ -476,12 +615,44 @@ function withUserZoneMarkers(lines: string[]): string[] {
   return marked;
 }
 
-function renderCompactUserLine(component: any, width: number, originalRender: (width: number) => string[]): string[] {
-  if (!Number.isFinite(width) || width <= 0) return [];
+function withUserMessageGap(lines: string[]): string[] {
+  return userRendering.gap && lines.length > 0 ? [...lines, ""] : lines;
+}
 
+function renderBorderlessUserMessage(
+  component: UserMessageWithContentBox,
+  width: number,
+  originalRender: (width: number) => string[],
+): string[] {
+  const contentBox = getUserMessageContentBox(component);
+  if (!contentBox) return originalRender.call(component, width);
+
+  return withPaddingY([contentBox], 0, () => {
+    const lines = originalRender.call(component, width);
+    // Preserve Pi's post-user-message separation, but keep the blank row outside the grey background.
+    return withUserMessageGap(lines);
+  });
+}
+
+function renderCompactUserMessage(
+  component: UserMessageWithContentBox,
+  width: number,
+  originalRender: (width: number) => string[],
+): string[] {
   const text = getUserMessageTextFromComponent(component) || getUserMessageTextFromRendered(originalRender.call(component, width));
-  const summary = clip(squash(text), MAX_USER_INPUT_LENGTH) || "…";
-  return withUserZoneMarkers(renderOneLine(`› ${summary}`, width, getUserBgFn(component)));
+  const summary = clip(squash(text), MAX_USER_MESSAGE_LENGTH) || "…";
+  return withUserMessageGap(withUserZoneMarkers(renderOneLine(`› ${summary}`, width, getUserBgFn(component))));
+}
+
+function renderConfiguredUserMessage(
+  component: UserMessageWithContentBox,
+  width: number,
+  originalRender: (width: number) => string[],
+): string[] {
+  if (!Number.isFinite(width) || width <= 0) return [];
+  if (userRendering.mode === "compact") return renderCompactUserMessage(component, width, originalRender);
+  if (userRendering.mode === "borderless") return renderBorderlessUserMessage(component, width, originalRender);
+  return originalRender.call(component, width);
 }
 
 function assistantThinkingTimingKeys(message: any): string[] {
@@ -658,25 +829,13 @@ function patchToolExecutionComponent(): boolean {
       throw new Error("ToolExecutionComponent unavailable");
     }
 
-    if (typeof proto[LEGACY_ORIGINAL_UPDATE_DISPLAY_KEY] === "function") {
-      proto.updateDisplay = proto[LEGACY_ORIGINAL_UPDATE_DISPLAY_KEY];
-      delete proto[LEGACY_ORIGINAL_UPDATE_DISPLAY_KEY];
-    }
+    const originalRender = typeof proto[TOOL_ORIGINAL_RENDER_KEY] === "function" ? proto[TOOL_ORIGINAL_RENDER_KEY] : proto.render;
 
-    const originalRender =
-      typeof proto[TOOL_ORIGINAL_RENDER_KEY] === "function"
-        ? proto[TOOL_ORIGINAL_RENDER_KEY]
-        : typeof proto[LEGACY_TOOL_ORIGINAL_RENDER_KEY] === "function"
-          ? proto[LEGACY_TOOL_ORIGINAL_RENDER_KEY]
-          : proto.render;
-
-    proto.render = function piCompactToolRender(this: any, width: number) {
+    proto.render = function piCompactToolRender(this: ToolExecutionWithShells & { hideComponent?: boolean }, width: number) {
       if (this.hideComponent) return [];
-      if (!compactTools || this.expanded) return originalRender.call(this, width);
-      return renderCompactToolLine(this, width);
+      return renderConfiguredTool(this, width, originalRender);
     };
 
-    proto.__piCompactToolRowsPatched = true;
     proto[TOOL_ORIGINAL_RENDER_KEY] = originalRender;
     lastToolPatchError = undefined;
     return true;
@@ -695,12 +854,10 @@ function patchUserMessageComponent(): boolean {
 
     const originalRender = typeof proto[USER_ORIGINAL_RENDER_KEY] === "function" ? proto[USER_ORIGINAL_RENDER_KEY] : proto.render;
 
-    proto.render = function piCompactUserRender(this: any, width: number) {
-      if (!compactUserInputs) return originalRender.call(this, width);
-      return renderCompactUserLine(this, width, originalRender);
+    proto.render = function piCompactUserRender(this: UserMessageWithContentBox, width: number) {
+      return renderConfiguredUserMessage(this, width, originalRender);
     };
 
-    proto.__piCompactUserInputsPatched = true;
     proto[USER_ORIGINAL_RENDER_KEY] = originalRender;
     lastUserPatchError = undefined;
     return true;
@@ -727,15 +884,17 @@ function patchAssistantMessageComponent(): boolean {
       const blocks = getThinkingBlocks(message);
       this[ASSISTANT_THINKING_APPLIED_MODE_KEY] = compactThinking;
 
-      if (blocks.length === 0 || compactThinking === "normal") {
+      if (blocks.length === 0 || !compactThinking) {
         this[ASSISTANT_THINKING_STATE_KEY] = undefined;
         return originalUpdateContent.call(this, message);
       }
 
-      this[ASSISTANT_THINKING_STATE_KEY] =
-        compactThinking === "compact"
-          ? createThinkingState(message, blocks, this[ASSISTANT_THINKING_STATE_KEY], getThinkingTiming(message))
-          : undefined;
+      this[ASSISTANT_THINKING_STATE_KEY] = createThinkingState(
+        message,
+        blocks,
+        this[ASSISTANT_THINKING_STATE_KEY],
+        getThinkingTiming(message),
+      );
 
       try {
         return originalUpdateContent.call(this, cloneWithoutThinking(message));
@@ -751,13 +910,12 @@ function patchAssistantMessageComponent(): boolean {
 
       const lines = originalRender.call(this, width);
       const thinkingState = this[ASSISTANT_THINKING_STATE_KEY] as CompactThinkingState | undefined;
-      if (compactThinking !== "compact" || !thinkingState) return lines;
+      if (!compactThinking || !thinkingState) return lines;
 
       const thinkingLines = renderCompactThinkingLine(thinkingState, width);
       return thinkingLines.length > 0 ? [...thinkingLines, ...lines] : lines;
     };
 
-    proto.__piCompactThinkingPatched = true;
     proto[ASSISTANT_ORIGINAL_RENDER_KEY] = originalRender;
     proto[ASSISTANT_ORIGINAL_UPDATE_CONTENT_KEY] = originalUpdateContent;
     lastAssistantPatchError = undefined;
@@ -784,16 +942,24 @@ async function patchPiCompactComponents(): Promise<boolean> {
 function patchErrorDetails(): string {
   const errors = [];
   if (lastToolPatchError) errors.push(`tools: ${lastToolPatchError}`);
-  if (lastUserPatchError) errors.push(`user-inputs: ${lastUserPatchError}`);
+  if (lastUserPatchError) errors.push(`user-messages: ${lastUserPatchError}`);
   if (lastAssistantPatchError) errors.push(`thinking: ${lastAssistantPatchError}`);
   if (lastConfigError) errors.push(`config: ${lastConfigError}`);
   return errors.length > 0 ? `\n${errors.join("\n")}` : "";
 }
 
+function formatGapRendering(value: GapRendering): string {
+  return value.mode === "normal" ? "normal" : `${value.mode}${value.gap ? "+gap" : "+tight"}`;
+}
+
+function formatCompactMode(value: boolean): "compact" | "normal" {
+  return value ? "compact" : "normal";
+}
+
 function statusMessage(): string {
-  const toolsStatus = lastToolPatchError ? "failed" : compactTools ? "compact" : "normal";
-  const userStatus = lastUserPatchError ? "failed" : compactUserInputs ? "compact" : "normal";
-  const thinkingStatus = lastAssistantPatchError ? "failed" : compactThinking;
+  const toolsStatus = lastToolPatchError ? "failed" : formatGapRendering(toolRendering);
+  const userStatus = lastUserPatchError ? "failed" : formatGapRendering(userRendering);
+  const thinkingStatus = lastAssistantPatchError ? "failed" : formatCompactMode(compactThinking);
   return `pi-compact: tools=${toolsStatus} • user=${userStatus} • thinking=${thinkingStatus}${patchErrorDetails()}`;
 }
 
@@ -801,30 +967,49 @@ function hasStatusError(): boolean {
   return Boolean(lastToolPatchError || lastUserPatchError || lastAssistantPatchError || lastConfigError);
 }
 
-function parseCompactArg(args: string, current: boolean): boolean | undefined {
+function parseGapRenderingArg(args: string, current: GapRendering, defaultValue: GapRendering): GapRendering | undefined {
   const value = args.trim().toLowerCase();
   if (!value || value === "status") return current;
-  if (["1", "on", "true", "yes", "y", "enable", "enabled", "compact"].includes(value)) return true;
-  if (["0", "off", "false", "no", "n", "disable", "disabled", "normal"].includes(value)) return false;
-  if (["toggle", "flip"].includes(value)) return !current;
-  return undefined;
+
+  switch (value) {
+    case "normal":
+      return { ...current, mode: "normal" };
+    case "borderless":
+      return { ...current, mode: "borderless", gap: defaultValue.gap };
+    case "borderless-tight":
+      return { ...current, mode: "borderless", gap: false };
+    case "compact":
+      return { ...current, mode: "compact", gap: defaultValue.gap };
+    case "compact-tight":
+      return { ...current, mode: "compact", gap: false };
+    case "gap":
+      return { ...current, gap: true };
+    case "no-gap":
+    case "nogap":
+      return { ...current, gap: false };
+    case "toggle":
+      return current.mode === "normal" ? cloneGapRendering(defaultValue) : { ...current, mode: "normal" };
+    case "cycle":
+      if (current.mode === "normal") return { ...current, mode: "borderless", gap: defaultValue.gap };
+      if (current.mode === "borderless") return { ...current, mode: "compact", gap: defaultValue.gap };
+      return { ...current, mode: "normal" };
+    default:
+      return undefined;
+  }
 }
 
-function parseThinkingArg(args: string, current: CompactThinkingMode): CompactThinkingMode | undefined {
+function parseThinkingArg(args: string, current: boolean): boolean | undefined {
   const value = args.trim().toLowerCase();
   if (!value || value === "status") return current;
-  if (["toggle", "flip"].includes(value)) return current === "compact" ? "normal" : "compact";
-  return parseThinkingMode(value);
+  if (["compact", "on", "true", "yes", "enable", "enabled"].includes(value)) return true;
+  if (["normal", "off", "false", "no", "disable", "disabled"].includes(value)) return false;
+  if (["toggle", "flip"].includes(value)) return !current;
+  return undefined;
 }
 
 void patchPiCompactComponents();
 
 export default function (pi: ExtensionAPI) {
-  pi.registerFlag(COMPACT_USER_INPUTS_FLAG, {
-    description: "Render user inputs as single compact lines",
-    type: "boolean",
-  });
-
   pi.on("message_update", (event) => {
     recordAssistantThinkingTiming(event.message, event.assistantMessageEvent);
   });
@@ -841,42 +1026,42 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.registerCommand("compact-user-inputs", {
-    description: "Show/toggle one-line user input rendering (on|off|toggle)",
+  pi.registerCommand("compact-user", {
+    description: "Set user message rendering (normal|borderless|borderless-tight|compact|compact-tight)",
     handler: async (args, ctx) => {
-      const next = parseCompactArg(args, compactUserInputs);
+      const next = parseGapRenderingArg(args, userRendering, DEFAULT_PI_COMPACT_SETTINGS.user);
       if (next === undefined) {
-        ctx.ui.notify("Usage: /compact-user-inputs [on|off|toggle|status]", "error");
+        ctx.ui.notify("Usage: /compact-user [normal|borderless|borderless-tight|compact|compact-tight|gap|no-gap|toggle|cycle|status]", "error");
         return;
       }
 
-      compactUserInputs = next;
+      userRendering = next;
       await patchPiCompactComponents();
       ctx.ui.notify(statusMessage(), hasStatusError() ? "error" : "info");
     },
   });
 
   pi.registerCommand("compact-tools", {
-    description: "Show/toggle one-line tool rendering (on|off|toggle)",
+    description: "Set tool rendering (normal|borderless|borderless-tight|compact|compact-tight)",
     handler: async (args, ctx) => {
-      const next = parseCompactArg(args, compactTools);
+      const next = parseGapRenderingArg(args, toolRendering, DEFAULT_PI_COMPACT_SETTINGS.tools);
       if (next === undefined) {
-        ctx.ui.notify("Usage: /compact-tools [on|off|toggle|status]", "error");
+        ctx.ui.notify("Usage: /compact-tools [normal|borderless|borderless-tight|compact|compact-tight|gap|no-gap|toggle|cycle|status]", "error");
         return;
       }
 
-      compactTools = next;
+      toolRendering = next;
       await patchPiCompactComponents();
       ctx.ui.notify(statusMessage(), hasStatusError() ? "error" : "info");
     },
   });
 
   pi.registerCommand("compact-thinking", {
-    description: "Show/toggle thinking rendering (compact|hidden|normal|toggle)",
+    description: "Set thinking rendering (normal|compact|toggle)",
     handler: async (args, ctx) => {
       const next = parseThinkingArg(args, compactThinking);
       if (next === undefined) {
-        ctx.ui.notify("Usage: /compact-thinking [compact|hidden|normal|toggle|status]", "error");
+        ctx.ui.notify("Usage: /compact-thinking [normal|compact|toggle|status]", "error");
         return;
       }
 
@@ -887,10 +1072,10 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
-    const settings = resolvePiCompactSettings(ctx.cwd, pi);
-    compactTools = settings.tools;
-    compactUserInputs = settings.user;
-    compactThinking = settings.thinking;
+    const settings = resolvePiCompactSettings(ctx.cwd);
+    toolRendering = cloneGapRendering(settings.tools);
+    userRendering = cloneGapRendering(settings.user);
+    compactThinking = settings.thinking.mode === "compact";
     activeTheme = ctx.hasUI ? ctx.ui.theme : undefined;
 
     await patchPiCompactComponents();
