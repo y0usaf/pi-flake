@@ -6,35 +6,37 @@ Pi extension: compact chat rendering for Pi's interactive TUI.
 
 - patches Pi's interactive tool-row renderer
 - collapsed tool calls → one width-aware summary line
+- edit results → compact `+N -N` diff counts instead of success prose
 - expanded tool calls → original rendering/output
+- thinking blocks → compact elapsed-seconds + character-count row by default, or fully hidden
 - optional user inputs → one width-aware summary line
 
 ## Configuration
 
-Defaults: `tools=true`, `user=false`, colours = Pi theme defaults.
+Defaults: `tools=true`, `thinking="compact"`, `user=true`.
 
-Pi settings (`~/.pi/agent/settings.json` or `.pi/settings.json`):
+Pi extension settings (`~/.pi/agent/extension-settings.json` or `.pi/extension-settings.json`):
 
 ```json
 {
   "pi-compact": {
     "user": true,
     "tools": true,
-    "tool_colour": "#1e293b",
-    "user_colour": "#312e81"
+    "thinking": "compact"
   }
 }
 ```
 
-`tool_colour` / `user_colour` are optional compact-row background colours. Invalid/missing hex → Pi theme default.
+`thinking`: `compact`/`true` → one-line row (`thinking for N.N seconds, N characters` → `thought for N.N seconds, N characters`), `hidden` → no row, `normal`/`false` → Pi default rendering.
 
-Precedence for `user`: CLI flag → env → project settings → global settings → off.
+Colours come from the active Pi theme. Customize them with Pi themes, not this extension.
 
-Enable user compaction with CLI/env:
+Precedence for `user`: CLI flag → env → project settings → global settings → on.
+
+User compaction is on by default. Disable via settings/env or toggle at runtime:
 
 ```bash
-pi -e ./extensions/pi-compact/src/index.ts --compact-user-inputs
-PI_COMPACT_USER_INPUTS=1 pi -e ./extensions/pi-compact/src/index.ts
+PI_COMPACT_USER_INPUTS=0 pi -e ./extensions/pi-compact/src/index.ts
 ```
 
 Toggle at runtime:
@@ -42,6 +44,7 @@ Toggle at runtime:
 ```text
 /compact-user-inputs on|off|toggle|status
 /compact-tools on|off|toggle|status
+/compact-thinking compact|hidden|normal|toggle|status
 /compact-status
 ```
 
