@@ -116,6 +116,13 @@
       "pi-tool-management" = piToolManagement.packages.${system}.default;
       "pi-webfetch" = piWebfetch.packages.${system}.default;
 
+      # pi with ALL extensions pre-bundled
+      pi-full = self.lib.piWithExtensions {
+        inherit pkgs;
+        pi = self.packages.${system}.pi;
+        extensions = self.lib.extensionPackagesFor system;
+      };
+
       default = self.packages.${system}.pi;
     });
 
@@ -139,11 +146,13 @@
       ];
     in {
       default = pkgs.mkShell {
-        packages = with pkgs; [
-          nodejs_22
-          bun
-          pkg-config
-        ] ++ canvasNativeDeps;
+        packages = with pkgs;
+          [
+            nodejs_22
+            bun
+            pkg-config
+          ]
+          ++ canvasNativeDeps;
 
         shellHook = ''
           echo "pi-flake dev shell — node $(node --version), bun v$(bun --version)"
@@ -152,5 +161,184 @@
     });
 
     formatter = forAllSystems (system: pkgsFor.${system}.alejandra);
+
+    nixosModules.default = import ./nix/modules/nixos.nix self;
+
+    # Extension package set keyed by bundled extension name.
+    lib.extensionPackagesFor = system: {
+      agents = self.packages.${system}."pi-agents";
+      "codex-fast" = self.packages.${system}."pi-codex-fast";
+      "gecko-websearch" = self.packages.${system}."pi-gecko-websearch";
+      rtk = self.packages.${system}."pi-rtk";
+      compact = self.packages.${system}."pi-compact";
+      "tool-management" = self.packages.${system}."pi-tool-management";
+      webfetch = self.packages.${system}."pi-webfetch";
+    };
+
+    # Convert boolean flags into an extension attrset for piWithExtensions.
+    lib.enabledExtensions = {
+      system,
+      extensionFlags ? {},
+    }: let
+      lib = nixpkgs.lib;
+      available = self.lib.extensionPackagesFor system;
+      unknownEnabled = lib.filterAttrs (_: enabled: enabled) (builtins.removeAttrs extensionFlags (builtins.attrNames available));
+    in
+      assert lib.assertMsg (unknownEnabled == {}) "Unknown pi extension flag(s): ${lib.concatStringsSep ", " (builtins.attrNames unknownEnabled)}";
+        lib.filterAttrs (name: _: extensionFlags.${name} or false) available;
+
+    # Flag-driven builder for consumers that want conditional bundled extensions.
+    lib.piWithExtensionFlags = {
+      pkgs,
+      system ? pkgs.stdenv.hostPlatform.system,
+      pi ? null,
+      extensionFlags ? {},
+      extraExtensions ? {},
+    }: let
+      selectedPi =
+        if pi == null
+        then self.packages.${system}.pi
+        else pi;
+      extensions = (self.lib.enabledExtensions {inherit system extensionFlags;}) // extraExtensions;
+    in
+      self.lib.piWithExtensions {
+        inherit pkgs extensions;
+        pi = selectedPi;
+      };
+
+    # Library function to build pi with extensions (available across systems)
+    lib.piWithExtensions = {
+      pkgs,
+      pi,
+      extensions,
+    }:
+      pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-with-extensions";
+        version = pi.version;
+
+        passthru = {
+          inherit (pi) version;
+          extensionNames = builtins.attrNames extensions;
+        };
+
+        dontUnpack = true;
+        dontBuild = true;
+
+        installPhase = ''
+                  mkdir -p $out/bin $out/share/pi/extensions
+
+                  # Symlink the pi binary
+                  ln -s ${pi}/bin/pi $out/bin/.pi-real
+
+                  # Create extension subdirectories and copy content
+                  ${pkgs.lib.concatStringsSep "\n" (pkgs.lib.mapAttrsToList (name: ext: ''
+              mkdir -p "$out/share/pi/extensions/${name}"
+              cp -R ${ext}/* "$out/share/pi/extensions/${name}/" 2>/dev/null || true
+            '')
+            extensions)}
+
+                  # Create a helper script for merging default extensions
+                  cat > $out/share/pi/merge-default-extensions.js << 'script'
+          const fs = require('fs');
+          const path = require('path');
+
+          const defaultExtensionsPath = process.env.PI_DEFAULT_EXTENSIONS;
+          const settingsPath = process.env.PI_SETTINGS_PATH;
+
+          if (!defaultExtensionsPath) {
+            console.error('Error: PI_DEFAULT_EXTENSIONS not set');
+            process.exit(1);
+          }
+
+          if (!settingsPath) {
+            console.error('Error: PI_SETTINGS_PATH not set');
+            process.exit(1);
+          }
+
+          function isDirectory(p) {
+            try {
+              return fs.statSync(p).isDirectory();
+            } catch {
+              return false;
+            }
+          }
+
+          function isExtensionDir(p) {
+            return fs.existsSync(path.join(p, 'index.ts')) || fs.existsSync(path.join(p, 'package.json'));
+          }
+
+          const defaultExtensions = !fs.existsSync(defaultExtensionsPath)
+            ? []
+            : fs.readdirSync(defaultExtensionsPath)
+                .map(p => path.join(defaultExtensionsPath, p))
+                .filter(p => isDirectory(p) && isExtensionDir(p));
+
+          if (defaultExtensions.length === 0) process.exit(0);
+
+          let existingSettings = {};
+          if (fs.existsSync(settingsPath)) {
+            try {
+              const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+              if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) existingSettings = parsed;
+            } catch {
+              // Replace corrupt settings with a minimal valid file.
+            }
+          }
+
+          const existingExtensions = Array.isArray(existingSettings.extensions) ? existingSettings.extensions : [];
+          const missingExtensions = defaultExtensions.filter(ext => !existingExtensions.includes(ext));
+
+          // If settings already contain the bundled extensions, do not rewrite the file.
+          // This keeps declarative/symlinked NixOS settings untouched.
+          if (missingExtensions.length === 0) process.exit(0);
+
+          const mergedSettings = {
+            ...existingSettings,
+            extensions: [...existingExtensions, ...missingExtensions],
+          };
+          const next = JSON.stringify(mergedSettings, null, 2) + '\n';
+
+          fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+          fs.writeFileSync(settingsPath, next);
+          script
+
+                  # Create wrapper that auto-discovers bundled extensions
+                  cat > $out/bin/.pi-wrapped << 'wrapper'
+          #!/bin/bash
+          set -euo pipefail
+
+          # Set defaults
+          export PI_PACKAGE_DIR="${pi}/share/pi"
+          export PI_DEFAULT_EXTENSIONS="@out@/share/pi/extensions"
+          export PI_SKIP_VERSION_CHECK=1
+
+          # Determine settings path
+          AGENT_DIR="$HOME/.pi/agent"
+          PROJECT_SETTINGS="$(pwd)/.pi/settings.json"
+
+          if [ -f "$PROJECT_SETTINGS" ]; then
+            export PI_SETTINGS_PATH="$PROJECT_SETTINGS"
+          else
+            mkdir -p "$AGENT_DIR"
+            export PI_SETTINGS_PATH="$AGENT_DIR/settings.json"
+          fi
+
+          # Merge bundled extensions with user settings.
+          ${pkgs.nodejs}/bin/node @out@/share/pi/merge-default-extensions.js
+
+          # Run pi
+          exec "@out@/bin/.pi-real" "$@"
+          wrapper
+
+                  substituteInPlace $out/bin/.pi-wrapped \
+                    --replace-fail '@out@' "$out"
+
+                  # Make wrapper executable
+                  chmod +x $out/bin/.pi-wrapped
+                  mv $out/bin/.pi-wrapped $out/bin/pi
+        '';
+
+        meta = pi.meta;
+      };
   };
 }
