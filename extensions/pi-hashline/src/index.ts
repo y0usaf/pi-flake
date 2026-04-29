@@ -27,7 +27,7 @@ import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 const HASH_ALPHABET = "ZPMQVRWSNKTXJBYH";
-const HASH_LENGTH = 3;
+const HASH_LENGTH = 2;
 const HASH_RE = new RegExp(`^[${HASH_ALPHABET}]{${HASH_LENGTH}}$`);
 const HASHLINE_PREFIX_RE = new RegExp(
   `^\\s*(?:>>>|>>)?\\s*\\d+\\s*#\\s*[${HASH_ALPHABET}]{${HASH_LENGTH}}:`,
@@ -186,9 +186,8 @@ function computeLineHash(lineNumber: number, line: string): string {
     ? normalized
     : `${lineNumber}\0${normalized}`;
   const digest = createHash("sha256").update(seed).digest();
-  const value = ((digest[0]! << 4) | (digest[1]! >> 4)) & 0xfff;
+  const value = digest[0]!;
   return [
-    HASH_ALPHABET[(value >> 8) & 0xf],
     HASH_ALPHABET[(value >> 4) & 0xf],
     HASH_ALPHABET[value & 0xf],
   ].join("");
