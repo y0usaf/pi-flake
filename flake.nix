@@ -29,6 +29,9 @@
 
     piWebfetch.url = "path:./extensions/pi-webfetch";
     piWebfetch.inputs.nixpkgs.follows = "nixpkgs";
+
+    piHashline.url = "path:./extensions/pi-hashline";
+    piHashline.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs = {
@@ -42,6 +45,7 @@
     piCompact,
     piToolManagement,
     piWebfetch,
+    piHashline,
     ...
   }: let
     systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
@@ -115,6 +119,7 @@
       "pi-compact" = piCompact.packages.${system}.default;
       "pi-tool-management" = piToolManagement.packages.${system}.default;
       "pi-webfetch" = piWebfetch.packages.${system}.default;
+      "pi-hashline" = piHashline.packages.${system}.default;
 
       # pi with ALL extensions pre-bundled
       pi-full = self.lib.piWithExtensions {
@@ -173,6 +178,7 @@
       compact = self.packages.${system}."pi-compact";
       "tool-management" = self.packages.${system}."pi-tool-management";
       webfetch = self.packages.${system}."pi-webfetch";
+      hashline = self.packages.${system}."pi-hashline";
     };
 
     # Convert boolean flags into an extension attrset for piWithExtensions.

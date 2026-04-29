@@ -78,6 +78,7 @@ Flake `inputs` cannot pass arbitrary booleans into another flake's outputs. Use 
         compact = true;
         "tool-management" = false;
         webfetch = true;
+        hashline = true;
       };
     };
   };
@@ -111,6 +112,7 @@ Only flags set to `true` are copied into the bundled wrapper.
             #   "codex-fast" = true;
             #   compact = true;
             #   webfetch = true;
+            #   hashline = true;
             # };
 
             # Option 3: concrete package
@@ -138,6 +140,7 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-compact` | Compaction utilities |
 | `pi-tool-management` | Tool management interface |
 | `pi-webfetch` | HTTP fetching utilities |
+| `pi-hashline` | Hashline read/edit tool override |
 
 ---
 
@@ -194,6 +197,7 @@ inputs.pi-flake.packages.<system>."pi-rtk"
 inputs.pi-flake.packages.<system>."pi-compact"
 inputs.pi-flake.packages.<system>."pi-tool-management"
 inputs.pi-flake.packages.<system>."pi-webfetch"
+inputs.pi-flake.packages.<system>."pi-hashline"
 ```
 
 ### Variants

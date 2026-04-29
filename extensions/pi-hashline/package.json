@@ -1,0 +1,20 @@
+{
+  "name": "pi-hashline",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Strict hashline read/edit tool override for Pi",
+  "keywords": ["pi-package", "pi", "coding-agent", "extension", "hashline"],
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0"
+  }
+}

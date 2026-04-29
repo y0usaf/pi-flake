@@ -80,6 +80,22 @@
       },
       "parent": []
     },
+    "piHashline": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-hashline",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-hashline",
+        "type": "path"
+      },
+      "parent": []
+    },
     "piRtk": {
       "inputs": {
         "nixpkgs": [
@@ -152,6 +168,7 @@
         "piCodexFast": "piCodexFast",
         "piCompact": "piCompact",
         "piGeckoWebsearch": "piGeckoWebsearch",
+        "piHashline": "piHashline",
         "piRtk": "piRtk",
         "piSrc": "piSrc",
         "piToolManagement": "piToolManagement",
