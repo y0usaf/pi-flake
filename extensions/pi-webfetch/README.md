@@ -18,7 +18,7 @@ No secondary model summarization — the raw markdown goes straight to the main 
 
 ```bash
 # Install as a pi package
-pi --install ~/Dev/pi-webfetch
+pi install ~/Dev/pi-webfetch
 
 # Or load directly
 pi -e ~/Dev/pi-webfetch/src/index.ts

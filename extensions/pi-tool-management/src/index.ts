@@ -19,12 +19,6 @@ function uniqueSorted(arr: string[]): string[] {
 	return [...new Set(arr)].sort((a, b) => a.localeCompare(b));
 }
 
-function sameElements(a: Set<string>, b: Set<string>): boolean {
-	if (a.size !== b.size) return false;
-	for (const v of a) if (!b.has(v)) return false;
-	return true;
-}
-
 function toStringArray(value: unknown): string[] {
 	if (!Array.isArray(value)) return [];
 	return value.filter((v): v is string => typeof v === "string").map((s) => s.trim()).filter(Boolean);
@@ -33,32 +27,22 @@ function toStringArray(value: unknown): string[] {
 // ── Settings I/O ───────────────────────────────────────────────────
 
 let disabledTools = new Set<string>();
-let loaded = false;
 let lastWarning: string | undefined;
 let lastSaveError: string | undefined;
 
 function parseSettings(raw: string): { disabledTools: string[]; warning?: string } {
 	const parsed: unknown = JSON.parse(raw);
 
-	// Legacy: bare array
-	if (Array.isArray(parsed)) {
-		return { disabledTools: uniqueSorted(toStringArray(parsed)), warning: `Migrated legacy array format in ${SETTINGS_PATH}` };
-	}
-
-	if (typeof parsed !== "object" || parsed === null) {
-		return { disabledTools: [], warning: `Ignoring invalid settings in ${SETTINGS_PATH}: expected object or array` };
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		return { disabledTools: [], warning: `Ignoring invalid settings in ${SETTINGS_PATH}: expected object` };
 	}
 
 	const obj = parsed as Record<string, unknown>;
-	const tools = uniqueSorted(toStringArray(obj.disabledTools));
+	if (obj.version !== SETTINGS_VERSION) {
+		return { disabledTools: [], warning: `Ignoring unsupported settings version in ${SETTINGS_PATH}: ${String(obj.version)}` };
+	}
 
-	if (obj.version === undefined) {
-		return { disabledTools: tools, warning: `Migrated unversioned settings in ${SETTINGS_PATH}` };
-	}
-	if (typeof obj.version === "number" && obj.version > SETTINGS_VERSION) {
-		return { disabledTools: tools, warning: `Settings use newer version ${obj.version}; using disabledTools as-is` };
-	}
-	return { disabledTools: tools };
+	return { disabledTools: uniqueSorted(toStringArray(obj.disabledTools)) };
 }
 
 async function loadSettings(): Promise<void> {
@@ -83,7 +67,6 @@ async function loadSettings(): Promise<void> {
 		}
 		// ENOENT: no file yet, keep current disabledTools (empty on first load)
 	}
-	loaded = true;
 }
 
 async function saveSettings(): Promise<void> {

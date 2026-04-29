@@ -35,7 +35,7 @@
           runHook preInstall
 
           mkdir -p "$out"
-          cp -r . "$out"
+          cp package.json README.md CHANGELOG.md LICENSE index.ts "$out"/
 
           substituteInPlace "$out/index.ts" \
             --replace-fail 'execFileSync("rtk", ["rewrite", command], {' 'execFileSync("${pkgs.rtk}/bin/rtk", ["rewrite", command], {'

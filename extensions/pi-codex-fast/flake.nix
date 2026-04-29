@@ -34,7 +34,8 @@
         installPhase = ''
           runHook preInstall
           mkdir -p "$out"
-          cp -r . "$out"
+          cp package.json README.md "$out"/
+          cp -r src "$out"/
           runHook postInstall
         '';
 
@@ -43,7 +44,7 @@
         };
 
         meta = with lib; {
-          description = "Pi extension that enables Codex fast mode via extension-settings.json";
+          description = "Pi extension that enables Codex fast mode via settings.json extensionSettings";
           license = licenses.mit;
           platforms = platforms.all;
         };

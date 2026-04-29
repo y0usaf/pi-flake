@@ -40,8 +40,9 @@
           runHook preInstall
 
           mkdir -p "$out"
-          cp -r package.json package-lock.json README.md src "$out"/
+          cp -r package.json README.md src "$out"/
           cp -r node_modules "$out"/node_modules
+          rm -f "$out/node_modules/.package-lock.json"
 
           runHook postInstall
         '';
