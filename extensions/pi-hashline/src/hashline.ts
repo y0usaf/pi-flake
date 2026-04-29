@@ -1,28 +1,40 @@
-import { createHash } from "node:crypto";
-import { DEFAULT_MAX_BYTES } from "@mariozechner/pi-coding-agent";
 import {
   DIFF_DELETE_PREFIX_RE,
-  HASH_ALPHABET,
   HASH_LENGTH,
   HASH_RE,
+  HASHLINE_BIGRAMS,
+  HASHLINE_BIGRAMS_COUNT,
+  HASHLINE_BIGRAM_RE_SRC,
   HASHLINE_PLUS_PREFIX_RE,
   HASHLINE_PREFIX_RE,
   SIGNIFICANT_RE,
+  STRUCTURAL_STRIP_RE,
 } from "./constants";
 import { normalizeToLF } from "./text-file";
+
+const DEFAULT_ANCHOR_TEXT_BUDGET_BYTES = 50 * 1024;
 
 export type Anchor = {
   line: number;
   hash: string;
 };
 
+export type HashlineLoc =
+  | "append"
+  | "prepend"
+  | { append: string }
+  | { prepend: string }
+  | { range: { pos: string; end: string } };
+
 export type RawEdit = {
-  op: string;
+  op?: string;
   pos?: string;
   end?: string;
   lines?: string[] | string | null;
   oldText?: string;
   newText?: string;
+  loc?: HashlineLoc;
+  content?: string[] | string | null;
 };
 
 export type EditRequest = {
@@ -44,17 +56,33 @@ type StaleAnchor = {
   reason?: string;
 };
 
+function structuralBigram(lineNumber: number): string {
+  const mod100 = lineNumber % 100;
+  if (mod100 >= 11 && mod100 <= 13) return "th";
+  switch (lineNumber % 10) {
+    case 1:
+      return "st";
+    case 2:
+      return "nd";
+    case 3:
+      return "rd";
+    default:
+      return "th";
+  }
+}
+
 export function computeLineHash(lineNumber: number, line: string): string {
   const normalized = line.replace(/\r/g, "").trimEnd();
-  const seed = SIGNIFICANT_RE.test(normalized)
-    ? normalized
-    : `${lineNumber}\0${normalized}`;
-  const digest = createHash("sha256").update(seed).digest();
-  const value = digest[0]!;
-  return [
-    HASH_ALPHABET[(value >> 4) & 0xf],
-    HASH_ALPHABET[value & 0xf],
-  ].join("");
+  if (normalized.replace(STRUCTURAL_STRIP_RE, "").length === 0) {
+    return structuralBigram(lineNumber);
+  }
+
+  const seed = SIGNIFICANT_RE.test(normalized) ? 0 : lineNumber;
+  const xxHash32 = (globalThis as unknown as { Bun?: { hash?: { xxHash32?: (value: string, seed?: number) => number } } }).Bun?.hash?.xxHash32;
+  if (typeof xxHash32 !== "function") {
+    throw new Error("[E_HASH_UNAVAILABLE] Bun.hash.xxHash32 is required for hashline v2 anchors.");
+  }
+  return HASHLINE_BIGRAMS[xxHash32(normalized, seed) % HASHLINE_BIGRAMS_COUNT]!;
 }
 
 export function getVisibleLines(text: string): string[] {
@@ -74,16 +102,16 @@ export function formatHashlineRegion(lines: string[], startLine: number): string
   return lines
     .map((line, index) => {
       const lineNumber = startLine + index;
-      return `${lineNumber}#${computeLineHash(lineNumber, line)}:${line}`;
+      return `${lineNumber}${computeLineHash(lineNumber, line)}|${line}`;
     })
     .join("\n");
 }
 
 function parseAnchor(ref: string): Anchor {
   const core = ref.replace(/^\s*[>+-]*\s*/, "").trimEnd();
-  const match = core.match(/^([0-9]+)\s*#\s*([^\s:]+)(?:\s*:.*)?$/s);
+  const match = core.match(new RegExp(`^([0-9]+)(${HASHLINE_BIGRAM_RE_SRC})(?:[:|].*)?$`, "s"));
   if (!match) {
-    throw new Error(`[E_BAD_REF] Invalid line reference ${JSON.stringify(ref)}. Expected "LINE#HASH" from read output, e.g. "12#K7".`);
+    throw new Error(`[E_BAD_REF] Invalid line reference ${JSON.stringify(ref)}. Expected hashline v2 anchor from read output, e.g. "12th".`);
   }
 
   const line = Number.parseInt(match[1]!, 10);
@@ -93,22 +121,21 @@ function parseAnchor(ref: string): Anchor {
 
   const hash = match[2]!;
   if (hash.length !== HASH_LENGTH || !HASH_RE.test(hash)) {
-    throw new Error(`[E_BAD_REF] Invalid hash in ${JSON.stringify(ref)}. Hashes are ${HASH_LENGTH} characters from ${HASH_ALPHABET}.`);
+    throw new Error(`[E_BAD_REF] Invalid hash in ${JSON.stringify(ref)}. Hashes are two-letter hashline v2 bigrams.`);
   }
 
   return { line, hash };
 }
 
 function stringifyAnchor(anchor: Anchor): string {
-  return `${anchor.line}#${anchor.hash}`;
+  return `${anchor.line}${anchor.hash}`;
 }
 
-function parseEditLines(value: string[] | string | null | undefined, editIndex: number): string[] {
+function parseEditLines(value: string[] | string | null | undefined, editIndex: number, fieldName = "lines"): string[] {
   if (value === undefined) {
-    throw new Error(`Edit ${editIndex} requires a "lines" field.`);
+    throw new Error(`Edit ${editIndex} requires a "${fieldName}" field.`);
   }
   if (value === null) return [];
-
   const lines = typeof value === "string"
     ? (value.endsWith("\n") ? value.slice(0, -1) : value).replaceAll("\r", "").split("\n")
     : value.map((line) => line.replaceAll("\r", ""));
@@ -119,7 +146,7 @@ function parseEditLines(value: string[] | string | null | undefined, editIndex: 
       HASHLINE_PLUS_PREFIX_RE.test(line) ||
       DIFF_DELETE_PREFIX_RE.test(line)
     ) {
-      throw new Error(`[E_INVALID_PATCH] edits[${editIndex}].lines must contain literal file content, not rendered LINE#HASH or diff prefixes. Offending line: ${JSON.stringify(line)}`);
+      throw new Error(`[E_INVALID_PATCH] edits[${editIndex}].${fieldName} must contain literal file content, not rendered hashline anchors or diff prefixes. Offending line: ${JSON.stringify(line)}`);
     }
   }
 
@@ -158,7 +185,7 @@ function formatStaleAnchorError(staleAnchors: StaleAnchor[], fileLines: string[]
   }
 
   const out = [
-    `[E_STALE_ANCHOR] ${staleAnchors.length} stale or invalid anchor${staleAnchors.length === 1 ? "" : "s"}. Retry with the >>> LINE#HASH lines below, or call read again.`,
+    `[E_STALE_ANCHOR] ${staleAnchors.length} stale or invalid anchor${staleAnchors.length === 1 ? "" : "s"}. Retry with the >>> LINEID|content lines below, or call read again.`,
     "",
   ];
 
@@ -179,8 +206,8 @@ function formatStaleAnchorError(staleAnchors: StaleAnchor[], fileLines: string[]
       if (previous !== -1 && lineNumber > previous + 1) out.push("    ...");
       previous = lineNumber;
       const line = fileLines[lineNumber - 1]!;
-      const prefix = `${lineNumber}#${computeLineHash(lineNumber, line)}`;
-      out.push(`${retryLines.has(lineNumber) ? ">>>" : "   "} ${prefix}:${line}`);
+      const prefix = `${lineNumber}${computeLineHash(lineNumber, line)}`;
+      out.push(`${retryLines.has(lineNumber) ? ">>>" : "   "} ${prefix}|${line}`);
     }
   }
 
@@ -192,6 +219,7 @@ function formatStaleAnchorError(staleAnchors: StaleAnchor[], fileLines: string[]
 }
 
 function describeLineEdit(edit: RawEdit): string {
+  if (edit.loc !== undefined) return `loc ${JSON.stringify(edit.loc)}`;
   switch (edit.op) {
     case "replace":
       return edit.end ? `replace ${edit.pos}-${edit.end}` : `replace ${edit.pos}`;
@@ -200,8 +228,46 @@ function describeLineEdit(edit: RawEdit): string {
     case "prepend":
       return edit.pos ? `prepend before ${edit.pos}` : "prepend at BOF";
     default:
-      return edit.op;
+      return edit.op ?? "edit";
   }
+}
+
+function resolveLocEdit(index: number, edit: RawEdit, fileLines: string[], staleAnchors: StaleAnchor[]): LineEdit {
+  const lines = parseEditLines(edit.content, index, "content");
+  const loc = edit.loc;
+
+  if (loc === "append") {
+    return { requestIndex: index, label: describeLineEdit(edit), start: fileLines.length, end: fileLines.length, lines };
+  }
+  if (loc === "prepend") {
+    return { requestIndex: index, label: describeLineEdit(edit), start: 0, end: 0, lines };
+  }
+  if (!loc || typeof loc !== "object") {
+    throw new Error(`[E_BAD_OP] Edit ${index} loc must be "append", "prepend", {append}, {prepend}, or {range}.`);
+  }
+
+  if ("append" in loc) {
+    const pos = parseAnchor(loc.append);
+    validateAnchor(pos, fileLines, staleAnchors);
+    return { requestIndex: index, label: describeLineEdit(edit), start: pos.line, end: pos.line, lines };
+  }
+  if ("prepend" in loc) {
+    const pos = parseAnchor(loc.prepend);
+    validateAnchor(pos, fileLines, staleAnchors);
+    return { requestIndex: index, label: describeLineEdit(edit), start: pos.line - 1, end: pos.line - 1, lines };
+  }
+  if ("range" in loc) {
+    const pos = parseAnchor(loc.range.pos);
+    const end = parseAnchor(loc.range.end);
+    validateAnchor(pos, fileLines, staleAnchors);
+    validateAnchor(end, fileLines, staleAnchors);
+    if (end.line < pos.line) {
+      throw new Error(`[E_BAD_REF] Edit ${index} has end before pos (${stringifyAnchor(end)} < ${stringifyAnchor(pos)}).`);
+    }
+    return { requestIndex: index, label: describeLineEdit(edit), start: pos.line - 1, end: end.line, lines };
+  }
+
+  throw new Error(`[E_BAD_OP] Edit ${index} loc must be "append", "prepend", {append}, {prepend}, or {range}.`);
 }
 
 function resolveLineEdits(edits: RawEdit[], fileLines: string[]): LineEdit[] {
@@ -210,7 +276,10 @@ function resolveLineEdits(edits: RawEdit[], fileLines: string[]): LineEdit[] {
 
   for (const [index, edit] of edits.entries()) {
     if (edit.op === "replace_text") continue;
-
+    if (edit.loc !== undefined) {
+      resolved.push(resolveLocEdit(index, edit, fileLines, staleAnchors));
+      continue;
+    }
     const lines = parseEditLines(edit.lines, index);
     const pos = edit.pos ? parseAnchor(edit.pos) : undefined;
     const end = edit.end ? parseAnchor(edit.end) : undefined;
@@ -254,7 +323,9 @@ function resolveLineEdits(edits: RawEdit[], fileLines: string[]): LineEdit[] {
         });
         break;
       }
-    }
+      default:
+        throw new Error(`[E_BAD_OP] Unknown edit op ${JSON.stringify(edit.op)}. Expected replace, append, prepend, or replace_text.`);
+  }
   }
 
   if (staleAnchors.length > 0) {
@@ -317,7 +388,10 @@ export function applyEditsToContent(original: string, edits: RawEdit[]): string 
       throw new Error("[E_EDIT_CONFLICT] replace_text cannot be mixed with anchor edits in one call. Use anchors or split the request.");
     }
     const edit = textEdits[0]!;
-    return applyExactUniqueReplace(original, edit.oldText!, edit.newText!);
+    if (typeof edit.oldText !== "string" || typeof edit.newText !== "string") {
+      throw new Error("[E_BAD_OP] replace_text requires string oldText and newText.");
+    }
+    return applyExactUniqueReplace(original, edit.oldText, edit.newText);
   }
 
   const preserveTerminalNewline = original.endsWith("\n");
@@ -377,7 +451,11 @@ function computeChangedLineRange(oldText: string, newText: string): {
   };
 }
 
-export function buildChangedAnchorResponse(original: string, result: string): {
+export function buildChangedAnchorResponse(
+  original: string,
+  result: string,
+  options: { maxBytes?: number } = {},
+): {
   text: string;
   firstChangedLine?: number;
   addedLines: number;
@@ -406,7 +484,7 @@ export function buildChangedAnchorResponse(original: string, result: string): {
   const end = Math.min(resultLines.length, range.last + 2);
   const region = resultLines.slice(start - 1, end);
   const anchors = `--- Anchors ${start}-${end} ---\n${formatHashlineRegion(region, start)}`;
-  const text = Buffer.byteLength(anchors, "utf8") > DEFAULT_MAX_BYTES
+  const text = Buffer.byteLength(anchors, "utf8") > (options.maxBytes ?? DEFAULT_ANCHOR_TEXT_BUDGET_BYTES)
     ? "Anchors omitted; changed region is too large. Use read for subsequent edits."
     : anchors;
 
