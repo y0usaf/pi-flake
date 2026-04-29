@@ -1,7 +1,7 @@
 {
   "name": "pi-hashline",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Strict hashline read/edit tool override for Pi",
   "keywords": ["pi-package", "pi", "coding-agent", "extension", "hashline"],
