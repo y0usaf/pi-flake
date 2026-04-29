@@ -29,12 +29,18 @@ function parseSettings(raw: unknown): Partial<CodexFastSettings> {
 	return out;
 }
 
+function pickSettings(parsed: Record<string, unknown>): unknown {
+	const extensionSettings = parsed.extensionSettings;
+	if (!isRecord(extensionSettings)) return undefined;
+	return extensionSettings["codex-fast"];
+}
+
 function readSettingsFile(path: string): Partial<CodexFastSettings> {
 	if (!existsSync(path)) return {};
 	try {
 		const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown;
 		if (!isRecord(parsed)) return {};
-		return parseSettings(parsed["codex-fast"] ?? parsed.codexFast);
+		return parseSettings(pickSettings(parsed));
 	} catch {
 		return {};
 	}
@@ -43,8 +49,8 @@ function readSettingsFile(path: string): Partial<CodexFastSettings> {
 function loadSettings(cwd: string): CodexFastSettings {
 	return {
 		...DEFAULT_SETTINGS,
-		...readSettingsFile(join(getAgentDir(), "extension-settings.json")),
-		...readSettingsFile(join(cwd, ".pi", "extension-settings.json")),
+		...readSettingsFile(join(getAgentDir(), "settings.json")),
+		...readSettingsFile(join(cwd, ".pi", "settings.json")),
 	};
 }
 
@@ -79,7 +85,7 @@ export default function codexFastExtension(pi: ExtensionAPI) {
 				`model: ${model}`,
 				`enabled: ${settings.enabled}`,
 				`supportedModels: ${settings.supportedModels.join(", ") || "(none)"}`,
-				"config: ~/.pi/agent/extension-settings.json, .pi/extension-settings.json",
+				"config: ~/.pi/agent/settings.json#extensionSettings, .pi/settings.json#extensionSettings",
 			];
 			ctx.ui.notify(lines.join("\n"), "info");
 		},

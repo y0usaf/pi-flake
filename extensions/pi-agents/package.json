@@ -1,7 +1,7 @@
 {
 	"name": "pi-multi-agent",
 	"version": "0.1.0",
-	"description": "Minimal async recursive sub-agent tasks for pi",
+	"description": "Multi-agent orchestration extension for pi",
 	"keywords": [
 		"pi-package",
 		"pi-extension",

@@ -31,16 +31,18 @@ A pi coding agent extension that searches and browses the web using a headless G
 | `PI_GECKO_BINARY` | Gecko browser path or command name (e.g. `firefox`, `librewolf`) | Auto-detect Firefox, then LibreWolf |
 
 Or configure either:
-- `~/.pi/agent/extension-settings.json`
-- `.pi/extension-settings.json`
+- `~/.pi/agent/settings.json`
+- `.pi/settings.json`
 
 Project settings override global settings.
 
 ```json
 {
-  "gecko-websearch": {
-    "binary": "firefox",
-    "profileRoot": "/home/you/.mozilla/firefox"
+  "extensionSettings": {
+    "gecko-websearch": {
+      "binary": "firefox",
+      "profileRoot": "/home/you/.mozilla/firefox"
+    }
   }
 }
 ```
@@ -56,7 +58,7 @@ Use `profile` instead of `profileRoot` when you want an exact profile directory.
 
 ```bash
 # Install as a pi package
-pi --install ~/Dev/pi-gecko-websearch
+pi install ~/Dev/pi-gecko-websearch
 
 # Or load directly
 pi -e ~/Dev/pi-gecko-websearch/src/index.ts

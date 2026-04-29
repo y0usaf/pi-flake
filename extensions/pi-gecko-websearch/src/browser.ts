@@ -11,17 +11,18 @@ interface GeckoWebsearchSettings {
 	profileRoot?: string;
 }
 
-interface ExtensionSettingsFile {
-	"gecko-websearch"?: GeckoWebsearchSettings;
-	geckoWebsearch?: GeckoWebsearchSettings;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
 
 function str(v: unknown): string | undefined {
 	return typeof v === "string" ? v.trim() || undefined : undefined;
+}
+
+function pickSettings(parsed: Record<string, unknown>): unknown {
+	const extensionSettings = parsed.extensionSettings;
+	if (!isRecord(extensionSettings)) return undefined;
+	return extensionSettings["gecko-websearch"];
 }
 
 function readSettings(filePath: string): GeckoWebsearchSettings {
@@ -31,8 +32,7 @@ function readSettings(filePath: string): GeckoWebsearchSettings {
 		const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8")) as unknown;
 		if (!isRecord(parsed)) return {};
 
-		const file = parsed as ExtensionSettingsFile;
-		const settings = file["gecko-websearch"] ?? file.geckoWebsearch;
+		const settings = pickSettings(parsed);
 		if (!isRecord(settings)) return {};
 
 		return {
@@ -58,17 +58,9 @@ export class BrowserManager {
 	private readonly settings: GeckoWebsearchSettings;
 
 	constructor(cwd: string = process.cwd()) {
-		const globalSettings = readSettings(path.join(getAgentDir(), "extension-settings.json"));
-		const projectSettings = readSettings(path.join(cwd, ".pi", "extension-settings.json"));
+		const globalSettings = readSettings(path.join(getAgentDir(), "settings.json"));
+		const projectSettings = readSettings(path.join(cwd, ".pi", "settings.json"));
 		this.settings = { ...globalSettings, ...projectSettings };
-	}
-
-	/** Get the Marionette client. Only valid after ensureRunning(). */
-	getClient(): MarionetteClient {
-		if (!this.client || !this.running) {
-			throw new Error("Browser not running. Call ensureRunning() first.");
-		}
-		return this.client;
 	}
 
 	/** Lazy-init: if browser isn't running, start it and connect Marionette. */

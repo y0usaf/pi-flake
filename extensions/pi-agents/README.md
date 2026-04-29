@@ -1,138 +1,211 @@
-# pi-agents
+# pi-multi-agent
 
-Minimal async, recursive, session-local sub-agents for pi.
+Multi-agent extension for pi. Root agents get four orchestration tools — `spawn_agent`, `delegate`, `kill_agent`, `list_agents` — plus every spawned child gets `read`, `write`, `edit`, `bash`, `report`, and descendant-scoped orchestration tools of its own.
 
-This extension exposes **one tool**: `agent_task`. It starts one-shot sub-agent tasks in the background, lets agents check/wait/cancel/list them, and gives every sub-agent the same tool so recursion works naturally without a large orchestration API.
+Children are in-process `Agent` instances that persist across interactions with their full conversation history. Recursive spawning is bounded by `pi-agents.json` via `maxDepth` and `maxLiveAgents`.
 
-## Model
+## Prerequisites
 
-- **Async first**: `agent_task({ action: "start", ... })` returns immediately.
-- **One-shot tasks**: no persistent workers and no `delegate` state machine.
-- **Recursive by construction**: each task can start descendant tasks with `agent_task`.
-- **Session-local**: tasks live in memory and are cancelled on session shutdown/reload.
-- **Scoped**: root sees all tasks; a sub-agent sees only its descendants.
-- **Bounded**: defaults are `maxDepth=3`, `maxLiveTasks=16`, task runtime timeout `10m`.
-- **Standard tools**: sub-agents use pi's standard `read`, `write`, `edit`, `bash`, `ls`, `grep`, and `find` tool factories, plus `report` and `agent_task`.
+- **Node.js ≥ 18** (uses native `Promise.race`, `AbortSignal`, etc.)
+- **npm** (for installing dependencies)
+- **pi** installed and on your `$PATH`
 
-No tmux, no git worktrees, no durable registry, no attach/detach. Use side-agent/worktree systems for long-running isolated implementation work.
+## Install
 
-## Tool
+```bash
+# Run directly for this session only (-e loads an extension without installing it)
+pi -e ~/Dev/pi-dev/index.ts
 
-### `agent_task`
+# Or register permanently via package.json auto-discovery.
+# pi reads the "pi": { "extensions": [...] } field and loads listed entry points.
+# Add this repo's path to your pi config, or place it where pi scans for extensions.
+cd ~/Dev/pi-dev && npm install
 
-```ts
-{
-  action: "start" | "check" | "wait" | "cancel" | "list",
-  id?: string,
-  task?: string,
-  system_prompt?: string,
-  timeout_seconds?: number
-}
+# NOTE: symlinking index.ts alone won't work — module resolution requires the
+# package directory to be present alongside the file. Either:
+#   (a) copy the entire directory, or
+#   (b) use the -e flag pointing to the original location (recommended), or
+#   (c) configure pi's extension auto-discovery to load from this directory
+#       by setting "pi": { "extensions": ["./index.ts"] } in its package.json.
+pi
 ```
 
-### `start`
+### Install from a package source
 
-Starts a background sub-agent task and returns immediately.
+Once this repo is pushed to GitHub, pi can install it directly as a pi package:
+
+```bash
+pi install https://github.com/<owner>/pi-multi-agent
+# or pinned to a ref/tag
+pi install git:github.com/<owner>/pi-multi-agent@v0.1.0
+```
+
+Because the repo includes a `package.json` with a `pi` manifest, pi can treat the repository itself as a package source.
+
+### The `-e` flag
+
+`pi -e <path>` loads an extension **for this session only** without permanently installing it. Useful for development and testing. The path can be relative or absolute, and may point to a `.ts` file (pi compiles it on the fly).
+
+### The `"pi"` field in `package.json`
 
 ```json
 {
-  "action": "start",
-  "id": "api-review",
-  "system_prompt": "You are a concise API reviewer.",
-  "task": "Review the proposed agent_task API and identify risks."
-}
-```
-
-Returns:
-
-```json
-{
-  "ok": true,
-  "task": {
-    "id": "api-review",
-    "status": "running",
-    "depth": 1,
-    "startedAt": 1760000000000,
-    "reports": [],
-    "activity": []
+  "pi": {
+    "extensions": ["./index.ts"]
   }
 }
 ```
 
-`timeout_seconds` on `start` is the task runtime limit. If omitted, the default is 10 minutes.
+This tells pi's extension auto-discovery to load `./index.ts` as an extension when pi starts from (or scans) this directory.
 
-### `check`
+This repo also includes the `pi-package` keyword so it can be shared as a normal pi package via git or npm.
 
-Non-blocking status/result check.
+## Configuration
 
-```json
-{ "action": "check", "id": "api-review" }
-```
+Extension config is loaded from:
 
-### `wait`
+- Global (default): `~/.pi/agent/pi-agents.json`
+- Project: `.pi/pi-agents.json`
 
-Waits for a task to finish.
+Project settings override global settings.
 
-```json
-{ "action": "wait", "id": "api-review", "timeout_seconds": 30 }
-```
-
-- If the task finishes, returns its final result.
-- If the wait times out, returns the current running status.
-- `timeout_seconds: 0` behaves like a non-blocking check.
-- `timeout_seconds` on `wait` does **not** cancel the underlying task.
-
-### `cancel`
-
-Cancels a task and its descendants.
+Example:
 
 ```json
-{ "action": "cancel", "id": "api-review" }
+{
+  "maxDepth": 1,
+  "maxLiveAgents": 6
+}
 ```
 
-### `list`
+Depth is counted from the root session at depth `0`:
 
-Lists visible tasks.
+- `maxDepth: 0` → no spawned agents
+- `maxDepth: 1` → root can spawn children, children cannot spawn descendants
+- `maxDepth: 2` → grandchildren allowed
 
-```json
-{ "action": "list" }
+`maxLiveAgents` caps the total number of live agents kept in the in-memory registry at once.
+
+## Tools
+
+### `spawn_agent(id, system_prompt, task, [timeout_seconds])`
+
+Creates a new child agent with its own system prompt. The child gets `read`, `write`, `edit`, `bash`, `report`, and descendant-scoped `spawn_agent`/`delegate`/`kill_agent`/`list_agents` tools. Blocks until the child finishes.
+
+Multiple `spawn_agent` calls in one turn run concurrently (parallel tool execution). Spawning is rejected when it would exceed configured `maxDepth` or `maxLiveAgents`.
+
+- `timeout_seconds` — optional, must be a finite number greater than 0. If the child is still running when the deadline expires it is aborted, removed from the registry, and an error is thrown.
+
+**File-system confinement:** `read`, `write`, and `edit` are restricted to the child’s inherited working directory. Any path that resolves outside that tree — via `../` traversal, an absolute path to a different location, or a symlink escape — is rejected with `Path traversal denied`. Absolute paths that stay within that working directory are accepted. `bash` is **not** confined in the same way: it starts in the working directory, but it can still access the rest of the file system and execute arbitrary shell commands.
+
+### `delegate(id, message, [timeout_seconds])`
+
+Sends follow-up work to an **existing** child (must have been previously spawned with `spawn_agent`). The child keeps its full conversation history from previous runs. Blocks until done.
+
+Descendant agents can only delegate to agents in their own subtree.
+
+- `timeout_seconds` — optional, must be a finite number greater than 0. If the child is still running when the deadline expires it is aborted, removed from the registry, and an error is thrown. If you still need that worker after a timeout, spawn a new child.
+
+### `report(message)` (child-only)
+
+Children call this to send intermediate results back to the parent. Reports stream to the parent via `tool_execution_update` during execution. All reports are collected in the final tool result.
+
+**`report` vs implicit output contract:** if a child never calls `report`, its final assistant message is returned as the result instead. So you always get _something_ back even if the child doesn't explicitly report.
+
+### `kill_agent(id)`
+
+Kills a child agent and frees its resources. Aborts the child if it's still running. If the target has descendants, the whole subtree is killed recursively.
+
+### `list_agents()`
+
+Lists currently active child agent IDs and their status. The root agent sees the full registry. Descendant agents only see their own subtree. Output includes depth and parent metadata.
+
+Example output:
+```
+• worker — idle, depth 1, root child, 3 reports
+• reviewer — running, depth 2, parent worker, 0 reports
 ```
 
-Root sees all tasks. A sub-agent sees only descendant tasks it started.
+## Nix
 
-## Recommended usage
+This repo includes a `flake.nix` for reproducible development and packaging.
 
-Fan out explicitly from the parent/root agent:
+```bash
+# Enter a dev shell with node + npm
+nix develop
 
-```text
-agent_task start api-review
-agent_task start impl-review
-agent_task start product-review
-...continue other work...
-agent_task wait api-review
-agent_task wait impl-review
-agent_task wait product-review
-synthesize
+# Run the extension directly from the working tree
+pi -e ./index.ts
+
+# Build a store-backed package directory
+nix build
+
+# Then load the built package or extension from ./result
+pi -e ./result/index.ts
+# or install the package path into pi settings
+pi install ./result
 ```
 
-Sub-agents can also recurse when it is useful:
+The flake's default package is just this repository packaged as a local pi package path, so pi can load it the same way it loads any other local directory package.
 
-```text
-root task
-└─ implementation reviewer
-   ├─ types reviewer
-   └─ concurrency reviewer
+## TUI
+
+While a child is running, you see a live activity feed with a braille spinner:
+
+```
+⠹ worker (5 actions)
+  → read src/auth.ts
+  ✓ read done
+  → edit src/auth.ts
+  ✓ edit done
+  ↑ report "Refactored auth to use tokens"
 ```
 
-This avoids the old persistent-agent/delegate tree and makes recursion a simple task primitive.
+When done, the result shows a summary (Ctrl+O to expand for full activity log and reports):
 
-## Caveats
+```
+✓ worker (5 actions, 1 reports)
+  ... 2 earlier
+  ✓ edit done
+  ↑ report "Refactored auth to use tokens"
+```
 
-- Tasks are **not durable**. Shutdown/reload cancels them.
-- Tasks are **not isolated**. They share the current workspace.
-- Parallel file edits can conflict. Prefer async tasks for research/review/checks, or use worktrees for independent implementation.
-- Children share the parent's model.
-- `bash` has the same OS-level access as normal pi bash.
+## Flow
+
+```
+Parent: "Refactor auth and write tests in parallel"
+├─ spawn_agent("refactor", "You refactor code.", "Refactor the auth module")
+│   ├─ child reads files, edits code
+│   ├─ report("Refactored 3 files")      ← streamed to parent
+│   └─ report("Updated imports")          ← streamed to parent
+│
+└─ spawn_agent("tests", "You write tests.", "Write tests for auth")
+    ├─ child reads code, writes test files
+    └─ report("12 tests passing")         ← streamed to parent
+
+// Both run concurrently. Parent gets both results.
+
+Parent: "The refactor agent should also update the docs"
+└─ delegate("refactor", "Update the migration docs too")
+    └─ child resumes with full history, updates docs
+
+Parent: "Done with the test agent"
+└─ kill_agent("tests")
+    └─ child freed, resources released
+
+Parent: "Which agents are still alive?"
+└─ list_agents()
+    └─ • refactor — idle, depth 1, root child, 2 reports
+```
+
+## Caveats / Known Limitations
+
+- **Children share the parent's model** — there is no per-child model selection; all children use whatever model the parent session has active.
+- **Children run in-process** — they are not isolated processes; a crash or infinite loop in a child can affect the parent session.
+- **Recursive spawning is config-bounded** — descendants may spawn more descendants only while doing so stays within configured `maxDepth` and `maxLiveAgents`.
+- **Subtree-scoped control** — descendant agents can only manage agents in their own subtree; they cannot delegate to or kill arbitrary siblings from other branches.
+- **`bash` is not file-system confined** — unlike `read`/`write`/`edit`, the `bash` tool can access paths outside the working directory. Treat child agents with `bash` as having the same OS-level file and network access as the user running pi.
+- **Minimal allowlisted env for `bash`** — child shell commands receive only a small allowlisted environment (`PATH`, `HOME`, locale/terminal basics, temp-dir basics, and a few standard identity variables). Secret variables are not forwarded by default. If a command genuinely needs something additional, pass it inline for that command invocation instead of relying on inherited environment state.
 
 ## License
 

@@ -1,6 +1,6 @@
 # pi-codex-fast
 
-A pi coding agent extension that enables Codex fast mode from `extension-settings.json`.
+A pi coding agent extension that enables Codex fast mode from `settings.json` → `extensionSettings`.
 
 ## What it does
 
@@ -20,8 +20,8 @@ By default, the extension only enables fast mode for `gpt-5.5`, since that is th
 
 Add this to either:
 
-- `~/.pi/agent/extension-settings.json`
-- `.pi/extension-settings.json`
+- `~/.pi/agent/settings.json`
+- `.pi/settings.json`
 
 Project settings override global settings.
 
@@ -29,7 +29,9 @@ Simple form:
 
 ```json
 {
-  "codex-fast": true
+  "extensionSettings": {
+    "codex-fast": true
+  }
 }
 ```
 
@@ -37,10 +39,12 @@ Advanced form:
 
 ```json
 {
-  "codex-fast": {
-    "enabled": true,
-    "supportedModels": ["gpt-5.5"],
-    "showStatus": true
+  "extensionSettings": {
+    "codex-fast": {
+      "enabled": true,
+      "supportedModels": ["gpt-5.5"],
+      "showStatus": true
+    }
   }
 }
 ```
