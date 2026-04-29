@@ -140,7 +140,7 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-compact` | Compaction utilities |
 | `pi-tool-management` | Tool management interface |
 | `pi-webfetch` | HTTP fetching utilities |
-| `pi-hashline` | Hashline read/edit tool override |
+| `pi-hashline` | Hashline v2 read/edit tool override |
 
 ---
 

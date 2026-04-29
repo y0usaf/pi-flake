@@ -10,10 +10,11 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
+import { resolveMutationTargetPath } from "./fs-write";
 import { formatHashlineRegion, getVisibleLines } from "./hashline";
 import { resolveToCwd } from "./path-utils";
 import { throwIfAborted } from "./runtime";
-import { isImagePath, loadTextFile } from "./text-file";
+import { isSupportedImageFile, loadTextFileWithSnapshot } from "./text-file";
 
 function normalizePositiveInteger(value: number | undefined, name: "offset" | "limit"): number | undefined {
   if (value === undefined) return undefined;
@@ -83,10 +84,10 @@ export function registerReadTool(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "read",
     label: "Read",
-    description: `Read a UTF-8 text file. Every returned line is prefixed as LINE#HASH:content. Copy LINE#HASH anchors into edit. Output is capped at ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}. Supported images are delegated to Pi's built-in read tool.`,
-    promptSnippet: "Read files with LINE#HASH anchors for hashline edit.",
+    description: `Read a UTF-8 text file. Every returned line is prefixed as LINEID|content (hashline v2). Copy LINEID anchors into edit. Output is capped at ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}. Supported images are delegated to Pi's built-in read tool.`,
+    promptSnippet: "Read files with hashline v2 LINEID anchors for edit.",
     promptGuidelines: [
-      "Use read before edit so you can copy LINE#HASH anchors exactly.",
+      "Use read before edit so you can copy full LINEID anchors exactly (e.g. 160sr).",
       "When read output is truncated, continue with the suggested offset before editing unseen lines.",
     ],
     parameters: Type.Object({
@@ -120,10 +121,6 @@ export function registerReadTool(pi: ExtensionAPI): void {
       const absolutePath = resolveToCwd(path, ctx.cwd);
       throwIfAborted(signal);
 
-      if (isImagePath(absolutePath)) {
-        return createReadTool(ctx.cwd).execute(toolCallId, params, signal, onUpdate, ctx);
-      }
-
       try {
         await fsAccess(absolutePath, constants.R_OK);
       } catch (error: unknown) {
@@ -133,8 +130,13 @@ export function registerReadTool(pi: ExtensionAPI): void {
         throw new Error(`Cannot access file: ${path}`);
       }
 
+      if (await isSupportedImageFile(absolutePath)) {
+        return createReadTool(ctx.cwd).execute(toolCallId, params, signal, onUpdate, ctx);
+      }
+
       throwIfAborted(signal);
-      const file = await loadTextFile(absolutePath);
+      const targetPath = await resolveMutationTargetPath(absolutePath);
+      const file = await loadTextFileWithSnapshot(targetPath);
       const preview = formatHashlineReadPreview(file.text, {
         offset: params.offset,
         limit: params.limit,
@@ -143,6 +145,7 @@ export function registerReadTool(pi: ExtensionAPI): void {
       return {
         content: [{ type: "text", text: preview.text }],
         details: {
+          snapshotId: file.snapshot.snapshotId,
           ...(preview.truncation ? { truncation: preview.truncation } : {}),
           ...(preview.nextOffset !== undefined ? { nextOffset: preview.nextOffset } : {}),
         },

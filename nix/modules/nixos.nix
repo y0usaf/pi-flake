@@ -73,7 +73,7 @@ in {
       compact = mkEnableOption "pi-compact extension";
       "tool-management" = mkEnableOption "pi-tool-management extension";
       webfetch = mkEnableOption "pi-webfetch extension";
-      hashline = mkEnableOption "pi-hashline read/edit tool override";
+      hashline = mkEnableOption "pi-hashline v2 read/edit tool override";
     };
 
     extraExtensions = mkOption {
