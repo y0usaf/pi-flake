@@ -5,9 +5,9 @@ Strict hashline read/edit tool override for Pi.
 Inspired by Can Bölük's "harness problem" write-up and hashline edit format. This extension replaces Pi's built-in `read` and `edit` tools with a line-anchor workflow:
 
 ```text
-10#K7Q:function hello() {
-11#N2P:  return "world";
-12#RX8:}
+10#K7:function hello() {
+11#N2:  return "world";
+12#RX:}
 ```
 
 Edits reference anchors copied from `read` output instead of reproducing old text exactly.
@@ -16,7 +16,7 @@ Edits reference anchors copied from `read` output instead of reproducing old tex
 {
   "path": "src/main.ts",
   "edits": [
-    { "op": "replace", "pos": "11#N2P", "lines": ["  return \"hashline\";"] }
+    { "op": "replace", "pos": "11#N2", "lines": ["  return \"hashline\";"] }
   ]
 }
 ```
