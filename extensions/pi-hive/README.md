@@ -135,7 +135,7 @@ Existing child ids are delegated to; new child ids are spawned and **must** incl
 
 ### Workflows
 
-Workflows are plain JSON: no CUE/compiler layer. Steps run deterministically in order. A step can be a single agent step, a parallel barrier, or a bounded `while` loop. Tasks support `{previous}`, `{all}`, `{step:<id>}`, and loop-local `{iteration}` / `{max_iterations}` substitutions.
+Workflows are plain JSON: no CUE/compiler layer. Steps run deterministically in order. A step can be a single agent step, a parallel barrier, or a `while` loop. `while` loops may be nested and run until their `until` condition is met or the run is cancelled. Tasks support `{previous}`, `{all}`, `{step:<id>}`, and loop-local `{iteration}` substitutions.
 
 Progressive disclosure: workflow contents are **not** injected at session start. The model can discover them on demand via `agent({ action: "list_workflows" })`, inspect one via `agent({ action: "show_workflow", workflow_name: "..." })`, then run it via `agent({ action: "workflow", workflow_name: "..." })`.
 
@@ -191,13 +191,12 @@ Inline still works:
 }
 ```
 
-Bounded loop example:
+Loop example:
 
 ```json
 {
   "type": "while",
   "id": "quality-loop",
-  "max_iterations": 3,
   "until": {
     "step": "review",
     "last_line_equals": "STATUS: APPROVED"
@@ -206,7 +205,7 @@ Bounded loop example:
     {
       "id": "implement",
       "system_prompt": "You implement requested changes.",
-      "task": "Implement or revise. Iteration {iteration}/{max_iterations}. Context:\n{all}"
+      "task": "Implement or revise. Iteration {iteration}. Context:\n{all}"
     },
     {
       "id": "review",
@@ -217,7 +216,7 @@ Bounded loop example:
 }
 ```
 
-`while` loops are always capped (`max_iterations` 1..10). Nested `while` loops are intentionally unsupported.
+Nested loops are supported. Loops are uncapped; cancel the workflow run to stop a loop whose `until` condition is not reached.
 
 
 ### Run management
