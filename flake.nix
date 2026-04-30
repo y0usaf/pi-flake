@@ -201,11 +201,10 @@
     }: let
       lib = nixpkgs.lib;
       available = self.lib.extensionPackagesFor system;
-      normalizedFlags = extensionFlags;
-      unknownEnabled = lib.filterAttrs (_: enabled: enabled) (builtins.removeAttrs normalizedFlags (builtins.attrNames available));
+      unknownEnabled = lib.filterAttrs (_: enabled: enabled) (builtins.removeAttrs extensionFlags (builtins.attrNames available));
     in
       assert lib.assertMsg (unknownEnabled == {}) "Unknown pi extension flag(s): ${lib.concatStringsSep ", " (builtins.attrNames unknownEnabled)}";
-        lib.filterAttrs (name: _: normalizedFlags.${name} or false) available;
+        lib.filterAttrs (name: _: extensionFlags.${name} or false) available;
 
     # Flag-driven builder for consumers that want conditional bundled extensions.
     lib.piWithExtensionFlags = {
