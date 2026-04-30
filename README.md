@@ -214,7 +214,6 @@ inputs.pi-flake.packages.<system>."pi-hashline"
 - `pi-flake.lib.piWithExtensions { pkgs; pi; extensions; }` - bundle an explicit extension attrset
 - `pi-flake.lib.piWithExtensionFlags { pkgs; extensionFlags; }` - bundle extensions whose flags are `true`
 - `pi-flake.lib.extensionPackagesFor system` - available extension attrset keyed by bundled name
-- `pi-flake.lib.enabledExtensions { system; extensionFlags; }` - convert flags → extension attrset
 
 ---
 
@@ -233,8 +232,6 @@ nix build .#pi-full
 # Enter dev shell
 nix develop
 
-# Build all packages
-nix build .#pi .#pi-hive .#pi-codex-fast .#pi-gecko-websearch .#pi-rtk .#pi-compact .#pi-tool-management .#pi-webfetch .#pi-full
 ```
 
 ---

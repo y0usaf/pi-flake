@@ -57,13 +57,6 @@
               nodejs_22
             ];
 
-            shellHook = ''
-              echo "pi-hive dev shell"
-              echo "- Use: npm ci"
-              echo "- Check: npm run typecheck"
-              echo "- Test: pi -e ./index.ts"
-              echo "- Build package path: nix build"
-            '';
           };
         });
     };
