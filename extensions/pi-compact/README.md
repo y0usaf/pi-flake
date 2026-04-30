@@ -5,8 +5,8 @@ Pi extension: compact chat rendering for Pi's interactive TUI.
 ## What it does
 
 - patches Pi's interactive tool-row renderer
-- tool calls → configurable: Pi default, borderless, or one width-aware summary line
-- edit results → compact `+N -N` diff counts instead of success prose
+- tool calls → configurable: Pi default, borderless, or one width-aware summary line with animated braille pending status → ✓/✗
+- edit results → compact `+N -N` line counts from Pi diffs or `pi-hashline` metrics instead of success prose
 - expanded tool calls → original rendering/output
 - thinking blocks → compact elapsed-seconds + character-count row by default
 - user messages → configurable: Pi default, borderless markdown, or fully compact one-line summaries; optional plain gap line

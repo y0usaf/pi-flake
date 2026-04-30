@@ -83,6 +83,12 @@ const ASSISTANT_THINKING_STATE_KEY = "__piCompactThinkingState";
 const ASSISTANT_THINKING_APPLIED_MODE_KEY = "__piCompactThinkingAppliedMode";
 const ASSISTANT_THINKING_TIMING_KEY = "__piCompactThinkingTiming";
 const ANSI_PATTERN = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|_[^\x07]*(?:\x07|\x1b\\))/g;
+const FULL_SGR_RESET_PATTERN = /\x1b\[(?:0)?m/g;
+const BG_MARKER = "__pi_compact_bg_marker__";
+const BRAILLE_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const TOOL_SPINNER_INTERVAL_MS = 80;
+const TOOL_SPINNER_INTERVAL_KEY = "__piCompactToolSpinnerInterval";
+const TOOL_SPINNER_FRAME_KEY = "__piCompactToolSpinnerFrame";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -288,7 +294,17 @@ function textLineCount(result: any): number {
   return total;
 }
 
-function countDiffLines(diff: unknown): { added: number; removed: number } | undefined {
+type LineDiffCounts = { added: number; removed: number };
+
+function asLineCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : undefined;
+}
+
+function hasLineDiff(counts: LineDiffCounts): boolean {
+  return counts.added > 0 || counts.removed > 0;
+}
+
+function countDiffLines(diff: unknown): LineDiffCounts | undefined {
   if (typeof diff !== "string" || diff.length === 0) return undefined;
 
   let added = 0;
@@ -298,7 +314,24 @@ function countDiffLines(diff: unknown): { added: number; removed: number } | und
     else if (/^-\s*\d+\s/.test(line)) removed++;
   }
 
-  return added > 0 || removed > 0 ? { added, removed } : undefined;
+  const counts = { added, removed };
+  return hasLineDiff(counts) ? counts : undefined;
+}
+
+function countMetricLines(metrics: unknown): LineDiffCounts | undefined {
+  if (!isRecord(metrics)) return undefined;
+
+  const added = asLineCount(metrics.added_lines ?? metrics.addedLines ?? metrics.added);
+  const removed = asLineCount(metrics.removed_lines ?? metrics.removedLines ?? metrics.removed);
+  if (added === undefined && removed === undefined) return undefined;
+
+  const counts = { added: added ?? 0, removed: removed ?? 0 };
+  return hasLineDiff(counts) ? counts : undefined;
+}
+
+function countDetailsLineDiff(details: unknown): LineDiffCounts | undefined {
+  if (!isRecord(details)) return undefined;
+  return countMetricLines(details.metrics) ?? countMetricLines(details) ?? countDiffLines(details.diff);
 }
 
 function colourDiffAdded(text: string): string {
@@ -427,7 +460,7 @@ function summarizeResult(toolName: string, result: any): string {
       if (typeof details.exitCode === "number") return details.exitCode === 0 ? "" : ` → exit ${details.exitCode}`;
       break;
     case "edit": {
-      const counts = countDiffLines(details?.diff);
+      const counts = countDetailsLineDiff(details);
       if (counts) return ` ${colourDiffAdded(`+${counts.added}`)} ${colourDiffRemoved(`-${counts.removed}`)}`;
       break;
     }
@@ -465,8 +498,20 @@ function summarizeResult(toolName: string, result: any): string {
   return ` → ${clip(line, MAX_RESULT_LENGTH)}`;
 }
 
+function getToolSpinnerFrame(state: any): string {
+  const rawFrame = typeof state?.[TOOL_SPINNER_FRAME_KEY] === "number" ? state[TOOL_SPINNER_FRAME_KEY] : 0;
+  const frame = Number.isFinite(rawFrame) ? Math.trunc(rawFrame) : 0;
+  const index = ((frame % BRAILLE_SPINNER_FRAMES.length) + BRAILLE_SPINNER_FRAMES.length) % BRAILLE_SPINNER_FRAMES.length;
+  return BRAILLE_SPINNER_FRAMES[index] ?? BRAILLE_SPINNER_FRAMES[0];
+}
+
+function toolStatusPrefix(state: any): string {
+  if (state?.isPartial) return `${getToolSpinnerFrame(state)} `;
+  return state?.result?.isError ? "✗ " : "✓ ";
+}
+
 function buildToolLine(state: any): string {
-  const prefix = state?.isPartial ? "… " : state?.result?.isError ? "✗ " : "✓ ";
+  const prefix = toolStatusPrefix(state);
   const summary = clip(summarizeArgs(state?.toolName ?? "tool", state?.args), MAX_SUMMARY_LENGTH);
   const suffix = summarizeResult(state?.toolName ?? "tool", state?.result);
   return `${prefix}${state?.toolName ?? "tool"} ${summary || "…"}${suffix}`;
@@ -490,12 +535,32 @@ function getToolBgFn(state: any): ((text: string) => string) | undefined {
   return getThemeToolBgFn(token);
 }
 
+function splitWrappingAnsi(wrapper: (text: string) => string): { prefix: string; suffix: string } | undefined {
+  const wrapped = wrapper(BG_MARKER);
+  const markerIndex = wrapped.indexOf(BG_MARKER);
+  if (markerIndex < 0) return undefined;
+  return {
+    prefix: wrapped.slice(0, markerIndex),
+    suffix: wrapped.slice(markerIndex + BG_MARKER.length),
+  };
+}
+
+function applyBackgroundPreservingResets(text: string, bgFn: (text: string) => string): string {
+  const wrapping = splitWrappingAnsi(bgFn);
+  if (!wrapping) return bgFn(text);
+
+  // truncateToWidth() inserts full SGR resets around ellipses to close active
+  // foreground styles. Full resets also clear the row background, so re-apply
+  // the background after each one before the final background-only reset.
+  return `${wrapping.prefix}${text.replace(FULL_SGR_RESET_PATTERN, (reset) => `${reset}${wrapping.prefix}`)}${wrapping.suffix}`;
+}
+
 function renderOneLine(rawLine: string, width: number, bgFn?: (text: string) => string, preserveAnsi = false): string[] {
   if (!Number.isFinite(width) || width <= 0) return [];
 
   const line = truncateToWidth(preserveAnsi ? rawLine : stripAnsi(rawLine), Math.max(1, width), "…");
   const padded = `${line}${" ".repeat(Math.max(0, width - visibleWidth(line)))}`;
-  return [bgFn ? bgFn(padded) : padded];
+  return [bgFn ? applyBackgroundPreservingResets(padded, bgFn) : padded];
 }
 
 function renderCompactToolLine(state: any, width: number): string[] {
@@ -520,7 +585,54 @@ type ToolExecutionWithShells = {
   contentBox?: unknown;
   contentText?: unknown;
   expanded?: boolean;
+  isPartial?: boolean;
+  ui?: { requestRender?: () => void };
+  [TOOL_SPINNER_INTERVAL_KEY]?: ReturnType<typeof setInterval>;
+  [TOOL_SPINNER_FRAME_KEY]?: number;
 };
+
+function requestToolRender(component: ToolExecutionWithShells): void {
+  const requestRender = component.ui?.requestRender;
+  if (typeof requestRender !== "function") {
+    stopToolSpinner(component);
+    return;
+  }
+
+  try {
+    requestRender.call(component.ui);
+  } catch {
+    stopToolSpinner(component);
+  }
+}
+
+function startToolSpinner(component: ToolExecutionWithShells): void {
+  if (component[TOOL_SPINNER_INTERVAL_KEY] !== undefined) return;
+  if (typeof component.ui?.requestRender !== "function") return;
+  component[TOOL_SPINNER_FRAME_KEY] ??= 0;
+
+  const interval = setInterval(() => {
+    component[TOOL_SPINNER_FRAME_KEY] = ((component[TOOL_SPINNER_FRAME_KEY] ?? 0) + 1) % BRAILLE_SPINNER_FRAMES.length;
+    requestToolRender(component);
+  }, TOOL_SPINNER_INTERVAL_MS);
+
+  if (typeof interval === "object" && interval && "unref" in interval && typeof interval.unref === "function") {
+    interval.unref();
+  }
+
+  component[TOOL_SPINNER_INTERVAL_KEY] = interval;
+}
+
+function stopToolSpinner(component: ToolExecutionWithShells): void {
+  const interval = component[TOOL_SPINNER_INTERVAL_KEY];
+  if (interval !== undefined) clearInterval(interval);
+  component[TOOL_SPINNER_INTERVAL_KEY] = undefined;
+  component[TOOL_SPINNER_FRAME_KEY] = 0;
+}
+
+function syncToolSpinner(component: ToolExecutionWithShells, compactLine: boolean): void {
+  if (compactLine && component.isPartial) startToolSpinner(component);
+  else stopToolSpinner(component);
+}
 
 function getVerticalPaddingShell(value: unknown): BoxWithVerticalPadding | undefined {
   return isRecord(value) && typeof value.paddingY === "number" ? (value as BoxWithVerticalPadding) : undefined;
@@ -575,9 +687,12 @@ function renderBorderlessTool(
 }
 
 function renderConfiguredTool(component: ToolExecutionWithShells, width: number, originalRender: (width: number) => string[]): string[] {
+  const compactLine = toolRendering.mode === "compact" && !component.expanded;
+  syncToolSpinner(component, compactLine);
+
   if (!Number.isFinite(width) || width <= 0) return [];
 
-  if (toolRendering.mode === "compact" && !component.expanded) return withToolGap(renderCompactToolLine(component, width));
+  if (compactLine) return withToolGap(renderCompactToolLine(component, width));
   if (toolRendering.mode === "borderless") return renderBorderlessTool(component, width, originalRender);
   return withToolGap(originalRender.call(component, width));
 }
@@ -832,7 +947,10 @@ function patchToolExecutionComponent(): boolean {
     const originalRender = typeof proto[TOOL_ORIGINAL_RENDER_KEY] === "function" ? proto[TOOL_ORIGINAL_RENDER_KEY] : proto.render;
 
     proto.render = function piCompactToolRender(this: ToolExecutionWithShells & { hideComponent?: boolean }, width: number) {
-      if (this.hideComponent) return [];
+      if (this.hideComponent) {
+        stopToolSpinner(this);
+        return [];
+      }
       return renderConfiguredTool(this, width, originalRender);
     };
 
