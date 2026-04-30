@@ -2,17 +2,26 @@ import { open, stat, readFile } from "node:fs/promises";
 import { TextDecoder } from "node:util";
 import { type FileSnapshot, getFileSnapshot, sameFileSnapshot } from "./snapshot";
 
+export type LineEnding = "\n" | "\r\n";
+export type LineTerminator = LineEnding | "\r" | "";
+
+export type TextLineRecord = {
+  text: string;
+  ending: LineTerminator;
+};
+
 export type LoadedTextFile = {
   bom: string;
+  rawText: string;
   text: string;
-  lineEnding: "\n" | "\r\n";
+  lineEnding: LineEnding;
 };
 
 export type LoadedTextFileWithSnapshot = LoadedTextFile & {
   snapshot: FileSnapshot;
 };
 
-export function detectLineEnding(text: string): "\n" | "\r\n" {
+export function detectLineEnding(text: string): LineEnding {
   const crlf = text.indexOf("\r\n");
   const lf = text.indexOf("\n");
   if (crlf === -1 || lf === -1) return "\n";
@@ -23,8 +32,39 @@ export function normalizeToLF(text: string): string {
   return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
-export function restoreLineEnding(text: string, lineEnding: "\n" | "\r\n"): string {
+export function restoreLineEnding(text: string, lineEnding: LineEnding): string {
   return lineEnding === "\r\n" ? text.replace(/\n/g, "\r\n") : text;
+}
+
+export function splitTextLineRecords(text: string): TextLineRecord[] {
+  if (text.length === 0) return [];
+
+  const records: TextLineRecord[] = [];
+  let lineStart = 0;
+  let index = 0;
+
+  while (index < text.length) {
+    const char = text[index];
+    if (char !== "\r" && char !== "\n") {
+      index++;
+      continue;
+    }
+
+    const ending: LineTerminator = char === "\r" && text[index + 1] === "\n" ? "\r\n" : char;
+    records.push({ text: text.slice(lineStart, index), ending });
+    index += ending.length;
+    lineStart = index;
+  }
+
+  if (lineStart < text.length) {
+    records.push({ text: text.slice(lineStart), ending: "" });
+  }
+
+  return records;
+}
+
+export function joinTextLineRecords(records: TextLineRecord[]): string {
+  return records.map((record) => `${record.text}${record.ending}`).join("");
 }
 
 export function stripBom(text: string): { bom: string; text: string } {
@@ -109,9 +149,9 @@ export async function loadTextFile(path: string): Promise<LoadedTextFile> {
   }
 
   const decoded = decodeUtf8(buffer);
-  const { bom, text } = stripBom(decoded);
-  const lineEnding = detectLineEnding(text);
-  return { bom, text: normalizeToLF(text), lineEnding };
+  const { bom, text: rawText } = stripBom(decoded);
+  const lineEnding = detectLineEnding(rawText);
+  return { bom, rawText, text: normalizeToLF(rawText), lineEnding };
 }
 
 export async function loadTextFileWithSnapshot(path: string): Promise<LoadedTextFileWithSnapshot> {

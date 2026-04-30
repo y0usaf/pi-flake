@@ -5,11 +5,11 @@ import { DEFAULT_MAX_BYTES, withFileMutationQueue, type ExtensionAPI } from "@ma
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { resolveMutationTargetPath, writeTextFileAtomically } from "./fs-write";
-import { applyEditsToContent, buildChangedAnchorResponse, type EditRequest } from "./hashline";
+import { applyEditsToRawContentPreservingLineEndings, buildChangedAnchorResponse, type EditRequest } from "./hashline";
 import { resolveToCwd } from "./path-utils";
 import { throwIfAborted } from "./runtime";
 import { getFileSnapshot, sameFileSnapshot } from "./snapshot";
-import { isSupportedImageFile, loadTextFileWithSnapshot, restoreLineEnding } from "./text-file";
+import { isSupportedImageFile, loadTextFileWithSnapshot, normalizeToLF } from "./text-file";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -247,7 +247,10 @@ export function registerEditTool(pi: ExtensionAPI): void {
         let file = await loadTextFileWithSnapshot(targetPath);
         let original = file.text;
         let snapshot = file.snapshot;
-        let result = applyEditsToContent(original, params.edits);
+        let resultRaw = applyEditsToRawContentPreservingLineEndings(file.rawText, params.edits, {
+          defaultLineEnding: file.lineEnding,
+        });
+        let result = normalizeToLF(resultRaw);
 
         if (result === original) {
           return {
@@ -262,7 +265,10 @@ export function registerEditTool(pi: ExtensionAPI): void {
           file = await loadTextFileWithSnapshot(targetPath);
           original = file.text;
           snapshot = file.snapshot;
-          result = applyEditsToContent(original, params.edits);
+          resultRaw = applyEditsToRawContentPreservingLineEndings(file.rawText, params.edits, {
+            defaultLineEnding: file.lineEnding,
+          });
+          result = normalizeToLF(resultRaw);
           if (result === original) {
             return {
               content: [{ type: "text", text: "No changes made. The requested edits produced identical content." }],
@@ -272,7 +278,7 @@ export function registerEditTool(pi: ExtensionAPI): void {
           latestSnapshot = snapshot;
         }
 
-        const persisted = file.bom + restoreLineEnding(result, file.lineEnding);
+        const persisted = file.bom + resultRaw;
         const updatedSnapshot = await writeTextFileAtomically(targetPath, persisted, {
           expectedSnapshot: latestSnapshot,
         });
