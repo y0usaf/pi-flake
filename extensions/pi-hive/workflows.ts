@@ -40,16 +40,18 @@ const workflowUntilSchema = Type.Object({
 	last_line_equals: Type.Optional(Type.String({ description: "Stop when the step output's last non-empty line equals this text." })),
 }, { additionalProperties: false });
 
-const workflowStepSchema = Type.Recursive((This) => Type.Union([
+const workflowWhileStepSchema = Type.Object({
+	type: Type.Literal("while"),
+	id: Type.String({ description: "Loop/barrier output id" }),
+	until: workflowUntilSchema,
+	steps: Type.Array(Type.Any({ description: "Loop body steps. Nested while loops are supported. Loops run until their condition is met or the run is cancelled." }), { minItems: 1 }),
+}, { additionalProperties: false });
+
+const workflowStepSchema = Type.Union([
 	workflowAgentStepSchema,
 	workflowParallelStepSchema,
-	Type.Object({
-		type: Type.Literal("while"),
-		id: Type.String({ description: "Loop/barrier output id" }),
-		until: workflowUntilSchema,
-		steps: Type.Array(This, { minItems: 1, description: "Loop body steps. Nested while loops are supported. Loops run until their condition is met or the run is cancelled." }),
-	}, { additionalProperties: false }),
-]), { $id: "WorkflowStep" });
+	workflowWhileStepSchema,
+]);
 
 export const workflowSchema = Type.Object({
 	name: Type.Optional(Type.String({ description: "Workflow name" })),
