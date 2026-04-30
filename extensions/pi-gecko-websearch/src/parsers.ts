@@ -68,12 +68,11 @@ const engines: Record<string, Engine> = {
 		},
 	},
 	brave: {
-		blockRegex: /<div[^>]*class="[^"]*snippet\b[^"]*"[^>]*>([\s\S]*?)(?=<div[^>]*class="[^"]*snippet\b|<footer|$)/gi,
-		titleUrlPatterns: [
-			/<a[^>]*class="[^"]*result-header[^"]*"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i,
-			/<a[^>]+href="(https?:\/\/[^"]*)"[^>]*>([\s\S]*?)<\/a>/i,
-		],
+		mainRegex:
+			/<a[^>]+href="(https?:\/\/[^"]*)"[^>]*class="[^"]*\bl1\b[^"]*"[^>]*>[\s\S]*?<div[^>]*class="[^"]*search-snippet-title[^"]*"[^>]*>([\s\S]*?)<\/div>[\s\S]*?<\/a>/gi,
+		lookaheadChars: 2500,
 		snippetPatterns: [
+			/<div[^>]*class="[^"]*generic-snippet[^"]*"[^>]*>[\s\S]*?<div[^>]*class="[^"]*content[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
 			/<p[^>]*class="[^"]*snippet-description[^"]*"[^>]*>([\s\S]*?)<\/p>/i,
 			/<div[^>]*class="[^"]*snippet-description[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
 		],

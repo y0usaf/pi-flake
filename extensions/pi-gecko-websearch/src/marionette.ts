@@ -21,24 +21,54 @@ export class MarionetteClient {
 	private connected = false;
 
 	/** Connect to Marionette on the given port. Reads and discards the greeting. */
-	async connect(port: number = 2828, host: string = "127.0.0.1"): Promise<void> {
+	async connect(port: number = 2828, host: string = "127.0.0.1", timeoutMs: number = 10000): Promise<void> {
+		this.socket?.destroy();
+		this.socket = null;
+		this.connected = false;
+		this.buffer = Buffer.alloc(0);
+
 		return new Promise<void>((resolve, reject) => {
 			const socket = net.createConnection({ port, host }, () => {
 				this.connected = true;
 			});
+			this.socket = socket;
 
 			// Do NOT set encoding — we need raw Buffers to handle byte-length framing correctly.
 
 			let gotGreeting = false;
+			let settled = false;
+			let timer: ReturnType<typeof setTimeout> | undefined;
+
+			const failBeforeGreeting = (err: Error) => {
+				if (settled) return;
+				settled = true;
+				if (timer) clearTimeout(timer);
+				this.connected = false;
+				if (this.socket === socket) this.socket = null;
+				socket.destroy();
+				reject(err);
+			};
+
+			timer = setTimeout(() => {
+				failBeforeGreeting(new Error(`Timed out waiting for Marionette greeting on ${host}:${port}`));
+			}, timeoutMs);
 
 			socket.on("data", (chunk: Buffer) => {
 				this.buffer = Buffer.concat([this.buffer, chunk]);
 
 				if (!gotGreeting) {
 					// The greeting is the first length-prefixed message
-					const parsed = this.tryParseMessage();
+					let parsed: any | null;
+					try {
+						parsed = this.tryParseMessage();
+					} catch (error) {
+						failBeforeGreeting(error instanceof Error ? error : new Error(String(error)));
+						return;
+					}
 					if (parsed !== null) {
 						gotGreeting = true;
+						settled = true;
+						if (timer) clearTimeout(timer);
 						resolve();
 					}
 					return;
@@ -50,7 +80,7 @@ export class MarionetteClient {
 
 			socket.on("error", (err) => {
 				if (!gotGreeting) {
-					reject(err);
+					failBeforeGreeting(err);
 				} else if (this.pendingReject) {
 					this.pendingReject(err);
 					this.pendingResolve = null;
@@ -61,15 +91,13 @@ export class MarionetteClient {
 			socket.on("close", () => {
 				this.connected = false;
 				if (!gotGreeting) {
-					reject(new Error("Marionette connection closed before greeting"));
+					failBeforeGreeting(new Error("Marionette connection closed before greeting"));
 				} else if (this.pendingReject) {
 					this.pendingReject(new Error("Marionette connection closed"));
 					this.pendingResolve = null;
 					this.pendingReject = null;
 				}
 			});
-
-			this.socket = socket;
 		});
 	}
 

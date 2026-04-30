@@ -34,6 +34,21 @@ function formatResults(results: SearchResult[]): string {
 		.join("\n\n");
 }
 
+function searchFailureDiagnostic(pageText: string, engine: string): string | null {
+	const text = pageText.replace(/\s+/g, " ").trim();
+	if (!text) return null;
+
+	if (/unusual traffic|not a robot|captcha|verify (?:that )?you|automated queries/i.test(text)) {
+		return `${engine} returned an anti-bot/verification page instead of search results:\n\n${text.slice(0, 1000)}`;
+	}
+
+	if (/enable javascript|turn on javascript|cookies are disabled/i.test(text)) {
+		return `${engine} returned a browser compatibility page instead of search results:\n\n${text.slice(0, 1000)}`;
+	}
+
+	return null;
+}
+
 // ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
@@ -93,28 +108,42 @@ export default function (pi: ExtensionAPI) {
 				throw new Error(`Unknown search engine: "${engine}". Use google, duckduckgo, or brave.`);
 			}
 
-			update(onUpdate, "Starting browser...");
-			const client = await browser.ensureRunning();
-			if (signal?.aborted) throw new Error("Aborted");
+			update(onUpdate, "Acquiring browser...");
+			return browser.withClient(async (client) => {
+				if (signal?.aborted) throw new Error("Aborted");
 
-			const url = buildUrl(params.query);
-			update(onUpdate, `Searching ${engine}...`);
-			await client.navigate(url, 30_000);
-			if (signal?.aborted) throw new Error("Aborted");
+				const url = buildUrl(params.query);
+				update(onUpdate, `Searching ${engine}...`);
+				await client.navigate(url, 30_000);
+				if (signal?.aborted) throw new Error("Aborted");
 
-			update(onUpdate, "Extracting results...");
-			const html = await client.getPageSource(10_000);
-			const results = parseSearchResults(html, engine);
+				update(onUpdate, "Extracting results...");
+				const html = await client.getPageSource(10_000);
+				const results = parseSearchResults(html, engine);
 
-			const formatted = formatResults(results);
-			const output = `Search results for "${params.query}" (${engine}, ${results.length} results):\n\n${formatted}`;
+				if (results.length === 0) {
+					const pageText = await client
+						.executeScript(`return document.body?.innerText || document.documentElement?.innerText || ""`, [], 5000)
+						.catch(() => "");
+					const diagnostic = typeof pageText === "string" ? searchFailureDiagnostic(pageText, engine) : null;
+					if (diagnostic) {
+						return {
+							content: [{ type: "text" as const, text: truncate(diagnostic) }],
+							details: { engine, query: params.query, resultCount: 0, blocked: true },
+						};
+					}
+				}
 
-			const text = truncate(output);
+				const formatted = formatResults(results);
+				const output = `Search results for "${params.query}" (${engine}, ${results.length} results):\n\n${formatted}`;
 
-			return {
-				content: [{ type: "text" as const, text }],
-				details: { engine, query: params.query, resultCount: results.length },
-			};
+				const text = truncate(output);
+
+				return {
+					content: [{ type: "text" as const, text }],
+					details: { engine, query: params.query, resultCount: results.length },
+				};
+			});
 		},
 	});
 
@@ -154,42 +183,43 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
-			update(onUpdate, "Starting browser...");
-			const client = await browser.ensureRunning();
-			if (signal?.aborted) throw new Error("Aborted");
+			update(onUpdate, "Acquiring browser...");
+			return browser.withClient(async (client) => {
+				if (signal?.aborted) throw new Error("Aborted");
 
-			update(onUpdate, `Navigating to ${params.url}...`);
-			await client.navigate(params.url, 30_000);
-			if (signal?.aborted) throw new Error("Aborted");
+				update(onUpdate, `Navigating to ${params.url}...`);
+				await client.navigate(params.url, 30_000);
+				if (signal?.aborted) throw new Error("Aborted");
 
-			let content: string;
+				let content: string;
 
-			if (params.extract) {
-				update(onUpdate, "Running extraction script...");
-				let script = params.extract.trim();
-				if (!script.startsWith("return ")) script = `return ${script}`;
-				const result = await client.executeScript(script, [], 10_000);
-				content = typeof result === "string" ? result : JSON.stringify(result, null, 2);
-			} else {
-				update(onUpdate, "Extracting page content...");
-				content = await client.executeScript(
-					`return document.body?.innerText || document.documentElement?.innerText || ""`,
-					[],
-					10_000,
-				);
-			}
+				if (params.extract) {
+					update(onUpdate, "Running extraction script...");
+					let script = params.extract.trim();
+					if (!script.startsWith("return ")) script = `return ${script}`;
+					const result = await client.executeScript(script, [], 10_000);
+					content = typeof result === "string" ? result : JSON.stringify(result, null, 2);
+				} else {
+					update(onUpdate, "Extracting page content...");
+					content = await client.executeScript(
+						`return document.body?.innerText || document.documentElement?.innerText || ""`,
+						[],
+						10_000,
+					);
+				}
 
-			const header = `Content from ${params.url} (${formatSize(Buffer.byteLength(content, "utf-8"))}):\n\n`;
-			const text = truncate(content, header);
+				const header = `Content from ${params.url} (${formatSize(Buffer.byteLength(content, "utf-8"))}):\n\n`;
+				const text = truncate(content, header);
 
-			return {
-				content: [{ type: "text" as const, text }],
-				details: {
-					url: params.url,
-					extracted: !!params.extract,
-					contentLength: content.length,
-				},
-			};
+				return {
+					content: [{ type: "text" as const, text }],
+					details: {
+						url: params.url,
+						extracted: !!params.extract,
+						contentLength: content.length,
+					},
+				};
+			});
 		},
 	});
 
