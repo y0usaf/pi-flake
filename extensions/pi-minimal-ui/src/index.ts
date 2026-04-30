@@ -1,9 +1,22 @@
 import type { AssistantMessage } from "@mariozechner/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 
+const UI_WIDTH_RATIO = 0.9;
+const UI_MAX_WIDTH = 100;
+const UI_MIN_WIDTH = 24;
+
 const MIN_LOCATION_WIDTH = 8;
-const RIGHT_MAX_RATIO = 0.45;
+const ANSI_PATTERN = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|_[^\x07]*(?:\x07|\x1b\\))/g;
+
+function uiWidth(width: number): number {
+	if (width <= UI_MIN_WIDTH) return Math.max(1, width);
+	return Math.min(width, UI_MAX_WIDTH, Math.max(UI_MIN_WIDTH, Math.floor(width * UI_WIDTH_RATIO)));
+}
+
+function stripAnsi(value: string): string {
+	return value.replace(ANSI_PATTERN, "");
+}
 
 function compactNumber(value: number): string {
 	if (value < 1000) return `${value}`;
@@ -15,8 +28,6 @@ function compactNumber(value: number): string {
 function sanitize(value: string): string {
 	return value.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
 }
-
-
 
 function joinStyled(parts: Array<string | undefined>, separator: string): string {
 	return parts.filter((part): part is string => Boolean(part)).join(separator);
@@ -140,38 +151,66 @@ function renderExtensionStatuses(footerData: { getExtensionStatuses(): ReadonlyM
 		.join(" ");
 }
 
-function renderLeft(
-	ctx: ExtensionContext,
-	branch: string | null,
-	stats: string,
-	theme: ExtensionContext["ui"]["theme"],
-	maxWidth: number,
-): string {
-	const statsGroup = fitBracket(stats, theme, Math.min(visibleWidth(stats) + 2, maxWidth));
-	const locationMax = maxWidth - visibleWidth(statsGroup) - 1;
-
-	if (locationMax >= MIN_LOCATION_WIDTH + 2) {
-		return `${fitBracket(renderLocation(ctx, branch, theme, locationMax - 2), theme, locationMax)} ${statsGroup}`;
-	}
-
-	return statsGroup;
-}
-
-function renderRight(pi: ExtensionAPI, ctx: ExtensionContext, statuses: string, theme: ExtensionContext["ui"]["theme"]): string {
+function renderModelInfo(pi: ExtensionAPI, ctx: ExtensionContext, theme: ExtensionContext["ui"]["theme"]): string {
 	const separator = theme.fg("dim", " · ");
 	const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "no-model";
 	const thinking = ctx.model?.reasoning ? pi.getThinkingLevel() : undefined;
-	return joinStyled([theme.fg("dim", model), thinking ? theme.fg("accent", thinking) : undefined, statuses || undefined], separator);
+	return joinStyled([theme.fg("dim", model), thinking ? theme.fg("accent", thinking) : undefined], separator);
 }
 
-function fitGroups(left: string, right: string, width: number): string {
-	if (width <= 0) return "";
-	if (!right) return truncateToWidth(left, width, "…");
-
-	const gap = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
-	const line = `${left}${" ".repeat(gap)}${right}`;
+function padLine(line: string, width: number): string {
 	const clipped = truncateToWidth(line, width, "…");
 	return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
+}
+
+function centerLine(line: string, lineWidth: number, width: number): string {
+	const left = Math.max(0, Math.floor((width - lineWidth) / 2));
+	const right = Math.max(0, width - lineWidth - left);
+	return `${" ".repeat(left)}${line}${" ".repeat(right)}`;
+}
+
+function packGroups(groups: string[], width: number): string[] {
+	const lines: string[] = [];
+	let current = "";
+
+	for (const rawGroup of groups) {
+		const group = truncateToWidth(rawGroup, width, "…");
+		if (!group) continue;
+
+		if (!current) {
+			current = group;
+			continue;
+		}
+
+		const next = `${current} ${group}`;
+		if (visibleWidth(next) <= width) {
+			current = next;
+		} else {
+			lines.push(current);
+			current = group;
+		}
+	}
+
+	if (current) lines.push(current);
+	return lines.length > 0 ? lines : [""];
+}
+
+function renderStatusGroups(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	footerData: { getGitBranch(): string | null; getExtensionStatuses(): ReadonlyMap<string, string> },
+	theme: ExtensionContext["ui"]["theme"],
+	width: number,
+): string[] {
+	const branch = footerData.getGitBranch();
+	const statuses = renderExtensionStatuses(footerData);
+
+	return [
+		fitBracket(renderLocation(ctx, branch, theme, Math.max(1, width - 2)), theme, width),
+		fitBracket(renderStats(ctx, theme), theme, width),
+		fitBracket(renderModelInfo(pi, ctx, theme), theme, width),
+		statuses ? fitBracket(statuses, theme, width) : undefined,
+	].filter((group): group is string => Boolean(group));
 }
 
 function renderStatusline(
@@ -180,24 +219,64 @@ function renderStatusline(
 	footerData: { getGitBranch(): string | null; getExtensionStatuses(): ReadonlyMap<string, string> },
 	theme: ExtensionContext["ui"]["theme"],
 	width: number,
-): string {
-	const branch = footerData.getGitBranch();
-	const stats = renderStats(ctx, theme);
-	const rightContent = renderRight(pi, ctx, renderExtensionStatuses(footerData), theme);
-	const rightFullWidth = visibleWidth(bracket(rightContent, theme));
-	const rightMax = Math.min(rightFullWidth, Math.max(0, Math.floor(width * RIGHT_MAX_RATIO)));
-	const right = rightContent && rightMax > 0 ? fitBracket(rightContent, theme, rightMax) : "";
-	const leftMax = Math.max(0, width - visibleWidth(right) - (right ? 2 : 0));
-	const left = renderLeft(ctx, branch, stats, theme, leftMax);
-	return fitGroups(left, right, width);
+): string[] {
+	const innerWidth = uiWidth(width);
+	return packGroups(renderStatusGroups(pi, ctx, footerData, theme, innerWidth), innerWidth).map((line) =>
+		centerLine(padLine(line, innerWidth), innerWidth, width),
+	);
 }
 
+function isEditorBorder(line: string): boolean {
+	const text = stripAnsi(line).trim();
+	return /^─+$/.test(text) || /^─── [↑↓] \d+ more ─*$/.test(text);
+}
 
-export default function statusline(pi: ExtensionAPI) {
+function scrollLabel(line: string): string | undefined {
+	return stripAnsi(line).match(/[↑↓] \d+ more/)?.[0];
+}
+
+class MinimalBoxEditor extends CustomEditor {
+	render(width: number): string[] {
+		if (width < 4) return super.render(width);
+
+		const outerWidth = uiWidth(width);
+		const innerWidth = Math.max(1, outerWidth - 2);
+		const leftMargin = " ".repeat(Math.max(0, Math.floor((width - outerWidth) / 2)));
+		const lines = super.render(innerWidth);
+		if (lines.length === 0) return lines;
+
+		const bottomIndex = lines.findIndex((line, index) => index > 0 && isEditorBorder(line));
+		const topLabel = scrollLabel(lines[0] ?? "");
+		const bottomLabel = bottomIndex >= 0 ? scrollLabel(lines[bottomIndex] ?? "") : undefined;
+		const body = bottomIndex >= 0 ? [...lines.slice(1, bottomIndex), ...lines.slice(bottomIndex + 1)] : lines;
+
+		return [
+			leftMargin + this.renderBorder("┌", "┐", innerWidth, topLabel),
+			...body.map((line) => leftMargin + this.renderBodyLine(line, innerWidth)),
+			leftMargin + this.renderBorder("└", "┘", innerWidth, bottomLabel),
+		];
+	}
+
+	private renderBorder(left: string, right: string, innerWidth: number, label?: string): string {
+		const rawLabel = label ? ` ${label} ` : "";
+		const visibleLabel = truncateToWidth(rawLabel, innerWidth, "");
+		const fill = "─".repeat(Math.max(0, innerWidth - visibleWidth(visibleLabel)));
+		return this.borderColor(`${left}${visibleLabel}${fill}${right}`);
+	}
+
+	private renderBodyLine(line: string, innerWidth: number): string {
+		const clipped = truncateToWidth(line, innerWidth, "");
+		const padded = `${clipped}${" ".repeat(Math.max(0, innerWidth - visibleWidth(clipped)))}`;
+		return `${this.borderColor("│")}${padded}${this.borderColor("│")}`;
+	}
+}
+
+export default function minimalUi(pi: ExtensionAPI) {
 	let requestRender: (() => void) | undefined;
 	const refresh = () => requestRender?.();
 
 	pi.on("session_start", (_event, ctx) => {
+		ctx.ui.setEditorComponent((tui, theme, keybindings) => new MinimalBoxEditor(tui, theme, keybindings, { paddingX: 1 }));
 
 		ctx.ui.setFooter((tui, _theme, footerData) => {
 			const unsubscribeBranch = footerData.onBranchChange(() => {
@@ -206,13 +285,13 @@ export default function statusline(pi: ExtensionAPI) {
 			});
 
 			ctx.ui.setWidget(
-				"statusline",
+				"minimal-ui-statusline",
 				(widgetTui, theme) => {
 					requestRender = () => widgetTui.requestRender();
 					return {
 						invalidate() {},
 						render(width: number): string[] {
-							return [renderStatusline(pi, ctx, footerData, theme, width)];
+							return renderStatusline(pi, ctx, footerData, theme, width);
 						},
 					};
 				},
@@ -222,7 +301,7 @@ export default function statusline(pi: ExtensionAPI) {
 			return {
 				dispose() {
 					unsubscribeBranch();
-					ctx.ui.setWidget("statusline", undefined);
+					ctx.ui.setWidget("minimal-ui-statusline", undefined);
 					requestRender = undefined;
 				},
 				invalidate() {},
@@ -233,6 +312,9 @@ export default function statusline(pi: ExtensionAPI) {
 		});
 	});
 
+	pi.on("session_shutdown", (_event, ctx) => {
+		ctx.ui.setEditorComponent(undefined);
+	});
 
 	pi.on("model_select", refresh);
 	pi.on("message_update", refresh);

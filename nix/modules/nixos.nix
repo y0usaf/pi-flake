@@ -74,6 +74,7 @@ in {
       "tool-management" = mkEnableOption "pi-tool-management extension";
       webfetch = mkEnableOption "pi-webfetch extension";
       hashline = mkEnableOption "pi-hashline v2 read/edit tool override";
+      "minimal-ui" = mkEnableOption "pi-minimal-ui statusline and compact input box extension";
     };
 
     extraExtensions = mkOption {
