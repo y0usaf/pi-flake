@@ -9,7 +9,7 @@
  * Report streams intermediate results to the parent via onUpdate.
  */
 
-import { readFile, writeFile, mkdir, realpath, stat } from "node:fs/promises";
+import { readFile, writeFile, mkdir, readdir, unlink, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { spawn as spawnProcess } from "node:child_process";
 import { dirname, join, resolve, isAbsolute, sep, relative } from "node:path";
@@ -120,7 +120,7 @@ const reportSchema = Type.Object({
 const CONFIG_FILE_NAME = "pi-hive.json";
 
 const DEFAULT_MAX_DEPTH = 1;
-const DEFAULT_MAX_LIVE_AGENTS = 6;
+const DEFAULT_MAX_LIVE_AGENTS = 20;
 
 interface PiHiveConfig {
 	maxDepth: number;
@@ -665,6 +665,140 @@ interface RunState {
 	error?: string;
 	abortController: AbortController;
 	promise: Promise<void>;
+}
+
+interface RunRecord {
+	id: string;
+	workspaceKey: string;
+	kind: RunKind;
+	status: RunStatus;
+	startedAt: number;
+	finishedAt?: number;
+	children: string[];
+	resultText?: string;
+	error?: string;
+}
+
+function runResultText(result?: AgentToolResult<unknown>): string | undefined {
+	if (!result) return undefined;
+	return result.content
+		.filter((part): part is { type: "text"; text: string } => part.type === "text")
+		.map((part) => part.text)
+		.join("\n");
+}
+
+function runRecordPath(workspaceKey: string, runId: string): string {
+	return join(workspaceKey, ".pi", "agent", "runs", `${runId}.json`);
+}
+
+function toRunRecord(run: RunState): RunRecord {
+	const resultText = runResultText(run.result);
+	return {
+		id: run.id,
+		workspaceKey: run.workspaceKey,
+		kind: run.kind,
+		status: run.status,
+		startedAt: run.startedAt,
+		finishedAt: run.finishedAt,
+		children: [...run.children],
+		resultText: resultText && resultText.length > 50_000 ? resultText.slice(-50_000) : resultText,
+		error: run.error,
+	};
+}
+
+async function persistRunRecord(run: RunState): Promise<void> {
+	const record = toRunRecord(run);
+	const dir = join(run.workspaceKey, ".pi", "agent", "runs");
+	await mkdir(dir, { recursive: true });
+	await writeFile(runRecordPath(run.workspaceKey, run.id), `${JSON.stringify(record, null, 2)}\n`, "utf-8");
+	await prunePersistedRuns(run.workspaceKey);
+}
+
+async function safePersistRunRecord(run: RunState): Promise<void> {
+	try {
+		await persistRunRecord(run);
+	} catch (err) {
+		console.warn(`pi-hive: failed to persist run ${run.id}: ${(err as Error).message}`);
+	}
+}
+
+async function prunePersistedRuns(workspaceKey: string): Promise<void> {
+	const dir = join(workspaceKey, ".pi", "agent", "runs");
+	let entries;
+	try {
+		entries = await readdir(dir, { withFileTypes: true });
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+		throw err;
+	}
+
+	const files = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".json")).map((entry) => join(dir, entry.name));
+	const records = await Promise.all(files.map(async (file) => {
+		try {
+			const parsed = JSON.parse(await readFile(file, "utf-8")) as Partial<RunRecord>;
+			return { file, startedAt: typeof parsed.startedAt === "number" ? parsed.startedAt : 0, finishedAt: typeof parsed.finishedAt === "number" ? parsed.finishedAt : 0 };
+		} catch {
+			return { file, startedAt: 0, finishedAt: 0 };
+		}
+	}));
+
+	records.sort((a, b) => a.startedAt - b.startedAt || a.finishedAt - b.finishedAt);
+	while (records.length > MAX_RUNS) {
+		const victim = records.shift()!;
+		await unlink(victim.file).catch(() => undefined);
+	}
+}
+
+async function readPersistedRunRecords(workspaceKey: string): Promise<RunRecord[]> {
+	const dir = join(workspaceKey, ".pi", "agent", "runs");
+	let entries;
+	try {
+		entries = await readdir(dir, { withFileTypes: true });
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw err;
+	}
+
+	const records: RunRecord[] = [];
+	for (const entry of entries) {
+		if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+		const file = join(dir, entry.name);
+		try {
+			const parsed = JSON.parse(await readFile(file, "utf-8")) as Partial<RunRecord>;
+			if (typeof parsed.id !== "string" || typeof parsed.kind !== "string" || typeof parsed.status !== "string" || typeof parsed.startedAt !== "number") continue;
+			if (parsed.workspaceKey !== undefined && parsed.workspaceKey !== workspaceKey) continue;
+			records.push({
+				id: parsed.id,
+				workspaceKey,
+				kind: parsed.kind as RunKind,
+				status: parsed.status as RunStatus,
+				startedAt: parsed.startedAt,
+				finishedAt: typeof parsed.finishedAt === "number" ? parsed.finishedAt : undefined,
+				children: Array.isArray(parsed.children) ? parsed.children.filter((child): child is string => typeof child === "string") : [],
+				resultText: typeof parsed.resultText === "string" ? parsed.resultText : undefined,
+				error: typeof parsed.error === "string" ? parsed.error : undefined,
+			});
+		} catch {
+			continue;
+		}
+	}
+return records;
+}
+
+function formatRunRecord(run: RunRecord): AgentToolResult<unknown> {
+	const lines = [
+		`run_id: ${run.id}`,
+		`kind: ${run.kind}`,
+		`status: ${run.status}`,
+		`children: ${run.children.length > 0 ? run.children.join(", ") : "(none)"}`,
+	];
+	if (run.error) lines.push(`error: ${run.error}`);
+	if (run.resultText) lines.push("", run.resultText);
+	return { content: [{ type: "text", text: lines.join("\n") }], details: { run } };
+}
+
+function formatRunState(run: RunState): AgentToolResult<unknown> {
+	return formatRunRecord(toRunRecord(run));
 }
 
 function extractLastAssistantText(agent: Agent): string {
@@ -1294,6 +1428,7 @@ export default function piHive(pi: ExtensionAPI) {
 		const resultText = run.result ? textOf(run.result) : undefined;
 		return {
 			id: run.id,
+			workspaceKey: run.workspaceKey,
 			kind: run.kind,
 			status: run.status,
 			startedAt: run.startedAt,
@@ -1314,26 +1449,24 @@ export default function piHive(pi: ExtensionAPI) {
 		}
 	}
 
-	function formatRunResult(run: RunState): AgentToolResult<unknown> {
-		const dto = toRunDTO(run);
-		const lines = [
-			`run_id: ${dto.id}`,
-			`kind: ${dto.kind}`,
-			`status: ${dto.status}`,
-			`children: ${dto.children.length > 0 ? dto.children.join(", ") : "(none)"}`,
-		];
-		if (dto.error) lines.push(`error: ${dto.error}`);
-		if (dto.resultText) lines.push("", dto.resultText);
-		return { content: [{ type: "text", text: lines.join("\n") }], details: { run: dto } };
+	async function loadRunById(state: HiveState, runId: string): Promise<RunState | RunRecord | undefined> {
+		const live = state.runs.get(runId);
+		if (live) return live;
+		const persisted = await readPersistedRunRecords(state.workspaceKey);
+		return persisted.find((run) => run.id === runId);
 	}
 
-	function startRun(
+	function formatRunStateResult(run: RunState): AgentToolResult<unknown> {
+		return formatRunRecord(toRunRecord(run));
+	}
+
+	async function startRun(
 		state: HiveState,
 		kind: RunKind,
 		runId: string | undefined,
 		childrenForRun: string[],
 		work: (signal: AbortSignal) => Promise<AgentToolResult<unknown>>,
-	): AgentToolResult<unknown> {
+	): Promise<AgentToolResult<unknown>> {
 		evictCompletedRuns(state);
 		const runningRuns = [...state.runs.values()].filter((run) => run.status === "running").length;
 		if (runningRuns >= MAX_RUNNING_RUNS) throw new Error(`Cannot start ${kind} run: max running runs ${MAX_RUNNING_RUNS} reached.`);
@@ -1341,6 +1474,8 @@ export default function piHive(pi: ExtensionAPI) {
 		if (state.runs.has(id)) throw new Error(`Run "${id}" already exists.`);
 		const abortController = new AbortController();
 		const run: RunState = { id, workspaceKey: state.workspaceKey, kind, status: "running", startedAt: Date.now(), children: childrenForRun, abortController, promise: Promise.resolve() };
+		state.runs.set(id, run);
+		await safePersistRunRecord(run);
 		run.promise = (async () => {
 			try {
 				run.result = await work(abortController.signal);
@@ -1350,14 +1485,48 @@ export default function piHive(pi: ExtensionAPI) {
 				run.status = run.status === "killed" ? "killed" : "failed";
 			} finally {
 				run.finishedAt = Date.now();
+				await safePersistRunRecord(run);
 				evictCompletedRuns(state);
 			}
 		})();
-		state.runs.set(id, run);
 		return { content: [{ type: "text", text: `Started ${kind} run "${id}".` }], details: { runId: id, kind, status: "running", children: childrenForRun } };
 	}
 
+	async function executeLoggedRun(
+		state: HiveState,
+		kind: RunKind,
+		runId: string | undefined,
+		childrenForRun: string[],
+		work: (signal: AbortSignal) => Promise<AgentToolResult<unknown>>,
+		signal?: AbortSignal,
+	): Promise<AgentToolResult<unknown>> {
+		evictCompletedRuns(state);
+		const runningRuns = [...state.runs.values()].filter((run) => run.status === "running").length;
+		if (runningRuns >= MAX_RUNNING_RUNS) throw new Error(`Cannot start ${kind} run: max running runs ${MAX_RUNNING_RUNS} reached.`);
+		const id = runId || makeRunId(kind);
+		if (state.runs.has(id)) throw new Error(`Run "${id}" already exists.`);
+		const abortController = new AbortController();
+		const onAbort = () => abortController.abort();
+		signal?.addEventListener("abort", onAbort, { once: true });
+		if (signal?.aborted) onAbort();
+		const run: RunState = { id, workspaceKey: state.workspaceKey, kind, status: "running", startedAt: Date.now(), children: childrenForRun, abortController, promise: Promise.resolve() };
+		state.runs.set(id, run);
+		await safePersistRunRecord(run);
+		try {
+			run.result = await work(abortController.signal);
+			run.status = run.status === "killed" || abortController.signal.aborted ? "killed" : "succeeded";
+			return run.result;
+		} catch (err) {
+			run.error = err instanceof Error ? err.message : String(err);
+			run.status = run.status === "killed" || abortController.signal.aborted ? "killed" : "failed";
+			throw err;
+		} finally {
+			run.finishedAt = Date.now();
+			await safePersistRunRecord(run);
+			signal?.removeEventListener("abort", onAbort);
 
+		}
+	}
 
 	async function waitForRun(run: RunState, timeoutSeconds?: number): Promise<RunState> {
 		const timeout = normalizePositiveTimeout(timeoutSeconds, "timeout_seconds");
@@ -1378,14 +1547,20 @@ export default function piHive(pi: ExtensionAPI) {
 		}
 	}
 
-	function listRunsResult(state: HiveState): AgentToolResult<unknown> {
+	async function listRunsResult(state: HiveState): Promise<AgentToolResult<unknown>> {
 		evictCompletedRuns(state);
-		const listed = [...state.runs.values()].sort((a, b) => a.startedAt - b.startedAt);
+		const live = [...state.runs.values()].map(toRunDTO);
+		const persisted = await readPersistedRunRecords(state.workspaceKey);
+		const listedMap = new Map<string, RunRecord>();
+		for (const run of persisted) listedMap.set(run.id, run);
+		for (const run of live) listedMap.set(run.id, run);
+		const listed = [...listedMap.values()].sort((a, b) => a.startedAt - b.startedAt).slice(-MAX_RUNS);
 		const text = listed.length === 0
 			? "No runs."
 			: listed.map((run) => `• ${run.id} — ${run.kind}, ${run.status}, children: ${run.children.length > 0 ? run.children.join(", ") : "(none)"}`).join("\n");
-		return { content: [{ type: "text", text }], details: { runs: listed.map(toRunDTO) } };
+		return { content: [{ type: "text", text }], details: { runs: listed } };
 	}
+
 
 
 
@@ -1486,7 +1661,7 @@ export default function piHive(pi: ExtensionAPI) {
 				};
 				if (params.async) {
 					if (!allowAsync) throw new Error("async=true is only supported by root-level agent actions.");
-					return startRun(state, "spawn", params.run_id, [id], (runSignal) => spawnChild(state, callerId, spawnParams, selectedModel, cwd, runSignal));
+					return await startRun(state, "spawn", params.run_id, [id], (runSignal) => spawnChild(state, callerId, spawnParams, selectedModel, cwd, runSignal));
 				}
 				return await spawnChild(state, callerId, spawnParams, selectedModel, cwd, signal, onUpdate);
 			}
@@ -1495,7 +1670,7 @@ export default function piHive(pi: ExtensionAPI) {
 				const delegateParams = { id, message: requireStringParam(params, "message"), timeout_seconds: params.timeout_seconds };
 				if (params.async) {
 					if (!allowAsync) throw new Error("async=true is only supported by root-level agent actions.");
-					return startRun(state, "delegate", params.run_id, [id], (runSignal) => delegateToChild(state, callerId, delegateParams, runSignal));
+					return await startRun(state, "delegate", params.run_id, [id], (runSignal) => delegateToChild(state, callerId, delegateParams, runSignal));
 				}
 				return await delegateToChild(state, callerId, delegateParams, signal, onUpdate);
 			}
@@ -1518,7 +1693,7 @@ export default function piHive(pi: ExtensionAPI) {
 				const steps = requireSteps(params);
 				if (params.async) {
 					if (!allowAsync) throw new Error("async=true is only supported by root-level agent actions.");
-					return startRun(state, "chain", params.run_id, steps.map((step) => step.id), (runSignal) => runChainSteps(state, callerId, steps, selectedModel, cwd, runSignal));
+					return await startRun(state, "chain", params.run_id, steps.map((step) => step.id), (runSignal) => runChainSteps(state, callerId, steps, selectedModel, cwd, runSignal));
 				}
 				return await runChainSteps(state, callerId, steps, selectedModel, cwd, signal, onUpdate);
 			}
@@ -1527,12 +1702,10 @@ export default function piHive(pi: ExtensionAPI) {
 				const tasks = requireTasks(params);
 				if (params.async) {
 					if (!allowAsync) throw new Error("async=true is only supported by root-level agent actions.");
-					return startRun(state, "parallel", params.run_id, tasks.map((task) => task.id), (runSignal) => runParallelTasks(state, callerId, tasks, selectedModel, cwd, runSignal));
+					return await startRun(state, "parallel", params.run_id, tasks.map((task) => task.id), (runSignal) => runParallelTasks(state, callerId, tasks, selectedModel, cwd, runSignal));
 				}
 				return await runParallelTasks(state, callerId, tasks, selectedModel, cwd, signal, onUpdate);
 			}
-
-
 			case "list_workflows": {
 				rejectUnsupportedAsync(params);
 				return await listWorkflowsResult(cwd);
@@ -1556,42 +1729,46 @@ export default function piHive(pi: ExtensionAPI) {
 				};
 				if (params.async) {
 					if (!allowAsync) throw new Error("async=true is only supported by root-level agent actions.");
-					return startRun(state, "workflow", params.run_id, children, (runSignal) => runWorkflow(workflow, runtime, runSignal));
+					return await startRun(state, "workflow", params.run_id, children, (runSignal) => runWorkflow(workflow, runtime, runSignal));
 				}
-				return await runWorkflow(workflow, runtime, signal, onUpdate);
+				return await executeLoggedRun(state, "workflow", params.run_id, children, (runSignal) => runWorkflow(workflow, runtime, runSignal), signal);
 			}
 			case "list_runs": {
 				rejectUnsupportedAsync(params);
 				if (callerId) throw new Error("Run management actions are root-only.");
-				return listRunsResult(state);
+				return await listRunsResult(state);
 			}
 			case "result": {
 				rejectUnsupportedAsync(params);
 				if (callerId) throw new Error("Run management actions are root-only.");
 				const runId = requireStringParam(params, "run_id");
-				evictCompletedRuns(state);
-				const run = state.runs.get(runId);
+				const run = await loadRunById(state, runId);
 				if (!run) throw new Error(`Run "${runId}" not found in this workspace (it may have been evicted).`);
-				return formatRunResult(run);
+				return "abortController" in run ? formatRunStateResult(run) : formatRunRecord(run);
 			}
-
-
 			case "wait": {
 				rejectUnsupportedAsync(params);
 				if (callerId) throw new Error("Run management actions are root-only.");
 				const runId = requireStringParam(params, "run_id");
-				const run = state.runs.get(runId);
+				const run = await loadRunById(state, runId);
 				if (!run) throw new Error(`Run "${runId}" not found in this workspace (it may have been evicted).`);
-				await waitForRun(run, params.timeout_seconds);
-				return formatRunResult(run);
+				if ("abortController" in run) {
+					await waitForRun(run, params.timeout_seconds);
+					return formatRunStateResult(run);
+				}
+				return formatRunRecord(run);
 			}
 			case "cancel": {
 				rejectUnsupportedAsync(params);
 				if (callerId) throw new Error("Run management actions are root-only.");
 				const runId = requireStringParam(params, "run_id");
-				const run = state.runs.get(runId);
+				const run = await loadRunById(state, runId);
 				if (!run) throw new Error(`Run "${runId}" not found in this workspace (it may have been evicted).`);
-				if (run.status !== "running") return formatRunResult(run);
+				if (!("abortController" in run)) {
+					if (run.status !== "running") return formatRunRecord(run);
+					throw new Error(`Run "${runId}" is not active in this session and cannot be cancelled.`);
+				}
+				if (run.status !== "running") return formatRunStateResult(run);
 				run.abortController.abort();
 				let killed: string[] = [];
 				for (const childId of run.children) {
@@ -1599,6 +1776,7 @@ export default function piHive(pi: ExtensionAPI) {
 				}
 				run.status = "killed";
 				run.finishedAt = Date.now();
+				await safePersistRunRecord(run);
 				evictCompletedRuns(state);
 				return { content: [{ type: "text", text: `Killed run "${run.id}" (${killed.length} agent(s): ${killed.join(", ") || "none"}).` }], details: { run: toRunDTO(run), killed } };
 			}
@@ -1628,9 +1806,11 @@ export default function piHive(pi: ExtensionAPI) {
 					run.status = "killed";
 					run.finishedAt = Date.now();
 					run.abortController.abort();
+					await safePersistRunRecord(run);
 				}
 			}
 		}
+
 		for (const child of childStates) {
 			child.agent.abort();
 		}

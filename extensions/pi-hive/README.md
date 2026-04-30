@@ -32,7 +32,7 @@ Example:
 ```json
 {
   "maxDepth": 1,
-  "maxLiveAgents": 6
+  "maxLiveAgents": 20
 }
 ```
 
@@ -226,7 +226,7 @@ Nested loops are supported. Loops are uncapped; cancel the workflow run to stop 
 { action: "result", run_id: "review-1" }
 ```
 
-Runs are in-memory and capped to 100 per workspace. At most 10 async runs may be running per workspace. To stop async work, kill the relevant child agent with `kill`. `details.run`/`details.runs` expose serializable DTOs, not internal promises/controllers.
+Runs are persisted to `.pi/agent/runs/` per workspace and capped to 100 records. At most 10 async runs may be running per workspace. To stop async work, kill the relevant child agent with `kill`. `details.run`/`details.runs` expose serializable DTOs, not internal promises/controllers.
 
 ### Agent management
 
@@ -251,7 +251,7 @@ Runs are in-memory and capped to 100 per workspace. At most 10 async runs may be
 - Children share the parent's model — there is no per-child model selection yet.
 - Children run in-process — they are not isolated processes.
 - `bash` is not file-system confined; child agents with `bash` have the same OS-level access as the user running pi.
-- Async run state is in-memory and cleared on session shutdown.
+- Async run state is persisted under `.pi/agent/runs/`; live in-memory state still clears on session shutdown.
 
 ## License
 
