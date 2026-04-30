@@ -41,7 +41,7 @@ jobs:
       fail-fast: false
       matrix:
         dir:
-          - extensions/pi-agents
+          - extensions/pi-hive
           - extensions/pi-codex-fast
           - extensions/pi-gecko-websearch
           - extensions/pi-rtk

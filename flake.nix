@@ -9,8 +9,8 @@
       flake = false;
     };
 
-    piAgents.url = "path:./extensions/pi-agents";
-    piAgents.inputs.nixpkgs.follows = "nixpkgs";
+    piHive.url = "path:./extensions/pi-hive";
+    piHive.inputs.nixpkgs.follows = "nixpkgs";
 
     piCodexFast.url = "path:./extensions/pi-codex-fast";
     piCodexFast.inputs.nixpkgs.follows = "nixpkgs";
@@ -23,6 +23,7 @@
 
     piCompact.url = "path:./extensions/pi-compact";
     piCompact.inputs.nixpkgs.follows = "nixpkgs";
+
 
     piToolManagement.url = "path:./extensions/pi-tool-management";
     piToolManagement.inputs.nixpkgs.follows = "nixpkgs";
@@ -41,11 +42,12 @@
     self,
     nixpkgs,
     piSrc,
-    piAgents,
+    piHive,
     piCodexFast,
     piGeckoWebsearch,
     piRtk,
     piCompact,
+
     piToolManagement,
     piWebfetch,
     piHashline,
@@ -116,11 +118,14 @@
         };
       };
 
-      "pi-agents" = piAgents.packages.${system}.default;
+      "pi-hive" = piHive.packages.${system}.default;
+
       "pi-codex-fast" = piCodexFast.packages.${system}.default;
       "pi-gecko-websearch" = piGeckoWebsearch.packages.${system}.default;
       "pi-rtk" = piRtk.packages.${system}.default;
       "pi-compact" = piCompact.packages.${system}.default;
+
+
       "pi-tool-management" = piToolManagement.packages.${system}.default;
       "pi-webfetch" = piWebfetch.packages.${system}.default;
       "pi-hashline" = piHashline.packages.${system}.default;
@@ -176,11 +181,13 @@
 
     # Extension package set keyed by bundled extension name.
     lib.extensionPackagesFor = system: {
-      agents = self.packages.${system}."pi-agents";
+      hive = self.packages.${system}."pi-hive";
+
       "codex-fast" = self.packages.${system}."pi-codex-fast";
       "gecko-websearch" = self.packages.${system}."pi-gecko-websearch";
       rtk = self.packages.${system}."pi-rtk";
       compact = self.packages.${system}."pi-compact";
+
       "tool-management" = self.packages.${system}."pi-tool-management";
       webfetch = self.packages.${system}."pi-webfetch";
       hashline = self.packages.${system}."pi-hashline";
@@ -194,10 +201,11 @@
     }: let
       lib = nixpkgs.lib;
       available = self.lib.extensionPackagesFor system;
-      unknownEnabled = lib.filterAttrs (_: enabled: enabled) (builtins.removeAttrs extensionFlags (builtins.attrNames available));
+      normalizedFlags = extensionFlags;
+      unknownEnabled = lib.filterAttrs (_: enabled: enabled) (builtins.removeAttrs normalizedFlags (builtins.attrNames available));
     in
       assert lib.assertMsg (unknownEnabled == {}) "Unknown pi extension flag(s): ${lib.concatStringsSep ", " (builtins.attrNames unknownEnabled)}";
-        lib.filterAttrs (name: _: extensionFlags.${name} or false) available;
+        lib.filterAttrs (name: _: normalizedFlags.${name} or false) available;
 
     # Flag-driven builder for consumers that want conditional bundled extensions.
     lib.piWithExtensionFlags = {

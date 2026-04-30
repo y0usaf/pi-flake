@@ -16,18 +16,18 @@
         "type": "github"
       }
     },
-    "piAgents": {
+    "piHive": {
       "inputs": {
         "nixpkgs": [
           "nixpkgs"
         ]
       },
       "locked": {
-        "path": "./extensions/pi-agents",
+        "path": "./extensions/pi-hive",
         "type": "path"
       },
       "original": {
-        "path": "./extensions/pi-agents",
+        "path": "./extensions/pi-hive",
         "type": "path"
       },
       "parent": []
@@ -64,6 +64,7 @@
       },
       "parent": []
     },
+
     "piGeckoWebsearch": {
       "inputs": {
         "nixpkgs": [
@@ -180,9 +181,10 @@
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
-        "piAgents": "piAgents",
+        "piHive": "piHive",
         "piCodexFast": "piCodexFast",
         "piCompact": "piCompact",
+
         "piGeckoWebsearch": "piGeckoWebsearch",
         "piHashline": "piHashline",
         "piMinimalUi": "piMinimalUi",
