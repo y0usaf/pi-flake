@@ -194,18 +194,6 @@
       "minimal-ui" = self.packages.${system}."pi-minimal-ui";
     };
 
-    # Convert boolean flags into an extension attrset for piWithExtensions.
-    lib.enabledExtensions = {
-      system,
-      extensionFlags ? {},
-    }: let
-      lib = nixpkgs.lib;
-      available = self.lib.extensionPackagesFor system;
-      unknownEnabled = lib.filterAttrs (_: enabled: enabled) (builtins.removeAttrs extensionFlags (builtins.attrNames available));
-    in
-      assert lib.assertMsg (unknownEnabled == {}) "Unknown pi extension flag(s): ${lib.concatStringsSep ", " (builtins.attrNames unknownEnabled)}";
-        lib.filterAttrs (name: _: extensionFlags.${name} or false) available;
-
     # Flag-driven builder for consumers that want conditional bundled extensions.
     lib.piWithExtensionFlags = {
       pkgs,
@@ -214,15 +202,15 @@
       extensionFlags ? {},
       extraExtensions ? {},
     }: let
-      selectedPi =
-        if pi == null
-        then self.packages.${system}.pi
-        else pi;
-      extensions = (self.lib.enabledExtensions {inherit system extensionFlags;}) // extraExtensions;
+      lib = nixpkgs.lib;
+      available = self.lib.extensionPackagesFor system;
+      unknownEnabled = lib.filterAttrs (_: enabled: enabled) (builtins.removeAttrs extensionFlags (builtins.attrNames available));
+      extensions = assert lib.assertMsg (unknownEnabled == {}) "Unknown pi extension flag(s): ${lib.concatStringsSep ", " (builtins.attrNames unknownEnabled)}";
+        lib.filterAttrs (name: _: extensionFlags.${name} or false) available // extraExtensions;
     in
       self.lib.piWithExtensions {
         inherit pkgs extensions;
-        pi = selectedPi;
+        pi = if pi == null then self.packages.${system}.pi else pi;
       };
 
     # Library function to build pi with extensions (available across systems)
@@ -274,14 +262,6 @@
             process.exit(1);
           }
 
-          function isDirectory(p) {
-            try {
-              return fs.statSync(p).isDirectory();
-            } catch {
-              return false;
-            }
-          }
-
           function isExtensionDir(p) {
             return fs.existsSync(path.join(p, 'index.ts')) || fs.existsSync(path.join(p, 'package.json'));
           }
@@ -290,7 +270,13 @@
             ? []
             : fs.readdirSync(defaultExtensionsPath)
                 .map(p => path.join(defaultExtensionsPath, p))
-                .filter(p => isDirectory(p) && isExtensionDir(p));
+                .filter(p => {
+                  try {
+                    return fs.statSync(p).isDirectory() && isExtensionDir(p);
+                  } catch {
+                    return false;
+                  }
+                });
 
           if (defaultExtensions.length === 0) process.exit(0);
 
