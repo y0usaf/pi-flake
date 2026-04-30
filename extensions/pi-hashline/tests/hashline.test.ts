@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   applyEditsToContent,
+  applyEditsToRawContentPreservingLineEndings,
   buildChangedAnchorResponse,
   computeLineHash,
   formatHashlineRegion,
@@ -14,6 +15,10 @@ function anchor(lineNumber: number, line: string): string {
 
 function apply(original: string, edits: RawEdit[]): string {
   return applyEditsToContent(original, edits);
+}
+
+function applyRaw(original: string, edits: RawEdit[]): string {
+  return applyEditsToRawContentPreservingLineEndings(original, edits);
 }
 
 describe("hashline formatting", () => {
@@ -111,6 +116,19 @@ describe("anchor edits", () => {
     ])).toBe("a\nB\nc\nd\n");
     expect(apply("a\n", [{ loc: "prepend", content: ["z"] }])).toBe("z\na\n");
   });
+
+  test("raw anchor edits preserve mixed line endings", () => {
+    const original = "a\nb\r\nc\r\n";
+    const result = applyRaw(original, [
+      { loc: { range: { pos: anchor(2, "b"), end: anchor(2, "b") } }, content: ["B"] },
+    ]);
+    expect(result).toBe("a\nB\r\nc\r\n");
+  });
+
+  test("raw inserts preserve final newline state", () => {
+    expect(applyRaw("a", [{ loc: { append: anchor(1, "a") }, content: ["b"] }])).toBe("a\nb");
+    expect(applyRaw("a\r\n", [{ loc: { append: anchor(1, "a") }, content: ["b"] }])).toBe("a\r\nb\r\n");
+  });
 });
 
 describe("replace_text", () => {
@@ -131,6 +149,17 @@ describe("replace_text", () => {
       { op: "replace_text", oldText: "a", newText: "A" },
       { op: "append", lines: ["b"] },
     ])).toThrow("[E_EDIT_CONFLICT]");
+  });
+
+  test("raw replace_text preserves unrelated mixed line endings", () => {
+    const result = applyRaw("a\nb\r\nc\r\n", [
+      { op: "replace_text", oldText: "b", newText: "B" },
+    ]);
+    expect(result).toBe("a\nB\r\nc\r\n");
+
+    expect(applyRaw("a\nb\r\nc\r\n", [
+      { op: "replace_text", oldText: "b\nc", newText: "B\nC" },
+    ])).toBe("a\nB\r\nC\r\n");
   });
 });
 

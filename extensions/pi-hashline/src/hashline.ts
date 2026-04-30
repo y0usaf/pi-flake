@@ -10,7 +10,14 @@ import {
   SIGNIFICANT_RE,
   STRUCTURAL_STRIP_RE,
 } from "./constants";
-import { normalizeToLF } from "./text-file";
+import {
+  joinTextLineRecords,
+  normalizeToLF,
+  splitTextLineRecords,
+  type LineEnding,
+  type LineTerminator,
+  type TextLineRecord,
+} from "./text-file";
 
 const DEFAULT_ANCHOR_TEXT_BUDGET_BYTES = 50 * 1024;
 
@@ -42,9 +49,12 @@ export type EditRequest = {
   edits: RawEdit[];
 };
 
+type LineEditKind = "replace" | "append" | "prepend";
+
 type LineEdit = {
   requestIndex: number;
   label: string;
+  kind: LineEditKind;
   start: number;
   end: number;
   lines: string[];
@@ -237,10 +247,10 @@ function resolveLocEdit(index: number, edit: RawEdit, fileLines: string[], stale
   const loc = edit.loc;
 
   if (loc === "append") {
-    return { requestIndex: index, label: describeLineEdit(edit), start: fileLines.length, end: fileLines.length, lines };
+    return { requestIndex: index, label: describeLineEdit(edit), kind: "append", start: fileLines.length, end: fileLines.length, lines };
   }
   if (loc === "prepend") {
-    return { requestIndex: index, label: describeLineEdit(edit), start: 0, end: 0, lines };
+    return { requestIndex: index, label: describeLineEdit(edit), kind: "prepend", start: 0, end: 0, lines };
   }
   if (!loc || typeof loc !== "object") {
     throw new Error(`[E_BAD_OP] Edit ${index} loc must be "append", "prepend", {append}, {prepend}, or {range}.`);
@@ -249,12 +259,12 @@ function resolveLocEdit(index: number, edit: RawEdit, fileLines: string[], stale
   if ("append" in loc) {
     const pos = parseAnchor(loc.append);
     validateAnchor(pos, fileLines, staleAnchors);
-    return { requestIndex: index, label: describeLineEdit(edit), start: pos.line, end: pos.line, lines };
+    return { requestIndex: index, label: describeLineEdit(edit), kind: "append", start: pos.line, end: pos.line, lines };
   }
   if ("prepend" in loc) {
     const pos = parseAnchor(loc.prepend);
     validateAnchor(pos, fileLines, staleAnchors);
-    return { requestIndex: index, label: describeLineEdit(edit), start: pos.line - 1, end: pos.line - 1, lines };
+    return { requestIndex: index, label: describeLineEdit(edit), kind: "prepend", start: pos.line - 1, end: pos.line - 1, lines };
   }
   if ("range" in loc) {
     const pos = parseAnchor(loc.range.pos);
@@ -264,7 +274,7 @@ function resolveLocEdit(index: number, edit: RawEdit, fileLines: string[], stale
     if (end.line < pos.line) {
       throw new Error(`[E_BAD_REF] Edit ${index} has end before pos (${stringifyAnchor(end)} < ${stringifyAnchor(pos)}).`);
     }
-    return { requestIndex: index, label: describeLineEdit(edit), start: pos.line - 1, end: end.line, lines };
+    return { requestIndex: index, label: describeLineEdit(edit), kind: "replace", start: pos.line - 1, end: end.line, lines };
   }
 
   throw new Error(`[E_BAD_OP] Edit ${index} loc must be "append", "prepend", {append}, {prepend}, or {range}.`);
@@ -297,6 +307,7 @@ function resolveLineEdits(edits: RawEdit[], fileLines: string[]): LineEdit[] {
         resolved.push({
           requestIndex: index,
           label: describeLineEdit(edit),
+          kind: "replace",
           start: pos.line - 1,
           end: endAnchor.line,
           lines,
@@ -307,6 +318,7 @@ function resolveLineEdits(edits: RawEdit[], fileLines: string[]): LineEdit[] {
         resolved.push({
           requestIndex: index,
           label: describeLineEdit(edit),
+          kind: "append",
           start: pos ? pos.line : fileLines.length,
           end: pos ? pos.line : fileLines.length,
           lines,
@@ -317,6 +329,7 @@ function resolveLineEdits(edits: RawEdit[], fileLines: string[]): LineEdit[] {
         resolved.push({
           requestIndex: index,
           label: describeLineEdit(edit),
+          kind: "prepend",
           start: pos ? pos.line - 1 : 0,
           end: pos ? pos.line - 1 : 0,
           lines,
@@ -354,9 +367,140 @@ function applyLineEdits(originalLines: string[], edits: LineEdit[]): string[] {
   return next;
 }
 
-function applyExactUniqueReplace(content: string, oldText: string, newText: string): string {
-  const normalizedOld = normalizeToLF(oldText);
-  const normalizedNew = normalizeToLF(newText);
+type NonEmptyLineTerminator = Exclude<LineTerminator, "">;
+
+function isNonEmptyLineTerminator(ending: LineTerminator): ending is NonEmptyLineTerminator {
+  return ending.length > 0;
+}
+
+function resolveFallbackLineTerminator(ending: LineEnding | LineTerminator | undefined): NonEmptyLineTerminator {
+  return ending && ending.length > 0 ? ending as NonEmptyLineTerminator : "\n";
+}
+
+function cloneLineRecords(records: TextLineRecord[]): TextLineRecord[] {
+  return records.map((record) => ({ text: record.text, ending: record.ending }));
+}
+
+function findBackwardLineTerminator(records: TextLineRecord[], start: number): NonEmptyLineTerminator | undefined {
+  for (let index = Math.min(start, records.length - 1); index >= 0; index--) {
+    const ending = records[index]?.ending ?? "";
+    if (isNonEmptyLineTerminator(ending)) return ending;
+  }
+  return undefined;
+}
+
+function findForwardLineTerminator(records: TextLineRecord[], start: number): NonEmptyLineTerminator | undefined {
+  for (let index = Math.max(0, start); index < records.length; index++) {
+    const ending = records[index]?.ending ?? "";
+    if (isNonEmptyLineTerminator(ending)) return ending;
+  }
+  return undefined;
+}
+
+function getPreferredLineTerminator(
+  edit: LineEdit,
+  originalRecords: TextLineRecord[],
+  fallback: NonEmptyLineTerminator,
+): NonEmptyLineTerminator {
+  if (edit.kind === "replace") {
+    for (let index = edit.start; index < edit.end; index++) {
+      const ending = originalRecords[index]?.ending ?? "";
+      if (isNonEmptyLineTerminator(ending)) return ending;
+    }
+    return findForwardLineTerminator(originalRecords, edit.start) ??
+      findBackwardLineTerminator(originalRecords, edit.start - 1) ??
+      fallback;
+  }
+
+  if (edit.kind === "append") {
+    return findBackwardLineTerminator(originalRecords, edit.start - 1) ??
+      findForwardLineTerminator(originalRecords, edit.start) ??
+      fallback;
+  }
+
+  return findForwardLineTerminator(originalRecords, edit.start) ??
+    findBackwardLineTerminator(originalRecords, edit.start - 1) ??
+    fallback;
+}
+
+function normalizeLineRecordTerminatorState(records: TextLineRecord[], originalHadFinalNewline: boolean, fallback: NonEmptyLineTerminator): void {
+  if (records.length === 0) return;
+
+  for (let index = 0; index < records.length - 1; index++) {
+    if (!isNonEmptyLineTerminator(records[index]!.ending)) records[index]!.ending = fallback;
+  }
+
+  const last = records[records.length - 1]!;
+  if (originalHadFinalNewline) {
+    if (!isNonEmptyLineTerminator(last.ending)) last.ending = fallback;
+  } else {
+    last.ending = "";
+  }
+}
+
+function applyLineRecordEdits(
+  originalRecords: TextLineRecord[],
+  edits: RawEdit[],
+  fallback: NonEmptyLineTerminator,
+): TextLineRecord[] {
+  const originalLines = originalRecords.map((record) => record.text);
+  const lineEdits = resolveLineEdits(edits, originalLines);
+  const next = cloneLineRecords(originalRecords);
+  const originalHadFinalNewline = originalRecords.length > 0 && isNonEmptyLineTerminator(originalRecords[originalRecords.length - 1]!.ending);
+
+  for (const edit of [...lineEdits].sort((a, b) => b.start - a.start || b.end - a.end)) {
+    const preferredEnding = getPreferredLineTerminator(edit, originalRecords, fallback);
+    const replacementRecords = edit.lines.map((line) => ({ text: line, ending: preferredEnding }));
+    next.splice(edit.start, edit.end - edit.start, ...replacementRecords);
+  }
+
+  normalizeLineRecordTerminatorState(next, originalHadFinalNewline, fallback);
+  return next;
+}
+
+function firstLineTerminatorInText(text: string): NonEmptyLineTerminator | undefined {
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (char === "\r") return text[index + 1] === "\n" ? "\r\n" : "\r";
+    if (char === "\n") return "\n";
+  }
+  return undefined;
+}
+
+function lastLineTerminatorInText(text: string): NonEmptyLineTerminator | undefined {
+  for (let index = text.length - 1; index >= 0; index--) {
+    const char = text[index];
+    if (char === "\n") return index > 0 && text[index - 1] === "\r" ? "\r\n" : "\n";
+    if (char === "\r") return text[index + 1] === "\n" ? undefined : "\r";
+  }
+  return undefined;
+}
+
+function restoreLineTerminator(text: string, ending: NonEmptyLineTerminator): string {
+  const normalized = normalizeToLF(text);
+  return ending === "\n" ? normalized : normalized.replace(/\n/g, ending);
+}
+
+function buildNormalizedOffsetToRawOffsetMap(text: string): number[] {
+  const map: number[] = [];
+  let rawOffset = 0;
+  let normalizedOffset = 0;
+
+  while (rawOffset < text.length) {
+    map[normalizedOffset] = rawOffset;
+    if (text[rawOffset] === "\r" && text[rawOffset + 1] === "\n") {
+      rawOffset += 2;
+    } else {
+      rawOffset++;
+    }
+    normalizedOffset++;
+  }
+
+  map[normalizedOffset] = rawOffset;
+  return map;
+}
+
+function findUniqueNormalizedMatch(content: string, normalizedOld: string): number {
   if (normalizedOld.length === 0) {
     throw new Error("[E_BAD_OP] replace_text requires non-empty oldText.");
   }
@@ -377,7 +521,34 @@ function applyExactUniqueReplace(content: string, oldText: string, newText: stri
     throw new Error("[E_MULTI_MATCH] replace_text found multiple matches in the current file. Re-read and use hashline anchors.");
   }
 
-  const start = matches[0]!;
+  return matches[0]!;
+}
+
+function applyExactUniqueReplacePreservingLineEndings(
+  rawContent: string,
+  oldText: string,
+  newText: string,
+  fallback: NonEmptyLineTerminator,
+): string {
+  const normalizedContent = normalizeToLF(rawContent);
+  const normalizedOld = normalizeToLF(oldText);
+  const normalizedNew = normalizeToLF(newText);
+  const start = findUniqueNormalizedMatch(normalizedContent, normalizedOld);
+  const offsetMap = buildNormalizedOffsetToRawOffsetMap(rawContent);
+  const rawStart = offsetMap[start]!;
+  const rawEnd = offsetMap[start + normalizedOld.length]!;
+  const preferredEnding = firstLineTerminatorInText(rawContent.slice(rawStart, rawEnd)) ??
+    lastLineTerminatorInText(rawContent.slice(0, rawStart)) ??
+    firstLineTerminatorInText(rawContent.slice(rawEnd)) ??
+    fallback;
+
+  return rawContent.slice(0, rawStart) + restoreLineTerminator(normalizedNew, preferredEnding) + rawContent.slice(rawEnd);
+}
+
+function applyExactUniqueReplace(content: string, oldText: string, newText: string): string {
+  const normalizedOld = normalizeToLF(oldText);
+  const normalizedNew = normalizeToLF(newText);
+  const start = findUniqueNormalizedMatch(content, normalizedOld);
   return content.slice(0, start) + normalizedNew + content.slice(start + normalizedOld.length);
 }
 
@@ -399,6 +570,28 @@ export function applyEditsToContent(original: string, edits: RawEdit[]): string 
   const lineEdits = resolveLineEdits(edits, originalLines);
   const nextLines = applyLineEdits(originalLines, lineEdits);
   return joinVisibleLines(nextLines, preserveTerminalNewline);
+}
+
+export function applyEditsToRawContentPreservingLineEndings(
+  originalRaw: string,
+  edits: RawEdit[],
+  options: { defaultLineEnding?: LineEnding | LineTerminator } = {},
+): string {
+  const fallback = resolveFallbackLineTerminator(options.defaultLineEnding);
+  const textEdits = edits.filter((edit) => edit.op === "replace_text");
+  if (textEdits.length > 0) {
+    if (edits.length !== 1) {
+      throw new Error("[E_EDIT_CONFLICT] replace_text cannot be mixed with anchor edits in one call. Use anchors or split the request.");
+    }
+    const edit = textEdits[0]!;
+    if (typeof edit.oldText !== "string" || typeof edit.newText !== "string") {
+      throw new Error("[E_BAD_OP] replace_text requires string oldText and newText.");
+    }
+    return applyExactUniqueReplacePreservingLineEndings(originalRaw, edit.oldText, edit.newText, fallback);
+  }
+
+  const nextRecords = applyLineRecordEdits(splitTextLineRecords(originalRaw), edits, fallback);
+  return joinTextLineRecords(nextRecords);
 }
 
 function computeChangedLineRange(oldText: string, newText: string): {

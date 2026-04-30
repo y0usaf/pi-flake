@@ -6,9 +6,11 @@ import {
   detectLineEnding,
   detectSupportedImageMime,
   isSupportedImageFile,
+  joinTextLineRecords,
   loadTextFile,
   normalizeToLF,
   restoreLineEnding,
+  splitTextLineRecords,
   stripBom,
 } from "../src/text-file";
 
@@ -17,6 +19,16 @@ describe("line endings and BOM", () => {
     expect(normalizeToLF("a\r\nb\rc")).toBe("a\nb\nc");
     expect(restoreLineEnding("a\nb", "\n")).toBe("a\nb");
     expect(restoreLineEnding("a\nb", "\r\n")).toBe("a\r\nb");
+  });
+
+  test("splits and joins mixed line endings", () => {
+    const records = splitTextLineRecords("a\nb\r\nc");
+    expect(records).toEqual([
+      { text: "a", ending: "\n" },
+      { text: "b", ending: "\r\n" },
+      { text: "c", ending: "" },
+    ]);
+    expect(joinTextLineRecords(records)).toBe("a\nb\r\nc");
   });
 
   test("detects line ending from first newline", () => {
@@ -49,6 +61,7 @@ describe("loadTextFile", () => {
     await expect(isSupportedImageFile(path)).resolves.toBe(false);
     await expect(loadTextFile(path)).resolves.toEqual({
       bom: "\uFEFF",
+      rawText: "a\r\nb\r\n",
       text: "a\nb\n",
       lineEnding: "\r\n",
     });
