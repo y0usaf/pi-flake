@@ -316,8 +316,17 @@
           };
           const next = JSON.stringify(mergedSettings, null, 2) + '\n';
 
-          fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-          fs.writeFileSync(settingsPath, next);
+          try {
+            fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+            fs.writeFileSync(settingsPath, next);
+          } catch (err) {
+            if (err && ['EROFS', 'EACCES', 'EPERM'].includes(err.code)) {
+              console.error(`Warning: cannot update pi settings at ''${settingsPath}: ''${err.code}`);
+              console.error('Bundled extensions were not auto-registered; make settings writable or add them declaratively.');
+              process.exit(0);
+            }
+            throw err;
+          }
           script
 
                   # Create wrapper that auto-discovers bundled extensions
