@@ -6,7 +6,7 @@ const UI_MIN_WIDTH = 24;
 const PROMPT_MARKER = ":::";
 const HEADER_DIAG = "╱";
 const MIN_HEADER_DIAGS = 3;
-const SECTION_SEPARATOR_TEXT = " / ";
+const SECTION_SEPARATOR_TEXT = " /// ";
 const STATUS_EDGE_TEXT = "///";
 
 const ANSI_PATTERN = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|_[^\x07]*(?:\x07|\x1b\\))/g;
