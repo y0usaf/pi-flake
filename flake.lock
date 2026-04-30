@@ -96,6 +96,22 @@
       },
       "parent": []
     },
+    "piInputBox": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-input-box",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-input-box",
+        "type": "path"
+      },
+      "parent": []
+    },
     "piRtk": {
       "inputs": {
         "nixpkgs": [
@@ -128,6 +144,22 @@
         "repo": "pi-mono",
         "type": "github"
       }
+    },
+    "piStatusline": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-statusline",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-statusline",
+        "type": "path"
+      },
+      "parent": []
     },
     "piToolManagement": {
       "inputs": {
@@ -169,8 +201,10 @@
         "piCompact": "piCompact",
         "piGeckoWebsearch": "piGeckoWebsearch",
         "piHashline": "piHashline",
+        "piInputBox": "piInputBox",
         "piRtk": "piRtk",
         "piSrc": "piSrc",
+        "piStatusline": "piStatusline",
         "piToolManagement": "piToolManagement",
         "piWebfetch": "piWebfetch"
       }
