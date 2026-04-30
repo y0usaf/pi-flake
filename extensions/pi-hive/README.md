@@ -133,9 +133,9 @@ Existing child ids are delegated to; new child ids are spawned and **must** incl
 
 
 
-### Workflow / Honeycomb
+### Workflows
 
-Honeycomb workflows are plain JSON: no CUE/compiler layer. Steps run deterministically in order. A step can be a single agent step, a parallel barrier, or a bounded `while` loop. Tasks support `{previous}`, `{all}`, `{step:<id>}`, and loop-local `{iteration}` / `{max_iterations}` substitutions.
+Workflows are plain JSON: no CUE/compiler layer. Steps run deterministically in order. A step can be a single agent step, a parallel barrier, or a bounded `while` loop. Tasks support `{previous}`, `{all}`, `{step:<id>}`, and loop-local `{iteration}` / `{max_iterations}` substitutions.
 
 Progressive disclosure: workflow contents are **not** injected at session start. The model can discover them on demand via `agent({ action: "list_workflows" })`, inspect one via `agent({ action: "show_workflow", workflow_name: "..." })`, then run it via `agent({ action: "workflow", workflow_name: "..." })`.
 

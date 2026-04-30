@@ -10,6 +10,7 @@
 	],
 	"files": [
 		"index.ts",
+		"workflows.ts",
 		"README.md",
 		"flake.nix",
 		"tsconfig.json"

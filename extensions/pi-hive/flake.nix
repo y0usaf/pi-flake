@@ -36,7 +36,7 @@
 
             installPhase = ''
               mkdir -p $out
-              cp index.ts README.md package.json flake.nix $out/
+              cp index.ts workflows.ts README.md package.json flake.nix $out/
               if [ -f tsconfig.json ]; then cp tsconfig.json $out/; fi
             '';
 
