@@ -10,7 +10,6 @@ updates:
     commit-message:
       prefix: "chore"
       include: "scope"
-    open-pull-requests-limit: 5
 
   - package-ecosystem: "nix"
     directory: "/extensions/pi-hive"

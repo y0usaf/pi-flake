@@ -658,7 +658,6 @@ export const HASHLINE_BIGRAMS_COUNT = HASHLINE_BIGRAMS.length;
  */
 export const HASHLINE_BIGRAM_RE_SRC = `(?:${HASHLINE_BIGRAMS.join("|")})`;
 
-export const HASHLINE_CONTENT_SEPARATOR = "|";
 export const HASH_RE = new RegExp(`^(?:${HASHLINE_BIGRAM_RE_SRC})$`);
 
 export const HASHLINE_PREFIX_RE = new RegExp(
