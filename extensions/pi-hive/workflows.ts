@@ -40,18 +40,21 @@ const workflowUntilSchema = Type.Object({
 	last_line_equals: Type.Optional(Type.String({ description: "Stop when the step output's last non-empty line equals this text." })),
 }, { additionalProperties: false });
 
-const workflowWhileStepSchema = Type.Object({
-	type: Type.Literal("while"),
-	id: Type.String({ description: "Loop/barrier output id" }),
-	max_iterations: Type.Integer({ minimum: 1, maximum: 10, description: "Hard cap for loop iterations." }),
-	until: workflowUntilSchema,
-	steps: Type.Array(Type.Union([workflowAgentStepSchema, workflowParallelStepSchema]), { minItems: 1, description: "Loop body steps. Nested while loops are intentionally unsupported." }),
-}, { additionalProperties: false });
+const workflowStepSchema = Type.Recursive((This) => Type.Union([
+	workflowAgentStepSchema,
+	workflowParallelStepSchema,
+	Type.Object({
+		type: Type.Literal("while"),
+		id: Type.String({ description: "Loop/barrier output id" }),
+		until: workflowUntilSchema,
+		steps: Type.Array(This, { minItems: 1, description: "Loop body steps. Nested while loops are supported. Loops run until their condition is met or the run is cancelled." }),
+	}, { additionalProperties: false }),
+]), { $id: "WorkflowStep" });
 
 export const workflowSchema = Type.Object({
 	name: Type.Optional(Type.String({ description: "Workflow name" })),
 	description: Type.Optional(Type.String({ description: "Workflow description" })),
-	steps: Type.Array(Type.Union([workflowAgentStepSchema, workflowParallelStepSchema, workflowWhileStepSchema]), { minItems: 1, description: "Deterministic workflow steps run in order." }),
+	steps: Type.Array(workflowStepSchema, { minItems: 1, description: "Deterministic workflow steps run in order." }),
 }, { additionalProperties: false });
 
 export interface ChainStepParams {
@@ -69,8 +72,11 @@ export interface ParallelTaskParams {
 }
 
 export type WorkflowUntilParams = { step: string; contains?: string; last_line_equals?: string };
-export type WorkflowBodyStepParams = (ChainStepParams & { type?: "agent" }) | { type: "parallel"; id: string; tasks: ParallelTaskParams[] };
-export type WorkflowStepParams = WorkflowBodyStepParams | { type: "while"; id: string; max_iterations: number; until: WorkflowUntilParams; steps: WorkflowBodyStepParams[] };
+export type WorkflowAgentStepParams = ChainStepParams & { type?: "agent" };
+export type WorkflowParallelStepParams = { type: "parallel"; id: string; tasks: ParallelTaskParams[] };
+export type WorkflowWhileStepParams = { type: "while"; id: string; until: WorkflowUntilParams; steps: WorkflowStepParams[] };
+export type WorkflowStepParams = WorkflowAgentStepParams | WorkflowParallelStepParams | WorkflowWhileStepParams;
+export type WorkflowBodyStepParams = WorkflowAgentStepParams | WorkflowParallelStepParams;
 
 export interface WorkflowParams {
 	name?: string;
@@ -136,21 +142,33 @@ function assertWorkflowTask(task: ParallelTaskParams, source: string): void {
 	normalizePositiveTimeout(task.timeout_seconds, `${source}.timeout_seconds`);
 }
 
-function assertWorkflowBodyStep(step: WorkflowBodyStepParams, source: string): void {
+function assertWorkflowStep(step: WorkflowStepParams, source: string): void {
 	if (!step || typeof step !== "object" || Array.isArray(step)) throw new Error(`${source} must be an object.`);
 	const stepObj = step as unknown as Record<string, unknown>;
 	const type = stepObj.type ?? "agent";
-	if (type !== "agent" && type !== "parallel") throw new Error(`${source}.type must be "agent" or "parallel".`);
+	if (type !== "agent" && type !== "parallel" && type !== "while") throw new Error(`${source}.type must be "agent", "parallel", or "while".`);
 	if (type === "parallel") {
 		rejectUnknownKeys(stepObj, ["type", "id", "tasks"], source);
-		const parallelStep = step as { type: "parallel"; id: string; tasks: ParallelTaskParams[] };
+		const parallelStep = step as WorkflowParallelStepParams;
 		if (typeof parallelStep.id !== "string" || parallelStep.id.trim().length === 0) throw new Error(`${source} requires id.`);
 		if (!Array.isArray(parallelStep.tasks) || parallelStep.tasks.length === 0) throw new Error(`${source} requires non-empty tasks.`);
 		parallelStep.tasks.forEach((task, taskIndex) => assertWorkflowTask(task, `${source}.tasks[${taskIndex}]`));
 		return;
 	}
+	if (type === "while") {
+		rejectUnknownKeys(stepObj, ["type", "id", "until", "steps"], source);
+		const whileStep = step as WorkflowWhileStepParams;
+		if (typeof whileStep.id !== "string" || whileStep.id.trim().length === 0) throw new Error(`${source} requires id.`);
+		if (!whileStep.until || typeof whileStep.until !== "object" || Array.isArray(whileStep.until)) throw new Error(`${source}.until must be an object.`);
+		rejectUnknownKeys(whileStep.until as unknown as Record<string, unknown>, ["step", "contains", "last_line_equals"], `${source}.until`);
+		if (typeof whileStep.until.step !== "string" || whileStep.until.step.trim().length === 0) throw new Error(`${source}.until requires step.`);
+		if ((typeof whileStep.until.contains !== "string" || whileStep.until.contains.length === 0) && (typeof whileStep.until.last_line_equals !== "string" || whileStep.until.last_line_equals.length === 0)) throw new Error(`${source}.until requires non-empty contains or last_line_equals.`);
+		if (!Array.isArray(whileStep.steps) || whileStep.steps.length === 0) throw new Error(`${source}.steps must be non-empty.`);
+		whileStep.steps.forEach((bodyStep, bodyIndex) => assertWorkflowStep(bodyStep, `${source}.steps[${bodyIndex}]`));
+		return;
+	}
 	rejectUnknownKeys(stepObj, ["type", "id", "system_prompt", "task", "timeout_seconds"], source);
-	const agentStep = step as ChainStepParams & { type?: "agent" };
+	const agentStep = step as WorkflowAgentStepParams;
 	if (typeof agentStep.id !== "string" || agentStep.id.trim().length === 0) throw new Error(`${source} requires id.`);
 	if (typeof agentStep.task !== "string" || agentStep.task.trim().length === 0) throw new Error(`${source} requires task.`);
 	normalizePositiveTimeout(agentStep.timeout_seconds, `${source}.timeout_seconds`);
@@ -161,24 +179,7 @@ export function assertWorkflowShape(value: unknown, source: string): WorkflowPar
 	const workflow = value as WorkflowParams;
 	rejectUnknownKeys(workflow as unknown as Record<string, unknown>, ["name", "description", "steps"], source);
 	if (!Array.isArray(workflow.steps) || workflow.steps.length === 0) throw new Error(`${source}: expected non-empty steps array.`);
-	for (const [index, step] of workflow.steps.entries()) {
-		const stepObj = step as unknown as Record<string, unknown>;
-		if ((stepObj?.type ?? "agent") === "while") {
-			if (!step || typeof step !== "object" || Array.isArray(step)) throw new Error(`${source}: steps[${index}] must be an object.`);
-			rejectUnknownKeys(stepObj, ["type", "id", "max_iterations", "until", "steps"], `${source}: steps[${index}]`);
-			const whileStep = step as { type: "while"; id: string; max_iterations: number; until: WorkflowUntilParams; steps: WorkflowBodyStepParams[] };
-			if (typeof whileStep.id !== "string" || whileStep.id.trim().length === 0) throw new Error(`${source}: steps[${index}] requires id.`);
-			if (!Number.isInteger(whileStep.max_iterations) || whileStep.max_iterations < 1 || whileStep.max_iterations > 10) throw new Error(`${source}: steps[${index}].max_iterations must be an integer 1..10.`);
-			if (!whileStep.until || typeof whileStep.until !== "object" || Array.isArray(whileStep.until)) throw new Error(`${source}: steps[${index}].until must be an object.`);
-			rejectUnknownKeys(whileStep.until as unknown as Record<string, unknown>, ["step", "contains", "last_line_equals"], `${source}: steps[${index}].until`);
-			if (typeof whileStep.until.step !== "string" || whileStep.until.step.trim().length === 0) throw new Error(`${source}: steps[${index}].until requires step.`);
-			if ((typeof whileStep.until.contains !== "string" || whileStep.until.contains.length === 0) && (typeof whileStep.until.last_line_equals !== "string" || whileStep.until.last_line_equals.length === 0)) throw new Error(`${source}: steps[${index}].until requires non-empty contains or last_line_equals.`);
-			if (!Array.isArray(whileStep.steps) || whileStep.steps.length === 0) throw new Error(`${source}: steps[${index}].steps must be non-empty.`);
-			whileStep.steps.forEach((bodyStep, bodyIndex) => assertWorkflowBodyStep(bodyStep, `${source}: steps[${index}].steps[${bodyIndex}]`));
-		} else {
-			assertWorkflowBodyStep(step as WorkflowBodyStepParams, `${source}: steps[${index}]`);
-		}
-	}
+	workflow.steps.forEach((step, index) => assertWorkflowStep(step, `${source}: steps[${index}]`));
 	return workflow;
 }
 
@@ -285,25 +286,25 @@ export async function showWorkflowResult(params: WorkflowLoadParams, cwd: string
 	return { content: [{ type: "text", text }], details: { workflow } };
 }
 
-export function isWorkflowParallelStep(step: WorkflowStepParams | WorkflowBodyStepParams): step is { type: "parallel"; id: string; tasks: ParallelTaskParams[] } {
+export function isWorkflowParallelStep(step: WorkflowStepParams | WorkflowBodyStepParams): step is WorkflowParallelStepParams {
 	return (step as { type?: string }).type === "parallel";
 }
 
-export function isWorkflowWhileStep(step: WorkflowStepParams): step is { type: "while"; id: string; max_iterations: number; until: WorkflowUntilParams; steps: WorkflowBodyStepParams[] } {
+export function isWorkflowWhileStep(step: WorkflowStepParams): step is WorkflowWhileStepParams {
 	return (step as { type?: string }).type === "while";
+}
+
+function collectWorkflowChildIds(steps: WorkflowStepParams[], ids: string[]): void {
+	for (const step of steps) {
+		if (isWorkflowParallelStep(step)) ids.push(...step.tasks.map((task) => task.id));
+		else if (isWorkflowWhileStep(step)) collectWorkflowChildIds(step.steps, ids);
+		else ids.push(step.id);
+	}
 }
 
 export function workflowChildIds(workflow: WorkflowParams): string[] {
 	const ids: string[] = [];
-	for (const step of workflow.steps) {
-		if (isWorkflowParallelStep(step)) ids.push(...step.tasks.map((task) => task.id));
-		else if (isWorkflowWhileStep(step)) {
-			for (const bodyStep of step.steps) {
-				if (isWorkflowParallelStep(bodyStep)) ids.push(...bodyStep.tasks.map((task) => task.id));
-				else ids.push(bodyStep.id);
-			}
-		} else ids.push(step.id);
-	}
+	collectWorkflowChildIds(workflow.steps, ids);
 	return ids;
 }
 
@@ -342,9 +343,13 @@ function isUntilSatisfied(until: WorkflowUntilParams, outputs: Array<{ id: strin
 	return false;
 }
 
-async function runWorkflowBodySteps<Details>(runtime: WorkflowRuntime<Details>, steps: WorkflowBodyStepParams[], previous: string, outputs: Array<{ id: string; output: string }>, vars: Record<string, string>, signal?: AbortSignal, onUpdate?: (partialResult: AgentToolResult<Details>) => void): Promise<string> {
+async function runWorkflowBodySteps<Details>(runtime: WorkflowRuntime<Details>, steps: WorkflowStepParams[], previous: string, outputs: Array<{ id: string; output: string }>, vars: Record<string, string>, signal?: AbortSignal, onUpdate?: (partialResult: AgentToolResult<Details>) => void): Promise<string> {
 	for (const step of steps) {
 		if (signal?.aborted) throw new Error("Workflow run was aborted.");
+		if (isWorkflowWhileStep(step)) {
+			previous = await runWhileStep(runtime, step, previous, outputs, signal, onUpdate);
+			continue;
+		}
 		if (isWorkflowParallelStep(step)) {
 			const tasks = step.tasks.map((task) => ({ ...task, task: substituteStepVars(task.task, previous, outputs, vars) }));
 			const result = await runtime.runParallel(tasks, signal, onUpdate);
@@ -366,21 +371,20 @@ async function runWorkflowBodySteps<Details>(runtime: WorkflowRuntime<Details>, 
 	return previous;
 }
 
-async function runWhileStep<Details>(runtime: WorkflowRuntime<Details>, step: { type: "while"; id: string; max_iterations: number; until: WorkflowUntilParams; steps: WorkflowBodyStepParams[] }, previous: string, outputs: Array<{ id: string; output: string }>, signal?: AbortSignal, onUpdate?: (partialResult: AgentToolResult<Details>) => void): Promise<string> {
+async function runWhileStep<Details>(runtime: WorkflowRuntime<Details>, step: WorkflowWhileStepParams, previous: string, outputs: Array<{ id: string; output: string }>, signal?: AbortSignal, onUpdate?: (partialResult: AgentToolResult<Details>) => void): Promise<string> {
 	const loopOutputs: Array<{ id: string; output: string }> = [];
-	let stoppedBy = "max_iterations";
-	for (let iteration = 1; iteration <= step.max_iterations; iteration++) {
+	let iteration = 1;
+	while (true) {
+		if (signal?.aborted) throw new Error("Workflow run was aborted.");
 		const before = outputs.length;
-		previous = await runWorkflowBodySteps(runtime, step.steps, previous, outputs, { iteration: String(iteration), max_iterations: String(step.max_iterations) }, signal, onUpdate);
+		previous = await runWorkflowBodySteps(runtime, step.steps, previous, outputs, { iteration: String(iteration) }, signal, onUpdate);
 		const iterationOutputs = outputs.slice(before);
 		const iterationText = iterationOutputs.map((o) => `=== ${o.id} ===\n${o.output}`).join("\n\n");
 		loopOutputs.push({ id: `${step.id}#${iteration}`, output: iterationText });
-		if (isUntilSatisfied(step.until, iterationOutputs)) {
-			stoppedBy = "until";
-			break;
-		}
+		if (isUntilSatisfied(step.until, iterationOutputs)) break;
+		iteration++;
 	}
-	const text = [`while ${step.id}: stopped_by=${stoppedBy}`, ...loopOutputs.map((o) => `=== ${o.id} ===\n${o.output}`)].join("\n\n");
+	const text = [`while ${step.id}: stopped_by=until`, ...loopOutputs.map((o) => `=== ${o.id} ===\n${o.output}`)].join("\n\n");
 	outputs.push({ id: step.id, output: text });
 	return text;
 }
