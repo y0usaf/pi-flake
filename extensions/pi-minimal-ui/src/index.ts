@@ -9,6 +9,177 @@ const MIN_HEADER_DIAGS = 3;
 
 const ANSI_PATTERN = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|_[^\x07]*(?:\x07|\x1b\\))/g;
 
+const ANSI_FG_RESET = "\x1b[39m";
+const ANSI_SGR_PATTERN = /\x1b\[([0-9;]*)m/g;
+
+type Rgb = { r: number; g: number; b: number };
+type Hsl = { h: number; s: number; l: number };
+type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+type Theme = ExtensionContext["ui"]["theme"];
+
+const THINKING_COLOR: Record<ThinkingLevel, Parameters<Theme["fg"]>[0]> = {
+	off: "thinkingOff",
+	minimal: "thinkingMinimal",
+	low: "thinkingLow",
+	medium: "thinkingMedium",
+	high: "thinkingHigh",
+	xhigh: "thinkingXhigh",
+};
+
+const CUBE_VALUES = [0, 95, 135, 175, 215, 255];
+const GRAY_VALUES = Array.from({ length: 24 }, (_, i) => 8 + i * 10);
+
+function ansi256ToRgb(index: number): Rgb {
+	if (index < 16) {
+		const base: Rgb[] = [
+			{ r: 0, g: 0, b: 0 },
+			{ r: 128, g: 0, b: 0 },
+			{ r: 0, g: 128, b: 0 },
+			{ r: 128, g: 128, b: 0 },
+			{ r: 0, g: 0, b: 128 },
+			{ r: 128, g: 0, b: 128 },
+			{ r: 0, g: 128, b: 128 },
+			{ r: 192, g: 192, b: 192 },
+			{ r: 128, g: 128, b: 128 },
+			{ r: 255, g: 0, b: 0 },
+			{ r: 0, g: 255, b: 0 },
+			{ r: 255, g: 255, b: 0 },
+			{ r: 0, g: 0, b: 255 },
+			{ r: 255, g: 0, b: 255 },
+			{ r: 0, g: 255, b: 255 },
+			{ r: 255, g: 255, b: 255 },
+		];
+		return base[Math.max(0, Math.min(15, index))];
+	}
+	if (index >= 232) {
+		const gray = GRAY_VALUES[Math.max(0, Math.min(GRAY_VALUES.length - 1, index - 232))];
+		return { r: gray, g: gray, b: gray };
+	}
+	const offset = Math.max(0, Math.min(215, index - 16));
+	return {
+		r: CUBE_VALUES[Math.floor(offset / 36)],
+		g: CUBE_VALUES[Math.floor(offset / 6) % 6],
+		b: CUBE_VALUES[offset % 6],
+	};
+}
+
+function ansiToRgb(ansi: string): Rgb | undefined {
+	const truecolor = ansi.match(/\x1b\[38;2;(\d+);(\d+);(\d+)m/);
+	if (truecolor) return { r: Number(truecolor[1]), g: Number(truecolor[2]), b: Number(truecolor[3]) };
+	const color256 = ansi.match(/\x1b\[38;5;(\d+)m/);
+	return color256 ? ansi256ToRgb(Number(color256[1])) : undefined;
+}
+
+function rgbToHsl({ r, g, b }: Rgb): Hsl {
+	r /= 255;
+	g /= 255;
+	b /= 255;
+	const max = Math.max(r, g, b);
+	const min = Math.min(r, g, b);
+	const l = (max + min) / 2;
+	if (max === min) return { h: 0, s: 0, l };
+
+	const d = max - min;
+	const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+	let h = 0;
+	if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+	else if (max === g) h = (b - r) / d + 2;
+	else h = (r - g) / d + 4;
+	return { h: h * 60, s, l };
+}
+
+function hslToRgb({ h, s, l }: Hsl): Rgb {
+	const c = (1 - Math.abs(2 * l - 1)) * s;
+	const hp = (((h % 360) + 360) % 360) / 60;
+	const x = c * (1 - Math.abs((hp % 2) - 1));
+	const m = l - c / 2;
+	let [r, g, b] = [0, 0, 0];
+	if (hp < 1) [r, g, b] = [c, x, 0];
+	else if (hp < 2) [r, g, b] = [x, c, 0];
+	else if (hp < 3) [r, g, b] = [0, c, x];
+	else if (hp < 4) [r, g, b] = [0, x, c];
+	else if (hp < 5) [r, g, b] = [x, 0, c];
+	else [r, g, b] = [c, 0, x];
+	return { r: Math.round((r + m) * 255), g: Math.round((g + m) * 255), b: Math.round((b + m) * 255) };
+}
+
+function gradientAnsi(start: Rgb, end: Rgb, index: number, total: number): string {
+	const t = Math.min(1, total <= 1 ? 0 : index / (total - 1));
+	const a = rgbToHsl(start);
+	const b = rgbToHsl(end);
+	if (a.s < 0.05) a.h = b.h;
+	if (b.s < 0.05) b.h = a.h;
+	const hueDelta = ((((b.h - a.h) % 360) + 540) % 360) - 180;
+	const saturation = a.s + (b.s - a.s) * t;
+	const rgb = hslToRgb({
+		h: a.h + hueDelta * t,
+		s: Math.min(1, t === 0 || t === 1 ? saturation : Math.max(0.4, saturation * 1.25)),
+		l: a.l + (b.l - a.l) * t,
+	});
+	return `\x1b[38;2;${rgb.r};${rgb.g};${rgb.b}m`;
+}
+
+function currentFgFromSgr(params: string, currentFg: string | undefined): string | undefined {
+	const codes = params ? params.split(";").map((part) => Number(part)) : [0];
+	for (let i = 0; i < codes.length; i++) {
+		const code = codes[i];
+		if (code === 0 || code === 39) currentFg = undefined;
+		else if (code === 38 && codes[i + 1] === 2 && i + 4 < codes.length) {
+			currentFg = `\x1b[38;2;${codes[i + 2]};${codes[i + 3]};${codes[i + 4]}m`;
+			i += 4;
+		} else if (code === 38 && codes[i + 1] === 5 && i + 2 < codes.length) {
+			currentFg = `\x1b[38;5;${codes[i + 2]}m`;
+			i += 2;
+		}
+	}
+	return currentFg;
+}
+
+function applyHeaderGradient(line: string, theme: Theme, thinking: ThinkingLevel | undefined, gradientWidth: number): string {
+	if (!thinking) return line;
+	const start = ansiToRgb(theme.getFgAnsi("accent"));
+	const end = ansiToRgb(theme.getFgAnsi(THINKING_COLOR[thinking]));
+	if (!start || !end) return line;
+
+	const dimFg = new Set([theme.getFgAnsi("dim"), theme.getFgAnsi("muted")]);
+	const width = Math.max(1, gradientWidth);
+	let out = "";
+	let last = 0;
+	let visible = 0;
+	let currentFg: string | undefined;
+	ANSI_SGR_PATTERN.lastIndex = 0;
+
+	for (const match of line.matchAll(ANSI_SGR_PATTERN)) {
+		out += gradientChunk(line.slice(last, match.index), currentFg, dimFg, start, end, visible, width);
+		visible += visibleWidth(line.slice(last, match.index));
+		out += match[0];
+		currentFg = currentFgFromSgr(match[1], currentFg);
+		last = match.index + match[0].length;
+	}
+	out += gradientChunk(line.slice(last), currentFg, dimFg, start, end, visible, width);
+	return `${out}${ANSI_FG_RESET}`;
+}
+
+function gradientChunk(
+	chunk: string,
+	currentFg: string | undefined,
+	dimFg: Set<string>,
+	start: Rgb,
+	end: Rgb,
+	visibleOffset: number,
+	lineWidth: number,
+): string {
+	if (!chunk || (currentFg && dimFg.has(currentFg))) return chunk;
+	let out = "";
+	let visible = visibleOffset;
+	for (const char of chunk) {
+		const charWidth = visibleWidth(char);
+		out += charWidth > 0 ? `${gradientAnsi(start, end, visible, lineWidth)}${char}` : char;
+		visible += charWidth;
+	}
+	return out;
+}
+
 function uiWidth(width: number): number {
 	return width <= UI_MIN_WIDTH ? Math.max(1, width) : width;
 }
@@ -140,11 +311,17 @@ function renderExtensionStatuses(footerData: { getExtensionStatuses(): ReadonlyM
 		.join(" ");
 }
 
+function currentThinkingLevel(pi: ExtensionAPI, ctx: ExtensionContext): ThinkingLevel | undefined {
+	if (!ctx.model?.reasoning) return undefined;
+	const level = pi.getThinkingLevel();
+	return level && level in THINKING_COLOR ? (level as ThinkingLevel) : undefined;
+}
+
 function renderModelInfo(pi: ExtensionAPI, ctx: ExtensionContext, theme: ExtensionContext["ui"]["theme"]): string {
 	const separator = theme.fg("dim", " · ");
 	const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "no-model";
-	const thinking = ctx.model?.reasoning ? pi.getThinkingLevel() : undefined;
-	return joinStyled([theme.fg("dim", model), thinking ? theme.fg("accent", thinking) : undefined], separator);
+	const thinking = currentThinkingLevel(pi, ctx);
+	return joinStyled([theme.fg("dim", model), thinking ? theme.fg(THINKING_COLOR[thinking], thinking) : undefined], separator);
 }
 
 function padLine(line: string, width: number): string {
@@ -176,7 +353,7 @@ function renderStatusGroups(
 	].filter((group): group is string => Boolean(group));
 }
 
-function renderHeaderLine(groups: string[], theme: ExtensionContext["ui"]["theme"], width: number): string {
+function renderHeaderLine(groups: string[], theme: ExtensionContext["ui"]["theme"], width: number, thinking: ThinkingLevel | undefined): string {
 	const prefix = `${theme.fg("accent", "pi")} `;
 	const separator = theme.fg("dim", " • ");
 	const content = groups.join(separator);
@@ -186,7 +363,7 @@ function renderHeaderLine(groups: string[], theme: ExtensionContext["ui"]["theme
 	const fittedContentWidth = visibleWidth(fittedContent);
 	const diagCount = Math.max(MIN_HEADER_DIAGS, width - prefixWidth - fittedContentWidth - 1);
 	const line = `${prefix}${theme.fg("accent", HEADER_DIAG.repeat(diagCount))} ${fittedContent}`;
-	return padLine(line, width);
+	return applyHeaderGradient(padLine(line, width), theme, thinking, prefixWidth + diagCount);
 }
 
 function renderStatusline(
@@ -198,7 +375,7 @@ function renderStatusline(
 ): string[] {
 	const innerWidth = uiWidth(width);
 	const groups = renderStatusGroups(pi, ctx, footerData, theme, innerWidth);
-	const primary = renderHeaderLine(groups, theme, innerWidth);
+	const primary = renderHeaderLine(groups, theme, innerWidth, currentThinkingLevel(pi, ctx));
 	if (innerWidth === width) return [primary];
 	return [centerLine(primary, innerWidth, width)];
 }

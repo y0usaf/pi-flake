@@ -2,7 +2,7 @@
 
 Minimal Pi UI extension with compact, Crush-inspired chrome:
 
-- a full-width header above the editor with an accent diagonal rule
+- a full-width header above the editor with a thinking-level gradient diagonal rule
 - a prompt rail (`:::`) instead of a detached centered box, so the editor aligns with the chat flow
 - hidden default footer
 
@@ -12,7 +12,7 @@ pi ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱ ~/Dev/pi-flake �
   │ continued prompt line
 ```
 
-The status header follows terminal width and truncates from the right. The editor keeps Pi's multiline editor behavior while dropping the box frame in favor of a subtle left rail.
+The status header follows terminal width and truncates from the right. When the selected model supports thinking, non-muted header text gradients from Pi green to the current thinking-level color; greyed metadata stays dim. The editor keeps Pi's multiline editor behavior while dropping the box frame in favor of a subtle left rail.
 
 ## Statusline data
 
