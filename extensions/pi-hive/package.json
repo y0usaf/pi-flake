@@ -11,24 +11,30 @@
 	"files": [
 		"index.ts",
 		"README.md",
-		"flake.nix"
+		"flake.nix",
+		"tsconfig.json"
 	],
 	"pi": {
 		"extensions": ["./index.ts"]
 	},
+	"scripts": {
+		"typecheck": "tsc --noEmit"
+	},
 	"peerDependencies": {
-		"@mariozechner/pi-agent-core": "*",
-		"@mariozechner/pi-ai": "*",
-		"@mariozechner/pi-coding-agent": "*",
-		"@mariozechner/pi-tui": "*",
-		"@sinclair/typebox": "*"
+		"@mariozechner/pi-agent-core": "^0.64.0",
+		"@mariozechner/pi-ai": "^0.64.0",
+		"@mariozechner/pi-coding-agent": "^0.64.0",
+		"@mariozechner/pi-tui": "^0.64.0",
+		"@sinclair/typebox": "^0.34.33"
 	},
 	"devDependencies": {
 		"@mariozechner/pi-agent-core": "^0.64.0",
 		"@mariozechner/pi-ai": "^0.64.0",
 		"@mariozechner/pi-coding-agent": "^0.64.0",
 		"@mariozechner/pi-tui": "^0.64.0",
-		"@sinclair/typebox": "^0.34.33"
+		"@sinclair/typebox": "^0.34.33",
+		"@types/node": "^22.15.3",
+		"typescript": "^5.8.3"
 	},
 	"license": "MIT"
 }

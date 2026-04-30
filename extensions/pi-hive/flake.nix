@@ -36,7 +36,8 @@
 
             installPhase = ''
               mkdir -p $out
-              cp -r . $out/
+              cp index.ts README.md package.json flake.nix $out/
+              if [ -f tsconfig.json ]; then cp tsconfig.json $out/; fi
             '';
 
             meta = with lib; {
@@ -58,7 +59,8 @@
 
             shellHook = ''
               echo "pi-hive dev shell"
-              echo "- Use: npm install"
+              echo "- Use: npm ci"
+              echo "- Check: npm run typecheck"
               echo "- Test: pi -e ./index.ts"
               echo "- Build package path: nix build"
             '';

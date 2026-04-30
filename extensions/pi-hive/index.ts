@@ -9,7 +9,7 @@
  * Report streams intermediate results to the parent via onUpdate.
  */
 
-import { readFile, writeFile, mkdir, realpath } from "node:fs/promises";
+import { readFile, writeFile, mkdir, realpath, stat, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { spawn as spawnProcess } from "node:child_process";
 import { dirname, join, resolve, isAbsolute, sep, relative } from "node:path";
@@ -62,19 +62,55 @@ function buildSafeEnv(): NodeJS.ProcessEnv {
 // Schemas
 // ---------------------------------------------------------------------------
 
+const timeoutSecondsSchema = Type.Integer({ minimum: 1, maximum: 86400, description: "Timeout in whole seconds (1..86400)." });
+
 const chainStepSchema = Type.Object({
 	id: Type.String({ description: "Child agent id to spawn or delegate to" }),
 	system_prompt: Type.Optional(Type.String({ description: "System prompt for spawn steps. Required when the child does not already exist." })),
-	task: Type.String({ description: "Task/message for this step. Supports {previous} and {all}." }),
-	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds for this step." })),
-});
+	task: Type.String({ description: "Task/message for this step. Supports {previous}, {all}, and {step:<id>}." }),
+	timeout_seconds: Type.Optional(timeoutSecondsSchema),
+}, { additionalProperties: false });
 
 const parallelTaskSchema = Type.Object({
 	id: Type.String({ description: "Unique child agent id to spawn" }),
 	system_prompt: Type.String({ description: "System prompt defining the child agent's role and behavior" }),
-	task: Type.String({ description: "Task to assign to the child agent" }),
-	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds for this task." })),
-});
+	task: Type.String({ description: "Task to assign to the child agent. Supports workflow variables when used inside workflow steps." }),
+	timeout_seconds: Type.Optional(timeoutSecondsSchema),
+}, { additionalProperties: false });
+
+const workflowAgentStepSchema = Type.Object({
+	type: Type.Optional(Type.Literal("agent", { description: "Sequential agent step (default)." })),
+	id: Type.String({ description: "Child agent id to spawn or delegate to" }),
+	system_prompt: Type.Optional(Type.String({ description: "System prompt. Required when creating a new child." })),
+	task: Type.String({ description: "Task/message. Supports {previous}, {all}, and {step:<id>}." }),
+	timeout_seconds: Type.Optional(timeoutSecondsSchema),
+}, { additionalProperties: false });
+
+const workflowParallelStepSchema = Type.Object({
+	type: Type.Literal("parallel"),
+	id: Type.String({ description: "Barrier/output id for this parallel group" }),
+	tasks: Type.Array(parallelTaskSchema, { minItems: 1, description: "Parallel fan-out tasks." }),
+}, { additionalProperties: false });
+
+const workflowUntilSchema = Type.Object({
+	step: Type.String({ description: "Loop body step id whose latest output is inspected." }),
+	contains: Type.Optional(Type.String({ description: "Stop when the step output contains this text." })),
+	last_line_equals: Type.Optional(Type.String({ description: "Stop when the step output's last non-empty line equals this text." })),
+}, { additionalProperties: false });
+
+const workflowWhileStepSchema = Type.Object({
+	type: Type.Literal("while"),
+	id: Type.String({ description: "Loop/barrier output id" }),
+	max_iterations: Type.Integer({ minimum: 1, maximum: 10, description: "Hard cap for loop iterations." }),
+	until: workflowUntilSchema,
+	steps: Type.Array(Type.Union([workflowAgentStepSchema, workflowParallelStepSchema]), { minItems: 1, description: "Loop body steps. Nested while loops are intentionally unsupported." }),
+}, { additionalProperties: false });
+
+const workflowSchema = Type.Object({
+	name: Type.Optional(Type.String({ description: "Workflow name" })),
+	description: Type.Optional(Type.String({ description: "Workflow description" })),
+	steps: Type.Array(Type.Union([workflowAgentStepSchema, workflowParallelStepSchema, workflowWhileStepSchema]), { minItems: 1, description: "Deterministic workflow steps run in order." }),
+}, { additionalProperties: false });
 
 const agentActionSchema = Type.Union([
 	Type.Literal("spawn"),
@@ -83,6 +119,9 @@ const agentActionSchema = Type.Union([
 	Type.Literal("list"),
 	Type.Literal("chain"),
 	Type.Literal("parallel"),
+	Type.Literal("workflow"),
+	Type.Literal("list_workflows"),
+	Type.Literal("show_workflow"),
 	Type.Literal("list_runs"),
 	Type.Literal("result"),
 	Type.Literal("wait"),
@@ -96,15 +135,18 @@ const agentSchema = Type.Object({
 	system_prompt: Type.Optional(Type.String({ description: "System prompt for spawn action" })),
 	task: Type.Optional(Type.String({ description: "Task for spawn action" })),
 	message: Type.Optional(Type.String({ description: "Follow-up message for delegate action" })),
-	timeout_seconds: Type.Optional(Type.Number({ description: "Action timeout. For wait, this does not cancel the run." })),
-	async: Type.Optional(Type.Boolean({ description: "For spawn/delegate/chain/parallel from root only: run in the background and return a run id immediately." })),
+	timeout_seconds: Type.Optional(timeoutSecondsSchema),
+	async: Type.Optional(Type.Boolean({ description: "For spawn/delegate/chain/parallel/workflow from root only: run in the background and return a run id immediately." })),
 	steps: Type.Optional(Type.Array(chainStepSchema, { description: "Steps for chain action. Existing ids are delegated to; new ids require system_prompt." })),
 	tasks: Type.Optional(Type.Array(parallelTaskSchema, { description: "Tasks for parallel action." })),
-});
+	workflow: Type.Optional(workflowSchema),
+	workflow_path: Type.Optional(Type.String({ description: "Path to a workflow JSON file, relative to the workspace." })),
+	workflow_name: Type.Optional(Type.String({ description: "Workflow name. Loads .pi/agent/workflows/<name>.json, falling back to ~/.pi/agent/workflows/<name>.json." })),
+}, { additionalProperties: false });
 
 const reportSchema = Type.Object({
 	message: Type.String({ description: "Report content to send to the parent agent" }),
-});
+}, { additionalProperties: false });
 
 // ---------------------------------------------------------------------------
 // Extension config
@@ -201,10 +243,17 @@ interface AgentToolDetails {
 }
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-// MAX_RENDERED_ACTIVITY: max items shown in collapsed/live views (E2)
 const MAX_RENDERED_ACTIVITY = 8;
-// MAX_ACTIVITY_STORAGE: cap on stored activity items to prevent unbounded growth (E1)
 const MAX_ACTIVITY_STORAGE = 500;
+const MAX_REPORTS_PER_AGENT = 100;
+const MAX_REPORT_CHARS = 20_000;
+const MAX_TOTAL_REPORT_CHARS = 100_000;
+const MAX_READ_LINES = 10_000;
+const MAX_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_WRITE_BYTES = 2 * 1024 * 1024;
+const MAX_TIMEOUT_SECONDS = 86_400;
+const MAX_RUNS = 100;
+const MAX_RUNNING_RUNS = 10;
 const SHUTDOWN_GRACE_MS = 5000;
 
 function isWithinDirectory(base: string, target: string): boolean {
@@ -214,10 +263,29 @@ function isWithinDirectory(base: string, target: string): boolean {
 
 function normalizePositiveTimeout(value: number | undefined, label: string): number | undefined {
 	if (value === undefined) return undefined;
-	if (!Number.isFinite(value) || value <= 0) {
-		throw new Error(`${label} must be a finite number greater than 0`);
+	if (!Number.isInteger(value) || value < 1 || value > MAX_TIMEOUT_SECONDS) {
+		throw new Error(`${label} must be an integer number of seconds between 1 and ${MAX_TIMEOUT_SECONDS}`);
 	}
 	return value;
+}
+
+function normalizePositiveIntegerParam(value: number | undefined, label: string, max?: number): number | undefined {
+	if (value === undefined) return undefined;
+	if (!Number.isInteger(value) || value < 1 || (max !== undefined && value > max)) {
+		throw new Error(`${label} must be an integer >= 1${max !== undefined ? ` and <= ${max}` : ""}`);
+	}
+	return value;
+}
+
+async function assertReadableRegularFile(path: string): Promise<void> {
+	const info = await stat(path);
+	if (!info.isFile()) throw new Error(`Cannot read non-regular file: ${path}`);
+	if (info.size > MAX_FILE_BYTES) throw new Error(`File too large: ${path} is ${info.size} bytes; max ${MAX_FILE_BYTES}`);
+}
+
+function assertWriteSize(content: string): void {
+	const bytes = Buffer.byteLength(content, "utf-8");
+	if (bytes > MAX_WRITE_BYTES) throw new Error(`Write content too large: ${bytes} bytes; max ${MAX_WRITE_BYTES}`);
 }
 
 class AgentTimeoutError extends Error {
@@ -307,29 +375,30 @@ function formatToolActivity(name: string, args: Record<string, unknown>): string
 
 const readToolSchema = Type.Object({
 	path: Type.String({ description: "File path to read" }),
-	offset: Type.Optional(Type.Number({ description: "Line number to start from (1-indexed)" })),
-	limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read" })),
-});
+	offset: Type.Optional(Type.Integer({ minimum: 1, description: "Line number to start from (1-indexed)" })),
+	limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_READ_LINES, description: `Maximum number of lines to read (1..${MAX_READ_LINES})` })),
+}, { additionalProperties: false });
 
 const writeToolSchema = Type.Object({
 	path: Type.String({ description: "File path to write" }),
-	content: Type.String({ description: "Content to write" }),
-});
+	content: Type.String({ maxLength: MAX_WRITE_BYTES, description: "Content to write" }),
+}, { additionalProperties: false });
 
 const editToolSchema = Type.Object({
 	path: Type.String({ description: "File path to edit" }),
 	edits: Type.Array(
 		Type.Object({
-			oldText: Type.String({ description: "Exact text to find" }),
-			newText: Type.String({ description: "Replacement text" }),
-		}),
+			oldText: Type.String({ minLength: 1, maxLength: 20_000, description: "Exact text to find" }),
+			newText: Type.String({ maxLength: MAX_WRITE_BYTES, description: "Replacement text" }),
+		}, { additionalProperties: false }),
+		{ minItems: 1, maxItems: 50 },
 	),
-});
+}, { additionalProperties: false });
 
 const bashToolSchema = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),
-	timeout: Type.Optional(Type.Number({ description: "Seconds before the command is terminated (must be > 0). The process group receives SIGTERM, then SIGKILL after 3 seconds if still running. Partial stdout/stderr is still returned." })),
-});
+	timeout: Type.Optional(timeoutSecondsSchema),
+}, { additionalProperties: false });
 
 // ---------------------------------------------------------------------------
 // Child tool implementations
@@ -366,13 +435,14 @@ function createChildTools(cwd: string): AgentTool<any>[] {
 		return lexical;
 	};
 
-	const readTool: AgentTool<typeof readToolSchema> = {
+	const readTool: AgentTool<any> = {
 		name: "read",
 		label: "Read",
 		description: "Read a file's contents. Use offset/limit for large files.",
-		parameters: readToolSchema,
+		parameters: readToolSchema as any,
 		execute: async (_id, params) => {
 			const filePath = await resolvePath(params.path.replace(/^@/, ""));
+			await assertReadableRegularFile(filePath);
 			let content: string;
 			try {
 				content = await readFile(filePath, "utf-8");
@@ -380,22 +450,24 @@ function createChildTools(cwd: string): AgentTool<any>[] {
 				throw new Error(`Cannot read ${params.path}: ${(err as Error).message}`);
 			}
 			const lines = content.split("\n");
-			const offset = params.offset ?? 1;
-			const limit = params.limit ?? lines.length;
+			const offset = normalizePositiveIntegerParam(params.offset, "read offset") ?? 1;
+			const limit = normalizePositiveIntegerParam(params.limit, "read limit", MAX_READ_LINES) ?? Math.min(lines.length, MAX_READ_LINES);
 			const sliced = lines.slice(offset - 1, offset - 1 + limit);
 			const result = sliced.join("\n");
-			const truncated = result.length > 50000 ? result.slice(0, 50000) + "\n[truncated]" : result;
+			let truncated = result.length > 50000 ? result.slice(0, 50000) + "\n[truncated]" : result;
+			if (params.limit === undefined && lines.length > MAX_READ_LINES) truncated += `\n[truncated to ${MAX_READ_LINES} lines; pass offset/limit to read more]`;
 			return { content: [{ type: "text", text: truncated }], details: { path: filePath } };
 		},
 	};
 
-	const writeTool: AgentTool<typeof writeToolSchema> = {
+	const writeTool: AgentTool<any> = {
 		name: "write",
 		label: "Write",
 		description: "Write content to a file. Creates parent directories.",
-		parameters: writeToolSchema,
+		parameters: writeToolSchema as any,
 		execute: async (_id, params) => {
 			const filePath = await resolvePath(params.path.replace(/^@/, ""));
+			assertWriteSize(params.content);
 			await mkdir(dirname(filePath), { recursive: true });
 			await writeFile(filePath, params.content, "utf-8");
 			return {
@@ -405,13 +477,14 @@ function createChildTools(cwd: string): AgentTool<any>[] {
 		},
 	};
 
-	const editTool: AgentTool<typeof editToolSchema> = {
+	const editTool: AgentTool<any> = {
 		name: "edit",
 		label: "Edit",
 		description: "Edit a file using exact text replacement.",
-		parameters: editToolSchema,
+		parameters: editToolSchema as any,
 		execute: async (_id, params) => {
 			const filePath = await resolvePath(params.path.replace(/^@/, ""));
+			await assertReadableRegularFile(filePath);
 			let content: string;
 			try {
 				content = await readFile(filePath, "utf-8");
@@ -428,6 +501,7 @@ function createChildTools(cwd: string): AgentTool<any>[] {
 				}
 				content = content.replace(edit.oldText, () => edit.newText);
 			}
+			assertWriteSize(content);
 			await writeFile(filePath, content, "utf-8");
 			return {
 				content: [{ type: "text", text: `Applied ${params.edits.length} edit(s) to ${params.path}` }],
@@ -436,16 +510,19 @@ function createChildTools(cwd: string): AgentTool<any>[] {
 		},
 	};
 
-const DEFAULT_BASH_TIMEOUT_S = 120;
+	const DEFAULT_BASH_TIMEOUT_S = 120;
+	const BASH_KILL_GRACE_MS = 3000;
+	const BASH_FORCE_SETTLE_GRACE_MS = 1000;
 
-	const bashTool: AgentTool<typeof bashToolSchema> = {
+	const bashTool: AgentTool<any> = {
 		name: "bash",
 		label: "Bash",
 		description: "Execute a bash command. Returns stdout followed by stderr (prefixed with STDERR:), truncated if large.",
-		parameters: bashToolSchema,
+		parameters: bashToolSchema as any,
 		execute: async (_id, params, signal) => {
-			// Default timeout prevents pipe-drain deadlock when commands fork background processes.
+			// Default timeout + hard settlement prevents pipe-drain deadlock when commands fork background processes.
 			const commandTimeout = normalizePositiveTimeout(params.timeout ?? DEFAULT_BASH_TIMEOUT_S, "bash timeout");
+			if (commandTimeout === undefined) throw new Error("bash timeout is required");
 			return new Promise<AgentToolResult<unknown>>((res) => {
 				const proc = spawnProcess("bash", ["-c", params.command], {
 					cwd,
@@ -457,10 +534,10 @@ const DEFAULT_BASH_TIMEOUT_S = 120;
 				let stderr = "";
 				const MAX_OUTPUT_CHARS = 100_000;
 				proc.stdout!.on("data", (d: Buffer) => {
-					if (stdout.length < MAX_OUTPUT_CHARS) stdout += d.toString();
+					if (stdout.length < MAX_OUTPUT_CHARS) stdout += d.toString().slice(0, MAX_OUTPUT_CHARS - stdout.length);
 				});
 				proc.stderr!.on("data", (d: Buffer) => {
-					if (stderr.length < MAX_OUTPUT_CHARS) stderr += d.toString();
+					if (stderr.length < MAX_OUTPUT_CHARS) stderr += d.toString().slice(0, MAX_OUTPUT_CHARS - stderr.length);
 				});
 
 				const killGroup = (sig: NodeJS.Signals) => {
@@ -478,44 +555,65 @@ const DEFAULT_BASH_TIMEOUT_S = 120;
 				};
 
 				let timedOut = false;
+				let aborted = false;
+				let settled = false;
 				let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 				let escalationHandle: ReturnType<typeof setTimeout> | undefined;
-				const terminate = (reason: "abort" | "timeout") => {
-					if (reason === "timeout") timedOut = true;
-					killGroup("SIGTERM");
-					clearTimeout(escalationHandle);
-					escalationHandle = setTimeout(() => killGroup("SIGKILL"), 3000);
-				};
+				let forceSettleHandle: ReturnType<typeof setTimeout> | undefined;
 
-				if (commandTimeout !== undefined) {
-					timeoutHandle = setTimeout(() => terminate("timeout"), commandTimeout * 1000);
-				}
-
-				const onAbort = () => terminate("abort");
-				const cleanup = () => {
-					clearTimeout(timeoutHandle);
-					clearTimeout(escalationHandle);
-					if (signal) signal.removeEventListener("abort", onAbort);
-				};
-
-				proc.on("close", (code) => {
-					cleanup();
+				const buildOutput = (code: number | null) => {
 					let output = stdout;
 					if (stderr) output += (output ? "\n" : "") + `STDERR:\n${stderr}`;
 					if (timedOut) {
 						const partial = output || "(no output before timeout)";
-						output = `[TIMEOUT after ${commandTimeout}s — output may be incomplete]\n${partial}`;
+						output = `[TIMEOUT after ${commandTimeout}s — process group killed; output may be incomplete]\n${partial}`;
+					} else if (aborted) {
+						const partial = output || "(no output before abort)";
+						output = `[ABORTED — process group killed; output may be incomplete]\n${partial}`;
 					} else if (!output) {
 						output = `(exit code ${code ?? 0})`;
 					}
 					if (output.length > 50000) {
 						output = "[output truncated — showing last 50000 chars]\n" + output.slice(-50000);
 					}
-					res({ content: [{ type: "text", text: output }], details: { exitCode: code ?? 0, timedOut } });
-				});
-				proc.on("error", (err) => {
+					return output;
+				};
+
+				const cleanup = () => {
+					clearTimeout(timeoutHandle);
+					clearTimeout(escalationHandle);
+					clearTimeout(forceSettleHandle);
+					if (signal) signal.removeEventListener("abort", onAbort);
+					proc.stdout?.destroy();
+					proc.stderr?.destroy();
+					proc.unref();
+				};
+				const settle = (code: number | null) => {
+					if (settled) return;
+					settled = true;
 					cleanup();
-					res({ content: [{ type: "text", text: `Error: ${err.message}` }], details: { exitCode: 1, timedOut: false } });
+					res({ content: [{ type: "text", text: buildOutput(code) }], details: { exitCode: code, timedOut, aborted } });
+				};
+				const terminate = (reason: "abort" | "timeout") => {
+					if (settled) return;
+					if (reason === "timeout") timedOut = true;
+					if (reason === "abort") aborted = true;
+					killGroup("SIGTERM");
+					clearTimeout(escalationHandle);
+					clearTimeout(forceSettleHandle);
+					escalationHandle = setTimeout(() => killGroup("SIGKILL"), BASH_KILL_GRACE_MS);
+					forceSettleHandle = setTimeout(() => settle(null), BASH_KILL_GRACE_MS + BASH_FORCE_SETTLE_GRACE_MS);
+				};
+
+				timeoutHandle = setTimeout(() => terminate("timeout"), commandTimeout * 1000);
+				const onAbort = () => terminate("abort");
+
+				proc.on("close", (code) => settle(code ?? 0));
+				proc.on("error", (err) => {
+					if (settled) return;
+					settled = true;
+					cleanup();
+					res({ content: [{ type: "text", text: `Error: ${err.message}` }], details: { exitCode: 1, timedOut: false, aborted } });
 				});
 
 				if (signal) {
@@ -538,12 +636,27 @@ const DEFAULT_BASH_TIMEOUT_S = 120;
 // Child state
 // ---------------------------------------------------------------------------
 
+interface ConfigCacheState {
+	config?: PiHiveConfig;
+	configCwd?: string;
+	configError?: Error;
+}
+
+interface HiveState {
+	workspaceKey: string;
+	children: Map<string, ChildState>;
+	runs: Map<string, RunState>;
+	configCache: ConfigCacheState;
+	getApiKey?: (provider: string) => Promise<string | undefined>;
+}
+
 interface ChildState {
 	id: string;
 	parentId?: string;
 	rootId: string;
 	depth: number;
 	cwd: string;
+	workspaceKey: string;
 	createdAt: number;
 	agent: Agent;
 	reports: string[];
@@ -566,7 +679,17 @@ interface ParallelTaskParams {
 	timeout_seconds?: number;
 }
 
-type AgentAction = "spawn" | "delegate" | "kill" | "list" | "chain" | "parallel" | "list_runs" | "result" | "wait" | "cancel";
+type WorkflowUntilParams = { step: string; contains?: string; last_line_equals?: string };
+type WorkflowBodyStepParams = (ChainStepParams & { type?: "agent" }) | { type: "parallel"; id: string; tasks: ParallelTaskParams[] };
+type WorkflowStepParams = WorkflowBodyStepParams | { type: "while"; id: string; max_iterations: number; until: WorkflowUntilParams; steps: WorkflowBodyStepParams[] };
+
+interface WorkflowParams {
+	name?: string;
+	description?: string;
+	steps: WorkflowStepParams[];
+}
+
+type AgentAction = "spawn" | "delegate" | "kill" | "list" | "chain" | "parallel" | "workflow" | "list_workflows" | "show_workflow" | "list_runs" | "result" | "wait" | "cancel";
 
 interface AgentToolParams {
 	action: AgentAction;
@@ -579,13 +702,17 @@ interface AgentToolParams {
 	async?: boolean;
 	steps?: ChainStepParams[];
 	tasks?: ParallelTaskParams[];
+	workflow?: WorkflowParams;
+	workflow_path?: string;
+	workflow_name?: string;
 }
 
-type RunKind = "spawn" | "delegate" | "chain" | "parallel";
+type RunKind = "spawn" | "delegate" | "chain" | "parallel" | "workflow";
 type RunStatus = "running" | "succeeded" | "failed" | "killed";
 
 interface RunState {
 	id: string;
+	workspaceKey: string;
 	kind: RunKind;
 	status: RunStatus;
 	startedAt: number;
@@ -612,16 +739,25 @@ function extractLastAssistantText(agent: Agent): string {
 }
 
 // D2: buildReportTool now accepts reports array directly instead of full state
-function buildReportTool(childId: string, reports: string[]): AgentTool<typeof reportSchema> {
+function buildReportTool(childId: string, reports: string[]): AgentTool<any> {
 	return {
 		name: "report",
 		label: "Report",
 		description:
-			"Send a report to the parent agent. Use this to communicate " +
-			"results, progress, or findings. You may call this multiple " +
-			"times; every call is delivered.",
-		parameters: reportSchema,
+			"Send a report to the parent agent. Reports are bounded: " +
+			`max ${MAX_REPORTS_PER_AGENT} reports, ${MAX_REPORT_CHARS} chars each, ${MAX_TOTAL_REPORT_CHARS} chars total per agent.`,
+		parameters: reportSchema as any,
 		execute: async (_toolCallId, params) => {
+			if (params.message.length > MAX_REPORT_CHARS) {
+				throw new Error(`Report exceeds ${MAX_REPORT_CHARS} chars.`);
+			}
+			if (reports.length >= MAX_REPORTS_PER_AGENT) {
+				throw new Error(`Report limit exceeded: max ${MAX_REPORTS_PER_AGENT} reports per agent.`);
+			}
+			const totalChars = reports.reduce((sum, report) => sum + report.length, 0) + params.message.length;
+			if (totalChars > MAX_TOTAL_REPORT_CHARS) {
+				throw new Error(`Report storage limit exceeded: max ${MAX_TOTAL_REPORT_CHARS} chars per agent.`);
+			}
 			reports.push(params.message);
 			return {
 				content: [{ type: "text", text: "Report delivered to parent." }],
@@ -718,8 +854,8 @@ function subscribeChild(
 function collectResult(childId: string, state: ChildState, reportStartIdx: number): AgentToolResult<AgentToolDetails> {
 	const newReports = state.reports.slice(reportStartIdx);
 	const text = newReports.length > 0 ? newReports.join("\n---\n") : extractLastAssistantText(state.agent);
-	// F5: Agent resets error on each prompt, so this reflects the most recent run's failure state
-	const error = state.agent.state.errorMessage;
+	// Agent versions differ; errorMessage is best-effort diagnostic metadata.
+	const error = (state.agent.state as { errorMessage?: string }).errorMessage;
 	return {
 		content: [{ type: "text", text: error ? `[Error]: ${error}\n\n${text}` : text }],
 		details: {
@@ -750,16 +886,29 @@ function renderAgentCall(
 	return new Text(text, 0, 0);
 }
 
+function isAgentToolDetails(details: unknown): details is AgentToolDetails {
+	return !!details
+		&& typeof details === "object"
+		&& "childId" in details
+		&& typeof (details as { childId?: unknown }).childId === "string"
+		&& Array.isArray((details as { activity?: unknown }).activity)
+		&& Array.isArray((details as { reports?: unknown }).reports)
+		&& typeof (details as { done?: unknown }).done === "boolean";
+}
+
 function renderAgentResult(
 	result: { content: any[]; details?: unknown },
 	options: { expanded: boolean; isPartial: boolean },
 	theme: any,
 	context: any,
 ) {
-	// F1: runtime shape check before casting to AgentToolDetails
-	const details = (result.details && typeof result.details === "object" && "childId" in result.details)
-		? result.details as AgentToolDetails
-		: undefined;
+	// Runtime shape check before casting to AgentToolDetails. `kill` also has childId but not this shape.
+	const details = isAgentToolDetails(result.details) ? result.details : undefined;
+
+	if (!options.isPartial && context.state._spinnerInterval) {
+		clearInterval(context.state._spinnerInterval);
+		context.state._spinnerInterval = null;
+	}
 
 	if (!details) {
 		const t = result.content[0];
@@ -808,11 +957,7 @@ function renderAgentResult(
 		return component;
 	}
 
-	// -- done: clear spinner --
-	if (context.state._spinnerInterval) {
-		clearInterval(context.state._spinnerInterval);
-		context.state._spinnerInterval = null;
-	}
+	// -- done: spinner was cleared above --
 
 	const hasError = !!details.error;
 	const icon = hasError ? theme.fg("error", "✗") : theme.fg("success", "✓");
@@ -901,63 +1046,69 @@ function renderAgentResult(
 // ---------------------------------------------------------------------------
 
 export default function piHive(pi: ExtensionAPI) {
-	const children = new Map<string, ChildState>();
-	const runs = new Map<string, RunState>();
-	// cachedGetApiKey is initialized from the first agent action ctx.
-	// This assumes modelRegistry is stable for the session lifetime.
-	let cachedGetApiKey: ((provider: string) => Promise<string | undefined>) | undefined;
-	let cachedConfig: PiHiveConfig | undefined;
-	let cachedConfigCwd: string | undefined;
-	let cachedConfigError: Error | undefined;
+	const states = new Map<string, HiveState>();
 
-	async function getConfig(cwd: string): Promise<PiHiveConfig> {
-		if (cachedConfig && cachedConfigCwd === cwd) return cachedConfig;
-		if (cachedConfigError && cachedConfigCwd === cwd) throw cachedConfigError;
+	function workspaceKey(cwd: string): string {
+		return resolve(cwd);
+	}
 
-		try {
-			const config = await loadPiHiveConfig(cwd);
-			cachedConfig = config;
-			cachedConfigCwd = cwd;
-			cachedConfigError = undefined;
-			return config;
-		} catch (err) {
-			cachedConfig = undefined;
-			cachedConfigCwd = cwd;
-			cachedConfigError = err instanceof Error ? err : new Error(String(err));
-			throw cachedConfigError;
+	function getState(cwd: string): HiveState {
+		const key = workspaceKey(cwd);
+		let state = states.get(key);
+		if (!state) {
+			state = { workspaceKey: key, children: new Map(), runs: new Map(), configCache: {} };
+			states.set(key, state);
 		}
-	}
-
-	function clearConfigCache(): void {
-		cachedConfig = undefined;
-		cachedConfigCwd = undefined;
-		cachedConfigError = undefined;
-	}
-
-	function getCallerState(callerId: string): ChildState {
-		const state = children.get(callerId);
-		if (!state) throw new Error(`Caller agent "${callerId}" is no longer active.`);
 		return state;
 	}
 
-	function isInSubtree(targetId: string, ancestorId: string, allowSelf = true): boolean {
+	async function getConfig(state: HiveState, cwd: string): Promise<PiHiveConfig> {
+		const cache = state.configCache;
+		if (cache.config && cache.configCwd === cwd) return cache.config;
+		if (cache.configError && cache.configCwd === cwd) throw cache.configError;
+
+		try {
+			const config = await loadPiHiveConfig(cwd);
+			cache.config = config;
+			cache.configCwd = cwd;
+			cache.configError = undefined;
+			return config;
+		} catch (err) {
+			cache.config = undefined;
+			cache.configCwd = cwd;
+			cache.configError = err instanceof Error ? err : new Error(String(err));
+			throw cache.configError;
+		}
+	}
+
+	function clearConfigCache(state: HiveState): void {
+		state.configCache = {};
+	}
+
+	function getCallerState(state: HiveState, callerId: string): ChildState {
+		const caller = state.children.get(callerId);
+		if (!caller) throw new Error(`Caller agent "${callerId}" is no longer active.`);
+		return caller;
+	}
+
+	function isInSubtree(state: HiveState, targetId: string, ancestorId: string, allowSelf = true): boolean {
 		let current: string | undefined = targetId;
 		while (current) {
 			if (current === ancestorId) return allowSelf || current !== targetId;
-			current = children.get(current)?.parentId;
+			current = state.children.get(current)?.parentId;
 		}
 		return false;
 	}
 
-	function getSubtreeIds(rootId: string): string[] {
+	function getSubtreeIds(state: HiveState, rootId: string): string[] {
 		const result: string[] = [];
 		const queue = [rootId];
 		while (queue.length > 0) {
 			const current = queue.shift()!;
-			if (!children.has(current)) continue;
+			if (!state.children.has(current)) continue;
 			result.push(current);
-			const childIds = [...children.entries()]
-				.filter(([, state]) => state.parentId === current)
+			const childIds = [...state.children.entries()]
+				.filter(([, child]) => child.parentId === current)
 				.map(([id]) => id)
 				.sort((a, b) => a.localeCompare(b));
 			queue.push(...childIds);
@@ -965,64 +1116,64 @@ export default function piHive(pi: ExtensionAPI) {
 		return result;
 	}
 
-	function getScopedEntries(callerId?: string): Array<[string, ChildState]> {
-		const entries = [...children.entries()].filter(([id]) => !callerId || isInSubtree(id, callerId, true));
+	function getScopedEntries(state: HiveState, callerId?: string): Array<[string, ChildState]> {
+		const entries = [...state.children.entries()].filter(([id]) => !callerId || isInSubtree(state, id, callerId, true));
 		entries.sort((a, b) => a[1].depth - b[1].depth || a[0].localeCompare(b[0]));
 		return entries;
 	}
 
-	function formatScopedAgentIds(callerId?: string): string {
-		const ids = getScopedEntries(callerId).map(([id]) => id);
+	function formatScopedAgentIds(state: HiveState, callerId?: string): string {
+		const ids = getScopedEntries(state, callerId).map(([id]) => id);
 		return ids.length > 0 ? ids.join(", ") : "(none)";
 	}
 
-	function getAccessibleTarget(callerId: string | undefined, targetId: string, action: string, allowSelf = false): ChildState {
-		if (callerId) getCallerState(callerId);
-		const state = children.get(targetId);
-		if (!state) {
+	function getAccessibleTarget(state: HiveState, callerId: string | undefined, targetId: string, action: string, allowSelf = false): ChildState {
+		if (callerId) getCallerState(state, callerId);
+		const target = state.children.get(targetId);
+		if (!target) {
 			throw new Error(
-				`Child agent "${targetId}" not found. Visible agents: ${formatScopedAgentIds(callerId)}. ` +
+				`Child agent "${targetId}" not found. Visible agents: ${formatScopedAgentIds(state, callerId)}. ` +
 				`Call agent({ action: "list" }) for full status.`,
 			);
 		}
-		if (!callerId) return state;
-		if (!isInSubtree(targetId, callerId, allowSelf)) {
+		if (!callerId) return target;
+		if (!isInSubtree(state, targetId, callerId, allowSelf)) {
 			throw new Error(
 				`Agent "${callerId}" may only ${action} descendant agents in its own subtree. ` +
 				`"${targetId}" is outside that subtree.`,
 			);
 		}
-		return state;
+		return target;
 	}
 
-	function killSubtree(rootId: string): { killedIds: string[]; reportCount: number } {
-		const ids = getSubtreeIds(rootId);
+	function killSubtree(state: HiveState, rootId: string): { killedIds: string[]; reportCount: number } {
+		const ids = getSubtreeIds(state, rootId);
 		let reportCount = 0;
 		for (const id of ids) {
-			const state = children.get(id);
-			if (!state) continue;
-			state.killed = true;
-			reportCount += state.reports.length;
-			state.agent.abort();
+			const child = state.children.get(id);
+			if (!child) continue;
+			child.killed = true;
+			reportCount += child.reports.length;
+			child.agent.abort();
 		}
 		for (const id of ids) {
-			children.delete(id);
+			state.children.delete(id);
 		}
 		return { killedIds: ids, reportCount };
 	}
 
-	function listAgentsResult(callerId?: string): AgentToolResult<unknown> {
-		if (callerId) getCallerState(callerId);
-		const agents = getScopedEntries(callerId).map(([id, state]) => ({
+	function listAgentsResult(state: HiveState, callerId?: string): AgentToolResult<unknown> {
+		if (callerId) getCallerState(state, callerId);
+		const agents = getScopedEntries(state, callerId).map(([id, child]) => ({
 			id,
-			parentId: state.parentId,
-			rootId: state.rootId,
-			depth: state.depth,
-			cwd: state.cwd,
-			isRunning: state.agent.state.isStreaming || state.locked,
-			reportCount: state.reports.length,
-			activityCount: state.activity.length,
-			createdAt: state.createdAt,
+			parentId: child.parentId,
+			rootId: child.rootId,
+			depth: child.depth,
+			cwd: child.cwd,
+			isRunning: child.agent.state.isStreaming || child.locked,
+			reportCount: child.reports.length,
+			activityCount: child.activity.length,
+			createdAt: child.createdAt,
 		}));
 		const text = agents.length === 0
 			? "No active child agents."
@@ -1034,65 +1185,67 @@ export default function piHive(pi: ExtensionAPI) {
 	}
 
 	async function delegateToChild(
+		state: HiveState,
 		callerId: string | undefined,
 		params: { id: string; message: string; timeout_seconds?: number },
 		signal?: AbortSignal,
 		onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void,
 	): Promise<AgentToolResult<AgentToolDetails>> {
 		if (signal?.aborted) throw new Error(`Agent "${params.id}" was aborted before start.`);
-		const state = getAccessibleTarget(callerId, params.id, "delegate to");
-		if (state.agent.state.isStreaming || state.locked) {
+		const childState = getAccessibleTarget(state, callerId, params.id, "delegate to");
+		if (childState.agent.state.isStreaming || childState.locked) {
 			throw new Error(
 				`Child agent "${params.id}" is still running. ` +
 				`Wait for the current agent action to complete before sending more work.`,
 			);
 		}
 
-		const reportStart = state.reports.length;
-		state.activity = [];
+		const reportStart = childState.reports.length;
+		childState.activity = [];
 
-		const onAbort = () => state.agent.abort();
+		const onAbort = () => childState.agent.abort();
 		signal?.addEventListener("abort", onAbort, { once: true });
 		if (signal?.aborted) onAbort();
 
-		const unsub = subscribeChild(state.agent, params.id, state, onUpdate);
-		state.locked = true;
+		const unsub = subscribeChild(childState.agent, params.id, childState, onUpdate);
+		childState.locked = true;
 		try {
-			const runPromise = state.agent.prompt(params.message);
-			await withOptionalTimeout(state.agent, params.id, runPromise, params.timeout_seconds);
-			if (state.killed) {
+			const runPromise = childState.agent.prompt(params.message);
+			await withOptionalTimeout(childState.agent, params.id, runPromise, params.timeout_seconds);
+			if (childState.killed) {
 				throw new Error(`Agent "${params.id}" was killed while running`);
 			}
 		} catch (err) {
 			if (err instanceof AgentTimeoutError) {
-				killSubtree(params.id);
+				killSubtree(state, params.id);
 			}
 			throw err;
 		} finally {
-			state.locked = false;
+			childState.locked = false;
 			unsub();
 			signal?.removeEventListener("abort", onAbort);
 		}
 
-		return collectResult(params.id, state, reportStart);
+		return collectResult(params.id, childState, reportStart);
 	}
 
-	function createChildManagementTools(callerId: string, cwd: string, model: Model<any>): AgentTool<any>[] {
-		const agentTool: AgentTool<typeof agentSchema> = {
+	function createChildManagementTools(state: HiveState, callerId: string, cwd: string, model: Model<any>): AgentTool<any>[] {
+		const agentTool: AgentTool<any> = {
 			name: "agent",
 			label: "Agent",
 			description:
-				"Manage descendant agents with action=spawn|delegate|kill|list|chain|parallel. " +
+				"Manage descendant agents with action=spawn|delegate|kill|list|chain|parallel|workflow. " +
 				"Async run actions are root-only.",
-			parameters: agentSchema,
+			parameters: agentSchema as any,
 			execute: async (_toolCallId, params, signal, onUpdate) => {
-				return await executeAgentAction(callerId, params as AgentToolParams, model, cwd, signal, onUpdate, false);
+				return await executeAgentAction(state, callerId, params as AgentToolParams, model, cwd, signal, onUpdate, false);
 			},
 		};
 		return [agentTool as AgentTool<any>];
 	}
 
 	function buildChildAgent(
+		state: HiveState,
 		childId: string,
 		systemPrompt: string,
 		model: Model<any>,
@@ -1102,16 +1255,17 @@ export default function piHive(pi: ExtensionAPI) {
 		const reportTool = buildReportTool(childId, reports);
 		const childTools = [
 			...createChildTools(cwd),
-			...createChildManagementTools(childId, cwd, model),
+			...createChildManagementTools(state, childId, cwd, model),
 			reportTool as AgentTool<any>,
 		];
 		return new Agent({
 			initialState: { systemPrompt, model, tools: childTools },
-			getApiKey: cachedGetApiKey,
+			getApiKey: state.getApiKey,
 		});
 	}
 
 	async function spawnChild(
+		state: HiveState,
 		callerId: string | undefined,
 		params: { id: string; system_prompt: string; task: string; timeout_seconds?: number },
 		model: Model<any>,
@@ -1119,23 +1273,23 @@ export default function piHive(pi: ExtensionAPI) {
 		signal?: AbortSignal,
 		onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void,
 	): Promise<AgentToolResult<AgentToolDetails>> {
-		const config = await getConfig(cwd);
+		const config = await getConfig(state, cwd);
 		if (signal?.aborted) throw new Error(`Agent "${params.id}" was aborted before start.`);
-		if (children.has(params.id)) {
+		if (state.children.has(params.id)) {
 			throw new Error(
-				`Child agent "${params.id}" already exists. ` +
+				`Child agent "${params.id}" already exists in workspace "${state.workspaceKey}". ` +
 				`Use agent({ action: "delegate", id: "${params.id}", message: ... }) to send it more work, or agent({ action: "list" }) to inspect active agents.`,
 			);
 		}
 
-		const parentState = callerId ? getCallerState(callerId) : undefined;
+		const parentState = callerId ? getCallerState(state, callerId) : undefined;
 		const childDepth = (parentState?.depth ?? 0) + 1;
 		if (childDepth > config.maxDepth) {
 			throw new Error(
 				`Cannot spawn agent "${params.id}": depth ${childDepth} exceeds configured maxDepth ${config.maxDepth}.`,
 			);
 		}
-		if (children.size >= config.maxLiveAgents) {
+		if (state.children.size >= config.maxLiveAgents) {
 			throw new Error(
 				`Cannot spawn agent "${params.id}": maxLiveAgents ${config.maxLiveAgents} reached. ` +
 				`Kill or reuse an existing agent before spawning another one.`,
@@ -1143,13 +1297,14 @@ export default function piHive(pi: ExtensionAPI) {
 		}
 
 		const reports: string[] = [];
-		const child = buildChildAgent(params.id, params.system_prompt, model, cwd, reports);
-		const state: ChildState = {
+		const child = buildChildAgent(state, params.id, params.system_prompt, model, cwd, reports);
+		const childState: ChildState = {
 			id: params.id,
 			parentId: parentState?.id,
 			rootId: parentState?.rootId ?? params.id,
 			depth: childDepth,
 			cwd,
+			workspaceKey: state.workspaceKey,
 			createdAt: Date.now(),
 			agent: child,
 			reports,
@@ -1157,30 +1312,30 @@ export default function piHive(pi: ExtensionAPI) {
 			locked: false,
 			killed: false,
 		};
-		children.set(params.id, state);
+		state.children.set(params.id, childState);
 
 		const onAbort = () => child.abort();
 		signal?.addEventListener("abort", onAbort, { once: true });
 		if (signal?.aborted) onAbort();
 
-		const unsub = subscribeChild(child, params.id, state, onUpdate);
-		state.locked = true;
+		const unsub = subscribeChild(child, params.id, childState, onUpdate);
+		childState.locked = true;
 		try {
 			const runPromise = child.prompt(params.task);
 			await withOptionalTimeout(child, params.id, runPromise, params.timeout_seconds);
-			if (state.killed) {
+			if (childState.killed) {
 				throw new Error(`Agent "${params.id}" was killed while running`);
 			}
 		} catch (err) {
-			killSubtree(params.id);
+			killSubtree(state, params.id);
 			throw err;
 		} finally {
-			state.locked = false;
+			childState.locked = false;
 			unsub();
 			signal?.removeEventListener("abort", onAbort);
 		}
 
-		return collectResult(params.id, state, 0);
+		return collectResult(params.id, childState, 0);
 	}
 
 	function makeRunId(kind: RunKind): string {
@@ -1192,28 +1347,57 @@ export default function piHive(pi: ExtensionAPI) {
 		return first?.type === "text" ? first.text : "";
 	}
 
+	function toRunDTO(run: RunState) {
+		const resultText = run.result ? textOf(run.result) : undefined;
+		return {
+			id: run.id,
+			kind: run.kind,
+			status: run.status,
+			startedAt: run.startedAt,
+			finishedAt: run.finishedAt,
+			children: [...run.children],
+			error: run.error,
+			resultText: resultText && resultText.length > 50_000 ? resultText.slice(-50_000) : resultText,
+		};
+	}
+
+	function evictCompletedRuns(state: HiveState): void {
+		const completed = [...state.runs.values()]
+			.filter((run) => run.status !== "running")
+			.sort((a, b) => (a.finishedAt ?? a.startedAt) - (b.finishedAt ?? b.startedAt));
+		while (state.runs.size > MAX_RUNS && completed.length > 0) {
+			const run = completed.shift()!;
+			state.runs.delete(run.id);
+		}
+	}
+
 	function formatRunResult(run: RunState): AgentToolResult<unknown> {
+		const dto = toRunDTO(run);
 		const lines = [
-			`run_id: ${run.id}`,
-			`kind: ${run.kind}`,
-			`status: ${run.status}`,
-			`children: ${run.children.length > 0 ? run.children.join(", ") : "(none)"}`,
+			`run_id: ${dto.id}`,
+			`kind: ${dto.kind}`,
+			`status: ${dto.status}`,
+			`children: ${dto.children.length > 0 ? dto.children.join(", ") : "(none)"}`,
 		];
-		if (run.error) lines.push(`error: ${run.error}`);
-		if (run.result) lines.push("", textOf(run.result));
-		return { content: [{ type: "text", text: lines.join("\n") }], details: { run } };
+		if (dto.error) lines.push(`error: ${dto.error}`);
+		if (dto.resultText) lines.push("", dto.resultText);
+		return { content: [{ type: "text", text: lines.join("\n") }], details: { run: dto } };
 	}
 
 	function startRun(
+		state: HiveState,
 		kind: RunKind,
 		runId: string | undefined,
 		childrenForRun: string[],
 		work: (signal: AbortSignal) => Promise<AgentToolResult<unknown>>,
 	): AgentToolResult<unknown> {
+		evictCompletedRuns(state);
+		const runningRuns = [...state.runs.values()].filter((run) => run.status === "running").length;
+		if (runningRuns >= MAX_RUNNING_RUNS) throw new Error(`Cannot start ${kind} run: max running runs ${MAX_RUNNING_RUNS} reached.`);
 		const id = runId || makeRunId(kind);
-		if (runs.has(id)) throw new Error(`Run "${id}" already exists.`);
+		if (state.runs.has(id)) throw new Error(`Run "${id}" already exists.`);
 		const abortController = new AbortController();
-		const run: RunState = { id, kind, status: "running", startedAt: Date.now(), children: childrenForRun, abortController, promise: Promise.resolve() };
+		const run: RunState = { id, workspaceKey: state.workspaceKey, kind, status: "running", startedAt: Date.now(), children: childrenForRun, abortController, promise: Promise.resolve() };
 		run.promise = (async () => {
 			try {
 				run.result = await work(abortController.signal);
@@ -1223,11 +1407,14 @@ export default function piHive(pi: ExtensionAPI) {
 				run.status = run.status === "killed" ? "killed" : "failed";
 			} finally {
 				run.finishedAt = Date.now();
+				evictCompletedRuns(state);
 			}
 		})();
-		runs.set(id, run);
+		state.runs.set(id, run);
 		return { content: [{ type: "text", text: `Started ${kind} run "${id}".` }], details: { runId: id, kind, status: "running", children: childrenForRun } };
 	}
+
+
 
 	async function waitForRun(run: RunState, timeoutSeconds?: number): Promise<RunState> {
 		const timeout = normalizePositiveTimeout(timeoutSeconds, "timeout_seconds");
@@ -1248,27 +1435,238 @@ export default function piHive(pi: ExtensionAPI) {
 		}
 	}
 
-	function listRunsResult(): AgentToolResult<unknown> {
-		const listed = [...runs.values()].sort((a, b) => a.startedAt - b.startedAt);
+	function listRunsResult(state: HiveState): AgentToolResult<unknown> {
+		evictCompletedRuns(state);
+		const listed = [...state.runs.values()].sort((a, b) => a.startedAt - b.startedAt);
 		const text = listed.length === 0
 			? "No runs."
 			: listed.map((run) => `• ${run.id} — ${run.kind}, ${run.status}, children: ${run.children.length > 0 ? run.children.join(", ") : "(none)"}`).join("\n");
-		return { content: [{ type: "text", text }], details: { runs: listed } };
+		return { content: [{ type: "text", text }], details: { runs: listed.map(toRunDTO) } };
 	}
 
-	function substituteStepVars(template: string, previous: string, all: string): string {
-		return template.replaceAll("{previous}", previous).replaceAll("{all}", all);
+	function findLatestOutput(outputs: Array<{ id: string; output: string }>, id: string): string {
+		for (let i = outputs.length - 1; i >= 0; i--) {
+			if (outputs[i]!.id === id) return outputs[i]!.output;
+		}
+		return "";
 	}
 
-	async function runChainSteps(callerId: string | undefined, steps: ChainStepParams[], model: Model<any>, cwd: string, signal?: AbortSignal): Promise<AgentToolResult<unknown>> {
+	function substituteStepVars(template: string, previous: string, outputs: Array<{ id: string; output: string }>, vars: Record<string, string> = {}): string {
+		const all = outputs.map((o) => `=== ${o.id} ===\n${o.output}`).join("\n\n");
+		return template
+			.replaceAll("{previous}", previous)
+			.replaceAll("{all}", all)
+			.replace(/\{step:([^}]+)\}/g, (_match, id: string) => findLatestOutput(outputs, id))
+			.replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, key: string) => vars[key] ?? match);
+	}
+
+	function isWorkflowParallelStep(step: WorkflowStepParams | WorkflowBodyStepParams): step is { type: "parallel"; id: string; tasks: ParallelTaskParams[] } {
+		return (step as { type?: string }).type === "parallel";
+	}
+
+	function isWorkflowWhileStep(step: WorkflowStepParams): step is { type: "while"; id: string; max_iterations: number; until: WorkflowUntilParams; steps: WorkflowBodyStepParams[] } {
+		return (step as { type?: string }).type === "while";
+	}
+
+	function workflowChildIds(workflow: WorkflowParams): string[] {
+		const ids: string[] = [];
+		for (const step of workflow.steps) {
+			if (isWorkflowParallelStep(step)) ids.push(...step.tasks.map((task) => task.id));
+			else if (isWorkflowWhileStep(step)) {
+				for (const bodyStep of step.steps) {
+					if (isWorkflowParallelStep(bodyStep)) ids.push(...bodyStep.tasks.map((task) => task.id));
+					else ids.push(bodyStep.id);
+				}
+			} else ids.push(step.id);
+		}
+		return ids;
+	}
+
+	function workflowFileName(name: string): string {
+		if (!/^[A-Za-z0-9_.-]+$/.test(name)) throw new Error("workflow_name may only contain letters, numbers, _, ., and -");
+		return name.endsWith(".json") ? name : `${name}.json`;
+	}
+
+	function rejectUnknownKeys(value: Record<string, unknown>, allowed: string[], source: string): void {
+		const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
+		if (unknown.length > 0) throw new Error(`${source}: unknown key(s): ${unknown.join(", ")}`);
+	}
+
+	function assertWorkflowTask(task: ParallelTaskParams, source: string): void {
+		if (!task || typeof task !== "object" || Array.isArray(task)) throw new Error(`${source} must be an object.`);
+		rejectUnknownKeys(task as unknown as Record<string, unknown>, ["id", "system_prompt", "task", "timeout_seconds"], source);
+		if (typeof task.id !== "string" || task.id.trim().length === 0) throw new Error(`${source} requires id.`);
+		if (typeof task.system_prompt !== "string" || task.system_prompt.trim().length === 0) throw new Error(`${source} requires system_prompt.`);
+		if (typeof task.task !== "string" || task.task.trim().length === 0) throw new Error(`${source} requires task.`);
+		normalizePositiveTimeout(task.timeout_seconds, `${source}.timeout_seconds`);
+	}
+
+	function assertWorkflowBodyStep(step: WorkflowBodyStepParams, source: string): void {
+		if (!step || typeof step !== "object" || Array.isArray(step)) throw new Error(`${source} must be an object.`);
+		const stepObj = step as unknown as Record<string, unknown>;
+		const type = stepObj.type ?? "agent";
+		if (type !== "agent" && type !== "parallel") throw new Error(`${source}.type must be "agent" or "parallel".`);
+		if (type === "parallel") {
+			rejectUnknownKeys(stepObj, ["type", "id", "tasks"], source);
+			const parallelStep = step as { type: "parallel"; id: string; tasks: ParallelTaskParams[] };
+			if (typeof parallelStep.id !== "string" || parallelStep.id.trim().length === 0) throw new Error(`${source} requires id.`);
+			if (!Array.isArray(parallelStep.tasks) || parallelStep.tasks.length === 0) throw new Error(`${source} requires non-empty tasks.`);
+			parallelStep.tasks.forEach((task, taskIndex) => assertWorkflowTask(task, `${source}.tasks[${taskIndex}]`));
+			return;
+		}
+		rejectUnknownKeys(stepObj, ["type", "id", "system_prompt", "task", "timeout_seconds"], source);
+		const agentStep = step as ChainStepParams & { type?: "agent" };
+		if (typeof agentStep.id !== "string" || agentStep.id.trim().length === 0) throw new Error(`${source} requires id.`);
+		if (typeof agentStep.task !== "string" || agentStep.task.trim().length === 0) throw new Error(`${source} requires task.`);
+		normalizePositiveTimeout(agentStep.timeout_seconds, `${source}.timeout_seconds`);
+	}
+
+	function assertWorkflowShape(value: unknown, source: string): WorkflowParams {
+		if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${source}: expected workflow object.`);
+		const workflow = value as WorkflowParams;
+		rejectUnknownKeys(workflow as unknown as Record<string, unknown>, ["name", "description", "steps"], source);
+		if (!Array.isArray(workflow.steps) || workflow.steps.length === 0) throw new Error(`${source}: expected non-empty steps array.`);
+		for (const [index, step] of workflow.steps.entries()) {
+			const stepObj = step as unknown as Record<string, unknown>;
+			if ((stepObj?.type ?? "agent") === "while") {
+				if (!step || typeof step !== "object" || Array.isArray(step)) throw new Error(`${source}: steps[${index}] must be an object.`);
+				rejectUnknownKeys(stepObj, ["type", "id", "max_iterations", "until", "steps"], `${source}: steps[${index}]`);
+				const whileStep = step as { type: "while"; id: string; max_iterations: number; until: WorkflowUntilParams; steps: WorkflowBodyStepParams[] };
+				if (typeof whileStep.id !== "string" || whileStep.id.trim().length === 0) throw new Error(`${source}: steps[${index}] requires id.`);
+				if (!Number.isInteger(whileStep.max_iterations) || whileStep.max_iterations < 1 || whileStep.max_iterations > 10) throw new Error(`${source}: steps[${index}].max_iterations must be an integer 1..10.`);
+				if (!whileStep.until || typeof whileStep.until !== "object" || Array.isArray(whileStep.until)) throw new Error(`${source}: steps[${index}].until must be an object.`);
+				rejectUnknownKeys(whileStep.until as unknown as Record<string, unknown>, ["step", "contains", "last_line_equals"], `${source}: steps[${index}].until`);
+				if (typeof whileStep.until.step !== "string" || whileStep.until.step.trim().length === 0) throw new Error(`${source}: steps[${index}].until requires step.`);
+				if ((typeof whileStep.until.contains !== "string" || whileStep.until.contains.length === 0) && (typeof whileStep.until.last_line_equals !== "string" || whileStep.until.last_line_equals.length === 0)) throw new Error(`${source}: steps[${index}].until requires non-empty contains or last_line_equals.`);
+				if (!Array.isArray(whileStep.steps) || whileStep.steps.length === 0) throw new Error(`${source}: steps[${index}].steps must be non-empty.`);
+				whileStep.steps.forEach((bodyStep, bodyIndex) => assertWorkflowBodyStep(bodyStep, `${source}: steps[${index}].steps[${bodyIndex}]`));
+			} else {
+				assertWorkflowBodyStep(step as WorkflowBodyStepParams, `${source}: steps[${index}]`);
+			}
+		}
+		return workflow;
+	}
+
+	async function readWorkflowFile(path: string, label: string, confinedTo?: string): Promise<WorkflowParams> {
+		if (confinedTo) {
+			const baseReal = await realpath(confinedTo);
+			const targetReal = await realpath(path);
+			if (!isWithinDirectory(baseReal, targetReal)) throw new Error(`workflow ${label} resolves outside workspace: ${path}`);
+		}
+		await assertReadableRegularFile(path);
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(await readFile(path, "utf-8"));
+		} catch (err) {
+			throw new Error(`Failed to parse workflow ${label}: ${(err as Error).message}`);
+		}
+		return assertWorkflowShape(parsed, label);
+	}
+
+	async function loadWorkflow(params: AgentToolParams, cwd: string): Promise<WorkflowParams> {
+		const sources = [params.workflow, params.workflow_path, params.workflow_name].filter((value) => value !== undefined).length;
+		if (sources !== 1) throw new Error(`agent action "workflow" requires exactly one of workflow, workflow_path, or workflow_name.`);
+		if (params.workflow) return assertWorkflowShape(params.workflow, "workflow");
+		if (params.workflow_path) {
+			const lexical = isAbsolute(params.workflow_path) ? params.workflow_path : resolve(cwd, params.workflow_path);
+			if (!isWithinDirectory(cwd, lexical)) throw new Error(`workflow_path resolves outside workspace: ${params.workflow_path}`);
+			return await readWorkflowFile(lexical, params.workflow_path, cwd);
+		}
+		const name = workflowFileName(params.workflow_name!);
+		const projectPath = resolve(cwd, ".pi", "agent", "workflows", name);
+		try {
+			return await readWorkflowFile(projectPath, `.pi/agent/workflows/${name}`, cwd);
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+		}
+		const globalPath = join(getAgentDir(), "workflows", name);
+		return await readWorkflowFile(globalPath, `~/.pi/agent/workflows/${name}`);
+	}
+
+interface WorkflowSummary {
+	name: string;
+	description?: string;
+	path: string;
+	scope: "project" | "global";
+	steps?: number;
+	error?: string;
+}
+
+async function listWorkflowFiles(cwd: string): Promise<Array<{ path: string; scope: "project" | "global" }>> {
+	const dirs = [
+		{ dir: resolve(cwd, ".pi", "agent", "workflows"), scope: "project" as const },
+		{ dir: join(getAgentDir(), "workflows"), scope: "global" as const },
+	];
+	const files: Array<{ path: string; scope: "project" | "global" }> = [];
+	for (const { dir, scope } of dirs) {
+		let entries;
+		try {
+			entries = await readdir(dir, { withFileTypes: true });
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+			continue;
+		}
+		for (const entry of entries) {
+			if (entry.isFile() && entry.name.endsWith(".json")) files.push({ path: join(dir, entry.name), scope });
+		}
+	}
+	files.sort((a, b) => (a.scope === b.scope ? a.path.localeCompare(b.path) : a.scope === "project" ? -1 : 1));
+	return files;
+}
+
+async function listWorkflowSummaries(cwd: string): Promise<WorkflowSummary[]> {
+	const summaries: WorkflowSummary[] = [];
+	const seen = new Set<string>();
+	for (const file of await listWorkflowFiles(cwd)) {
+		const base = file.path.split(sep).pop()!.replace(/\.json$/, "");
+		if (seen.has(base)) continue;
+		seen.add(base);
+		try {
+			const parsed = JSON.parse(await readFile(file.path, "utf-8"));
+			summaries.push({
+				name: typeof parsed.name === "string" && parsed.name.trim() ? parsed.name : base,
+				description: typeof parsed.description === "string" ? parsed.description : undefined,
+				path: file.path,
+				scope: file.scope,
+				steps: Array.isArray(parsed.steps) ? parsed.steps.length : undefined,
+			});
+		} catch (err) {
+			summaries.push({ name: base, path: file.path, scope: file.scope, error: (err as Error).message });
+		}
+	}
+	return summaries;
+}
+
+async function listWorkflowsResult(cwd: string): Promise<AgentToolResult<unknown>> {
+	const workflows = await listWorkflowSummaries(cwd);
+	const text = workflows.length === 0
+		? "No workflows found. Add JSON workflows in .pi/agent/workflows/ or ~/.pi/agent/workflows/."
+		: workflows.map((wf) => {
+			const suffix = wf.error ? ` [invalid: ${wf.error}]` : `${wf.steps !== undefined ? ` (${wf.steps} steps)` : ""}${wf.description ? ` — ${wf.description}` : ""}`;
+			return `• ${wf.name} [${wf.scope}]${suffix}`;
+		}).join("\n");
+	return { content: [{ type: "text", text }], details: { workflows } };
+}
+
+async function showWorkflowResult(params: AgentToolParams, cwd: string): Promise<AgentToolResult<unknown>> {
+	const workflow = await loadWorkflow({ ...params, action: "workflow" }, cwd);
+	const text = JSON.stringify(workflow, null, 2);
+	return { content: [{ type: "text", text }], details: { workflow } };
+}
+
+	async function runChainSteps(state: HiveState, callerId: string | undefined, steps: ChainStepParams[], model: Model<any>, cwd: string, signal?: AbortSignal, onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void): Promise<AgentToolResult<unknown>> {
 		let previous = "";
 		const outputs: Array<{ id: string; output: string }> = [];
 		for (const step of steps) {
 			if (signal?.aborted) throw new Error("Chain run was aborted.");
-			const task = substituteStepVars(step.task, previous, outputs.map((o) => `=== ${o.id} ===\n${o.output}`).join("\n\n"));
-			const result = children.has(step.id)
-				? await delegateToChild(callerId, { id: step.id, message: task, timeout_seconds: step.timeout_seconds }, signal)
-				: await spawnChild(callerId, { id: step.id, system_prompt: step.system_prompt || "You are a focused child agent.", task, timeout_seconds: step.timeout_seconds }, model, cwd, signal);
+			const task = substituteStepVars(step.task, previous, outputs);
+			const existing = state.children.has(step.id);
+			if (!existing && (typeof step.system_prompt !== "string" || step.system_prompt.trim().length === 0)) {
+				throw new Error(`chain step "${step.id}" creates a new agent and requires system_prompt.`);
+			}
+			const result = existing
+				? await delegateToChild(state, callerId, { id: step.id, message: task, timeout_seconds: step.timeout_seconds }, signal, onUpdate)
+				: await spawnChild(state, callerId, { id: step.id, system_prompt: step.system_prompt!, task, timeout_seconds: step.timeout_seconds }, model, cwd, signal, onUpdate);
 			previous = textOf(result);
 			outputs.push({ id: step.id, output: previous });
 		}
@@ -1276,16 +1674,18 @@ export default function piHive(pi: ExtensionAPI) {
 		return { content: [{ type: "text", text }], details: { steps: outputs } };
 	}
 
-	async function runParallelTasks(callerId: string | undefined, tasks: ParallelTaskParams[], model: Model<any>, cwd: string, signal?: AbortSignal): Promise<AgentToolResult<unknown>> {
+	async function runParallelTasks(state: HiveState, callerId: string | undefined, tasks: ParallelTaskParams[], model: Model<any>, cwd: string, signal?: AbortSignal, onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void): Promise<AgentToolResult<unknown>> {
 		const ids = new Set<string>();
 		for (const task of tasks) {
 			if (ids.has(task.id)) throw new Error(`Duplicate parallel task id "${task.id}".`);
 			ids.add(task.id);
-			if (children.has(task.id)) throw new Error(`Child agent "${task.id}" already exists.`);
 		}
-		const settled = await Promise.allSettled(tasks.map((task) =>
-			spawnChild(callerId, { id: task.id, system_prompt: task.system_prompt, task: task.task, timeout_seconds: task.timeout_seconds }, model, cwd, signal),
-		));
+		const settled = await Promise.allSettled(tasks.map((task) => {
+			const existing = state.children.has(task.id);
+			return existing
+				? delegateToChild(state, callerId, { id: task.id, message: task.task, timeout_seconds: task.timeout_seconds }, signal, onUpdate)
+				: spawnChild(state, callerId, { id: task.id, system_prompt: task.system_prompt, task: task.task, timeout_seconds: task.timeout_seconds }, model, cwd, signal, onUpdate);
+		}));
 		const outputs = settled.map((result, index) => {
 			const id = tasks[index].id;
 			return result.status === "fulfilled"
@@ -1296,9 +1696,79 @@ export default function piHive(pi: ExtensionAPI) {
 		return { content: [{ type: "text", text }], details: { tasks: outputs } };
 	}
 
+	function lastNonEmptyLine(text: string): string {
+		const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+		return lines.at(-1) ?? "";
+	}
+
+	function isUntilSatisfied(until: WorkflowUntilParams, outputs: Array<{ id: string; output: string }>): boolean {
+		const output = findLatestOutput(outputs, until.step);
+		if (until.contains !== undefined && output.includes(until.contains)) return true;
+		if (until.last_line_equals !== undefined && lastNonEmptyLine(output) === until.last_line_equals) return true;
+		return false;
+	}
+
+	async function runWorkflowBodySteps(state: HiveState, callerId: string | undefined, steps: WorkflowBodyStepParams[], model: Model<any>, cwd: string, previous: string, outputs: Array<{ id: string; output: string }>, vars: Record<string, string>, signal?: AbortSignal, onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void): Promise<string> {
+		for (const step of steps) {
+			if (signal?.aborted) throw new Error("Workflow run was aborted.");
+			if (isWorkflowParallelStep(step)) {
+				const tasks = step.tasks.map((task) => ({ ...task, task: substituteStepVars(task.task, previous, outputs, vars) }));
+				const result = await runParallelTasks(state, callerId, tasks, model, cwd, signal, onUpdate);
+				previous = textOf(result);
+				outputs.push({ id: step.id, output: previous });
+				continue;
+			}
+			const task = substituteStepVars(step.task, previous, outputs, vars);
+			const existing = state.children.has(step.id);
+			if (!existing && (typeof step.system_prompt !== "string" || step.system_prompt.trim().length === 0)) {
+				throw new Error(`workflow step "${step.id}" creates a new agent and requires system_prompt.`);
+			}
+			const result = existing
+				? await delegateToChild(state, callerId, { id: step.id, message: task, timeout_seconds: step.timeout_seconds }, signal, onUpdate)
+				: await spawnChild(state, callerId, { id: step.id, system_prompt: step.system_prompt!, task, timeout_seconds: step.timeout_seconds }, model, cwd, signal, onUpdate);
+			previous = textOf(result);
+			outputs.push({ id: step.id, output: previous });
+		}
+		return previous;
+	}
+
+	async function runWhileStep(state: HiveState, callerId: string | undefined, step: { type: "while"; id: string; max_iterations: number; until: WorkflowUntilParams; steps: WorkflowBodyStepParams[] }, model: Model<any>, cwd: string, previous: string, outputs: Array<{ id: string; output: string }>, signal?: AbortSignal, onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void): Promise<string> {
+		const loopOutputs: Array<{ id: string; output: string }> = [];
+		let stoppedBy = "max_iterations";
+		for (let iteration = 1; iteration <= step.max_iterations; iteration++) {
+			const before = outputs.length;
+			previous = await runWorkflowBodySteps(state, callerId, step.steps, model, cwd, previous, outputs, { iteration: String(iteration), max_iterations: String(step.max_iterations) }, signal, onUpdate);
+			const iterationOutputs = outputs.slice(before);
+			const iterationText = iterationOutputs.map((o) => `=== ${o.id} ===\n${o.output}`).join("\n\n");
+			loopOutputs.push({ id: `${step.id}#${iteration}`, output: iterationText });
+			if (isUntilSatisfied(step.until, iterationOutputs)) {
+				stoppedBy = "until";
+				break;
+			}
+		}
+		const text = [`while ${step.id}: stopped_by=${stoppedBy}`, ...loopOutputs.map((o) => `=== ${o.id} ===\n${o.output}`)].join("\n\n");
+		outputs.push({ id: step.id, output: text });
+		return text;
+	}
+
+	async function runWorkflow(state: HiveState, callerId: string | undefined, workflow: WorkflowParams, model: Model<any>, cwd: string, signal?: AbortSignal, onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void): Promise<AgentToolResult<unknown>> {
+		let previous = "";
+		const outputs: Array<{ id: string; output: string }> = [];
+		for (const step of workflow.steps) {
+			if (isWorkflowWhileStep(step)) {
+				previous = await runWhileStep(state, callerId, step, model, cwd, previous, outputs, signal, onUpdate);
+			} else {
+				previous = await runWorkflowBodySteps(state, callerId, [step], model, cwd, previous, outputs, {}, signal, onUpdate);
+			}
+		}
+		const text = outputs.map((o) => `=== ${o.id} ===\n${o.output}`).join("\n\n");
+		return { content: [{ type: "text", text }], details: { workflow: workflow.name, steps: outputs } };
+	}
+
+
 	function requireStringParam(params: AgentToolParams, key: "id" | "run_id" | "system_prompt" | "task" | "message"): string {
 		const value = params[key];
-		if (typeof value !== "string" || value.length === 0) {
+		if (typeof value !== "string" || value.trim().length === 0) {
 			throw new Error(`agent action "${params.action}" requires "${key}".`);
 		}
 		return value;
@@ -1328,6 +1798,7 @@ export default function piHive(pi: ExtensionAPI) {
 	}
 
 	async function executeAgentAction(
+		state: HiveState,
 		callerId: string | undefined,
 		params: AgentToolParams,
 		model: Model<any> | undefined,
@@ -1348,70 +1819,93 @@ export default function piHive(pi: ExtensionAPI) {
 				};
 				if (params.async) {
 					if (!allowAsync) throw new Error("async=true is only supported by root-level agent actions.");
-					return startRun("spawn", params.run_id, [id], (runSignal) => spawnChild(callerId, spawnParams, selectedModel, cwd, runSignal));
+					return startRun(state, "spawn", params.run_id, [id], (runSignal) => spawnChild(state, callerId, spawnParams, selectedModel, cwd, runSignal));
 				}
-				return await spawnChild(callerId, spawnParams, selectedModel, cwd, signal, onUpdate);
+				return await spawnChild(state, callerId, spawnParams, selectedModel, cwd, signal, onUpdate);
 			}
 			case "delegate": {
 				const id = requireStringParam(params, "id");
 				const delegateParams = { id, message: requireStringParam(params, "message"), timeout_seconds: params.timeout_seconds };
 				if (params.async) {
 					if (!allowAsync) throw new Error("async=true is only supported by root-level agent actions.");
-					return startRun("delegate", params.run_id, [id], (runSignal) => delegateToChild(callerId, delegateParams, runSignal));
+					return startRun(state, "delegate", params.run_id, [id], (runSignal) => delegateToChild(state, callerId, delegateParams, runSignal));
 				}
-				return await delegateToChild(callerId, delegateParams, signal, onUpdate);
+				return await delegateToChild(state, callerId, delegateParams, signal, onUpdate);
 			}
 			case "kill": {
 				rejectUnsupportedAsync(params);
 				const id = requireStringParam(params, "id");
-				const state = getAccessibleTarget(callerId, id, "kill", callerId === undefined);
-				const { killedIds, reportCount } = killSubtree(state.id);
+				const target = getAccessibleTarget(state, callerId, id, "kill", callerId === undefined);
+				const { killedIds, reportCount } = killSubtree(state, target.id);
 				return {
 					content: [{ type: "text", text: `Killed ${killedIds.length} agent(s): ${killedIds.join(", ")}.` }],
-					details: { childId: state.id, killedIds, reportCount },
+					details: { childId: target.id, killedIds, reportCount },
 				};
 			}
 			case "list": {
 				rejectUnsupportedAsync(params);
-				return listAgentsResult(callerId);
+				return listAgentsResult(state, callerId);
 			}
 			case "chain": {
 				const selectedModel = requireModel(model, params.action);
 				const steps = requireSteps(params);
 				if (params.async) {
 					if (!allowAsync) throw new Error("async=true is only supported by root-level agent actions.");
-					return startRun("chain", params.run_id, steps.map((step) => step.id), (runSignal) => runChainSteps(callerId, steps, selectedModel, cwd, runSignal));
+					return startRun(state, "chain", params.run_id, steps.map((step) => step.id), (runSignal) => runChainSteps(state, callerId, steps, selectedModel, cwd, runSignal));
 				}
-				return await runChainSteps(callerId, steps, selectedModel, cwd, signal);
+				return await runChainSteps(state, callerId, steps, selectedModel, cwd, signal, onUpdate);
 			}
 			case "parallel": {
 				const selectedModel = requireModel(model, params.action);
 				const tasks = requireTasks(params);
 				if (params.async) {
 					if (!allowAsync) throw new Error("async=true is only supported by root-level agent actions.");
-					return startRun("parallel", params.run_id, tasks.map((task) => task.id), (runSignal) => runParallelTasks(callerId, tasks, selectedModel, cwd, runSignal));
+					return startRun(state, "parallel", params.run_id, tasks.map((task) => task.id), (runSignal) => runParallelTasks(state, callerId, tasks, selectedModel, cwd, runSignal));
 				}
-				return await runParallelTasks(callerId, tasks, selectedModel, cwd, signal);
+				return await runParallelTasks(state, callerId, tasks, selectedModel, cwd, signal, onUpdate);
+			}
+
+
+			case "list_workflows": {
+				rejectUnsupportedAsync(params);
+				return await listWorkflowsResult(cwd);
+			}
+			case "show_workflow": {
+				rejectUnsupportedAsync(params);
+				return await showWorkflowResult(params, cwd);
+			}
+			case "workflow": {
+				const selectedModel = requireModel(model, params.action);
+				const workflow = await loadWorkflow(params, cwd);
+				const children = workflowChildIds(workflow);
+				if (params.async) {
+					if (!allowAsync) throw new Error("async=true is only supported by root-level agent actions.");
+					return startRun(state, "workflow", params.run_id, children, (runSignal) => runWorkflow(state, callerId, workflow, selectedModel, cwd, runSignal));
+				}
+				return await runWorkflow(state, callerId, workflow, selectedModel, cwd, signal, onUpdate);
 			}
 			case "list_runs": {
 				rejectUnsupportedAsync(params);
 				if (callerId) throw new Error("Run management actions are root-only.");
-				return listRunsResult();
+				return listRunsResult(state);
 			}
 			case "result": {
 				rejectUnsupportedAsync(params);
 				if (callerId) throw new Error("Run management actions are root-only.");
 				const runId = requireStringParam(params, "run_id");
-				const run = runs.get(runId);
-				if (!run) throw new Error(`Run "${runId}" not found.`);
+				evictCompletedRuns(state);
+				const run = state.runs.get(runId);
+				if (!run) throw new Error(`Run "${runId}" not found in this workspace (it may have been evicted).`);
 				return formatRunResult(run);
 			}
+
+
 			case "wait": {
 				rejectUnsupportedAsync(params);
 				if (callerId) throw new Error("Run management actions are root-only.");
 				const runId = requireStringParam(params, "run_id");
-				const run = runs.get(runId);
-				if (!run) throw new Error(`Run "${runId}" not found.`);
+				const run = state.runs.get(runId);
+				if (!run) throw new Error(`Run "${runId}" not found in this workspace (it may have been evicted).`);
 				await waitForRun(run, params.timeout_seconds);
 				return formatRunResult(run);
 			}
@@ -1419,16 +1913,18 @@ export default function piHive(pi: ExtensionAPI) {
 				rejectUnsupportedAsync(params);
 				if (callerId) throw new Error("Run management actions are root-only.");
 				const runId = requireStringParam(params, "run_id");
-				const run = runs.get(runId);
-				if (!run) throw new Error(`Run "${runId}" not found.`);
+				const run = state.runs.get(runId);
+				if (!run) throw new Error(`Run "${runId}" not found in this workspace (it may have been evicted).`);
+				if (run.status !== "running") return formatRunResult(run);
 				run.abortController.abort();
 				let killed: string[] = [];
 				for (const childId of run.children) {
-					if (children.has(childId)) killed = killed.concat(killSubtree(childId).killedIds);
+					if (state.children.has(childId)) killed = killed.concat(killSubtree(state, childId).killedIds);
 				}
 				run.status = "killed";
 				run.finishedAt = Date.now();
-				return { content: [{ type: "text", text: `Killed run "${run.id}" (${killed.length} agent(s): ${killed.join(", ") || "none"}).` }], details: { runId: run.id, killed } };
+				evictCompletedRuns(state);
+				return { content: [{ type: "text", text: `Killed run "${run.id}" (${killed.length} agent(s): ${killed.join(", ") || "none"}).` }], details: { run: toRunDTO(run), killed } };
 			}
 			default:
 				throw new Error(`Unknown agent action "${(params as { action?: string }).action}".`);
@@ -1436,9 +1932,10 @@ export default function piHive(pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		clearConfigCache();
+		const state = getState(ctx.cwd);
+		clearConfigCache(state);
 		try {
-			await getConfig(ctx.cwd);
+			await getConfig(state, ctx.cwd);
 		} catch (err) {
 			if (ctx.hasUI) {
 				ctx.ui.notify(`pi-hive config error: ${(err as Error).message}`, "error");
@@ -1447,16 +1944,73 @@ export default function piHive(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
-		clearConfigCache();
-		const states = [...children.values()];
-		for (const state of states) {
-			state.agent.abort();
+		const childStates = [...states.values()].flatMap((state) => [...state.children.values()]);
+		for (const state of states.values()) {
+			clearConfigCache(state);
+			for (const run of state.runs.values()) {
+				if (run.status === "running") {
+					run.status = "killed";
+					run.finishedAt = Date.now();
+					run.abortController.abort();
+				}
+			}
+		}
+		for (const child of childStates) {
+			child.agent.abort();
 		}
 		await Promise.race([
-			Promise.allSettled(states.map((state) => state.agent.waitForIdle())).then(() => undefined),
+			Promise.allSettled(childStates.map((child) => child.agent.waitForIdle())).then(() => undefined),
 			new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_GRACE_MS)),
 		]);
-		children.clear();
+		states.clear();
+	});
+
+	function parseWorkflowCommandArgs(args: string): { subcommand: string; rest: string } {
+		const trimmed = args.trim();
+		if (!trimmed) return { subcommand: "list", rest: "" };
+		const [first, ...rest] = trimmed.split(/\s+/);
+		if (["list", "ls", "show", "run"].includes(first)) return { subcommand: first, rest: rest.join(" ").trim() };
+		return { subcommand: "run", rest: trimmed };
+	}
+
+	pi.registerCommand("workflow", {
+		description: "List, show, or run deterministic workflows",
+		handler: async (args, ctx) => {
+			const { subcommand, rest } = parseWorkflowCommandArgs(args);
+			try {
+				if (subcommand === "list" || subcommand === "ls") {
+					const result = await listWorkflowsResult(ctx.cwd);
+					const text = result.content[0]?.type === "text" ? result.content[0].text : "(no workflows)";
+					ctx.ui.notify(text, "info");
+					return;
+				}
+				if (subcommand === "show") {
+					if (!rest) {
+						ctx.ui.notify("Usage: /workflow show <name>", "warning");
+						return;
+					}
+					const result = await showWorkflowResult({ action: "show_workflow", workflow_name: rest }, ctx.cwd);
+					const text = result.content[0]?.type === "text" ? result.content[0].text : "(no output)";
+					ctx.ui.notify(text.length > 4000 ? text.slice(0, 4000) + "\n…" : text, "info");
+					return;
+				}
+				if (subcommand === "run") {
+					if (!rest) {
+						ctx.ui.notify("Usage: /workflow <name> or /workflow run <name>", "warning");
+						return;
+					}
+					if (!ctx.isIdle()) {
+						ctx.ui.notify("Agent is busy. Run the workflow when the current turn finishes.", "warning");
+						return;
+					}
+					pi.sendUserMessage(`Run workflow ${JSON.stringify(rest)} now. Use the agent tool with action=\"workflow\" and workflow_name=${JSON.stringify(rest)}. Do not list all workflows unless this workflow cannot be found.`);
+					return;
+				}
+				ctx.ui.notify("Usage: /workflow [list|show <name>|run <name>|<name>]", "warning");
+			} catch (err) {
+				ctx.ui.notify(`workflow: ${(err as Error).message}`, "error");
+			}
+		},
 	});
 
 	// ── agent ─────────────────────────────────────────────────────────────
@@ -1465,16 +2019,17 @@ export default function piHive(pi: ExtensionAPI) {
 		name: "agent",
 		label: "Agent",
 		description:
-			"Single multi-agent orchestration tool. " +
-			"Use action=spawn|delegate|kill|list|chain|parallel|list_runs|result|wait|cancel. " +
-			"spawn/delegate/chain/parallel support async=true from the root session. " +
-			"Recursive spawning is bounded by pi-hive.json maxDepth/maxLiveAgents.",
-		parameters: agentSchema,
+			"Single multi-agent orchestration tool with progressive workflow discovery. " +
+			"Use action=list_workflows/show_workflow to inspect saved workflows only when relevant; run with action=workflow. " +
+			"Other actions: spawn|delegate|kill|list|chain|parallel|list_runs|result. " +
+			"spawn/delegate/chain/parallel/workflow support async=true from the root session. Recursive spawning is bounded by pi-hive.json maxDepth/maxLiveAgents.",
+		parameters: agentSchema as any,
 
 		renderCall(args, theme, context) {
-			const action = args.action || "...";
-			const id = args.id || args.run_id || "";
-			const taskText = args.task || args.message || action;
+			const callArgs = (args ?? {}) as { action?: string; id?: string; run_id?: string; task?: string; message?: string };
+			const action = callArgs.action || "...";
+			const id = callArgs.id || callArgs.run_id || "";
+			const taskText = callArgs.task || callArgs.message || action;
 			return renderAgentCall(`agent:${action}`, { id, task: taskText }, theme, context);
 		},
 
@@ -1483,8 +2038,9 @@ export default function piHive(pi: ExtensionAPI) {
 		},
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			cachedGetApiKey ??= (provider: string) => ctx.modelRegistry.getApiKeyForProvider(provider);
-			return await executeAgentAction(undefined, params as AgentToolParams, ctx.model, ctx.cwd, signal, onUpdate, true);
+			const state = getState(ctx.cwd);
+			state.getApiKey ??= (provider: string) => ctx.modelRegistry.getApiKeyForProvider(provider);
+			return await executeAgentAction(state, undefined, params as AgentToolParams, ctx.model, ctx.cwd, signal, onUpdate, true);
 		},
 	});
 }
