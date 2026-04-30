@@ -3,6 +3,7 @@ import {
   applyEditsToContent,
   applyEditsToRawContentPreservingLineEndings,
   buildChangedAnchorResponse,
+  computeEditLineMetrics,
   computeLineHash,
   formatHashlineRegion,
   getVisibleLines,
@@ -170,6 +171,19 @@ describe("changed anchor response", () => {
     expect(response.text).toContain(`2${computeLineHash(2, "B")}|B`);
     expect(response.addedLines).toBe(1);
     expect(response.removedLines).toBe(1);
+  });
+
+  test("edit metrics sum requested edits instead of spanning unchanged lines", () => {
+    const original = Array.from({ length: 100 }, (_, index) => `line ${index + 1}`).join("\n") + "\n";
+    const edits: RawEdit[] = [
+      { op: "replace", pos: anchor(2, "line 2"), lines: ["LINE 2"] },
+      { op: "replace", pos: anchor(50, "line 50"), lines: ["LINE 50"] },
+      { op: "replace", pos: anchor(98, "line 98"), lines: ["LINE 98"] },
+    ];
+    const response = buildChangedAnchorResponse(original, apply(original, edits));
+    expect(response.addedLines).toBe(97);
+    expect(response.removedLines).toBe(97);
+    expect(computeEditLineMetrics(original, edits)).toEqual({ addedLines: 3, removedLines: 3 });
   });
 
   test("omits overly large anchor blocks", () => {

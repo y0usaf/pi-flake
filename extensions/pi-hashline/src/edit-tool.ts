@@ -5,7 +5,12 @@ import { DEFAULT_MAX_BYTES, withFileMutationQueue, type ExtensionAPI } from "@ma
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { resolveMutationTargetPath, writeTextFileAtomically } from "./fs-write";
-import { applyEditsToRawContentPreservingLineEndings, buildChangedAnchorResponse, type EditRequest } from "./hashline";
+import {
+  applyEditsToRawContentPreservingLineEndings,
+  buildChangedAnchorResponse,
+  computeEditLineMetrics,
+  type EditRequest,
+} from "./hashline";
 import { resolveToCwd } from "./path-utils";
 import { throwIfAborted } from "./runtime";
 import { getFileSnapshot, sameFileSnapshot } from "./snapshot";
@@ -284,6 +289,7 @@ export function registerEditTool(pi: ExtensionAPI): void {
         });
 
         const response = buildChangedAnchorResponse(original, result, { maxBytes: DEFAULT_MAX_BYTES });
+        const metrics = computeEditLineMetrics(original, params.edits);
         return {
           content: [{ type: "text", text: response.text }],
           details: {
@@ -291,8 +297,8 @@ export function registerEditTool(pi: ExtensionAPI): void {
             snapshotId: updatedSnapshot.snapshotId,
             metrics: {
               edits_attempted: params.edits.length,
-              added_lines: response.addedLines,
-              removed_lines: response.removedLines,
+              added_lines: metrics.addedLines,
+              removed_lines: metrics.removedLines,
             },
           },
         };
