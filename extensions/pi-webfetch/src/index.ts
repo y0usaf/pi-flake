@@ -30,6 +30,8 @@ function cacheGet(key: string): CacheEntry | undefined {
 		cache.delete(key);
 		return undefined;
 	}
+	cache.delete(key);
+	cache.set(key, entry);
 	return entry;
 }
 
@@ -57,6 +59,21 @@ async function getTurndown() {
 
 const MAX_REDIRECTS = 5;
 const FETCH_TIMEOUT_MS = 30_000;
+
+function isLocalOrPrivateHost(hostname: string): boolean {
+	const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+	return (
+		host === "localhost" ||
+		host.endsWith(".localhost") ||
+		host.endsWith(".local") ||
+		host === "::1" ||
+		host === "0:0:0:0:0:0:0:1" ||
+		/^127\./.test(host) ||
+		/^10\./.test(host) ||
+		/^192\.168\./.test(host) ||
+		/^172\.(1[6-9]|2\d|3[01])\./.test(host)
+	);
+}
 
 async function safeFetch(url: string, signal?: AbortSignal): Promise<Response> {
 	let current = url;
@@ -107,7 +124,7 @@ export default function (pi: ExtensionAPI) {
 			"Fetch a URL and return its content as markdown. For HTML pages, converts to clean markdown. For other content types, returns raw text. Includes a 15-minute cache.",
 		promptSnippet: "Fetch a URL and return its content as markdown",
 		promptGuidelines: [
-			"Use web_fetch to read documentation, API references, or other web content. URL must start with http:// or https:// (http is auto-upgraded). HTML is converted to markdown; non-HTML is returned as-is.",
+			"Use web_fetch to read documentation, API references, or other web content. URL must start with http:// or https:// (public http is tried as https first; localhost/private http stays http). HTML is converted to markdown; non-HTML is returned as-is.",
 			"For GitHub repos prefer `gh` CLI via bash. Authenticated pages won't work. Optionally pass `prompt` to indicate what you're looking for.",
 		],
 		parameters: Type.Object({
@@ -141,22 +158,50 @@ export default function (pi: ExtensionAPI) {
 				throw new Error(`Unsupported protocol: ${parsed.protocol}. Use http or https.`);
 			}
 
-			// Upgrade http → https
-			if (parsed.protocol === "http:") {
+			const originalUrl = parsed.href;
+			let fetchUrl = parsed.href;
+			let fallbackUrl: string | undefined;
+
+			// Try HTTPS for public HTTP URLs, but do not break local/private HTTP endpoints.
+			if (parsed.protocol === "http:" && !isLocalOrPrivateHost(parsed.hostname)) {
 				parsed.protocol = "https:";
+				fetchUrl = parsed.href;
+				fallbackUrl = originalUrl;
 			}
-			const fetchUrl = parsed.href;
 
 			// Check cache
-			const cached = cacheGet(fetchUrl);
+			let cachedUrl = fetchUrl;
+			let cached = cacheGet(fetchUrl);
+			if (!cached && fallbackUrl) {
+				const fallbackCached = cacheGet(fallbackUrl);
+				if (fallbackCached) {
+					cached = fallbackCached;
+					cachedUrl = fallbackUrl;
+				}
+			}
 			if (cached) {
-				return buildResult(cached.content, cached.bytes, cached.contentType, fetchUrl, prompt, true);
+				return buildResult(cached.content, cached.bytes, cached.contentType, cachedUrl, prompt, true);
 			}
 
 			onUpdate?.({ content: [{ type: "text", text: `Fetching ${fetchUrl}...` }], details: undefined });
 
+			let lastAttemptUrl = fetchUrl;
 			try {
-				const res = await safeFetch(fetchUrl, signal);
+				let effectiveUrl = fetchUrl;
+				let res: Response;
+				try {
+					lastAttemptUrl = fetchUrl;
+					res = await safeFetch(fetchUrl, signal);
+				} catch (err) {
+					if (!fallbackUrl || signal?.aborted) throw err;
+					onUpdate?.({
+						content: [{ type: "text", text: `HTTPS fetch failed; retrying ${fallbackUrl}...` }],
+						details: undefined,
+					});
+					effectiveUrl = fallbackUrl;
+					lastAttemptUrl = fallbackUrl;
+					res = await safeFetch(fallbackUrl, signal);
+				}
 
 				if (!res.ok && ![301, 302, 307, 308].includes(res.status)) {
 					throw new Error(`HTTP ${res.status} ${res.statusText}`);
@@ -176,12 +221,12 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				// Cache it
-				cacheSet(fetchUrl, { content, contentType, bytes, timestamp: Date.now() });
+				cacheSet(effectiveUrl, { content, contentType, bytes, timestamp: Date.now() });
 
-				return buildResult(content, bytes, contentType, fetchUrl, prompt, false);
+				return buildResult(content, bytes, contentType, effectiveUrl, prompt, false);
 			} catch (err: unknown) {
 				if (err instanceof Error && err.name === "TimeoutError") {
-					throw new Error(`Fetch timed out after ${FETCH_TIMEOUT_MS / 1000}s for ${fetchUrl}`);
+					throw new Error(`Fetch timed out after ${FETCH_TIMEOUT_MS / 1000}s for ${lastAttemptUrl}`);
 				}
 				throw err;
 			}
