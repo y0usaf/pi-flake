@@ -1,5 +1,5 @@
 {
-  description = "Nix flake for pi-statusline";
+  description = "Nix flake for pi-minimal-ui";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -24,8 +24,8 @@
       lib = pkgs.lib;
       packageJson = builtins.fromJSON (builtins.readFile ./package.json);
     in {
-      pi-statusline = pkgs.stdenvNoCC.mkDerivation {
-        pname = "pi-statusline";
+      pi-minimal-ui = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-minimal-ui";
         version = packageJson.version;
         src = lib.cleanSource ./.;
 
@@ -44,13 +44,13 @@
         };
 
         meta = with lib; {
-          description = "Pi extension that moves footer info into a statusline above the editor";
+          description = "Pi minimal UI extension with statusline and compact input box";
           license = licenses.mit;
           platforms = platforms.all;
         };
       };
 
-      default = self.packages.${system}.pi-statusline;
+      default = self.packages.${system}.pi-minimal-ui;
     });
 
     devShells = forAllSystems (system: let
@@ -59,7 +59,7 @@
       default = pkgs.mkShell {
         packages = with pkgs; [nodejs_22];
         shellHook = ''
-          echo "pi-statusline dev shell — node $(node --version)"
+          echo "pi-minimal-ui dev shell — node $(node --version)"
         '';
       };
     });

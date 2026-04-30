@@ -33,11 +33,8 @@
     piHashline.url = "path:./extensions/pi-hashline";
     piHashline.inputs.nixpkgs.follows = "nixpkgs";
 
-    piStatusline.url = "path:./extensions/pi-statusline";
-    piStatusline.inputs.nixpkgs.follows = "nixpkgs";
-
-    piInputBox.url = "path:./extensions/pi-input-box";
-    piInputBox.inputs.nixpkgs.follows = "nixpkgs";
+    piMinimalUi.url = "path:./extensions/pi-minimal-ui";
+    piMinimalUi.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs = {
@@ -52,8 +49,7 @@
     piToolManagement,
     piWebfetch,
     piHashline,
-    piStatusline,
-    piInputBox,
+    piMinimalUi,
     ...
   }: let
     systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
@@ -128,8 +124,7 @@
       "pi-tool-management" = piToolManagement.packages.${system}.default;
       "pi-webfetch" = piWebfetch.packages.${system}.default;
       "pi-hashline" = piHashline.packages.${system}.default;
-      "pi-statusline" = piStatusline.packages.${system}.default;
-      "pi-input-box" = piInputBox.packages.${system}.default;
+      "pi-minimal-ui" = piMinimalUi.packages.${system}.default;
 
       # pi with ALL extensions pre-bundled
       pi-full = self.lib.piWithExtensions {
@@ -189,8 +184,7 @@
       "tool-management" = self.packages.${system}."pi-tool-management";
       webfetch = self.packages.${system}."pi-webfetch";
       hashline = self.packages.${system}."pi-hashline";
-      statusline = self.packages.${system}."pi-statusline";
-      "input-box" = self.packages.${system}."pi-input-box";
+      "minimal-ui" = self.packages.${system}."pi-minimal-ui";
     };
 
     # Convert boolean flags into an extension attrset for piWithExtensions.
