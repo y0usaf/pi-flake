@@ -2,16 +2,15 @@ import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 
-const UI_WIDTH_RATIO = 0.9;
-const UI_MAX_WIDTH = 100;
 const UI_MIN_WIDTH = 24;
+const PROMPT_MARKER = ":::";
+const HEADER_DIAG = "╱";
+const MIN_HEADER_DIAGS = 3;
 
-const MIN_LOCATION_WIDTH = 8;
 const ANSI_PATTERN = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|_[^\x07]*(?:\x07|\x1b\\))/g;
 
 function uiWidth(width: number): number {
-	if (width <= UI_MIN_WIDTH) return Math.max(1, width);
-	return Math.min(width, UI_MAX_WIDTH, Math.max(UI_MIN_WIDTH, Math.floor(width * UI_WIDTH_RATIO)));
+	return width <= UI_MIN_WIDTH ? Math.max(1, width) : width;
 }
 
 function stripAnsi(value: string): string {
@@ -31,16 +30,6 @@ function sanitize(value: string): string {
 
 function joinStyled(parts: Array<string | undefined>, separator: string): string {
 	return parts.filter((part): part is string => Boolean(part)).join(separator);
-}
-
-function bracket(content: string, theme: ExtensionContext["ui"]["theme"]): string {
-	return `${theme.fg("dim", "[")}${content}${theme.fg("dim", "]")}`;
-}
-
-function fitBracket(content: string, theme: ExtensionContext["ui"]["theme"], maxWidth: number): string {
-	if (maxWidth <= 0) return "";
-	if (maxWidth <= 2) return truncateToWidth(bracket(content, theme), maxWidth, "…");
-	return bracket(truncateToWidth(content, maxWidth - 2, "…"), theme);
 }
 
 function shortPath(path: string): string {
@@ -169,32 +158,6 @@ function centerLine(line: string, lineWidth: number, width: number): string {
 	return `${" ".repeat(left)}${line}${" ".repeat(right)}`;
 }
 
-function packGroups(groups: string[], width: number): string[] {
-	const lines: string[] = [];
-	let current = "";
-
-	for (const rawGroup of groups) {
-		const group = truncateToWidth(rawGroup, width, "…");
-		if (!group) continue;
-
-		if (!current) {
-			current = group;
-			continue;
-		}
-
-		const next = `${current} ${group}`;
-		if (visibleWidth(next) <= width) {
-			current = next;
-		} else {
-			lines.push(current);
-			current = group;
-		}
-	}
-
-	if (current) lines.push(current);
-	return lines.length > 0 ? lines : [""];
-}
-
 function renderStatusGroups(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -206,11 +169,24 @@ function renderStatusGroups(
 	const statuses = renderExtensionStatuses(footerData);
 
 	return [
-		fitBracket(renderLocation(ctx, branch, theme, Math.max(1, width - 2)), theme, width),
-		fitBracket(renderStats(ctx, theme), theme, width),
-		fitBracket(renderModelInfo(pi, ctx, theme), theme, width),
-		statuses ? fitBracket(statuses, theme, width) : undefined,
+		renderLocation(ctx, branch, theme, Math.max(1, Math.floor(width * 0.45))),
+		renderStats(ctx, theme),
+		renderModelInfo(pi, ctx, theme),
+		statuses ? theme.fg("dim", statuses) : undefined,
 	].filter((group): group is string => Boolean(group));
+}
+
+function renderHeaderLine(groups: string[], theme: ExtensionContext["ui"]["theme"], width: number): string {
+	const prefix = `${theme.fg("accent", "pi")} `;
+	const separator = theme.fg("dim", " • ");
+	const content = groups.join(separator);
+	const prefixWidth = visibleWidth(prefix);
+	const maxContentWidth = Math.max(0, width - prefixWidth - MIN_HEADER_DIAGS - 1);
+	const fittedContent = truncateToWidth(content, maxContentWidth, "…");
+	const fittedContentWidth = visibleWidth(fittedContent);
+	const diagCount = Math.max(MIN_HEADER_DIAGS, width - prefixWidth - fittedContentWidth - 1);
+	const line = `${prefix}${theme.fg("accent", HEADER_DIAG.repeat(diagCount))} ${fittedContent}`;
+	return padLine(line, width);
 }
 
 function renderStatusline(
@@ -221,9 +197,10 @@ function renderStatusline(
 	width: number,
 ): string[] {
 	const innerWidth = uiWidth(width);
-	return packGroups(renderStatusGroups(pi, ctx, footerData, theme, innerWidth), innerWidth).map((line) =>
-		centerLine(padLine(line, innerWidth), innerWidth, width),
-	);
+	const groups = renderStatusGroups(pi, ctx, footerData, theme, innerWidth);
+	const primary = renderHeaderLine(groups, theme, innerWidth);
+	if (innerWidth === width) return [primary];
+	return [centerLine(primary, innerWidth, width)];
 }
 
 function isEditorBorder(line: string): boolean {
@@ -235,12 +212,13 @@ function scrollLabel(line: string): string | undefined {
 	return stripAnsi(line).match(/[↑↓] \d+ more/)?.[0];
 }
 
-class MinimalBoxEditor extends CustomEditor {
+class MinimalRailEditor extends CustomEditor {
 	render(width: number): string[] {
 		if (width < 4) return super.render(width);
 
 		const outerWidth = uiWidth(width);
-		const innerWidth = Math.max(1, outerWidth - 2);
+		const markerWidth = visibleWidth(PROMPT_MARKER) + 1;
+		const innerWidth = Math.max(1, outerWidth - markerWidth);
 		const leftMargin = " ".repeat(Math.max(0, Math.floor((width - outerWidth) / 2)));
 		const lines = super.render(innerWidth);
 		if (lines.length === 0) return lines;
@@ -249,25 +227,26 @@ class MinimalBoxEditor extends CustomEditor {
 		const topLabel = scrollLabel(lines[0] ?? "");
 		const bottomLabel = bottomIndex >= 0 ? scrollLabel(lines[bottomIndex] ?? "") : undefined;
 		const body = bottomIndex >= 0 ? [...lines.slice(1, bottomIndex), ...lines.slice(bottomIndex + 1)] : lines;
+		const rendered = body.map((line, index) => leftMargin + this.renderPromptLine(line, innerWidth, index === 0));
 
 		return [
-			leftMargin + this.renderBorder("┌", "┐", innerWidth, topLabel),
-			...body.map((line) => leftMargin + this.renderBodyLine(line, innerWidth)),
-			leftMargin + this.renderBorder("└", "┘", innerWidth, bottomLabel),
+			...(topLabel ? [leftMargin + this.renderScrollLabel(topLabel, outerWidth)] : []),
+			...rendered,
+			...(bottomLabel ? [leftMargin + this.renderScrollLabel(bottomLabel, outerWidth)] : []),
 		];
 	}
 
-	private renderBorder(left: string, right: string, innerWidth: number, label?: string): string {
-		const rawLabel = label ? ` ${label} ` : "";
-		const visibleLabel = truncateToWidth(rawLabel, innerWidth, "");
-		const fill = "─".repeat(Math.max(0, innerWidth - visibleWidth(visibleLabel)));
-		return this.borderColor(`${left}${visibleLabel}${fill}${right}`);
-	}
-
-	private renderBodyLine(line: string, innerWidth: number): string {
+	private renderPromptLine(line: string, innerWidth: number, first: boolean): string {
 		const clipped = truncateToWidth(line, innerWidth, "");
 		const padded = `${clipped}${" ".repeat(Math.max(0, innerWidth - visibleWidth(clipped)))}`;
-		return `${this.borderColor("│")}${padded}${this.borderColor("│")}`;
+		const marker = first ? this.borderColor(PROMPT_MARKER) : this.borderColor("  │");
+		return `${marker} ${padded}`;
+	}
+
+	private renderScrollLabel(label: string, outerWidth: number): string {
+		const text = ` ${label} `;
+		const fillWidth = Math.max(0, outerWidth - visibleWidth(text));
+		return this.borderColor(`${text}${"─".repeat(fillWidth)}`);
 	}
 }
 
@@ -276,7 +255,7 @@ export default function minimalUi(pi: ExtensionAPI) {
 	const refresh = () => requestRender?.();
 
 	pi.on("session_start", (_event, ctx) => {
-		ctx.ui.setEditorComponent((tui, theme, keybindings) => new MinimalBoxEditor(tui, theme, keybindings, { paddingX: 1 }));
+		ctx.ui.setEditorComponent((tui, theme, keybindings) => new MinimalRailEditor(tui, theme, keybindings, { paddingX: 0 }));
 
 		ctx.ui.setFooter((tui, _theme, footerData) => {
 			const unsubscribeBranch = footerData.onBranchChange(() => {
