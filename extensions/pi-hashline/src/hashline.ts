@@ -594,6 +594,33 @@ export function applyEditsToRawContentPreservingLineEndings(
   return joinTextLineRecords(nextRecords);
 }
 
+export function computeEditLineMetrics(original: string, edits: RawEdit[]): { addedLines: number; removedLines: number } {
+  const textEdits = edits.filter((edit) => edit.op === "replace_text");
+  if (textEdits.length > 0) {
+    if (edits.length !== 1) {
+      throw new Error("[E_EDIT_CONFLICT] replace_text cannot be mixed with anchor edits in one call. Use anchors or split the request.");
+    }
+    const edit = textEdits[0]!;
+    if (typeof edit.oldText !== "string" || typeof edit.newText !== "string") {
+      throw new Error("[E_BAD_OP] replace_text requires string oldText and newText.");
+    }
+    return {
+      addedLines: getVisibleLines(edit.newText).length,
+      removedLines: getVisibleLines(edit.oldText).length,
+    };
+  }
+
+  const originalLines = getVisibleLines(original);
+  const lineEdits = resolveLineEdits(edits, originalLines);
+  return lineEdits.reduce(
+    (metrics, edit) => ({
+      addedLines: metrics.addedLines + edit.lines.length,
+      removedLines: metrics.removedLines + edit.end - edit.start,
+    }),
+    { addedLines: 0, removedLines: 0 },
+  );
+}
+
 function computeChangedLineRange(oldText: string, newText: string): {
   first: number;
   last: number;
