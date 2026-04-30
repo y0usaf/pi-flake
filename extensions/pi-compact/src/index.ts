@@ -7,6 +7,10 @@ import { homedir } from "node:os";
 const MAX_SUMMARY_LENGTH = 120;
 const MAX_RESULT_LENGTH = 72;
 const MAX_USER_MESSAGE_LENGTH = 512;
+const TOOL_RULE = "╱";
+const USER_PROMPT_MARKER = ":::";
+const THINKING_ACTIVE_MARKER = "⠋";
+const THINKING_DONE_MARKER = "•";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
@@ -506,15 +510,17 @@ function getToolSpinnerFrame(state: any): string {
 }
 
 function toolStatusPrefix(state: any): string {
-  if (state?.isPartial) return `${getToolSpinnerFrame(state)} `;
-  return state?.result?.isError ? "✗ " : "✓ ";
+  if (state?.isPartial) return getToolSpinnerFrame(state);
+  return state?.result?.isError ? "✗" : "✓";
 }
 
 function buildToolLine(state: any): string {
+  const toolName = state?.toolName ?? "tool";
   const prefix = toolStatusPrefix(state);
-  const summary = clip(summarizeArgs(state?.toolName ?? "tool", state?.args), MAX_SUMMARY_LENGTH);
-  const suffix = summarizeResult(state?.toolName ?? "tool", state?.result);
-  return `${prefix}${state?.toolName ?? "tool"} ${summary || "…"}${suffix}`;
+  const summary = clip(summarizeArgs(toolName, state?.args), MAX_SUMMARY_LENGTH);
+  const suffix = summarizeResult(toolName, state?.result);
+  const detail = summary || suffix ? ` ${TOOL_RULE} ${summary || "…"}${suffix}` : "";
+  return `${prefix} ${toolName}${detail}`;
 }
 
 function getToolBgToken(state: any): ToolBgToken {
@@ -756,7 +762,7 @@ function renderCompactUserMessage(
 ): string[] {
   const text = getUserMessageTextFromComponent(component) || getUserMessageTextFromRendered(originalRender.call(component, width));
   const summary = clip(squash(text), MAX_USER_MESSAGE_LENGTH) || "…";
-  return withUserMessageGap(withUserZoneMarkers(renderOneLine(`› ${summary}`, width, getUserBgFn(component))));
+  return withUserMessageGap(withUserZoneMarkers(renderOneLine(`${USER_PROMPT_MARKER} ${summary}`, width, getUserBgFn(component))));
 }
 
 function renderConfiguredUserMessage(
@@ -920,16 +926,17 @@ function elapsedThinkingSeconds(state: CompactThinkingState): number {
 }
 
 function formatElapsedSeconds(seconds: number): string {
-  return `${seconds.toFixed(1)} seconds`;
+  return `${seconds.toFixed(1)}s`;
 }
 
 function buildThinkingLine(state: CompactThinkingState): string {
-  const seconds = formatElapsedSeconds(elapsedThinkingSeconds(state));
-  const characters = formatCount(state.charCount, "character");
+  const marker = state.completedAtMs === undefined ? THINKING_ACTIVE_MARKER : THINKING_DONE_MARKER;
   const status = state.completedAtMs === undefined ? "thinking" : "thought";
+  const elapsed = formatElapsedSeconds(elapsedThinkingSeconds(state));
+  const characters = formatCount(state.charCount, "char");
   const suffix = state.stopReason === "error" ? " → error" : state.stopReason === "aborted" ? " → aborted" : "";
 
-  return `${status} for ${seconds}, ${characters}${suffix}`;
+  return `${marker} ${status} ${TOOL_RULE} ${elapsed} · ${characters}${suffix}`;
 }
 
 function renderCompactThinkingLine(state: CompactThinkingState, width: number): string[] {

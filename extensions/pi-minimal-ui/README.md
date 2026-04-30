@@ -1,19 +1,18 @@
 # pi-minimal-ui
 
-Minimal Pi UI extension that combines:
+Minimal Pi UI extension with compact, Crush-inspired chrome:
 
-- a centered statusline above the editor that wraps to multiple lines when needed
-- a centered, square-corner, compact input box
+- a full-width header above the editor with an accent diagonal rule
+- a prompt rail (`:::`) instead of a detached centered box, so the editor aligns with the chat flow
 - hidden default footer
 
 ```text
-                         [~/Dev/pi-flake ·  main] [↑12k ↓2k $0.043 18.4%/272k] [openai-codex/gpt-5.5 · high · ⚡]
-                         ┌──────────────────────────────────────────────┐
-                         │ ask pi something                             │
-                         └──────────────────────────────────────────────┘
+pi ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱ ~/Dev/pi-flake ·  main • ↑12k ↓2k $0.043 18.4%/272k • openai-codex/gpt-5.5 · high • ⚡
+::: ask pi something
+  │ continued prompt line
 ```
 
-Both components share the same width policy: 90% terminal width, max 100 columns, min 24 columns. Statusline overflow wraps bracketed groups onto additional lines before truncating a group that is individually wider than the shared width.
+The status header follows terminal width and truncates from the right. The editor keeps Pi's multiline editor behavior while dropping the box frame in favor of a subtle left rail.
 
 ## Statusline data
 
@@ -23,14 +22,14 @@ Both components share the same width policy: 90% terminal width, max 100 columns
 - provider/model and thinking level
 - extension status icons from `ctx.ui.setStatus()` — e.g. `pi-codex-fast`'s `⚡`
 
-## Input box
+## Input rail
 
 Extends Pi's `CustomEditor`, so normal editor behavior is preserved:
 
 - submit, Esc, Ctrl-D, model shortcuts
 - autocomplete and slash menu
 - paste/history/cursor/IME behavior
-- thinking-level border color
+- thinking-level rail color
 
 ## Usage
 

@@ -5,11 +5,11 @@ Pi extension: compact chat rendering for Pi's interactive TUI.
 ## What it does
 
 - patches Pi's interactive tool-row renderer
-- tool calls → configurable: Pi default, borderless, or one width-aware summary line with animated braille pending status → ✓/✗
+- tool calls → configurable: Pi default, borderless, or one Crush-inspired summary row: `✓ bash ╱ git status`
 - edit results → compact `+N -N` line counts from Pi diffs or `pi-hashline` metrics instead of success prose
 - expanded tool calls → original rendering/output
-- thinking blocks → compact elapsed-seconds + character-count row by default
-- user messages → configurable: Pi default, borderless markdown, or fully compact one-line summaries; optional plain gap line
+- thinking blocks → compact `⠋ thinking ╱ 1.2s · 420 chars` / `• thought ╱ ...` row by default
+- user messages → configurable: Pi default, borderless markdown, or compact prompt-style `::: …` summaries; optional plain gap line
 
 ## Configuration
 
@@ -45,11 +45,11 @@ Tool/user modes:
 |---|---|---|
 | `normal` | Pi default tool content rendering | Pi default user message content rendering |
 | `borderless` | Pi tool rendering with top/bottom background padding removed | Multi-line markdown with top/bottom background padding removed |
-| `compact` | One-line tool summary | One-line `› …` summary |
+| `compact` | One-line `status tool ╱ details` summary | One-line `::: …` summary |
 
 `tools.gap=true` adds/preserves a plain separator line before tool rows. `user.gap=false` removes the plain gap line after borderless/compact user messages. Runtime aliases `borderless-tight` and `compact-tight` set `gap=false`.
 
-`thinking.mode="compact"` → one-line row (`thinking for N.N seconds, N characters` → `thought for N.N seconds, N characters`). `thinking.mode="normal"` → Pi default rendering.
+`thinking.mode="compact"` → one-line row (`⠋ thinking ╱ 1.2s · 420 chars` → `• thought ╱ 1.2s · 420 chars`). `thinking.mode="normal"` → Pi default rendering.
 
 Colours come from the active Pi theme. Customize them with Pi themes, not this extension.
 
