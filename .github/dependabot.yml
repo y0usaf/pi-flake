@@ -13,7 +13,7 @@ updates:
     open-pull-requests-limit: 5
 
   - package-ecosystem: "nix"
-    directory: "/extensions/pi-agents"
+    directory: "/extensions/pi-hive"
     schedule:
       interval: "weekly"
     labels:

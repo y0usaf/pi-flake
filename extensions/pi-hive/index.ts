@@ -1,15 +1,12 @@
 /**
- * Multi-Agent Extension for pi
+ * pi-hive: Multi-agent orchestration extension for pi.
  *
- * Parent tools: spawn_agent, delegate, kill_agent, list_agents.
- * Children additionally get read, write, edit, bash, report, and
- * descendant-scoped orchestration tools subject to maxDepth/maxLiveAgents.
+ * Root agents get one orchestration tool: agent.
+ * Children additionally get read, write, edit, bash, report, and a
+ * descendant-scoped agent tool subject to maxDepth/maxLiveAgents.
  *
  * Children are in-process Agent instances that persist across interactions.
  * Report streams intermediate results to the parent via onUpdate.
- *
- * spawn_agent and delegate block until the child finishes its current run.
- * Multiple spawn_agent calls in one turn run concurrently (parallel tool execution).
  */
 
 import { readFile, writeFile, mkdir, realpath } from "node:fs/promises";
@@ -65,38 +62,60 @@ function buildSafeEnv(): NodeJS.ProcessEnv {
 // Schemas
 // ---------------------------------------------------------------------------
 
-const spawnSchema = Type.Object({
-	id: Type.String({ description: "Unique identifier for the child agent" }),
+const chainStepSchema = Type.Object({
+	id: Type.String({ description: "Child agent id to spawn or delegate to" }),
+	system_prompt: Type.Optional(Type.String({ description: "System prompt for spawn steps. Required when the child does not already exist." })),
+	task: Type.String({ description: "Task/message for this step. Supports {previous} and {all}." }),
+	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds for this step." })),
+});
+
+const parallelTaskSchema = Type.Object({
+	id: Type.String({ description: "Unique child agent id to spawn" }),
 	system_prompt: Type.String({ description: "System prompt defining the child agent's role and behavior" }),
-	task: Type.String({ description: "Initial task to assign to the child agent" }),
-	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds to wait for the agent to finish (must be > 0). If the deadline expires the agent is aborted, removed from the registry, and an error is thrown." })),
+	task: Type.String({ description: "Task to assign to the child agent" }),
+	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds for this task." })),
 });
 
-const delegateSchema = Type.Object({
-	id: Type.String({ description: "ID of an existing child agent" }),
-	message: Type.String({ description: "Follow-up task or message to send to the child" }),
-	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds to wait for the agent to finish (must be > 0). If the deadline expires the agent is aborted, removed from the registry, and an error is thrown." })),
-});
+const agentActionSchema = Type.Union([
+	Type.Literal("spawn"),
+	Type.Literal("delegate"),
+	Type.Literal("kill"),
+	Type.Literal("list"),
+	Type.Literal("chain"),
+	Type.Literal("parallel"),
+	Type.Literal("list_runs"),
+	Type.Literal("result"),
+	Type.Literal("wait"),
+	Type.Literal("cancel"),
+]);
 
-const killSchema = Type.Object({
-	id: Type.String({ description: "ID of the child agent to kill" }),
+const agentSchema = Type.Object({
+	action: agentActionSchema,
+	id: Type.Optional(Type.String({ description: "Child agent id for spawn/delegate/kill actions" })),
+	run_id: Type.Optional(Type.String({ description: "Async run id for result/wait/cancel actions, or optional id when starting an async run" })),
+	system_prompt: Type.Optional(Type.String({ description: "System prompt for spawn action" })),
+	task: Type.Optional(Type.String({ description: "Task for spawn action" })),
+	message: Type.Optional(Type.String({ description: "Follow-up message for delegate action" })),
+	timeout_seconds: Type.Optional(Type.Number({ description: "Action timeout. For wait, this does not cancel the run." })),
+	async: Type.Optional(Type.Boolean({ description: "For spawn/delegate/chain/parallel from root only: run in the background and return a run id immediately." })),
+	steps: Type.Optional(Type.Array(chainStepSchema, { description: "Steps for chain action. Existing ids are delegated to; new ids require system_prompt." })),
+	tasks: Type.Optional(Type.Array(parallelTaskSchema, { description: "Tasks for parallel action." })),
 });
 
 const reportSchema = Type.Object({
 	message: Type.String({ description: "Report content to send to the parent agent" }),
 });
 
-const listSchema = Type.Object({});
-
 // ---------------------------------------------------------------------------
 // Extension config
 // ---------------------------------------------------------------------------
 
-const CONFIG_FILE_NAME = "pi-agents.json";
+const CONFIG_FILE_NAME = "pi-hive.json";
+
 const DEFAULT_MAX_DEPTH = 1;
 const DEFAULT_MAX_LIVE_AGENTS = 6;
 
-interface PiAgentsConfig {
+interface PiHiveConfig {
 	maxDepth: number;
 	maxLiveAgents: number;
 }
@@ -119,7 +138,7 @@ function normalizePositiveInteger(value: unknown, key: string, path: string): nu
 	return value as number;
 }
 
-async function readConfigFragment(path: string): Promise<Partial<PiAgentsConfig>> {
+async function readConfigFragment(path: string): Promise<Partial<PiHiveConfig>> {
 	let raw: string;
 	try {
 		raw = await readFile(path, "utf-8");
@@ -144,7 +163,7 @@ async function readConfigFragment(path: string): Promise<Partial<PiAgentsConfig>
 		throw new Error(`${path}: unknown key(s): ${unknownKeys.join(", ")}`);
 	}
 
-	const config: Partial<PiAgentsConfig> = {};
+	const config: Partial<PiHiveConfig> = {};
 	if ("maxDepth" in parsed) {
 		config.maxDepth = normalizeNonNegativeInteger(parsed.maxDepth, "maxDepth", path);
 	}
@@ -154,7 +173,7 @@ async function readConfigFragment(path: string): Promise<Partial<PiAgentsConfig>
 	return config;
 }
 
-async function loadPiAgentsConfig(cwd: string): Promise<PiAgentsConfig> {
+async function loadPiHiveConfig(cwd: string): Promise<PiHiveConfig> {
 	const globalConfig = await readConfigFragment(join(getAgentDir(), CONFIG_FILE_NAME));
 	const projectConfig = await readConfigFragment(resolve(cwd, ".pi", CONFIG_FILE_NAME));
 	return {
@@ -533,6 +552,51 @@ interface ChildState {
 	killed: boolean;
 }
 
+interface ChainStepParams {
+	id: string;
+	system_prompt?: string;
+	task: string;
+	timeout_seconds?: number;
+}
+
+interface ParallelTaskParams {
+	id: string;
+	system_prompt: string;
+	task: string;
+	timeout_seconds?: number;
+}
+
+type AgentAction = "spawn" | "delegate" | "kill" | "list" | "chain" | "parallel" | "list_runs" | "result" | "wait" | "cancel";
+
+interface AgentToolParams {
+	action: AgentAction;
+	id?: string;
+	run_id?: string;
+	system_prompt?: string;
+	task?: string;
+	message?: string;
+	timeout_seconds?: number;
+	async?: boolean;
+	steps?: ChainStepParams[];
+	tasks?: ParallelTaskParams[];
+}
+
+type RunKind = "spawn" | "delegate" | "chain" | "parallel";
+type RunStatus = "running" | "succeeded" | "failed" | "killed";
+
+interface RunState {
+	id: string;
+	kind: RunKind;
+	status: RunStatus;
+	startedAt: number;
+	finishedAt?: number;
+	children: string[];
+	result?: AgentToolResult<unknown>;
+	error?: string;
+	abortController: AbortController;
+	promise: Promise<void>;
+}
+
 function extractLastAssistantText(agent: Agent): string {
 	const messages = agent.state.messages;
 	for (let i = messages.length - 1; i >= 0; i--) {
@@ -669,7 +733,7 @@ function collectResult(childId: string, state: ChildState, reportStartIdx: numbe
 }
 
 // ---------------------------------------------------------------------------
-// Renderers (shared by spawn_agent and delegate)
+// Renderers
 // ---------------------------------------------------------------------------
 
 function renderAgentCall(
@@ -836,21 +900,22 @@ function renderAgentResult(
 // Extension
 // ---------------------------------------------------------------------------
 
-export default function multiAgent(pi: ExtensionAPI) {
+export default function piHive(pi: ExtensionAPI) {
 	const children = new Map<string, ChildState>();
-	// cachedGetApiKey is initialized from the first spawn_agent ctx.
+	const runs = new Map<string, RunState>();
+	// cachedGetApiKey is initialized from the first agent action ctx.
 	// This assumes modelRegistry is stable for the session lifetime.
 	let cachedGetApiKey: ((provider: string) => Promise<string | undefined>) | undefined;
-	let cachedConfig: PiAgentsConfig | undefined;
+	let cachedConfig: PiHiveConfig | undefined;
 	let cachedConfigCwd: string | undefined;
 	let cachedConfigError: Error | undefined;
 
-	async function getConfig(cwd: string): Promise<PiAgentsConfig> {
+	async function getConfig(cwd: string): Promise<PiHiveConfig> {
 		if (cachedConfig && cachedConfigCwd === cwd) return cachedConfig;
 		if (cachedConfigError && cachedConfigCwd === cwd) throw cachedConfigError;
 
 		try {
-			const config = await loadPiAgentsConfig(cwd);
+			const config = await loadPiHiveConfig(cwd);
 			cachedConfig = config;
 			cachedConfigCwd = cwd;
 			cachedConfigError = undefined;
@@ -917,7 +982,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		if (!state) {
 			throw new Error(
 				`Child agent "${targetId}" not found. Visible agents: ${formatScopedAgentIds(callerId)}. ` +
-				`Call list_agents() for full status.`,
+				`Call agent({ action: "list" }) for full status.`,
 			);
 		}
 		if (!callerId) return state;
@@ -974,11 +1039,12 @@ export default function multiAgent(pi: ExtensionAPI) {
 		signal?: AbortSignal,
 		onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void,
 	): Promise<AgentToolResult<AgentToolDetails>> {
+		if (signal?.aborted) throw new Error(`Agent "${params.id}" was aborted before start.`);
 		const state = getAccessibleTarget(callerId, params.id, "delegate to");
 		if (state.agent.state.isStreaming || state.locked) {
 			throw new Error(
 				`Child agent "${params.id}" is still running. ` +
-				`Wait for the current spawn_agent or delegate call to complete before sending more work.`,
+				`Wait for the current agent action to complete before sending more work.`,
 			);
 		}
 
@@ -987,6 +1053,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 		const onAbort = () => state.agent.abort();
 		signal?.addEventListener("abort", onAbort, { once: true });
+		if (signal?.aborted) onAbort();
 
 		const unsub = subscribeChild(state.agent, params.id, state, onUpdate);
 		state.locked = true;
@@ -1011,52 +1078,18 @@ export default function multiAgent(pi: ExtensionAPI) {
 	}
 
 	function createChildManagementTools(callerId: string, cwd: string, model: Model<any>): AgentTool<any>[] {
-		const spawnTool: AgentTool<typeof spawnSchema> = {
-			name: "spawn_agent",
-			label: "Spawn Agent",
+		const agentTool: AgentTool<typeof agentSchema> = {
+			name: "agent",
+			label: "Agent",
 			description:
-				"Spawn a descendant agent within your own subtree. " +
-				"Subject to configured maxDepth and maxLiveAgents limits.",
-			parameters: spawnSchema,
+				"Manage descendant agents with action=spawn|delegate|kill|list|chain|parallel. " +
+				"Async run actions are root-only.",
+			parameters: agentSchema,
 			execute: async (_toolCallId, params, signal, onUpdate) => {
-				return await spawnChild(callerId, params, model, cwd, signal, onUpdate);
+				return await executeAgentAction(callerId, params as AgentToolParams, model, cwd, signal, onUpdate, false);
 			},
 		};
-
-		const delegateTool: AgentTool<typeof delegateSchema> = {
-			name: "delegate",
-			label: "Delegate",
-			description: "Send follow-up work to a descendant agent in your subtree.",
-			parameters: delegateSchema,
-			execute: async (_toolCallId, params, signal, onUpdate) => {
-				return await delegateToChild(callerId, params, signal, onUpdate);
-			},
-		};
-
-		const killTool: AgentTool<typeof killSchema> = {
-			name: "kill_agent",
-			label: "Kill Agent",
-			description: "Kill a descendant agent in your subtree. Descendants are killed recursively.",
-			parameters: killSchema,
-			execute: async (_toolCallId, params) => {
-				const state = getAccessibleTarget(callerId, params.id, "kill");
-				const { killedIds, reportCount } = killSubtree(state.id);
-				return {
-					content: [{ type: "text", text: `Killed ${killedIds.length} agent(s): ${killedIds.join(", ")}.` }],
-					details: { childId: state.id, killedIds, reportCount },
-				};
-			},
-		};
-
-		const listTool: AgentTool<typeof listSchema> = {
-			name: "list_agents",
-			label: "List Agents",
-			description: "List agents in your subtree, including yourself.",
-			parameters: listSchema,
-			execute: async () => listAgentsResult(callerId),
-		};
-
-		return [spawnTool as AgentTool<any>, delegateTool as AgentTool<any>, killTool as AgentTool<any>, listTool as AgentTool<any>];
+		return [agentTool as AgentTool<any>];
 	}
 
 	function buildChildAgent(
@@ -1087,10 +1120,11 @@ export default function multiAgent(pi: ExtensionAPI) {
 		onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void,
 	): Promise<AgentToolResult<AgentToolDetails>> {
 		const config = await getConfig(cwd);
+		if (signal?.aborted) throw new Error(`Agent "${params.id}" was aborted before start.`);
 		if (children.has(params.id)) {
 			throw new Error(
 				`Child agent "${params.id}" already exists. ` +
-				`Use delegate("${params.id}", …) to send it more work, or call list_agents() to inspect active agents.`,
+				`Use agent({ action: "delegate", id: "${params.id}", message: ... }) to send it more work, or agent({ action: "list" }) to inspect active agents.`,
 			);
 		}
 
@@ -1127,6 +1161,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 		const onAbort = () => child.abort();
 		signal?.addEventListener("abort", onAbort, { once: true });
+		if (signal?.aborted) onAbort();
 
 		const unsub = subscribeChild(child, params.id, state, onUpdate);
 		state.locked = true;
@@ -1148,13 +1183,265 @@ export default function multiAgent(pi: ExtensionAPI) {
 		return collectResult(params.id, state, 0);
 	}
 
+	function makeRunId(kind: RunKind): string {
+		return `${kind}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+	}
+
+	function textOf(result: AgentToolResult<unknown>): string {
+		const first = result.content[0];
+		return first?.type === "text" ? first.text : "";
+	}
+
+	function formatRunResult(run: RunState): AgentToolResult<unknown> {
+		const lines = [
+			`run_id: ${run.id}`,
+			`kind: ${run.kind}`,
+			`status: ${run.status}`,
+			`children: ${run.children.length > 0 ? run.children.join(", ") : "(none)"}`,
+		];
+		if (run.error) lines.push(`error: ${run.error}`);
+		if (run.result) lines.push("", textOf(run.result));
+		return { content: [{ type: "text", text: lines.join("\n") }], details: { run } };
+	}
+
+	function startRun(
+		kind: RunKind,
+		runId: string | undefined,
+		childrenForRun: string[],
+		work: (signal: AbortSignal) => Promise<AgentToolResult<unknown>>,
+	): AgentToolResult<unknown> {
+		const id = runId || makeRunId(kind);
+		if (runs.has(id)) throw new Error(`Run "${id}" already exists.`);
+		const abortController = new AbortController();
+		const run: RunState = { id, kind, status: "running", startedAt: Date.now(), children: childrenForRun, abortController, promise: Promise.resolve() };
+		run.promise = (async () => {
+			try {
+				run.result = await work(abortController.signal);
+				run.status = run.status === "killed" ? "killed" : "succeeded";
+			} catch (err) {
+				run.error = err instanceof Error ? err.message : String(err);
+				run.status = run.status === "killed" ? "killed" : "failed";
+			} finally {
+				run.finishedAt = Date.now();
+			}
+		})();
+		runs.set(id, run);
+		return { content: [{ type: "text", text: `Started ${kind} run "${id}".` }], details: { runId: id, kind, status: "running", children: childrenForRun } };
+	}
+
+	async function waitForRun(run: RunState, timeoutSeconds?: number): Promise<RunState> {
+		const timeout = normalizePositiveTimeout(timeoutSeconds, "timeout_seconds");
+		if (run.status !== "running") return run;
+		if (timeout === undefined) {
+			await run.promise;
+			return run;
+		}
+		let handle: ReturnType<typeof setTimeout> | undefined;
+		const timedOut = new Promise<never>((_, reject) => {
+			handle = setTimeout(() => reject(new Error(`Run "${run.id}" is still running after ${timeout}s`)), timeout * 1000);
+		});
+		try {
+			await Promise.race([run.promise, timedOut]);
+			return run;
+		} finally {
+			clearTimeout(handle);
+		}
+	}
+
+	function listRunsResult(): AgentToolResult<unknown> {
+		const listed = [...runs.values()].sort((a, b) => a.startedAt - b.startedAt);
+		const text = listed.length === 0
+			? "No runs."
+			: listed.map((run) => `• ${run.id} — ${run.kind}, ${run.status}, children: ${run.children.length > 0 ? run.children.join(", ") : "(none)"}`).join("\n");
+		return { content: [{ type: "text", text }], details: { runs: listed } };
+	}
+
+	function substituteStepVars(template: string, previous: string, all: string): string {
+		return template.replaceAll("{previous}", previous).replaceAll("{all}", all);
+	}
+
+	async function runChainSteps(callerId: string | undefined, steps: ChainStepParams[], model: Model<any>, cwd: string, signal?: AbortSignal): Promise<AgentToolResult<unknown>> {
+		let previous = "";
+		const outputs: Array<{ id: string; output: string }> = [];
+		for (const step of steps) {
+			if (signal?.aborted) throw new Error("Chain run was aborted.");
+			const task = substituteStepVars(step.task, previous, outputs.map((o) => `=== ${o.id} ===\n${o.output}`).join("\n\n"));
+			const result = children.has(step.id)
+				? await delegateToChild(callerId, { id: step.id, message: task, timeout_seconds: step.timeout_seconds }, signal)
+				: await spawnChild(callerId, { id: step.id, system_prompt: step.system_prompt || "You are a focused child agent.", task, timeout_seconds: step.timeout_seconds }, model, cwd, signal);
+			previous = textOf(result);
+			outputs.push({ id: step.id, output: previous });
+		}
+		const text = outputs.map((o) => `=== ${o.id} ===\n${o.output}`).join("\n\n");
+		return { content: [{ type: "text", text }], details: { steps: outputs } };
+	}
+
+	async function runParallelTasks(callerId: string | undefined, tasks: ParallelTaskParams[], model: Model<any>, cwd: string, signal?: AbortSignal): Promise<AgentToolResult<unknown>> {
+		const ids = new Set<string>();
+		for (const task of tasks) {
+			if (ids.has(task.id)) throw new Error(`Duplicate parallel task id "${task.id}".`);
+			ids.add(task.id);
+			if (children.has(task.id)) throw new Error(`Child agent "${task.id}" already exists.`);
+		}
+		const settled = await Promise.allSettled(tasks.map((task) =>
+			spawnChild(callerId, { id: task.id, system_prompt: task.system_prompt, task: task.task, timeout_seconds: task.timeout_seconds }, model, cwd, signal),
+		));
+		const outputs = settled.map((result, index) => {
+			const id = tasks[index].id;
+			return result.status === "fulfilled"
+				? { id, status: "succeeded", output: textOf(result.value) }
+				: { id, status: "failed", output: result.reason instanceof Error ? result.reason.message : String(result.reason) };
+		});
+		const text = outputs.map((o) => `=== ${o.id} (${o.status}) ===\n${o.output}`).join("\n\n");
+		return { content: [{ type: "text", text }], details: { tasks: outputs } };
+	}
+
+	function requireStringParam(params: AgentToolParams, key: "id" | "run_id" | "system_prompt" | "task" | "message"): string {
+		const value = params[key];
+		if (typeof value !== "string" || value.length === 0) {
+			throw new Error(`agent action "${params.action}" requires "${key}".`);
+		}
+		return value;
+	}
+
+	function requireModel(model: Model<any> | undefined, action: AgentAction): Model<any> {
+		if (!model) throw new Error(`agent action "${action}" requires a selected model.`);
+		return model;
+	}
+
+	function requireSteps(params: AgentToolParams): ChainStepParams[] {
+		if (!Array.isArray(params.steps) || params.steps.length === 0) {
+			throw new Error(`agent action "${params.action}" requires non-empty "steps".`);
+		}
+		return params.steps;
+	}
+
+	function requireTasks(params: AgentToolParams): ParallelTaskParams[] {
+		if (!Array.isArray(params.tasks) || params.tasks.length === 0) {
+			throw new Error(`agent action "${params.action}" requires non-empty "tasks".`);
+		}
+		return params.tasks;
+	}
+
+	function rejectUnsupportedAsync(params: AgentToolParams): void {
+		if (params.async) throw new Error(`agent action "${params.action}" does not support async=true.`);
+	}
+
+	async function executeAgentAction(
+		callerId: string | undefined,
+		params: AgentToolParams,
+		model: Model<any> | undefined,
+		cwd: string,
+		signal?: AbortSignal,
+		onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void,
+		allowAsync = true,
+	): Promise<AgentToolResult<unknown>> {
+		switch (params.action) {
+			case "spawn": {
+				const selectedModel = requireModel(model, params.action);
+				const id = requireStringParam(params, "id");
+				const spawnParams = {
+					id,
+					system_prompt: requireStringParam(params, "system_prompt"),
+					task: requireStringParam(params, "task"),
+					timeout_seconds: params.timeout_seconds,
+				};
+				if (params.async) {
+					if (!allowAsync) throw new Error("async=true is only supported by root-level agent actions.");
+					return startRun("spawn", params.run_id, [id], (runSignal) => spawnChild(callerId, spawnParams, selectedModel, cwd, runSignal));
+				}
+				return await spawnChild(callerId, spawnParams, selectedModel, cwd, signal, onUpdate);
+			}
+			case "delegate": {
+				const id = requireStringParam(params, "id");
+				const delegateParams = { id, message: requireStringParam(params, "message"), timeout_seconds: params.timeout_seconds };
+				if (params.async) {
+					if (!allowAsync) throw new Error("async=true is only supported by root-level agent actions.");
+					return startRun("delegate", params.run_id, [id], (runSignal) => delegateToChild(callerId, delegateParams, runSignal));
+				}
+				return await delegateToChild(callerId, delegateParams, signal, onUpdate);
+			}
+			case "kill": {
+				rejectUnsupportedAsync(params);
+				const id = requireStringParam(params, "id");
+				const state = getAccessibleTarget(callerId, id, "kill", callerId === undefined);
+				const { killedIds, reportCount } = killSubtree(state.id);
+				return {
+					content: [{ type: "text", text: `Killed ${killedIds.length} agent(s): ${killedIds.join(", ")}.` }],
+					details: { childId: state.id, killedIds, reportCount },
+				};
+			}
+			case "list": {
+				rejectUnsupportedAsync(params);
+				return listAgentsResult(callerId);
+			}
+			case "chain": {
+				const selectedModel = requireModel(model, params.action);
+				const steps = requireSteps(params);
+				if (params.async) {
+					if (!allowAsync) throw new Error("async=true is only supported by root-level agent actions.");
+					return startRun("chain", params.run_id, steps.map((step) => step.id), (runSignal) => runChainSteps(callerId, steps, selectedModel, cwd, runSignal));
+				}
+				return await runChainSteps(callerId, steps, selectedModel, cwd, signal);
+			}
+			case "parallel": {
+				const selectedModel = requireModel(model, params.action);
+				const tasks = requireTasks(params);
+				if (params.async) {
+					if (!allowAsync) throw new Error("async=true is only supported by root-level agent actions.");
+					return startRun("parallel", params.run_id, tasks.map((task) => task.id), (runSignal) => runParallelTasks(callerId, tasks, selectedModel, cwd, runSignal));
+				}
+				return await runParallelTasks(callerId, tasks, selectedModel, cwd, signal);
+			}
+			case "list_runs": {
+				rejectUnsupportedAsync(params);
+				if (callerId) throw new Error("Run management actions are root-only.");
+				return listRunsResult();
+			}
+			case "result": {
+				rejectUnsupportedAsync(params);
+				if (callerId) throw new Error("Run management actions are root-only.");
+				const runId = requireStringParam(params, "run_id");
+				const run = runs.get(runId);
+				if (!run) throw new Error(`Run "${runId}" not found.`);
+				return formatRunResult(run);
+			}
+			case "wait": {
+				rejectUnsupportedAsync(params);
+				if (callerId) throw new Error("Run management actions are root-only.");
+				const runId = requireStringParam(params, "run_id");
+				const run = runs.get(runId);
+				if (!run) throw new Error(`Run "${runId}" not found.`);
+				await waitForRun(run, params.timeout_seconds);
+				return formatRunResult(run);
+			}
+			case "cancel": {
+				rejectUnsupportedAsync(params);
+				if (callerId) throw new Error("Run management actions are root-only.");
+				const runId = requireStringParam(params, "run_id");
+				const run = runs.get(runId);
+				if (!run) throw new Error(`Run "${runId}" not found.`);
+				run.abortController.abort();
+				let killed: string[] = [];
+				for (const childId of run.children) {
+					if (children.has(childId)) killed = killed.concat(killSubtree(childId).killedIds);
+				}
+				run.status = "killed";
+				run.finishedAt = Date.now();
+				return { content: [{ type: "text", text: `Killed run "${run.id}" (${killed.length} agent(s): ${killed.join(", ") || "none"}).` }], details: { runId: run.id, killed } };
+			}
+			default:
+				throw new Error(`Unknown agent action "${(params as { action?: string }).action}".`);
+		}
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
 		clearConfigCache();
 		try {
 			await getConfig(ctx.cwd);
 		} catch (err) {
 			if (ctx.hasUI) {
-				ctx.ui.notify(`pi-agents config error: ${(err as Error).message}`, "error");
+				ctx.ui.notify(`pi-hive config error: ${(err as Error).message}`, "error");
 			}
 		}
 	});
@@ -1172,22 +1459,23 @@ export default function multiAgent(pi: ExtensionAPI) {
 		children.clear();
 	});
 
-	// ── spawn_agent ─────────────────────────────────────────────────────
+	// ── agent ─────────────────────────────────────────────────────────────
 
 	pi.registerTool({
-		name: "spawn_agent",
-		label: "Spawn Agent",
+		name: "agent",
+		label: "Agent",
 		description:
-			"Spawn a child agent with its own system prompt and task. " +
-			"Children get read, write, edit, bash, report, and descendant-scoped orchestration tools. " +
-			"Recursive spawning is bounded by pi-agents.json maxDepth/maxLiveAgents. " +
-			"This call blocks until the child finishes. Multiple spawn_agent calls in the same turn run concurrently. " +
-			"On success, use delegate to send it more work or kill_agent to free its resources. " +
-			"On any error (including timeout) the agent subtree is removed from the registry automatically.",
-		parameters: spawnSchema,
+			"Single multi-agent orchestration tool. " +
+			"Use action=spawn|delegate|kill|list|chain|parallel|list_runs|result|wait|cancel. " +
+			"spawn/delegate/chain/parallel support async=true from the root session. " +
+			"Recursive spawning is bounded by pi-hive.json maxDepth/maxLiveAgents.",
+		parameters: agentSchema,
 
 		renderCall(args, theme, context) {
-			return renderAgentCall("spawn_agent", args, theme, context);
+			const action = args.action || "...";
+			const id = args.id || args.run_id || "";
+			const taskText = args.task || args.message || action;
+			return renderAgentCall(`agent:${action}`, { id, task: taskText }, theme, context);
 		},
 
 		renderResult(result, options, theme, context) {
@@ -1195,76 +1483,8 @@ export default function multiAgent(pi: ExtensionAPI) {
 		},
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			const model = ctx.model;
-			if (!model) throw new Error("No model selected");
-
 			cachedGetApiKey ??= (provider: string) => ctx.modelRegistry.getApiKeyForProvider(provider);
-			return await spawnChild(undefined, params, model, ctx.cwd, signal, onUpdate);
-		},
-	});
-
-	// ── kill_agent ──────────────────────────────────────────────────────
-
-	pi.registerTool({
-		name: "kill_agent",
-		label: "Kill Agent",
-		description:
-			"Kill a child agent and free its resources. " +
-			"If the child has descendants, they are killed recursively too.",
-		parameters: killSchema,
-
-		renderCall(args, theme) {
-			return new Text(theme.fg("toolTitle", theme.bold("kill_agent ")) + theme.fg("error", args.id || "..."), 0, 0);
-		},
-
-		renderResult(result) {
-			const text = result.content[0]?.type === "text" ? result.content[0].text : "done";
-			return new Text(text, 0, 0);
-		},
-
-		async execute(_toolCallId, params) {
-			const state = getAccessibleTarget(undefined, params.id, "kill", true);
-			const { killedIds, reportCount } = killSubtree(state.id);
-			return {
-				content: [{ type: "text", text: `Killed ${killedIds.length} agent(s): ${killedIds.join(", ")}.` }],
-				details: { childId: state.id, killedIds, reportCount },
-			};
-		},
-	});
-
-	// ── delegate ────────────────────────────────────────────────────────
-
-	pi.registerTool({
-		name: "delegate",
-		label: "Delegate",
-		description:
-			"Send a follow-up task to an existing child agent (must have been previously spawned with spawn_agent). " +
-			"The child resumes with its full conversation history and tools intact. " +
-			"Blocks until the child finishes processing the new task.",
-		parameters: delegateSchema,
-
-		renderCall(args, theme, context) {
-			return renderAgentCall("delegate", args, theme, context);
-		},
-
-		renderResult(result, options, theme, context) {
-			return renderAgentResult(result, options, theme, context);
-		},
-
-		async execute(_toolCallId, params, signal, onUpdate) {
-			return await delegateToChild(undefined, params, signal, onUpdate);
-		},
-	});
-
-	// ── list_agents ─────────────────────────────────────────────────────
-
-	pi.registerTool({
-		name: "list_agents",
-		label: "List Agents",
-		description: "List all currently active child agent IDs and their status. Includes depth and parent metadata.",
-		parameters: listSchema,
-		async execute() {
-			return listAgentsResult();
+			return await executeAgentAction(undefined, params as AgentToolParams, ctx.model, ctx.cwd, signal, onUpdate, true);
 		},
 	});
 }

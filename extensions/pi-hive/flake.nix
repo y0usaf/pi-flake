@@ -1,5 +1,5 @@
 {
-  description = "pi-multi-agent: a pi extension package for multi-agent orchestration";
+  description = "pi-hive: a pi extension package for multi-agent orchestration";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -30,7 +30,7 @@
           };
         in {
           default = pkgs.stdenvNoCC.mkDerivation {
-            pname = "pi-multi-agent";
+            pname = "pi-hive";
             inherit version src;
             dontBuild = true;
 
@@ -53,12 +53,11 @@
         in {
           default = pkgs.mkShell {
             packages = with pkgs; [
-              nodejs_20
-              nodePackages.npm
+              nodejs_22
             ];
 
             shellHook = ''
-              echo "pi-multi-agent dev shell"
+              echo "pi-hive dev shell"
               echo "- Use: npm install"
               echo "- Test: pi -e ./index.ts"
               echo "- Build package path: nix build"
