@@ -9,6 +9,7 @@ interface GeckoWebsearchSettings {
 	binary?: string;
 	profile?: string;
 	profileRoot?: string;
+	maxBrowsers?: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -17,6 +18,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function str(v: unknown): string | undefined {
 	return typeof v === "string" ? v.trim() || undefined : undefined;
+}
+
+function positiveInt(v: unknown): number | undefined {
+	const n = typeof v === "number" ? v : typeof v === "string" ? Number.parseInt(v.trim(), 10) : NaN;
+	return Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
 function pickSettings(parsed: Record<string, unknown>): unknown {
@@ -36,7 +42,10 @@ function readSettings(filePath: string): GeckoWebsearchSettings {
 		if (!isRecord(settings)) return {};
 
 		return {
-			binary: str(settings.binary), profile: str(settings.profile), profileRoot: str(settings.profileRoot),
+			binary: str(settings.binary),
+			profile: str(settings.profile),
+			profileRoot: str(settings.profileRoot),
+			maxBrowsers: positiveInt(settings.maxBrowsers),
 		};
 	} catch (error) {
 		console.error(
@@ -46,22 +55,98 @@ function readSettings(filePath: string): GeckoWebsearchSettings {
 	}
 }
 
+function clampMaxBrowsers(value: number | undefined): number {
+	return Math.max(1, Math.min(value ?? 2, 8));
+}
+
+interface BrowserLease {
+	resolve: (browser: ManagedBrowser) => void;
+	reject: (error: Error) => void;
+}
+
 /**
- * Manages the lifecycle of a headless Gecko browser instance
- * with Marionette enabled.
+ * Small browser pool. Each leased browser is exclusive for a full search/browse
+ * operation, so parallel tool calls cannot clobber each other's navigation state
+ * or Marionette request handlers.
  */
 export class BrowserManager {
-	private process: ChildProcess | null = null;
-	private client: MarionetteClient | null = null;
-	private tempProfileDir: string | null = null;
-	private running = false;
 	private readonly settings: GeckoWebsearchSettings;
+	private readonly maxBrowsers: number;
+	private readonly browsers = new Set<ManagedBrowser>();
+	private readonly idle: ManagedBrowser[] = [];
+	private readonly waiters: BrowserLease[] = [];
+	private shuttingDown = false;
 
 	constructor(cwd: string = process.cwd()) {
 		const globalSettings = readSettings(path.join(getAgentDir(), "settings.json"));
 		const projectSettings = readSettings(path.join(cwd, ".pi", "settings.json"));
 		this.settings = { ...globalSettings, ...projectSettings };
+		this.maxBrowsers = clampMaxBrowsers(positiveInt(process.env.PI_GECKO_MAX_BROWSERS) ?? this.settings.maxBrowsers);
 	}
+
+	async withClient<T>(fn: (client: MarionetteClient) => Promise<T>): Promise<T> {
+		const browser = await this.acquire();
+		try {
+			const client = await browser.ensureRunning();
+			return await fn(client);
+		} finally {
+			this.release(browser);
+		}
+	}
+
+	private acquire(): Promise<ManagedBrowser> {
+		if (this.shuttingDown) throw new Error("Gecko browser pool is shutting down");
+
+		const idle = this.idle.pop();
+		if (idle) return Promise.resolve(idle);
+
+		if (this.browsers.size < this.maxBrowsers) {
+			const browser = new ManagedBrowser(this.settings);
+			this.browsers.add(browser);
+			return Promise.resolve(browser);
+		}
+
+		return new Promise((resolve, reject) => {
+			this.waiters.push({ resolve, reject });
+		});
+	}
+
+	private release(browser: ManagedBrowser): void {
+		if (this.shuttingDown || !this.browsers.has(browser)) return;
+
+		const waiter = this.waiters.shift();
+		if (waiter) {
+			waiter.resolve(browser);
+		} else {
+			this.idle.push(browser);
+		}
+	}
+
+	async shutdown(): Promise<void> {
+		this.shuttingDown = true;
+
+		for (const waiter of this.waiters.splice(0)) {
+			waiter.reject(new Error("Gecko browser pool shut down"));
+		}
+
+		const browsers = [...this.browsers];
+		this.idle.length = 0;
+		this.browsers.clear();
+
+		await Promise.allSettled(browsers.map((browser) => browser.shutdown()));
+		this.shuttingDown = false;
+	}
+}
+
+/** Manages one headless Gecko browser instance with Marionette enabled. */
+class ManagedBrowser {
+	private process: ChildProcess | null = null;
+	private client: MarionetteClient | null = null;
+	private tempProfileDir: string | null = null;
+	private marionettePort: number | null = null;
+	private running = false;
+
+	constructor(private readonly settings: GeckoWebsearchSettings) {}
 
 	/** Lazy-init: if browser isn't running, start it and connect Marionette. */
 	async ensureRunning(): Promise<MarionetteClient> {
@@ -72,73 +157,116 @@ export class BrowserManager {
 		// Clean up any previous state
 		await this.shutdown();
 
-		// 1. Create temp profile directory
-		this.tempProfileDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-gecko-"));
+		try {
+			// 1. Create temp profile directory
+			this.tempProfileDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-gecko-"));
 
-		// 2. Copy cookies from user's real profile
-		const sourceProfile = this.resolveProfilePath();
-		if (sourceProfile) {
-			this.copyCookies(sourceProfile, this.tempProfileDir);
+			// 2. Copy cookies from user's real profile
+			const sourceProfile = this.resolveProfilePath();
+			if (sourceProfile) {
+				this.copyCookies(sourceProfile, this.tempProfileDir);
+			}
+
+			// 3. Write a user.js to the temp profile to configure Marionette
+			const userJs = [
+				'user_pref("marionette.port", 0);',
+				'user_pref("marionette.enabled", true);',
+				// Disable first-run stuff
+				'user_pref("browser.shell.checkDefaultBrowser", false);',
+				'user_pref("browser.startup.homepage_override.mstone", "ignore");',
+				'user_pref("datareporting.policy.dataSubmissionEnabled", false);',
+				'user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);',
+				// Disable session restore prompts
+				'user_pref("browser.sessionstore.resume_from_crash", false);',
+				// Reduce resource usage
+				'user_pref("browser.cache.disk.enable", false);',
+				'user_pref("media.hardware-video-decoding.enabled", false);',
+			].join("\n");
+			fs.writeFileSync(path.join(this.tempProfileDir, "user.js"), userJs);
+
+			// 4. Find the Gecko browser binary
+			const binary = this.findBinary();
+
+			// 5. Spawn headless Gecko browser with Marionette
+			const args = ["--marionette", "--headless", "--profile", this.tempProfileDir, "--no-remote"];
+			let startupError: Error | null = null;
+
+			this.process = spawn(binary, args, {
+				stdio: "ignore",
+				detached: false,
+			});
+
+			this.process.once("error", (error) => {
+				startupError = error instanceof Error ? error : new Error(String(error));
+				this.running = false;
+			});
+
+			this.process.on("exit", (code, signal) => {
+				if (!this.running && !startupError) {
+					const status = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
+					startupError = new Error(`Gecko browser exited before Marionette became ready (${status})`);
+				}
+				this.running = false;
+			});
+
+			// 6. Wait for Marionette port to be ready, then connect
+			this.client = new MarionetteClient();
+			await this.waitForMarionette(this.client, this.tempProfileDir, 45000, () => startupError);
+
+			// 7. Create a session
+			await this.client.newSession();
+
+			this.running = true;
+			return this.client;
+		} catch (error) {
+			await this.shutdown();
+			throw error;
 		}
-
-		// 3. Write a user.js to the temp profile to configure Marionette
-		const userJs = [
-			'user_pref("marionette.port", 2828);',
-			'user_pref("marionette.enabled", true);',
-			// Disable first-run stuff
-			'user_pref("browser.shell.checkDefaultBrowser", false);',
-			'user_pref("browser.startup.homepage_override.mstone", "ignore");',
-			'user_pref("datareporting.policy.dataSubmissionEnabled", false);',
-			'user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);',
-			// Disable session restore prompts
-			'user_pref("browser.sessionstore.resume_from_crash", false);',
-			// Reduce resource usage
-			'user_pref("browser.cache.disk.enable", false);',
-			'user_pref("media.hardware-video-decoding.enabled", false);',
-		].join("\n");
-		fs.writeFileSync(path.join(this.tempProfileDir, "user.js"), userJs);
-
-		// 4. Find the Gecko browser binary
-		const binary = this.findBinary();
-
-		// 5. Spawn headless Gecko browser with Marionette
-		const args = ["--marionette", "--headless", "--profile", this.tempProfileDir, "--no-remote"];
-
-		this.process = spawn(binary, args, {
-			stdio: "ignore",
-			detached: false,
-		});
-
-		this.process.on("exit", () => {
-			this.running = false;
-		});
-
-		// 6. Wait for Marionette port to be ready, then connect
-		this.client = new MarionetteClient();
-		await this.waitForMarionette(this.client, 2828, 15000);
-
-		// 7. Create a session
-		await this.client.newSession();
-
-		this.running = true;
-		return this.client;
 	}
 
-	/** Wait for the Marionette port to accept connections, retrying. */
-	private async waitForMarionette(client: MarionetteClient, port: number, timeoutMs: number): Promise<void> {
+	/** Read Gecko's chosen Marionette port from the temp profile. */
+	private readActivePort(profileDir: string): number | null {
+		try {
+			const text = fs.readFileSync(path.join(profileDir, "MarionetteActivePort"), "utf-8").trim();
+			const port = Number.parseInt(text, 10);
+			return Number.isInteger(port) && port > 0 ? port : null;
+		} catch {
+			return null;
+		}
+	}
+
+	/** Wait for Gecko to publish and accept its Marionette port, retrying. */
+	private async waitForMarionette(
+		client: MarionetteClient,
+		profileDir: string,
+		timeoutMs: number,
+		getStartupError?: () => Error | null,
+	): Promise<void> {
 		const start = Date.now();
 		const retryDelay = 500;
+		let lastPort: number | null = null;
 
 		while (Date.now() - start < timeoutMs) {
-			try {
-				await client.connect(port);
-				return;
-			} catch {
-				// Not ready yet — wait and retry
-				await new Promise((r) => setTimeout(r, retryDelay));
+			const startupError = getStartupError?.();
+			if (startupError) throw new Error(`Failed to start Gecko browser: ${startupError.message}`);
+
+			const port = this.readActivePort(profileDir);
+			if (port) {
+				lastPort = port;
+				try {
+					await client.connect(port, "127.0.0.1", 2000);
+					this.marionettePort = port;
+					return;
+				} catch {
+					// Port is published but not accepting yet — wait and retry.
+				}
 			}
+
+			await new Promise((r) => setTimeout(r, retryDelay));
 		}
-		throw new Error(`Timed out waiting for Marionette on port ${port} after ${timeoutMs}ms`);
+
+		const suffix = lastPort ? ` on port ${lastPort}` : " (no MarionetteActivePort file)";
+		throw new Error(`Timed out waiting for Marionette${suffix} after ${timeoutMs}ms`);
 	}
 
 	/**
@@ -226,9 +354,9 @@ export class BrowserManager {
 		return chosen && fs.existsSync(chosen) ? chosen : null;
 	}
 
-	/** Copy cookies.sqlite (and cert9.db if present) from source to dest profile. */
+	/** Copy cookie DB files (and cert9.db if present) from source to dest profile. */
 	private copyCookies(sourceProfile: string, destProfile: string): void {
-		const filesToCopy = ["cookies.sqlite", "cert9.db"];
+		const filesToCopy = ["cookies.sqlite", "cookies.sqlite-wal", "cert9.db"];
 		for (const file of filesToCopy) {
 			const src = path.join(sourceProfile, file);
 			if (fs.existsSync(src)) {
@@ -337,6 +465,7 @@ export class BrowserManager {
 			this.tempProfileDir = null;
 		}
 
+		this.marionettePort = null;
 		this.running = false;
 	}
 }

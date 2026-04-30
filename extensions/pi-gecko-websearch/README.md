@@ -29,6 +29,7 @@ A pi coding agent extension that searches and browses the web using a headless G
 | `PI_GECKO_PROFILE` | Exact Gecko profile directory | Auto-detect from common roots |
 | `PI_GECKO_PROFILE_ROOT` | Root containing `profiles.ini` / browser profiles | Auto-detect Firefox, then LibreWolf |
 | `PI_GECKO_BINARY` | Gecko browser path or command name (e.g. `firefox`, `librewolf`) | Auto-detect Firefox, then LibreWolf |
+| `PI_GECKO_MAX_BROWSERS` | Max pooled headless browsers for parallel tool calls | `2` |
 
 Or configure either:
 - `~/.pi/agent/settings.json`
@@ -41,13 +42,14 @@ Project settings override global settings.
   "extensionSettings": {
     "gecko-websearch": {
       "binary": "firefox",
-      "profileRoot": "/home/you/.mozilla/firefox"
+      "profileRoot": "/home/you/.mozilla/firefox",
+      "maxBrowsers": 2
     }
   }
 }
 ```
 
-Use `profile` instead of `profileRoot` when you want an exact profile directory.
+Use `profile` instead of `profileRoot` when you want an exact profile directory. `maxBrowsers` is clamped to `1..8`; increase it only if you have enough RAM/CPU for multiple headless browsers.
 
 ## Requirements
 
@@ -66,4 +68,4 @@ pi -e ~/Dev/pi-gecko-websearch/src/index.ts
 
 ## Profile locking
 
-Gecko browsers can lock their profile directories while running. This extension avoids conflicts by copying only `cookies.sqlite` and `cert9.db` to a temp profile. Your main browser session is never affected.
+Gecko browsers can lock their profile directories while running. This extension avoids conflicts by copying the cookie DB files (`cookies.sqlite` plus WAL when present) and `cert9.db` to a temp profile. Your main browser session is never affected.
