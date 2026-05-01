@@ -32,12 +32,20 @@
           default = pkgs.stdenvNoCC.mkDerivation {
             pname = "pi-hive";
             inherit version src;
+            nativeBuildInputs = [ pkgs.esbuild ];
             dontBuild = true;
 
             installPhase = ''
+              runHook preInstall
+
               mkdir -p $out
-              cp index.ts workflows.ts README.md package.json flake.nix $out/
+
+              cp *.ts README.md package.json flake.nix $out/
+
               if [ -f tsconfig.json ]; then cp tsconfig.json $out/; fi
+
+              esbuild *.ts --platform=node --format=esm --outdir=$out --outbase=.
+              runHook postInstall
             '';
 
             meta = with lib; {

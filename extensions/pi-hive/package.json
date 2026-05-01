@@ -9,8 +9,7 @@
 		"typescript"
 	],
 	"files": [
-		"index.ts",
-		"workflows.ts",
+		"*.ts",
 		"README.md",
 		"flake.nix",
 		"tsconfig.json"
