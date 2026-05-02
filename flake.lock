@@ -16,22 +16,6 @@
         "type": "github"
       }
     },
-    "piHive": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-hive",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-hive",
-        "type": "path"
-      },
-      "parent": []
-    },
     "piCodexFast": {
       "inputs": {
         "nixpkgs": [
@@ -64,7 +48,6 @@
       },
       "parent": []
     },
-
     "piGeckoWebsearch": {
       "inputs": {
         "nixpkgs": [
@@ -93,6 +76,22 @@
       },
       "original": {
         "path": "./extensions/pi-hashline",
+        "type": "path"
+      },
+      "parent": []
+    },
+    "piHive": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-hive",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-hive",
         "type": "path"
       },
       "parent": []
@@ -132,11 +131,11 @@
     "piSrc": {
       "flake": false,
       "locked": {
-        "lastModified": 1777033471,
-        "narHash": "sha256-KNpodvUvYr2sR9BI4Dgt8xyxHR4PsZ8d6g8IqwIq4Is=",
+        "lastModified": 1777726721,
+        "narHash": "sha256-TsqX81zlNCezHVK3ySBDuOIQSfo6aN4NlPkq3sQs/CY=",
         "owner": "badlogic",
         "repo": "pi-mono",
-        "rev": "3e0ee69b5ead441e4669b123b2f98635fee7da30",
+        "rev": "7268e9a9fda8b3f1b33ee26205e9610ccc9bd451",
         "type": "github"
       },
       "original": {
@@ -181,12 +180,11 @@
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
-        "piHive": "piHive",
         "piCodexFast": "piCodexFast",
         "piCompact": "piCompact",
-
         "piGeckoWebsearch": "piGeckoWebsearch",
         "piHashline": "piHashline",
+        "piHive": "piHive",
         "piMinimalUi": "piMinimalUi",
         "piRtk": "piRtk",
         "piSrc": "piSrc",
