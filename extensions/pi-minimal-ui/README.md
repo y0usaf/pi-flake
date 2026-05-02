@@ -8,7 +8,7 @@ Minimal Pi UI extension with compact, Crush-inspired chrome:
 - a Crush-style cycling-ribbon spinner that replaces Pi's default `⠋ Working...` (no label)
 
 ```text
-pi ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱ ~/Dev/pi-flake ·  main • ↑12k ↓2k $0.043 18.4%/272k • openai-codex/gpt-5.5 · high • ⚡
+pi ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱ ~/Dev/pi-flake ·  main • ↑12k ↓2k $0.043 18.4%/272k • openai-codex/gpt-5.5 · high • ⚡
 ::: ask pi something
   │ continued prompt line
 ```
@@ -48,3 +48,40 @@ pi -e ./extensions/pi-minimal-ui
 ```
 
 Or install/load as a bundled package via this flake.
+
+## Configuration
+
+Override the Pi base color (`accent`) and per-thinking-level colors via Pi's settings file under `extensionSettings["pi-minimal-ui"]`. Global lives at `~/.pi/agent/settings.json`, project lives at `<repo>/.pi/settings.json`; project wins, `thinking` keys merge.
+
+```jsonc
+// ~/.pi/agent/settings.json
+{
+  "$schema": "./extensions/pi-minimal-ui/pi-minimal-ui.schema.json", // optional, for editor IntelliSense
+  "extensionSettings": {
+    "pi-minimal-ui": {
+      "colors": {
+        "pi": "#00c878",
+        "thinking": {
+          "off":     "#888888",
+          "minimal": "#a0e0ff",
+          "low":     "#80c0ff",
+          "medium":  "#a080ff",
+          "high":    "#ff80a0",
+          "xhigh":   "#ff8060"
+        }
+      }
+    }
+  }
+}
+```
+
+Values are CSS hex (`#RGB` or `#RRGGBB`, leading `#` optional). Unset keys fall back to the active theme. Settings are re-read on `session_start`, `before_agent_start`, and `model_select`, so edits take effect on the next turn without a restart.
+
+Where each color is used:
+
+- `colors.pi` → header `pi` prefix, edge `///`, diagonal rule, current-path text, header gradient start, spinner solid/start color
+- `colors.thinking.<level>` → model-info thinking label + header/spinner gradient end (only when reasoning is on)
+
+Full schema: [`pi-minimal-ui.schema.json`](./pi-minimal-ui.schema.json).
+
+
