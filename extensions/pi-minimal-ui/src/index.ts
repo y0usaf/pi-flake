@@ -1,3 +1,7 @@
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
@@ -27,6 +31,118 @@ const THINKING_COLOR: Record<ThinkingLevel, Parameters<Theme["fg"]>[0]> = {
 	high: "thinkingHigh",
 	xhigh: "thinkingXhigh",
 };
+
+// ---- extension settings (settings.json -> extensionSettings["pi-minimal-ui"]) ----
+
+const EXTENSION_KEY = "pi-minimal-ui";
+
+type HexColor = string; // "#RRGGBB" or "#RGB"
+
+type ThinkingColorOverrides = Partial<Record<ThinkingLevel, HexColor>>;
+
+type ColorOverrides = {
+	pi?: HexColor;
+	thinking?: ThinkingColorOverrides;
+};
+
+type PiMinimalUiSettings = {
+	colors?: ColorOverrides;
+};
+
+let colorOverrides: ColorOverrides = {};
+
+function loadJsonSafe(path: string): Record<string, unknown> | undefined {
+	try {
+		if (!existsSync(path)) return undefined;
+		const raw = readFileSync(path, "utf8");
+		const parsed = JSON.parse(raw);
+		return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function extractExtensionSettings(root: Record<string, unknown> | undefined): PiMinimalUiSettings | undefined {
+	const extSettings = root?.extensionSettings;
+	if (!extSettings || typeof extSettings !== "object") return undefined;
+	const entry = (extSettings as Record<string, unknown>)[EXTENSION_KEY];
+	return entry && typeof entry === "object" ? (entry as PiMinimalUiSettings) : undefined;
+}
+
+function mergeColorOverrides(
+	global: ColorOverrides | undefined,
+	project: ColorOverrides | undefined,
+): ColorOverrides {
+	if (!global && !project) return {};
+	const pi = project?.pi ?? global?.pi;
+	const thinking: ThinkingColorOverrides = { ...global?.thinking, ...project?.thinking };
+	const result: ColorOverrides = {};
+	if (pi) result.pi = pi;
+	if (Object.keys(thinking).length > 0) result.thinking = thinking;
+	return result;
+}
+
+function loadColorOverrides(cwd: string): ColorOverrides {
+	const globalPath = join(homedir(), ".pi", "agent", "settings.json");
+	const projectPath = join(cwd, ".pi", "settings.json");
+	const globalCfg = extractExtensionSettings(loadJsonSafe(globalPath))?.colors;
+	const projectCfg = extractExtensionSettings(loadJsonSafe(projectPath))?.colors;
+	return mergeColorOverrides(globalCfg, projectCfg);
+}
+
+function reloadColorOverrides(cwd: string): void {
+	colorOverrides = loadColorOverrides(cwd);
+}
+
+function hexToRgb(hex: string): Rgb | undefined {
+	const match = hex.trim().match(/^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/);
+	if (!match) return undefined;
+	const v = match[1]!;
+	if (v.length === 3) {
+		return {
+			r: Number.parseInt(v[0]! + v[0]!, 16),
+			g: Number.parseInt(v[1]! + v[1]!, 16),
+			b: Number.parseInt(v[2]! + v[2]!, 16),
+		};
+	}
+	return {
+		r: Number.parseInt(v.slice(0, 2), 16),
+		g: Number.parseInt(v.slice(2, 4), 16),
+		b: Number.parseInt(v.slice(4, 6), 16),
+	};
+}
+
+function rgbToFgAnsi({ r, g, b }: Rgb): string {
+	return `\x1b[38;2;${r};${g};${b}m`;
+}
+
+function overrideFgAnsi(hex: HexColor | undefined): string | undefined {
+	if (!hex) return undefined;
+	const rgb = hexToRgb(hex);
+	return rgb ? rgbToFgAnsi(rgb) : undefined;
+}
+
+function wrapFg(text: string, ansi: string): string {
+	return `${ansi}${text}${ANSI_FG_RESET}`;
+}
+
+function piAnsi(theme: Theme): string {
+	return overrideFgAnsi(colorOverrides.pi) ?? theme.getFgAnsi("accent");
+}
+
+function piColored(theme: Theme, text: string): string {
+	const ansi = overrideFgAnsi(colorOverrides.pi);
+	return ansi ? wrapFg(text, ansi) : theme.fg("accent", text);
+}
+
+function thinkingAnsi(theme: Theme, level: ThinkingLevel): string {
+	return overrideFgAnsi(colorOverrides.thinking?.[level]) ?? theme.getFgAnsi(THINKING_COLOR[level]);
+}
+
+function thinkingColored(theme: Theme, level: ThinkingLevel, text: string): string {
+	const ansi = overrideFgAnsi(colorOverrides.thinking?.[level]);
+	return ansi ? wrapFg(text, ansi) : theme.fg(THINKING_COLOR[level], text);
+}
 
 const CUBE_VALUES = [0, 95, 135, 175, 215, 255];
 const GRAY_VALUES = Array.from({ length: 24 }, (_, i) => 8 + i * 10);
@@ -139,8 +255,8 @@ function currentFgFromSgr(params: string, currentFg: string | undefined): string
 
 function applyHeaderGradient(line: string, theme: Theme, thinking: ThinkingLevel | undefined, gradientWidth: number): string {
 	if (!thinking) return line;
-	const start = ansiToRgb(theme.getFgAnsi("accent"));
-	const end = ansiToRgb(theme.getFgAnsi(THINKING_COLOR[thinking]));
+	const start = ansiToRgb(piAnsi(theme));
+	const end = ansiToRgb(thinkingAnsi(theme, thinking));
 	if (!start || !end) return line;
 
 	const dimFg = new Set([theme.getFgAnsi("dim"), theme.getFgAnsi("muted")]);
@@ -273,13 +389,13 @@ function renderLocation(ctx: ExtensionContext, branch: string | null, theme: Ext
 		if (pathWidth < 4) continue;
 
 		const location = joinStyled(
-			[theme.fg("accent", tailPath(cwd, pathWidth)), ...suffixes.map((suffix) => theme.fg("dim", suffix))],
+			[piColored(theme, tailPath(cwd, pathWidth)), ...suffixes.map((suffix) => theme.fg("dim", suffix))],
 			separator,
 		);
 		if (visibleWidth(location) <= maxWidth) return location;
 	}
 
-	return theme.fg("accent", tailPath(cwd, maxWidth));
+	return piColored(theme, tailPath(cwd, maxWidth));
 }
 
 function renderStats(ctx: ExtensionContext, theme: ExtensionContext["ui"]["theme"]): string {
@@ -322,7 +438,7 @@ function renderModelInfo(pi: ExtensionAPI, ctx: ExtensionContext, theme: Extensi
 	const separator = SECTION_SEPARATOR_TEXT;
 	const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "no-model";
 	const thinking = currentThinkingLevel(pi, ctx);
-	return joinStyled([theme.fg("dim", model), thinking ? theme.fg(THINKING_COLOR[thinking], thinking) : undefined], separator);
+	return joinStyled([theme.fg("dim", model), thinking ? thinkingColored(theme, thinking, thinking) : undefined], separator);
 }
 
 function padLine(line: string, width: number): string {
@@ -379,16 +495,16 @@ function headerContentRows(groups: string[], theme: ExtensionContext["ui"]["them
 }
 
 function renderHeaderLine(content: string, theme: ExtensionContext["ui"]["theme"], width: number, thinking: ThinkingLevel | undefined): string {
-	const edge = theme.fg("accent", STATUS_EDGE_TEXT);
+	const edge = piColored(theme, STATUS_EDGE_TEXT);
 	const edgeWidth = visibleWidth(STATUS_EDGE_TEXT);
-	const prefix = `${theme.fg("accent", "pi")} `;
+	const prefix = `${piColored(theme, "pi")} `;
 	const prefixWidth = visibleWidth(prefix);
 	const fixedWidth = edgeWidth * 2 + prefixWidth + MIN_HEADER_DIAGS + 3;
 	const maxContentWidth = Math.max(0, width - fixedWidth);
 	const fittedContent = truncateToWidth(content, maxContentWidth, "…");
 	const fittedContentWidth = visibleWidth(fittedContent);
 	const diagCount = Math.max(MIN_HEADER_DIAGS, width - edgeWidth * 2 - prefixWidth - fittedContentWidth - 3);
-	const line = `${edge} ${prefix}${theme.fg("accent", HEADER_DIAG.repeat(diagCount))} ${fittedContent} ${edge}`;
+	const line = `${edge} ${prefix}${piColored(theme, HEADER_DIAG.repeat(diagCount))} ${fittedContent} ${edge}`;
 	return applyHeaderGradient(padLine(line, width), theme, thinking, edgeWidth + 1 + prefixWidth + diagCount);
 }
 
@@ -438,9 +554,9 @@ function pickRune(): string {
 }
 
 function buildWorkingFrames(theme: Theme, thinking: ThinkingLevel | undefined): string[] {
-	const accentAnsi = theme.getFgAnsi("accent");
+	const accentAnsi = piAnsi(theme);
 	const accentRgb = ansiToRgb(accentAnsi);
-	const endRgb = thinking ? ansiToRgb(theme.getFgAnsi(THINKING_COLOR[thinking])) : undefined;
+	const endRgb = thinking ? ansiToRgb(thinkingAnsi(theme, thinking)) : undefined;
 	const gradient = accentRgb && endRgb;
 
 	const birthOffsets = Array.from({ length: WORK_CYCLING_WIDTH }, () =>
@@ -469,6 +585,7 @@ function applyWorkingIndicator(pi: ExtensionAPI, ctx: ExtensionContext): void {
 	ctx.ui.setWorkingMessage(WORK_HIDDEN_MESSAGE);
 	ctx.ui.setWorkingIndicator({ frames, intervalMs: WORK_FRAME_MS });
 }
+
 
 
 class MinimalRailEditor extends CustomEditor {
@@ -514,6 +631,7 @@ export default function minimalUi(pi: ExtensionAPI) {
 	const refresh = () => requestRender?.();
 
 	pi.on("session_start", (_event, ctx) => {
+		reloadColorOverrides(ctx.cwd);
 		ctx.ui.setEditorComponent((tui, theme, keybindings) => new MinimalRailEditor(tui, theme, keybindings, { paddingX: 0 }));
 		applyWorkingIndicator(pi, ctx);
 
@@ -562,12 +680,16 @@ export default function minimalUi(pi: ExtensionAPI) {
 	// reconstructed at `agent_start` using the current indicator options. By
 	// regenerating here we pick up any thinking-level change the user made
 	// between turns, so the spinner gradient stays in sync with the header.
+	// Also re-read settings.json so color overrides take effect between turns
+	// without requiring a session restart.
 	pi.on("before_agent_start", (_event, ctx) => {
+		reloadColorOverrides(ctx.cwd);
 		applyWorkingIndicator(pi, ctx);
 		refresh();
 	});
 
 	pi.on("model_select", (_event, ctx) => {
+		reloadColorOverrides(ctx.cwd);
 		applyWorkingIndicator(pi, ctx);
 		refresh();
 	});

@@ -1,0 +1,41 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://github.com/y0usaf/pi-flake/extensions/pi-minimal-ui/pi-minimal-ui.schema.json",
+	"title": "pi-minimal-ui extension settings",
+	"description": "Schema for the `extensionSettings[\"pi-minimal-ui\"]` block of Pi's settings.json (~/.pi/agent/settings.json globally, .pi/settings.json per-project). Project values override global values; thinking-level overrides merge.",
+	"type": "object",
+	"additionalProperties": false,
+	"properties": {
+		"colors": {
+			"type": "object",
+			"description": "Override the Pi accent (\"pi\") and per-thinking-level colors used by the statusline header gradient and the working spinner.",
+			"additionalProperties": false,
+			"properties": {
+				"pi": {
+					"$ref": "#/$defs/hexColor",
+					"description": "Base accent color. Replaces the theme's `accent` everywhere this extension paints (header `pi` prefix, edge `///`, diagonal rule, current-path text, gradient start, spinner solid/start)."
+				},
+				"thinking": {
+					"type": "object",
+					"description": "Per-thinking-level colors. Each key replaces the corresponding `thinking*` theme color (used for the model-info label and the gradient end). Unset levels keep the theme default.",
+					"additionalProperties": false,
+					"properties": {
+						"off": { "$ref": "#/$defs/hexColor" },
+						"minimal": { "$ref": "#/$defs/hexColor" },
+						"low": { "$ref": "#/$defs/hexColor" },
+						"medium": { "$ref": "#/$defs/hexColor" },
+						"high": { "$ref": "#/$defs/hexColor" },
+						"xhigh": { "$ref": "#/$defs/hexColor" }
+					}
+				}
+			}
+		}
+	},
+	"$defs": {
+		"hexColor": {
+			"type": "string",
+			"pattern": "^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$",
+			"description": "CSS-style hex color (`#RGB` or `#RRGGBB`, with or without leading `#`)."
+		}
+	}
+}
