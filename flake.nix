@@ -57,11 +57,17 @@
     systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
     forAllSystems = nixpkgs.lib.genAttrs systems;
     pkgsFor = forAllSystems (system: import nixpkgs {inherit system;});
+    packageJson = builtins.fromJSON (builtins.readFile "${piSrc}/packages/coding-agent/package.json");
+    piPatches = [
+      ./patches/disable-install-telemetry.patch
+      ./patches/avoid-network-model-regeneration.patch
+      ./patches/remove-tree-filter-backcycle.patch
+    ];
   in {
     packages = forAllSystems (system: let
       pkgs = pkgsFor.${system};
       lib = pkgs.lib;
-      packageJson = builtins.fromJSON (builtins.readFile "${piSrc}/packages/coding-agent/package.json");
+
 
       canvasNativeDeps = with pkgs; [
         cairo
@@ -76,11 +82,7 @@
         pname = "pi";
         version = packageJson.version;
         src = piSrc;
-        patches = [
-          ./patches/disable-install-telemetry.patch
-          ./patches/avoid-network-model-regeneration.patch
-          ./patches/remove-tree-filter-backcycle.patch
-        ];
+        patches = piPatches;
         npmWorkspace = "packages/coding-agent";
         npmBuildScript = "build:binary";
         npmDepsFetcherVersion = 2;
@@ -139,6 +141,63 @@
       };
 
       default = self.packages.${system}.pi;
+    });
+
+    checks = forAllSystems (system: let
+      pkgs = pkgsFor.${system};
+    in {
+      pi-build = self.packages.${system}.pi;
+
+      patch-disable-install-telemetry = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-patch-disable-install-telemetry";
+        version = packageJson.version;
+        src = piSrc;
+        patches = piPatches;
+        nativeBuildInputs = [pkgs.gnugrep];
+        dontConfigure = true;
+        dontBuild = true;
+        installPhase = ''
+          runHook preInstall
+          grep -q 'return;' packages/coding-agent/src/modes/interactive/interactive-mode.ts
+          ! grep -q 'https://pi.dev/install' packages/coding-agent/src/modes/interactive/interactive-mode.ts
+          touch $out
+          runHook postInstall
+        '';
+      };
+
+      patch-avoid-network-model-regeneration = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-patch-avoid-network-model-regeneration";
+        version = packageJson.version;
+        src = piSrc;
+        patches = piPatches;
+        nativeBuildInputs = [pkgs.gnugrep];
+        dontConfigure = true;
+        dontBuild = true;
+        installPhase = ''
+          runHook preInstall
+          grep -q '"build": "tsgo -p tsconfig.build.json"' packages/ai/package.json
+          ! grep -q 'generate-models' packages/ai/package.json
+          touch $out
+          runHook postInstall
+        '';
+      };
+
+      patch-remove-tree-filter-backcycle = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-patch-remove-tree-filter-backcycle";
+        version = packageJson.version;
+        src = piSrc;
+        patches = piPatches;
+        nativeBuildInputs = [pkgs.gnugrep];
+        dontConfigure = true;
+        dontBuild = true;
+        installPhase = ''
+          runHook preInstall
+          ! grep -q 'app.tree.filter.cycleBackward' packages/coding-agent/src/modes/interactive/components/tree-selector.ts
+          grep -q 'const cycleKeys = keyText("app.tree.filter.cycleForward");' packages/coding-agent/src/modes/interactive/components/tree-selector.ts
+          touch $out
+          runHook postInstall
+        '';
+      };
     });
 
     apps = forAllSystems (system: {
