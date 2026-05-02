@@ -419,6 +419,58 @@ function scrollLabel(line: string): string | undefined {
 	return stripAnsi(line).match(/[↑↓] \d+ more/)?.[0];
 }
 
+// Crush-inspired "Working..." animation. Generates pre-rendered indicator
+// frames containing a gradient-colored cycling-character ribbon. Gradient
+// matches the sidebar header: solid accent when thinking is off, accent →
+// thinking-level color when on. No label / ellipsis. Pi loops frames at
+// WORK_FRAME_MS; the staggered birth phase replays on each loop.
+const WORK_FPS = 20;
+const WORK_FRAME_MS = Math.round(1000 / WORK_FPS);
+const WORK_CYCLING_WIDTH = 10;
+const WORK_TOTAL_FRAMES = 40;
+const WORK_BIRTH_FRAMES = 20;
+const WORK_RUNES = "0123456789abcdefABCDEF~!@#$%^&*()+=_-";
+const WORK_INITIAL_CHAR = ".";
+const WORK_HIDDEN_MESSAGE = "\u200B"; // zero-width: bypass pi's `||` fallback to "Working..."
+
+function pickRune(): string {
+	return WORK_RUNES[Math.floor(Math.random() * WORK_RUNES.length)] ?? WORK_INITIAL_CHAR;
+}
+
+function buildWorkingFrames(theme: Theme, thinking: ThinkingLevel | undefined): string[] {
+	const accentAnsi = theme.getFgAnsi("accent");
+	const accentRgb = ansiToRgb(accentAnsi);
+	const endRgb = thinking ? ansiToRgb(theme.getFgAnsi(THINKING_COLOR[thinking])) : undefined;
+	const gradient = accentRgb && endRgb;
+
+	const birthOffsets = Array.from({ length: WORK_CYCLING_WIDTH }, () =>
+		Math.floor(Math.random() * WORK_BIRTH_FRAMES),
+	);
+
+	const frames: string[] = [];
+	for (let f = 0; f < WORK_TOTAL_FRAMES; f++) {
+		let cycling = "";
+		for (let i = 0; i < WORK_CYCLING_WIDTH; i++) {
+			const color = gradient
+				? gradientAnsi(accentRgb, endRgb, i, WORK_CYCLING_WIDTH)
+				: accentAnsi;
+			const char = f < (birthOffsets[i] ?? 0) ? WORK_INITIAL_CHAR : pickRune();
+			cycling += `${color}${char}`;
+		}
+		cycling += ANSI_FG_RESET;
+		frames.push(cycling);
+	}
+	return frames;
+}
+
+function applyWorkingIndicator(pi: ExtensionAPI, ctx: ExtensionContext): void {
+	const thinking = currentThinkingLevel(pi, ctx);
+	const frames = buildWorkingFrames(ctx.ui.theme, thinking);
+	ctx.ui.setWorkingMessage(WORK_HIDDEN_MESSAGE);
+	ctx.ui.setWorkingIndicator({ frames, intervalMs: WORK_FRAME_MS });
+}
+
+
 class MinimalRailEditor extends CustomEditor {
 	render(width: number): string[] {
 		if (width < 4) return super.render(width);
@@ -463,6 +515,7 @@ export default function minimalUi(pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		ctx.ui.setEditorComponent((tui, theme, keybindings) => new MinimalRailEditor(tui, theme, keybindings, { paddingX: 0 }));
+		applyWorkingIndicator(pi, ctx);
 
 		ctx.ui.setFooter((tui, _theme, footerData) => {
 			const unsubscribeBranch = footerData.onBranchChange(() => {
@@ -500,9 +553,24 @@ export default function minimalUi(pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		ctx.ui.setEditorComponent(undefined);
+		ctx.ui.setWorkingIndicator();
+		ctx.ui.setWorkingMessage();
 	});
 
-	pi.on("model_select", refresh);
+	// Pi has no dedicated thinking-level change event, but `before_agent_start`
+	// fires before each user submission's agent loop and the loader is
+	// reconstructed at `agent_start` using the current indicator options. By
+	// regenerating here we pick up any thinking-level change the user made
+	// between turns, so the spinner gradient stays in sync with the header.
+	pi.on("before_agent_start", (_event, ctx) => {
+		applyWorkingIndicator(pi, ctx);
+		refresh();
+	});
+
+	pi.on("model_select", (_event, ctx) => {
+		applyWorkingIndicator(pi, ctx);
+		refresh();
+	});
 	pi.on("message_update", refresh);
 	pi.on("message_end", refresh);
 }
