@@ -66,6 +66,25 @@ type StaleAnchor = {
   reason?: string;
 };
 
+const ANCHOR_REBASE_WINDOW = 5;
+
+function tryRebaseAnchor(
+  anchor: { line: number; hash: string },
+  fileLines: string[],
+  window: number = ANCHOR_REBASE_WINDOW,
+): number | null {
+  const lo = Math.max(1, anchor.line - window);
+  const hi = Math.min(fileLines.length, anchor.line + window);
+  let found: number | null = null;
+  for (let line = lo; line <= hi; line++) {
+    if (line === anchor.line) continue;
+    if (computeLineHash(line, fileLines[line - 1] ?? "") !== anchor.hash) continue;
+    if (found !== null) return null;
+    found = line;
+  }
+  return found;
+}
+
 function structuralBigram(lineNumber: number): string {
   const mod100 = lineNumber % 100;
   if (mod100 >= 11 && mod100 <= 13) return "th";
@@ -174,9 +193,15 @@ function validateAnchor(anchor: Anchor, fileLines: string[], staleAnchors: Stale
   }
 
   const actual = computeLineHash(anchor.line, current);
-  if (actual !== anchor.hash) {
-    staleAnchors.push({ requested: anchor, actual });
+  if (actual === anchor.hash) return;
+
+  const rebased = tryRebaseAnchor(anchor, fileLines);
+  if (rebased !== null) {
+    anchor.line = rebased;
+    return;
   }
+
+  staleAnchors.push({ requested: anchor, actual });
 }
 
 function formatStaleAnchorError(staleAnchors: StaleAnchor[], fileLines: string[]): string {

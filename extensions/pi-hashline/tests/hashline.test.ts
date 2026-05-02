@@ -91,6 +91,13 @@ describe("anchor edits", () => {
     ])).toThrow("[E_BAD_REF]");
   });
 
+  test("rebases a stale anchor to a nearby identical hash", () => {
+    const result = apply("a\nbar\nfoo\nb\n", [
+      { op: "replace", pos: anchor(2, "foo"), lines: ["FOO"] },
+    ]);
+    expect(result).toBe("a\nbar\nFOO\nb\n");
+  });
+
   test("overlapping or adjacent edits reject", () => {
     expect(() => apply("a\nb\nc\n", [
       { op: "replace", pos: anchor(1, "a"), lines: ["A"] },
