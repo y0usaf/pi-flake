@@ -76,6 +76,7 @@ Flake `inputs` cannot pass arbitrary booleans into another flake's outputs. Use 
         "gecko-websearch" = false;
         rtk = false;
         compact = true;
+        "context-janitor" = true;
         "tool-management" = false;
         webfetch = true;
         hashline = true;
@@ -112,6 +113,7 @@ Only flags set to `true` are copied into the bundled wrapper.
             #   hive = true;
             #   "codex-fast" = true;
             #   compact = true;
+            #   "context-janitor" = true;
             #   webfetch = true;
             #   hashline = true;
             #   "minimal-ui" = true;
@@ -140,6 +142,7 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-gecko-websearch` | Web search using Firefox's engine |
 | `pi-rtk` | Real-time keyboard events |
 | `pi-compact` | Compaction utilities |
+| `pi-context-janitor` | Background context pruning via lightweight sidecar summarizer |
 | `pi-morph` | Morph edit tool via Vercel AI Gateway |
 | `pi-tool-management` | Tool management interface |
 | `pi-webfetch` | HTTP fetching utilities |
@@ -199,6 +202,7 @@ inputs.pi-flake.packages.<system>."pi-codex-fast"
 inputs.pi-flake.packages.<system>."pi-gecko-websearch"
 inputs.pi-flake.packages.<system>."pi-rtk"
 inputs.pi-flake.packages.<system>."pi-compact"
+inputs.pi-flake.packages.<system>."pi-context-janitor"
 inputs.pi-flake.packages.<system>."pi-tool-management"
 inputs.pi-flake.packages.<system>."pi-webfetch"
 inputs.pi-flake.packages.<system>."pi-hashline"

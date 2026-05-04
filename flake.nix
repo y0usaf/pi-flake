@@ -24,9 +24,11 @@
     piCompact.url = "path:./extensions/pi-compact";
     piCompact.inputs.nixpkgs.follows = "nixpkgs";
 
+    piContextJanitor.url = "path:./extensions/pi-context-janitor";
+    piContextJanitor.inputs.nixpkgs.follows = "nixpkgs";
+
     piMorph.url = "path:./extensions/pi-morph";
     piMorph.inputs.nixpkgs.follows = "nixpkgs";
-
 
     piToolManagement.url = "path:./extensions/pi-tool-management";
     piToolManagement.inputs.nixpkgs.follows = "nixpkgs";
@@ -50,6 +52,7 @@
     piGeckoWebsearch,
     piRtk,
     piCompact,
+    piContextJanitor,
     piMorph,
 
     piToolManagement,
@@ -130,8 +133,8 @@
       "pi-gecko-websearch" = piGeckoWebsearch.packages.${system}.default;
       "pi-rtk" = piRtk.packages.${system}.default;
       "pi-compact" = piCompact.packages.${system}.default;
+      "pi-context-janitor" = piContextJanitor.packages.${system}.default;
       "pi-morph" = piMorph.packages.${system}.default;
-
 
       "pi-tool-management" = piToolManagement.packages.${system}.default;
       "pi-webfetch" = piWebfetch.packages.${system}.default;
@@ -251,6 +254,7 @@
       "gecko-websearch" = self.packages.${system}."pi-gecko-websearch";
       rtk = self.packages.${system}."pi-rtk";
       compact = self.packages.${system}."pi-compact";
+      "context-janitor" = self.packages.${system}."pi-context-janitor";
       morph = self.packages.${system}."pi-morph";
 
       "tool-management" = self.packages.${system}."pi-tool-management";

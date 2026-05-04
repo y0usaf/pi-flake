@@ -1,0 +1,38 @@
+{
+	"name": "pi-context-janitor",
+	"version": "0.1.0",
+	"description": "Pi extension that uses a lightweight sidecar model to prune tool-result context in the background",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"context",
+		"pruning",
+		"summarization"
+	],
+	"type": "module",
+	"files": [
+		"src",
+		"README.md",
+		"flake.nix",
+		"tsconfig.json"
+	],
+	"pi": {
+		"extensions": ["./src/index.ts"]
+	},
+	"scripts": {
+		"typecheck": "tsc --noEmit"
+	},
+	"peerDependencies": {
+		"@mariozechner/pi-ai": "*",
+		"@mariozechner/pi-coding-agent": "*",
+		"@sinclair/typebox": "^0.34.33"
+	},
+	"devDependencies": {
+		"@mariozechner/pi-ai": "^0.67.0",
+		"@mariozechner/pi-coding-agent": "^0.67.0",
+		"@sinclair/typebox": "^0.34.33",
+		"@types/node": "^22.0.0",
+		"typescript": "^5.8.3"
+	},
+	"license": "MIT"
+}
