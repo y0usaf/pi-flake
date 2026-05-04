@@ -8,7 +8,7 @@ Pi extension: compact chat rendering for Pi's interactive TUI.
 - tool calls → configurable: Pi default, borderless, or one Crush-inspired summary row: `✓ bash ╱ git status`
 - edit results → compact `+N -N` line counts from Pi diffs or `pi-hashline` metrics instead of success prose
 - expanded tool calls → original rendering/output
-- thinking blocks → compact `⠋ thinking ╱ 1.2s · 420 chars` / `• thought ╱ ...` row by default
+- thinking blocks → compact `⠋ thinking ╱ 1.2s · 420 chars` / `• thought ╱ ...` row by default, or hidden entirely
 - user messages → configurable: Pi default, borderless markdown, or compact prompt-style `::: …` summaries; optional plain gap line
 
 ## Configuration
@@ -49,7 +49,7 @@ Tool/user modes:
 
 `tools.gap=true` adds/preserves a plain separator line before tool rows. `user.gap=false` removes the plain gap line after borderless/compact user messages. Runtime aliases `borderless-tight` and `compact-tight` set `gap=false`.
 
-`thinking.mode="compact"` → one-line row (`⠋ thinking ╱ 1.2s · 420 chars` → `• thought ╱ 1.2s · 420 chars`). `thinking.mode="normal"` → Pi default rendering.
+`thinking.mode="compact"` → one-line row (`⠋ thinking ╱ 1.2s · 420 chars` → `• thought ╱ 1.2s · 420 chars`). `thinking.mode="hidden"` → suppress thinking rows entirely (UI-only; model still thinks). `thinking.mode="normal"` → Pi default rendering.
 
 Colours come from the active Pi theme. Customize them with Pi themes, not this extension.
 
@@ -60,13 +60,13 @@ Toggle at runtime:
 ```text
 /compact-user normal|borderless|borderless-tight|compact|compact-tight|gap|no-gap|toggle|cycle|status
 /compact-tools normal|borderless|borderless-tight|compact|compact-tight|gap|no-gap|toggle|cycle|status
-/compact-thinking normal|compact|toggle|status
+/compact-thinking normal|compact|hidden|toggle|status
 /compact-status
 ```
 
 ## Scope
 
-This is UI-only. Tool execution, user messages, and conversation context are unchanged.
+This is UI-only. Tool execution, user messages, and conversation context are unchanged; hidden thinking only affects rendering.
 
 Tool compaction covers built-ins and extension tools such as:
 - `agent_task` / `report`
