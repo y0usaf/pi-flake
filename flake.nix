@@ -141,11 +141,13 @@
       "pi-hashline" = piHashline.packages.${system}.default;
       "pi-minimal-ui" = piMinimalUi.packages.${system}.default;
 
-      # pi with ALL extensions pre-bundled
+      # pi with default extensions pre-bundled. Morph is offered as an extension
+      # package/flag but is excluded from pi-full by default because it requires
+      # remote credentials and is best opted into explicitly.
       pi-full = self.lib.piWithExtensions {
         inherit pkgs;
         pi = self.packages.${system}.pi;
-        extensions = self.lib.extensionPackagesFor system;
+        extensions = self.lib.defaultExtensionPackagesFor system;
       };
 
       default = self.packages.${system}.pi;
@@ -262,6 +264,10 @@
       hashline = self.packages.${system}."pi-hashline";
       "minimal-ui" = self.packages.${system}."pi-minimal-ui";
     };
+
+    # Default bundle used by pi-full. Keep remote/API-key-dependent extensions opt-in.
+    lib.defaultExtensionPackagesFor = system:
+      builtins.removeAttrs (self.lib.extensionPackagesFor system) ["morph"];
 
     lib.enabledExtensions = {
       system,

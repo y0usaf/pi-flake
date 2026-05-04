@@ -77,6 +77,7 @@ Flake `inputs` cannot pass arbitrary booleans into another flake's outputs. Use 
         rtk = false;
         compact = true;
         "context-janitor" = true;
+        morph = false; # opt in with true if you want pi-morph bundled
         "tool-management" = false;
         webfetch = true;
         hashline = true;
@@ -105,7 +106,7 @@ Only flags set to `true` are copied into the bundled wrapper.
           programs.pi = {
             enable = true;
 
-            # Option 1: all bundled extensions, same contents as .#pi-full
+            # Option 1: default bundled extensions, same contents as .#pi-full
             full = true;
 
             # Option 2: selected bundled extensions
@@ -116,6 +117,7 @@ Only flags set to `true` are copied into the bundled wrapper.
             #   "context-janitor" = true;
             #   webfetch = true;
             #   hashline = true;
+            #   # morph = true; # opt-in; not included by full/pi-full by default
             #   "minimal-ui" = true;
             # };
 
@@ -143,7 +145,7 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-rtk` | Real-time keyboard events |
 | `pi-compact` | Compaction utilities |
 | `pi-context-janitor` | Simple hash-gated context truncation + undo UI |
-| `pi-morph` | Morph edit tool via Vercel AI Gateway |
+| `pi-morph` | Morph edit tool via Vercel AI Gateway (available as opt-in extension; not bundled in `pi-full`) |
 | `pi-tool-management` | Tool management interface |
 | `pi-webfetch` | HTTP fetching utilities |
 | `pi-hashline` | Hashline v2 read/edit tool override |
@@ -203,6 +205,7 @@ inputs.pi-flake.packages.<system>."pi-gecko-websearch"
 inputs.pi-flake.packages.<system>."pi-rtk"
 inputs.pi-flake.packages.<system>."pi-compact"
 inputs.pi-flake.packages.<system>."pi-context-janitor"
+inputs.pi-flake.packages.<system>."pi-morph"
 inputs.pi-flake.packages.<system>."pi-tool-management"
 inputs.pi-flake.packages.<system>."pi-webfetch"
 inputs.pi-flake.packages.<system>."pi-hashline"
@@ -211,7 +214,8 @@ inputs.pi-flake.packages.<system>."pi-hashline"
 ### Variants
 
 - `pi` - Base pi, no extensions
-- `pi-full` - pi with all extensions bundled (registered via settings merge)
+- `pi-full` - pi with default extensions bundled (registered via settings merge); excludes opt-in `pi-morph`
+- `pi-morph` - standalone Morph edit extension package, available for explicit bundling/flags
 
 ### Library helpers / modules
 
