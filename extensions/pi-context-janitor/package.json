@@ -1,7 +1,7 @@
 {
 	"name": "pi-context-janitor",
 	"version": "0.1.0",
-	"description": "Tiny hash-gated context janitor with undo UI",
+	"description": "Hash-gated context janitor with undo UI",
 	"keywords": [
 		"pi-package",
 		"pi-extension",

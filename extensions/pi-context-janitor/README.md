@@ -1,6 +1,6 @@
 # pi-context-janitor
 
-A tiny Pi extension that asks a lightweight sidecar model which completed tool outputs can be truncated from future model context.
+A Pi extension that asks a lightweight sidecar model which completed tool outputs can be truncated from future model context.
 
 Flow:
 
@@ -9,7 +9,7 @@ Flow:
 3. Send only those id/hash objects + bounded previews to a lightweight model.
 4. Accept only hash-matching `truncate` decisions.
 5. Keep the raw session log untouched.
-6. Project future context with a tiny archive marker instead of the raw tool output.
+6. Project future context with an archive marker instead of the raw tool output.
 7. Restore selected janitor runs with `/janitor undo`.
 
 ## Install / test
