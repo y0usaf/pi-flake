@@ -15,7 +15,7 @@ self: {
   selectedExtensions =
     (
       if cfg.full
-      then self.lib.extensionPackagesFor system
+      then self.lib.defaultExtensionPackagesFor system
       else enabledFlagExtensions
     )
     // cfg.extraExtensions;
