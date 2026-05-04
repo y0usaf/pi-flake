@@ -140,6 +140,7 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-gecko-websearch` | Web search using Firefox's engine |
 | `pi-rtk` | Real-time keyboard events |
 | `pi-compact` | Compaction utilities |
+| `pi-morph` | Morph edit tool via Vercel AI Gateway |
 | `pi-tool-management` | Tool management interface |
 | `pi-webfetch` | HTTP fetching utilities |
 | `pi-hashline` | Hashline v2 read/edit tool override |

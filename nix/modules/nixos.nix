@@ -72,6 +72,7 @@ in {
       "gecko-websearch" = mkEnableOption "pi-gecko-websearch extension";
       rtk = mkEnableOption "pi-rtk extension";
       compact = mkEnableOption "pi-compact extension";
+      morph = mkEnableOption "pi-morph Morph edit tool via Vercel AI Gateway";
       "tool-management" = mkEnableOption "pi-tool-management extension";
       webfetch = mkEnableOption "pi-webfetch extension";
       hashline = mkEnableOption "pi-hashline v2 read/edit tool override";
