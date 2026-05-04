@@ -1,13 +1,13 @@
 {
 	"name": "pi-context-janitor",
 	"version": "0.1.0",
-	"description": "Pi extension that uses a lightweight sidecar model to prune tool-result context in the background",
+	"description": "Tiny hash-gated context janitor with undo UI",
 	"keywords": [
 		"pi-package",
 		"pi-extension",
 		"context",
-		"pruning",
-		"summarization"
+		"truncation",
+		"hash"
 	],
 	"type": "module",
 	"files": [
@@ -25,12 +25,12 @@
 	"peerDependencies": {
 		"@mariozechner/pi-ai": "*",
 		"@mariozechner/pi-coding-agent": "*",
-		"@sinclair/typebox": "^0.34.33"
+		"@mariozechner/pi-tui": "*"
 	},
 	"devDependencies": {
 		"@mariozechner/pi-ai": "^0.67.0",
 		"@mariozechner/pi-coding-agent": "^0.67.0",
-		"@sinclair/typebox": "^0.34.33",
+		"@mariozechner/pi-tui": "^0.67.0",
 		"@types/node": "^22.0.0",
 		"typescript": "^5.8.3"
 	},
