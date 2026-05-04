@@ -536,44 +536,101 @@ function scrollLabel(line: string): string | undefined {
 }
 
 // Crush-inspired "Working..." animation. Generates pre-rendered indicator
-// frames containing a gradient-colored cycling-character ribbon. The cycle
-// is seamless, so it keeps animating until Pi clears it on output.
+// frames containing a 15-cell gradient-colored cycling-character ribbon.
+// `before_agent_start` gets a short dot bootstrap before handing off to the
+// seamless loop, so the spinner starts from `...............` without ever
+// snapping back to dots mid-turn.
 const WORK_FPS = 20;
 const WORK_FRAME_MS = Math.round(1000 / WORK_FPS);
-const WORK_CYCLING_WIDTH = 10;
+const WORK_CYCLING_WIDTH = 15;
+const WORK_STARTUP_FRAMES = WORK_CYCLING_WIDTH + 1;
+const WORK_STARTUP_SWITCH_MS = Math.max(
+	WORK_FRAME_MS,
+	(WORK_STARTUP_FRAMES - 1) * WORK_FRAME_MS,
+);
 const WORK_RUNES = "0123456789abcdefABCDEF~!@#$%^&*()+=_-";
+const WORK_INITIAL_CHAR = ".";
 const WORK_HIDDEN_MESSAGE = "\u200B"; // zero-width: bypass pi's `||` fallback to "Working..."
 
-function buildWorkingFrames(theme: Theme, thinking: ThinkingLevel | undefined): string[] {
+let workingIndicatorTimer: ReturnType<typeof setTimeout> | undefined;
+let workingIndicatorGeneration = 0;
+
+function clearWorkingIndicatorTimer(): void {
+	workingIndicatorGeneration++;
+	if (workingIndicatorTimer) {
+		clearTimeout(workingIndicatorTimer);
+		workingIndicatorTimer = undefined;
+	}
+}
+
+function workingCellColors(theme: Theme, thinking: ThinkingLevel | undefined): string[] {
 	const accentAnsi = piAnsi(theme);
 	const accentRgb = ansiToRgb(accentAnsi);
 	const endRgb = thinking ? ansiToRgb(thinkingAnsi(theme, thinking)) : undefined;
-	const gradient = accentRgb && endRgb;
+	return Array.from({ length: WORK_CYCLING_WIDTH }, (_, i) =>
+		accentRgb && endRgb ? gradientAnsi(accentRgb, endRgb, i, WORK_CYCLING_WIDTH) : accentAnsi,
+	);
+}
 
+function workingPhaseChars(phase: number): string[] {
 	const cycleLength = WORK_RUNES.length;
 	const phaseSpacing = Math.max(1, Math.floor(cycleLength / WORK_CYCLING_WIDTH));
+	return Array.from({ length: WORK_CYCLING_WIDTH }, (_, i) =>
+		WORK_RUNES[(phase + i * phaseSpacing) % cycleLength] ?? WORK_INITIAL_CHAR,
+	);
+}
 
+function renderWorkingFrame(colors: string[], chars: string[]): string {
+	let out = "";
+	for (let i = 0; i < WORK_CYCLING_WIDTH; i++) {
+		out += `${colors[i] ?? ""}${chars[i] ?? WORK_INITIAL_CHAR}`;
+	}
+	return `${out}${ANSI_FG_RESET}`;
+}
+
+function buildWorkingLoopFrames(colors: string[]): string[] {
+	const cycleLength = WORK_RUNES.length;
 	const frames: string[] = [];
-	for (let f = 0; f < cycleLength; f++) {
-		let cycling = "";
-		for (let i = 0; i < WORK_CYCLING_WIDTH; i++) {
-			const color = gradient
-				? gradientAnsi(accentRgb, endRgb, i, WORK_CYCLING_WIDTH)
-				: accentAnsi;
-			const char = WORK_RUNES[(f + i * phaseSpacing) % cycleLength] ?? ".";
-			cycling += `${color}${char}`;
-		}
-		cycling += ANSI_FG_RESET;
-		frames.push(cycling);
+	for (let phase = 0; phase < cycleLength; phase++) {
+		frames.push(renderWorkingFrame(colors, workingPhaseChars(phase)));
 	}
 	return frames;
 }
 
-function applyWorkingIndicator(pi: ExtensionAPI, ctx: ExtensionContext): void {
+function buildWorkingStartupFrames(colors: string[]): string[] {
+	const targetChars = workingPhaseChars(0);
+	const birthOffsets = Array.from({ length: WORK_CYCLING_WIDTH }, (_, i) =>
+		1 + Math.floor((i * (WORK_STARTUP_FRAMES - 1)) / WORK_CYCLING_WIDTH),
+	);
+	const frames: string[] = [];
+	for (let phase = 0; phase < WORK_STARTUP_FRAMES; phase++) {
+		const chars = targetChars.map((char, index) =>
+			phase < (birthOffsets[index] ?? 0) ? WORK_INITIAL_CHAR : char,
+		);
+		frames.push(renderWorkingFrame(colors, chars));
+	}
+	return frames;
+}
+
+function applyWorkingIndicator(pi: ExtensionAPI, ctx: ExtensionContext, startup = false): void {
+	clearWorkingIndicatorTimer();
 	const thinking = currentThinkingLevel(pi, ctx);
-	const frames = buildWorkingFrames(ctx.ui.theme, thinking);
+	const colors = workingCellColors(ctx.ui.theme, thinking);
+	const loopFrames = buildWorkingLoopFrames(colors);
 	ctx.ui.setWorkingMessage(WORK_HIDDEN_MESSAGE);
-	ctx.ui.setWorkingIndicator({ frames, intervalMs: WORK_FRAME_MS });
+
+	if (startup) {
+		ctx.ui.setWorkingIndicator({ frames: buildWorkingStartupFrames(colors), intervalMs: WORK_FRAME_MS });
+		const generation = workingIndicatorGeneration;
+		workingIndicatorTimer = setTimeout(() => {
+			if (generation !== workingIndicatorGeneration) return;
+			workingIndicatorTimer = undefined;
+			ctx.ui.setWorkingIndicator({ frames: loopFrames, intervalMs: WORK_FRAME_MS });
+		}, WORK_STARTUP_SWITCH_MS);
+		return;
+	}
+
+	ctx.ui.setWorkingIndicator({ frames: loopFrames, intervalMs: WORK_FRAME_MS });
 }
 
 
@@ -660,21 +717,18 @@ export default function minimalUi(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
+		clearWorkingIndicatorTimer();
 		ctx.ui.setEditorComponent(undefined);
 		ctx.ui.setWorkingIndicator();
 		ctx.ui.setWorkingMessage();
 	});
 
-	// Pi has no dedicated thinking-level change event, but `before_agent_start`
-	// fires before each user submission's agent loop and the loader is
-	// reconstructed at `agent_start` using the current indicator options. By
-	// regenerating here we pick up any thinking-level change the user made
-	// between turns, so the spinner gradient stays in sync with the header.
-	// Also re-read settings.json so color overrides take effect between turns
-	// without requiring a session restart.
+	// `before_agent_start` kicks off the dot bootstrap for each turn, then the
+	// timer swaps in the seamless 15-char loop. `session_start`/`model_select`
+	// just keep the loop version primed with the live thinking color.
 	pi.on("before_agent_start", (_event, ctx) => {
 		reloadColorOverrides(ctx.cwd);
-		applyWorkingIndicator(pi, ctx);
+		applyWorkingIndicator(pi, ctx, true);
 		refresh();
 	});
 
