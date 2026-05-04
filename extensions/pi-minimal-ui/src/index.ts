@@ -536,22 +536,13 @@ function scrollLabel(line: string): string | undefined {
 }
 
 // Crush-inspired "Working..." animation. Generates pre-rendered indicator
-// frames containing a gradient-colored cycling-character ribbon. Gradient
-// matches the sidebar header: solid accent when thinking is off, accent →
-// thinking-level color when on. No label / ellipsis. Pi loops frames at
-// WORK_FRAME_MS; the staggered birth phase replays on each loop.
+// frames containing a gradient-colored cycling-character ribbon. The cycle
+// is seamless, so it keeps animating until Pi clears it on output.
 const WORK_FPS = 20;
 const WORK_FRAME_MS = Math.round(1000 / WORK_FPS);
 const WORK_CYCLING_WIDTH = 10;
-const WORK_TOTAL_FRAMES = 40;
-const WORK_BIRTH_FRAMES = 20;
 const WORK_RUNES = "0123456789abcdefABCDEF~!@#$%^&*()+=_-";
-const WORK_INITIAL_CHAR = ".";
 const WORK_HIDDEN_MESSAGE = "\u200B"; // zero-width: bypass pi's `||` fallback to "Working..."
-
-function pickRune(): string {
-	return WORK_RUNES[Math.floor(Math.random() * WORK_RUNES.length)] ?? WORK_INITIAL_CHAR;
-}
 
 function buildWorkingFrames(theme: Theme, thinking: ThinkingLevel | undefined): string[] {
 	const accentAnsi = piAnsi(theme);
@@ -559,18 +550,17 @@ function buildWorkingFrames(theme: Theme, thinking: ThinkingLevel | undefined): 
 	const endRgb = thinking ? ansiToRgb(thinkingAnsi(theme, thinking)) : undefined;
 	const gradient = accentRgb && endRgb;
 
-	const birthOffsets = Array.from({ length: WORK_CYCLING_WIDTH }, () =>
-		Math.floor(Math.random() * WORK_BIRTH_FRAMES),
-	);
+	const cycleLength = WORK_RUNES.length;
+	const phaseSpacing = Math.max(1, Math.floor(cycleLength / WORK_CYCLING_WIDTH));
 
 	const frames: string[] = [];
-	for (let f = 0; f < WORK_TOTAL_FRAMES; f++) {
+	for (let f = 0; f < cycleLength; f++) {
 		let cycling = "";
 		for (let i = 0; i < WORK_CYCLING_WIDTH; i++) {
 			const color = gradient
 				? gradientAnsi(accentRgb, endRgb, i, WORK_CYCLING_WIDTH)
 				: accentAnsi;
-			const char = f < (birthOffsets[i] ?? 0) ? WORK_INITIAL_CHAR : pickRune();
+			const char = WORK_RUNES[(f + i * phaseSpacing) % cycleLength] ?? ".";
 			cycling += `${color}${char}`;
 		}
 		cycling += ANSI_FG_RESET;
