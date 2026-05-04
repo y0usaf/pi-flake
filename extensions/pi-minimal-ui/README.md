@@ -1,11 +1,11 @@
 # pi-minimal-ui
 
-Minimal Pi UI extension with compact, Crush-inspired chrome:
+Minimal Pi UI extension with compact chrome:
 
 - a full-width header above the editor with a thinking-level gradient diagonal rule
 - a prompt rail (`:::`) instead of a detached centered box, so the editor aligns with the chat flow
 - hidden default footer
-- a Crush-style cycling-ribbon spinner that replaces Pi's default `⠋ Working...` (no label)
+- a compact cycling-ribbon spinner that replaces Pi's default `⠋ Working...` (no label)
 
 ```text
 pi ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱ ~/Dev/pi-flake ·  main • ↑12k ↓2k $0.043 18.4%/272k • openai-codex/gpt-5.5 · high • ⚡
@@ -34,11 +34,11 @@ Extends Pi's `CustomEditor`, so normal editor behavior is preserved:
 
 ## Working spinner
 
-Replaces the default `⠋ Working...` loader via `ctx.ui.setWorkingIndicator()` with a Crush-inspired cycling-character ribbon — no label, no ellipsis, just the animation:
-- a 15-cell ribbon of cycling glyphs (`0-9 a-f A-F ~!@#$%^&*()+=_-`)
+Replaces the default `⠋ Working...` loader via `ctx.ui.setWorkingIndicator()` with a compact cycling-character ribbon — no label, no ellipsis, just the animation:
+- a 10-cell ribbon of cycling glyphs (`0-9 a-f A-F ~!@#$£€%^&*()+=_`)
 - gradient mirrors the sidebar header: solid Pi accent when thinking is off, accent → current thinking-level color when on
-- deterministic dot-to-ribbon startup phase: it begins from `...............` and then hands off to the seamless loop
-- 20 fps, 16 startup frames + seamless loop, regenerated on `before_agent_start` / `model_select` so the gradient tracks the live thinking level
+- random dot-to-ribbon startup phase: cells begin as `.` and reveal over the first second before handing off to the loop
+- 20 fps, randomized pre-rendered frames, regenerated on `before_agent_start` / `model_select` so the gradient tracks the live thinking level
 
 ## Usage
 
