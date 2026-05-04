@@ -144,7 +144,7 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-gecko-websearch` | Web search using Firefox's engine |
 | `pi-rtk` | Real-time keyboard events |
 | `pi-compact` | Compaction utilities |
-| `pi-context-janitor` | Simple hash-gated context truncation + undo UI |
+| `pi-context-janitor` | Hash-gated context truncation + undo UI |
 | `pi-morph` | Morph edit tool via Vercel AI Gateway (available as opt-in extension; not bundled in `pi-full`) |
 | `pi-tool-management` | Tool management interface |
 | `pi-webfetch` | HTTP fetching utilities |

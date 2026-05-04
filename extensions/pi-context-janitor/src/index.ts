@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { completeSimple, type Model, type ToolResultMessage, type Usage } from "@mariozechner/pi-ai";
+import { completeSimple as complete, type Model, type ToolResultMessage, type Usage } from "@mariozechner/pi-ai";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { Component } from "@mariozechner/pi-tui";
 import { truncateToWidth } from "@mariozechner/pi-tui";
@@ -320,7 +320,7 @@ function buildDeciderInput(records: PendingToolCallRecord[]): { input: string; c
 	for (let attempt = 0; attempt < 8; attempt += 1) {
 		objects = records.map(record => deciderObject(record, argsBudget, outputBudget));
 		input = JSON.stringify({
-			instruction: "For each tool_result object, choose action=truncate only if its output is safe to replace with a tiny archive marker in future context. Otherwise choose keep.",
+			instruction: "For each tool_result object, choose action=truncate only if its output is safe to replace with an archive marker in future context. Otherwise choose keep.",
 			actions: ["truncate", "keep"],
 			objects,
 		}, null, 2);
@@ -372,7 +372,7 @@ async function decideRecords(ctx: ExtensionContext, records: PendingToolCallReco
 	const model = resolveLightweightModel(ctx);
 	const apiKey = await ctx.modelRegistry.getApiKeyForProvider(model.provider);
 	const { input, candidates } = buildDeciderInput(records);
-	const response = await completeSimple(
+	const response = await complete(
 		model,
 		{
 			systemPrompt: DECIDER_SYSTEM_PROMPT,
@@ -884,7 +884,7 @@ export default function contextJanitor(pi: ExtensionAPI) {
 	}
 
 	pi.registerCommand("janitor", {
-		description: "Simple context janitor: on, off, undo",
+		description: "Context janitor controls: on, off, undo",
 		handler: async (args, ctx) => {
 			lastCtx = ctx;
 			const sub = splitArgs(args)[0]?.toLowerCase() ?? "";
