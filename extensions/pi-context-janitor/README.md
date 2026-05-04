@@ -9,8 +9,13 @@ Flow:
 3. Send only those id/hash objects + bounded previews to a lightweight model.
 4. Accept only hash-matching `truncate` decisions.
 5. Keep the raw session log untouched.
-6. Project future context with an archive marker instead of the raw tool output.
-7. Restore selected janitor runs with `/janitor undo`.
+6. Project future context with an invisible placeholder instead of the raw tool output.
+7. Store janitor run metadata as hidden custom entries.
+8. Restore selected janitor runs with `/janitor undo`.
+
+Janitor has hysteresis: it waits for a small backlog before asking the sidecar model. By default it runs after ≥6 pending tool results, ≥16k raw chars, or when the oldest pending batch is ≥60s old.
+
+Successful janitor runs are intentionally silent: no transcript messages are injected. Future LLM context gets only a zero-width placeholder for each cleaned tool result so the tool-call protocol stays valid without bloating context. Legacy visible janitor summary messages from older versions are suppressed by a hidden renderer.
 
 ## Install / test
 

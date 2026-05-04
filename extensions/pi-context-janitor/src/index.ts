@@ -15,14 +15,20 @@ const SUMMARY_CUSTOM_TYPE = "context-janitor-summary";
 const STATUS_KEY = "context-janitor";
 const JANITOR_CUSTOM_TYPES = new Set([INDEX_CUSTOM_TYPE, RESTORE_CUSTOM_TYPE, SUMMARY_CUSTOM_TYPE]);
 
+// Keep projected tool results protocol-valid while adding no visible transcript text.
+const CONTEXT_HIDDEN_TEXT = "\u200B";
 const DEBOUNCE_MS = 900;
+const HYSTERESIS_MIN_TOOL_CALLS = 6;
+const HYSTERESIS_MIN_RAW_CHARS = 16_000;
+const HYSTERESIS_MAX_AGE_MS = 60_000;
+const HYSTERESIS_RECHECK_MS = 5_000;
 const MAX_DECIDER_INPUT_CHARS = 60_000;
 const MAX_RECORDS_PER_PASS = 24;
 const MAX_DECIDER_TOKENS = 1_000;
 
 const DECIDER_SYSTEM_PROMPT = `You are Context Janitor, a conservative background context cleaner for a coding agent.
 
-You receive JSON objects representing completed tool results. Each object has an id and a hash. Decide which tool-result outputs are safe to truncate from future model context.
+You receive JSON objects representing completed tool results. Each object has an id and a hash. Decide which tool-result outputs are safe to replace with a hidden placeholder in future model context.
 
 Output JSON only:
 {"actions":[{"target":{"id":"...","hash":"..."},"action":"truncate|keep","reason":"..."}]}
@@ -242,6 +248,20 @@ function pendingTotals(pendingBatches: CapturedBatch[]): { toolCalls: number; ra
 	return { toolCalls, rawChars };
 }
 
+function pendingHysteresis(pendingBatches: CapturedBatch[], now = Date.now()): { ready: boolean; nextDelayMs: number; reason: string } {
+	const totals = pendingTotals(pendingBatches);
+	const oldestCapturedAt = Math.min(...pendingBatches.map(batch => batch.capturedAt));
+	const ageMs = Number.isFinite(oldestCapturedAt) ? Math.max(0, now - oldestCapturedAt) : 0;
+	if (totals.toolCalls >= HYSTERESIS_MIN_TOOL_CALLS) return { ready: true, nextDelayMs: DEBOUNCE_MS, reason: "tool-count" };
+	if (totals.rawChars >= HYSTERESIS_MIN_RAW_CHARS) return { ready: true, nextDelayMs: DEBOUNCE_MS, reason: "raw-size" };
+	if (ageMs >= HYSTERESIS_MAX_AGE_MS) return { ready: true, nextDelayMs: DEBOUNCE_MS, reason: "age" };
+	return {
+		ready: false,
+		nextDelayMs: Math.max(DEBOUNCE_MS, Math.min(HYSTERESIS_RECHECK_MS, HYSTERESIS_MAX_AGE_MS - ageMs)),
+		reason: "warming",
+	};
+}
+
 function batchFromRecords(records: PendingToolCallRecord[]): CapturedBatch | undefined {
 	if (records.length === 0) return undefined;
 	return {
@@ -320,7 +340,7 @@ function buildDeciderInput(records: PendingToolCallRecord[]): { input: string; c
 	for (let attempt = 0; attempt < 8; attempt += 1) {
 		objects = records.map(record => deciderObject(record, argsBudget, outputBudget));
 		input = JSON.stringify({
-			instruction: "For each tool_result object, choose action=truncate only if its output is safe to replace with an archive marker in future context. Otherwise choose keep.",
+			instruction: "For each tool_result object, choose action=truncate only if its output is safe to replace with a hidden placeholder in future context. Otherwise choose keep.",
 			actions: ["truncate", "keep"],
 			objects,
 		}, null, 2);
@@ -423,32 +443,9 @@ function summarizeToolNames(records: ReadonlyArray<{ toolName: string }>, maxNam
 	return `${parts.slice(0, maxNames).join(", ")} +${parts.length - maxNames} more`;
 }
 
-function projectionText(record: ToolCallRecord): string {
-	return [
-		"[context-janitor] tool result truncated",
-		`toolCallId: ${record.toolCallId}`,
-		`tool: ${record.toolName}`,
-		`hash: ${record.hash ?? "unknown"}`,
-		`raw: ${formatChars(record.resultText.length)}`,
-		record.janitorReason ? `reason: ${record.janitorReason}` : undefined,
-		"restore: /janitor undo",
-	].filter((line): line is string => typeof line === "string").join("\n");
-}
-
-function formatRunMessage(summaryId: string, records: PendingToolCallRecord[]): string {
-	const rawChars = records.reduce((sum, record) => sum + record.resultText.length, 0);
-	const reasons = records
-		.map(record => record.janitorReason)
-		.filter((reason): reason is string => typeof reason === "string" && reason.length > 0)
-		.slice(0, 6);
-	return [
-		`[context-janitor] truncated tool outputs \`${summaryId}\``,
-		"",
-		`Truncated ${records.length} tool output(s), ${formatChars(rawChars)} raw.`,
-		`Tools: ${summarizeToolNames(records)}`,
-		"Restore with /janitor undo.",
-		...(reasons.length > 0 ? ["", "Reasons:", ...reasons.map(reason => `- ${reason}`)] : []),
-	].join("\n");
+// Do not expose janitor metadata to the main model. Restore metadata lives in hidden custom entries.
+function projectionText(_record: ToolCallRecord): string {
+	return CONTEXT_HIDDEN_TEXT;
 }
 
 function entryFromRun(summaryId: string, reason: string, records: PendingToolCallRecord[], result: { usage?: Usage; modelLabel: string }): SummaryIndexEntry {
@@ -501,7 +498,7 @@ function parseIndexEntry(raw: unknown): SummaryIndexEntry | undefined {
 		createdAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString(),
 		reason: typeof raw.reason === "string" ? raw.reason : "reconstruct",
 		rawChars: typeof raw.rawChars === "number" ? raw.rawChars : toolCalls.reduce((sum, record) => sum + record.resultText.length, 0),
-		projectedChars: typeof raw.projectedChars === "number" ? raw.projectedChars : toolCalls.reduce((sum, record) => sum + projectionText(record).length, 0),
+		projectedChars: toolCalls.reduce((sum, record) => sum + projectionText(record).length, 0),
 		deciderModel: typeof raw.deciderModel === "string" ? raw.deciderModel : "unknown",
 		usage: isRecord(raw.usage) ? raw.usage as unknown as Usage : undefined,
 		toolCalls,
@@ -684,7 +681,17 @@ class JanitorUndoPicker implements Component {
 	}
 }
 
+class HiddenMessageComponent implements Component {
+	invalidate(): void {}
+	render(_width: number): string[] {
+		return [];
+	}
+}
+
 export default function contextJanitor(pi: ExtensionAPI) {
+	// Hide legacy janitor summary custom messages that were emitted by older versions.
+	// Current runs store metadata via appendEntry only, so no janitor block is displayed.
+	pi.registerMessageRenderer(SUMMARY_CUSTOM_TYPE, () => new HiddenMessageComponent());
 	let settings: JanitorSettings = { ...DEFAULT_SETTINGS };
 	let settingsError: string | undefined;
 	let index = new Map<string, ToolCallRecord>();
@@ -712,8 +719,12 @@ export default function contextJanitor(pi: ExtensionAPI) {
 		const active = activeSavings(entries, restoredSummaryIds);
 		let text = settings.enabled ? "janitor: ON" : "janitor: OFF";
 		if (settings.enabled && flushPromise) text = "janitor: deciding…";
-		else if (settings.enabled && pending.toolCalls > 0) text = `janitor: ${pending.toolCalls} pending`;
-		else if (settings.enabled && active.savedChars > 0) text = `janitor: ON ↓${formatChars(active.savedChars)}`;
+		else if (settings.enabled && pending.toolCalls > 0) {
+			const hysteresis = pendingHysteresis(pendingBatches);
+			text = hysteresis.ready
+				? `janitor: ${pending.toolCalls} pending`
+				: `janitor: warming ${pending.toolCalls}/${HYSTERESIS_MIN_TOOL_CALLS} · ${formatChars(pending.rawChars)}`;
+		} else if (settings.enabled && active.savedChars > 0) text = `janitor: ON ↓${formatChars(active.savedChars)}`;
 		ctx.ui.setStatus(STATUS_KEY, text);
 	}
 
@@ -742,13 +753,21 @@ export default function contextJanitor(pi: ExtensionAPI) {
 		lastCtx = ctx;
 		if (!settings.enabled || pendingBatches.length === 0) return;
 		if (scheduleTimer) clearTimeout(scheduleTimer);
+		const hysteresis = pendingHysteresis(pendingBatches);
+		const delayMs = hysteresis.ready ? DEBOUNCE_MS : hysteresis.nextDelayMs;
 		scheduleTimer = setTimeout(() => {
 			scheduleTimer = undefined;
-			void flushPending(ctx, reason).catch(error => {
+			const latestHysteresis = pendingHysteresis(pendingBatches);
+			if (!latestHysteresis.ready) {
+				scheduleFlush(ctx, reason);
+				updateStatus(ctx);
+				return;
+			}
+			void flushPending(ctx, `${reason}:${latestHysteresis.reason}`).catch(error => {
 				if (ctx.hasUI) ctx.ui.notify(`Context Janitor failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 				updateStatus(ctx);
 			});
-		}, DEBOUNCE_MS);
+		}, delayMs);
 		scheduleTimer.unref?.();
 	}
 
@@ -788,21 +807,7 @@ export default function contextJanitor(pi: ExtensionAPI) {
 				if (selectedRecords.length === 0) return;
 
 				const entry = entryFromRun(summaryId, reason, selectedRecords, { usage: decided.usage, modelLabel: decided.modelLabel });
-				const summaryContent = formatRunMessage(summaryId, selectedRecords);
 				pi.appendEntry(INDEX_CUSTOM_TYPE, entry);
-				pi.sendMessage({
-					customType: SUMMARY_CUSTOM_TYPE,
-					content: summaryContent,
-					display: true,
-					details: {
-						summaryId,
-						toolCallIds: selectedRecords.map(record => record.toolCallId),
-						rawChars: entry.rawChars,
-						projectedChars: entry.projectedChars,
-						deciderModel: entry.deciderModel,
-					},
-				}, { deliverAs: "nextTurn" });
-				if (!ctx.isIdle() && ctx.hasUI) ctx.ui.notify(summaryContent, "info");
 				applyIndexEntry(entry, index, entries);
 
 			} catch (error) {
