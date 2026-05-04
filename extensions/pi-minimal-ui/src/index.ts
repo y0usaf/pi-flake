@@ -494,10 +494,10 @@ function headerContentRows(groups: string[], theme: ExtensionContext["ui"]["them
 	return rows.length > 0 ? rows : [""];
 }
 
-function renderHeaderLine(content: string, theme: ExtensionContext["ui"]["theme"], width: number, thinking: ThinkingLevel | undefined, showPrefix = true): string {
+function renderHeaderLine(content: string, theme: ExtensionContext["ui"]["theme"], width: number, thinking: ThinkingLevel | undefined): string {
 	const edge = piColored(theme, STATUS_EDGE_TEXT);
 	const edgeWidth = visibleWidth(STATUS_EDGE_TEXT);
-	const prefix = showPrefix ? `${piColored(theme, "pi")} ` : "   ";
+	const prefix = `${piColored(theme, "pi")} `;
 	const prefixWidth = visibleWidth(prefix);
 	const fixedWidth = edgeWidth * 2 + prefixWidth + MIN_HEADER_DIAGS + 3;
 	const maxContentWidth = Math.max(0, width - fixedWidth);
@@ -506,6 +506,14 @@ function renderHeaderLine(content: string, theme: ExtensionContext["ui"]["theme"
 	const diagCount = Math.max(MIN_HEADER_DIAGS, width - edgeWidth * 2 - prefixWidth - fittedContentWidth - 3);
 	const line = `${edge} ${prefix}${piColored(theme, HEADER_DIAG.repeat(diagCount))} ${fittedContent} ${edge}`;
 	return applyHeaderGradient(padLine(line, width), theme, thinking, edgeWidth + 1 + prefixWidth + diagCount);
+}
+
+function renderHeaderRuleLine(theme: ExtensionContext["ui"]["theme"], width: number, thinking: ThinkingLevel | undefined): string {
+	const edge = piColored(theme, STATUS_EDGE_TEXT);
+	const edgeWidth = visibleWidth(STATUS_EDGE_TEXT);
+	const diagWidth = Math.max(0, width - edgeWidth * 2 - 2);
+	const line = `${edge} ${piColored(theme, HEADER_DIAG.repeat(diagWidth))} ${edge}`;
+	return applyHeaderGradient(padLine(line, width), theme, thinking, edgeWidth + 1 + diagWidth);
 }
 
 
@@ -521,7 +529,8 @@ function renderStatusline(
 	const maxContentWidth = Math.max(1, innerWidth - fixedWidth);
 	const groups = renderStatusGroups(pi, ctx, footerData, theme, innerWidth);
 	const thinking = currentThinkingLevel(pi, ctx);
-	const lines = headerContentRows(groups, theme, maxContentWidth).map((row, index) => renderHeaderLine(row, theme, innerWidth, thinking, index === 0));
+	const rows = headerContentRows(groups, theme, maxContentWidth);
+	const lines = [renderHeaderLine(rows[0] ?? "", theme, innerWidth, thinking), ...(rows.length > 1 ? [renderHeaderRuleLine(theme, innerWidth, thinking)] : [])];
 	if (innerWidth === width) return lines;
 	return lines.map((line) => centerLine(line, innerWidth, width));
 }
