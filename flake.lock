@@ -64,6 +64,22 @@
       },
       "parent": []
     },
+    "piContextJanitor": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-context-janitor",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-context-janitor",
+        "type": "path"
+      },
+      "parent": []
+    },
 
     "piGeckoWebsearch": {
       "inputs": {
@@ -200,6 +216,7 @@
         "piHive": "piHive",
         "piCodexFast": "piCodexFast",
         "piCompact": "piCompact",
+        "piContextJanitor": "piContextJanitor",
 
         "piGeckoWebsearch": "piGeckoWebsearch",
         "piHashline": "piHashline",
