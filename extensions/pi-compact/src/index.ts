@@ -17,6 +17,7 @@ const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 
 type UserMessageMode = "normal" | "borderless" | "compact";
+type ThinkingMode = "normal" | "compact" | "hidden";
 type ToolBgToken = "toolPendingBg" | "toolSuccessBg" | "toolErrorBg";
 type ThemeFgToken = "toolDiffAdded" | "toolDiffRemoved" | "thinkingText";
 
@@ -29,7 +30,7 @@ type ToolsSettings = GapRendering;
 type UserSettings = GapRendering;
 
 interface ThinkingSettings {
-  mode: "normal" | "compact";
+  mode: ThinkingMode;
 }
 
 interface PiCompactSettings {
@@ -74,7 +75,7 @@ let lastAssistantPatchError: string | undefined;
 let lastConfigError: string | undefined;
 let toolRendering = cloneGapRendering(DEFAULT_PI_COMPACT_SETTINGS.tools);
 let userRendering = cloneGapRendering(DEFAULT_PI_COMPACT_SETTINGS.user);
-let compactThinking = DEFAULT_PI_COMPACT_SETTINGS.thinking.mode === "compact";
+let thinkingMode: ThinkingMode = DEFAULT_PI_COMPACT_SETTINGS.thinking.mode;
 let activeTheme: ThemeWithCompactColours | undefined;
 
 const thinkingTimings = new Map<string, CompactThinkingTiming>();
@@ -132,7 +133,7 @@ function parseUserMessageMode(value: unknown): UserMessageMode | undefined {
   }
 }
 
-function parseCompactMode(value: unknown): "normal" | "compact" | undefined {
+function parseThinkingMode(value: unknown): ThinkingMode | undefined {
   if (typeof value !== "string") return undefined;
 
   switch (value.trim().toLowerCase()) {
@@ -140,6 +141,10 @@ function parseCompactMode(value: unknown): "normal" | "compact" | undefined {
       return "normal";
     case "compact":
       return "compact";
+    case "hidden":
+    case "hide":
+    case "off":
+      return "hidden";
     default:
       return undefined;
   }
@@ -169,7 +174,7 @@ function parseThinkingSettings(raw: unknown): Partial<ThinkingSettings> | undefi
   if (!isRecord(raw)) return undefined;
 
   const settings: Partial<ThinkingSettings> = {};
-  const mode = parseCompactMode(raw.mode);
+  const mode = parseThinkingMode(raw.mode);
   if (mode) settings.mode = mode;
   return hasSettings(settings) ? settings : undefined;
 }
@@ -1007,9 +1012,9 @@ function patchAssistantMessageComponent(): boolean {
 
     proto.updateContent = function piCompactAssistantUpdateContent(this: any, message: any) {
       const blocks = getThinkingBlocks(message);
-      this[ASSISTANT_THINKING_APPLIED_MODE_KEY] = compactThinking;
+      this[ASSISTANT_THINKING_APPLIED_MODE_KEY] = thinkingMode;
 
-      if (blocks.length === 0 || !compactThinking) {
+      if (blocks.length === 0 || thinkingMode === "normal") {
         this[ASSISTANT_THINKING_STATE_KEY] = undefined;
         return originalUpdateContent.call(this, message);
       }
@@ -1029,13 +1034,13 @@ function patchAssistantMessageComponent(): boolean {
     };
 
     proto.render = function piCompactAssistantRender(this: any, width: number) {
-      if (this[ASSISTANT_THINKING_APPLIED_MODE_KEY] !== compactThinking && this.lastMessage) {
+      if (this[ASSISTANT_THINKING_APPLIED_MODE_KEY] !== thinkingMode && this.lastMessage) {
         this.updateContent(this.lastMessage);
       }
 
       const lines = originalRender.call(this, width);
       const thinkingState = this[ASSISTANT_THINKING_STATE_KEY] as CompactThinkingState | undefined;
-      if (!compactThinking || !thinkingState) return lines;
+      if (thinkingMode !== "compact" || !thinkingState) return lines;
 
       const thinkingLines = renderCompactThinkingLine(thinkingState, width);
       return thinkingLines.length > 0 ? [...thinkingLines, ...lines] : lines;
@@ -1077,14 +1082,10 @@ function formatGapRendering(value: GapRendering): string {
   return value.mode === "normal" ? "normal" : `${value.mode}${value.gap ? "+gap" : "+tight"}`;
 }
 
-function formatCompactMode(value: boolean): "compact" | "normal" {
-  return value ? "compact" : "normal";
-}
-
 function statusMessage(): string {
   const toolsStatus = lastToolPatchError ? "failed" : formatGapRendering(toolRendering);
   const userStatus = lastUserPatchError ? "failed" : formatGapRendering(userRendering);
-  const thinkingStatus = lastAssistantPatchError ? "failed" : formatCompactMode(compactThinking);
+  const thinkingStatus = lastAssistantPatchError ? "failed" : thinkingMode;
   return `pi-compact: tools=${toolsStatus} • user=${userStatus} • thinking=${thinkingStatus}${patchErrorDetails()}`;
 }
 
@@ -1123,13 +1124,25 @@ function parseGapRenderingArg(args: string, current: GapRendering, defaultValue:
   }
 }
 
-function parseThinkingArg(args: string, current: boolean): boolean | undefined {
+function parseThinkingArg(args: string, current: ThinkingMode): ThinkingMode | undefined {
   const value = args.trim().toLowerCase();
   if (!value || value === "status") return current;
-  if (["compact", "on", "true", "yes", "enable", "enabled"].includes(value)) return true;
-  if (["normal", "off", "false", "no", "disable", "disabled"].includes(value)) return false;
-  if (["toggle", "flip"].includes(value)) return !current;
-  return undefined;
+
+  switch (value) {
+    case "normal":
+      return "normal";
+    case "compact":
+      return "compact";
+    case "hidden":
+    case "hide":
+    case "off":
+      return "hidden";
+    case "toggle":
+      if (current === "normal") return "compact";
+      return current === "compact" ? "hidden" : "compact";
+    default:
+      return undefined;
+  }
 }
 
 void patchPiCompactComponents();
@@ -1182,15 +1195,15 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("compact-thinking", {
-    description: "Set thinking rendering (normal|compact|toggle)",
+    description: "Set thinking rendering (normal|compact|hidden|toggle)",
     handler: async (args, ctx) => {
-      const next = parseThinkingArg(args, compactThinking);
+      const next = parseThinkingArg(args, thinkingMode);
       if (next === undefined) {
-        ctx.ui.notify("Usage: /compact-thinking [normal|compact|toggle|status]", "error");
+        ctx.ui.notify("Usage: /compact-thinking [normal|compact|hidden|toggle|status]", "error");
         return;
       }
 
-      compactThinking = next;
+      thinkingMode = next;
       await patchPiCompactComponents();
       ctx.ui.notify(statusMessage(), hasStatusError() ? "error" : "info");
     },
@@ -1200,7 +1213,7 @@ export default function (pi: ExtensionAPI) {
     const settings = resolvePiCompactSettings(ctx.cwd);
     toolRendering = cloneGapRendering(settings.tools);
     userRendering = cloneGapRendering(settings.user);
-    compactThinking = settings.thinking.mode === "compact";
+    thinkingMode = settings.thinking.mode;
     activeTheme = ctx.hasUI ? ctx.ui.theme : undefined;
 
     await patchPiCompactComponents();
@@ -1208,3 +1221,4 @@ export default function (pi: ExtensionAPI) {
     if (hasStatusError()) ctx.ui.notify(statusMessage(), "error");
   });
 }
+
