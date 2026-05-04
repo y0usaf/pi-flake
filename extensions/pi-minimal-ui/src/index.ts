@@ -509,11 +509,8 @@ function renderHeaderLine(content: string, theme: ExtensionContext["ui"]["theme"
 }
 
 function renderHeaderRuleLine(theme: ExtensionContext["ui"]["theme"], width: number, thinking: ThinkingLevel | undefined): string {
-	const edge = piColored(theme, STATUS_EDGE_TEXT);
-	const edgeWidth = visibleWidth(STATUS_EDGE_TEXT);
-	const diagWidth = Math.max(0, width - edgeWidth * 2 - 2);
-	const line = `${edge} ${piColored(theme, HEADER_DIAG.repeat(diagWidth))} ${edge}`;
-	return applyHeaderGradient(padLine(line, width), theme, thinking, edgeWidth + 1 + diagWidth);
+	const line = piColored(theme, HEADER_DIAG.repeat(width));
+	return applyHeaderGradient(line, theme, thinking, width);
 }
 
 
