@@ -522,11 +522,12 @@ function scrollLabel(line: string): string | undefined {
 // frame until born, then switch to pre-rendered random cycling frames; after
 // startup the same cycling frames loop continuously.
 const WORK_FRAME_MS = 50;
-const WORK_CYCLING_WIDTH = 10;
+const WORK_CYCLING_WIDTH = 15;
 const WORK_MAX_BIRTH_OFFSET_MS = 1000;
 const WORK_STARTUP_FRAMES = Math.ceil(WORK_MAX_BIRTH_OFFSET_MS / WORK_FRAME_MS) + 1;
 const WORK_STARTUP_SWITCH_MS = WORK_MAX_BIRTH_OFFSET_MS;
-const WORK_PRERENDERED_FRAMES = 10;
+const WORK_PRERENDERED_FRAMES = WORK_CYCLING_WIDTH * 2;
+const WORK_GRADIENT_RAMP_WIDTH = WORK_CYCLING_WIDTH * 3;
 const WORK_RUNES = "0123456789abcdefABCDEF~!@#$£€%^&*()+=_";
 const WORK_INITIAL_CHAR = ".";
 const WORK_HIDDEN_MESSAGE = "\u200B"; // zero-width: bypass pi's `||` fallback to "Working..."
@@ -542,13 +543,27 @@ function clearWorkingIndicatorTimer(): void {
 	}
 }
 
-function workingCellColors(theme: Theme, thinking: ThinkingLevel | undefined): string[] {
+function workingGradient(theme: Theme, thinking: ThinkingLevel | undefined): { accentAnsi: string; accentRgb: Rgb | undefined; endRgb: Rgb | undefined } {
 	const accentAnsi = piAnsi(theme);
 	const accentRgb = ansiToRgb(accentAnsi);
-	const endRgb = thinking ? ansiToRgb(thinkingAnsi(theme, thinking)) : undefined;
-	return Array.from({ length: WORK_CYCLING_WIDTH }, (_, i) =>
-		accentRgb && endRgb ? gradientAnsi(accentRgb, endRgb, i, WORK_CYCLING_WIDTH) : accentAnsi,
-	);
+	const endAnsi = thinking ? thinkingAnsi(theme, thinking) : theme.getFgAnsi(THINKING_COLOR.high);
+	const endRgb = ansiToRgb(endAnsi);
+	return { accentAnsi, accentRgb, endRgb };
+}
+
+function workingGradientAnsi(gradient: ReturnType<typeof workingGradient>, index: number): string {
+	if (!gradient.accentRgb || !gradient.endRgb) return gradient.accentAnsi;
+
+	const wrapped = ((index % WORK_GRADIENT_RAMP_WIDTH) + WORK_GRADIENT_RAMP_WIDTH) % WORK_GRADIENT_RAMP_WIDTH;
+	const segment = Math.floor(wrapped / WORK_CYCLING_WIDTH);
+	const localIndex = wrapped % WORK_CYCLING_WIDTH;
+	return segment === 1
+		? gradientAnsi(gradient.endRgb, gradient.accentRgb, localIndex, WORK_CYCLING_WIDTH)
+		: gradientAnsi(gradient.accentRgb, gradient.endRgb, localIndex, WORK_CYCLING_WIDTH);
+}
+
+function workingCellColors(gradient: ReturnType<typeof workingGradient>, offset: number): string[] {
+	return Array.from({ length: WORK_CYCLING_WIDTH }, (_, i) => workingGradientAnsi(gradient, i + offset));
 }
 
 function renderWorkingFrame(colors: string[], chars: string[]): string {
@@ -565,21 +580,21 @@ function randomWorkingChars(): string[] {
 	);
 }
 
-function buildWorkingInitialFrames(colors: string[]): string[] {
-	return Array.from({ length: WORK_PRERENDERED_FRAMES }, () =>
-		renderWorkingFrame(colors, Array.from({ length: WORK_CYCLING_WIDTH }, () => WORK_INITIAL_CHAR)),
+function buildWorkingInitialFrames(gradient: ReturnType<typeof workingGradient>): string[] {
+	return Array.from({ length: WORK_PRERENDERED_FRAMES }, (_, frame) =>
+		renderWorkingFrame(workingCellColors(gradient, frame), Array.from({ length: WORK_CYCLING_WIDTH }, () => WORK_INITIAL_CHAR)),
 	);
 }
 
-function buildWorkingLoopFrames(colors: string[]): string[] {
-	return Array.from({ length: WORK_PRERENDERED_FRAMES }, () => renderWorkingFrame(colors, randomWorkingChars()));
+function buildWorkingLoopFrames(gradient: ReturnType<typeof workingGradient>): string[] {
+	return Array.from({ length: WORK_PRERENDERED_FRAMES }, (_, frame) => renderWorkingFrame(workingCellColors(gradient, frame), randomWorkingChars()));
 }
 
 function visibleChars(frame: string): string[] {
 	return stripAnsi(frame).slice(0, WORK_CYCLING_WIDTH).split("");
 }
 
-function buildWorkingStartupFrames(colors: string[], initialFrames: string[], loopFrames: string[]): string[] {
+function buildWorkingStartupFrames(gradient: ReturnType<typeof workingGradient>, initialFrames: string[], loopFrames: string[]): string[] {
 	const birthOffsets = Array.from({ length: WORK_CYCLING_WIDTH }, () => Math.random() * WORK_MAX_BIRTH_OFFSET_MS);
 	return Array.from({ length: WORK_STARTUP_FRAMES }, (_, frame) => {
 		const elapsedMs = frame * WORK_FRAME_MS;
@@ -590,20 +605,20 @@ function buildWorkingStartupFrames(colors: string[], initialFrames: string[], lo
 				? (initialChars[index] ?? WORK_INITIAL_CHAR)
 				: (cyclingChars[index] ?? WORK_INITIAL_CHAR),
 		);
-		return renderWorkingFrame(colors, chars);
+		return renderWorkingFrame(workingCellColors(gradient, frame), chars);
 	});
 }
 
 function applyWorkingIndicator(pi: ExtensionAPI, ctx: ExtensionContext, startup = false): void {
 	clearWorkingIndicatorTimer();
 	const thinking = currentThinkingLevel(pi, ctx);
-	const colors = workingCellColors(ctx.ui.theme, thinking);
-	const initialFrames = buildWorkingInitialFrames(colors);
-	const loopFrames = buildWorkingLoopFrames(colors);
+	const gradient = workingGradient(ctx.ui.theme, thinking);
+	const initialFrames = buildWorkingInitialFrames(gradient);
+	const loopFrames = buildWorkingLoopFrames(gradient);
 	ctx.ui.setWorkingMessage(WORK_HIDDEN_MESSAGE);
 
 	if (startup) {
-		ctx.ui.setWorkingIndicator({ frames: buildWorkingStartupFrames(colors, initialFrames, loopFrames), intervalMs: WORK_FRAME_MS });
+		ctx.ui.setWorkingIndicator({ frames: buildWorkingStartupFrames(gradient, initialFrames, loopFrames), intervalMs: WORK_FRAME_MS });
 		const generation = workingIndicatorGeneration;
 		workingIndicatorTimer = setTimeout(() => {
 			if (generation !== workingIndicatorGeneration) return;
@@ -615,6 +630,7 @@ function applyWorkingIndicator(pi: ExtensionAPI, ctx: ExtensionContext, startup 
 
 	ctx.ui.setWorkingIndicator({ frames: loopFrames, intervalMs: WORK_FRAME_MS });
 }
+
 
 
 
