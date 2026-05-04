@@ -470,29 +470,7 @@ function renderStatusGroups(
 	].filter((group): group is string => Boolean(group));
 }
 
-function headerContentRows(groups: string[], theme: ExtensionContext["ui"]["theme"], maxWidth: number): string[] {
-	const separator = SECTION_SEPARATOR_TEXT;
-	const separatorWidth = visibleWidth(SECTION_SEPARATOR_TEXT);
-	const rows: string[] = [];
-	let row: string[] = [];
-	let rowWidth = 0;
 
-	for (const group of groups) {
-		const groupWidth = visibleWidth(group);
-		const nextWidth = row.length === 0 ? groupWidth : rowWidth + separatorWidth + groupWidth;
-		if (row.length > 0 && nextWidth > maxWidth) {
-			rows.push(row.join(separator));
-			row = [group];
-			rowWidth = groupWidth;
-		} else {
-			row.push(group);
-			rowWidth = nextWidth;
-		}
-	}
-
-	if (row.length > 0) rows.push(row.join(separator));
-	return rows.length > 0 ? rows : [""];
-}
 
 function renderHeaderLine(content: string, theme: ExtensionContext["ui"]["theme"], width: number, thinking: ThinkingLevel | undefined): string {
 	const edge = piColored(theme, STATUS_EDGE_TEXT);
@@ -522,12 +500,10 @@ function renderStatusline(
 	width: number,
 ): string[] {
 	const innerWidth = uiWidth(width);
-	const fixedWidth = visibleWidth(STATUS_EDGE_TEXT) * 2 + visibleWidth("pi ") + MIN_HEADER_DIAGS + 3;
-	const maxContentWidth = Math.max(1, innerWidth - fixedWidth);
 	const groups = renderStatusGroups(pi, ctx, footerData, theme, innerWidth);
 	const thinking = currentThinkingLevel(pi, ctx);
-	const rows = headerContentRows(groups, theme, maxContentWidth);
-	const lines = [renderHeaderLine(rows[0] ?? "", theme, innerWidth, thinking), ...(rows.length > 1 ? [renderHeaderRuleLine(theme, innerWidth, thinking)] : [])];
+	const content = groups.join(SECTION_SEPARATOR_TEXT);
+	const lines = [renderHeaderLine(content, theme, innerWidth, thinking)];
 	if (innerWidth === width) return lines;
 	return lines.map((line) => centerLine(line, innerWidth, width));
 }
