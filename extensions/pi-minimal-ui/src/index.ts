@@ -10,8 +10,8 @@ const UI_MIN_WIDTH = 24;
 const PROMPT_MARKER = ":::";
 const HEADER_DIAG = "╱";
 const MIN_HEADER_DIAGS = 3;
-const SECTION_SEPARATOR_TEXT = " /// ";
-const STATUS_EDGE_TEXT = "///";
+const SECTION_SEPARATOR_TEXT = " ╱╱╱ ";
+const STATUS_EDGE_TEXT = "╱╱╱";
 
 const ANSI_PATTERN = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|_[^\x07]*(?:\x07|\x1b\\))/g;
 
@@ -494,10 +494,10 @@ function headerContentRows(groups: string[], theme: ExtensionContext["ui"]["them
 	return rows.length > 0 ? rows : [""];
 }
 
-function renderHeaderLine(content: string, theme: ExtensionContext["ui"]["theme"], width: number, thinking: ThinkingLevel | undefined): string {
+function renderHeaderLine(content: string, theme: ExtensionContext["ui"]["theme"], width: number, thinking: ThinkingLevel | undefined, showPrefix = true): string {
 	const edge = piColored(theme, STATUS_EDGE_TEXT);
 	const edgeWidth = visibleWidth(STATUS_EDGE_TEXT);
-	const prefix = `${piColored(theme, "pi")} `;
+	const prefix = showPrefix ? `${piColored(theme, "pi")} ` : "   ";
 	const prefixWidth = visibleWidth(prefix);
 	const fixedWidth = edgeWidth * 2 + prefixWidth + MIN_HEADER_DIAGS + 3;
 	const maxContentWidth = Math.max(0, width - fixedWidth);
@@ -521,7 +521,7 @@ function renderStatusline(
 	const maxContentWidth = Math.max(1, innerWidth - fixedWidth);
 	const groups = renderStatusGroups(pi, ctx, footerData, theme, innerWidth);
 	const thinking = currentThinkingLevel(pi, ctx);
-	const lines = headerContentRows(groups, theme, maxContentWidth).map((row) => renderHeaderLine(row, theme, innerWidth, thinking));
+	const lines = headerContentRows(groups, theme, maxContentWidth).map((row, index) => renderHeaderLine(row, theme, innerWidth, thinking, index === 0));
 	if (innerWidth === width) return lines;
 	return lines.map((line) => centerLine(line, innerWidth, width));
 }
@@ -535,20 +535,17 @@ function scrollLabel(line: string): string | undefined {
 	return stripAnsi(line).match(/[↑↓] \d+ more/)?.[0];
 }
 
-// Crush-inspired "Working..." animation. Generates pre-rendered indicator
-// frames containing a 15-cell gradient-colored cycling-character ribbon.
-// `before_agent_start` gets a short dot bootstrap before handing off to the
-// seamless loop, so the spinner starts from `...............` without ever
-// snapping back to dots mid-turn.
-const WORK_FPS = 20;
-const WORK_FRAME_MS = Math.round(1000 / WORK_FPS);
-const WORK_CYCLING_WIDTH = 15;
-const WORK_STARTUP_FRAMES = WORK_CYCLING_WIDTH + 1;
-const WORK_STARTUP_SWITCH_MS = Math.max(
-	WORK_FRAME_MS,
-	(WORK_STARTUP_FRAMES - 1) * WORK_FRAME_MS,
-);
-const WORK_RUNES = "0123456789abcdefABCDEF~!@#$%^&*()+=_-";
+// Compact working animation: a gradient ribbon at 20 FPS, with per-cell
+// random birth offsets during the first second. Cells show the initial `.`
+// frame until born, then switch to pre-rendered random cycling frames; after
+// startup the same cycling frames loop continuously.
+const WORK_FRAME_MS = 50;
+const WORK_CYCLING_WIDTH = 10;
+const WORK_MAX_BIRTH_OFFSET_MS = 1000;
+const WORK_STARTUP_FRAMES = Math.ceil(WORK_MAX_BIRTH_OFFSET_MS / WORK_FRAME_MS) + 1;
+const WORK_STARTUP_SWITCH_MS = WORK_MAX_BIRTH_OFFSET_MS;
+const WORK_PRERENDERED_FRAMES = 10;
+const WORK_RUNES = "0123456789abcdefABCDEF~!@#$£€%^&*()+=_";
 const WORK_INITIAL_CHAR = ".";
 const WORK_HIDDEN_MESSAGE = "\u200B"; // zero-width: bypass pi's `||` fallback to "Working..."
 
@@ -572,14 +569,6 @@ function workingCellColors(theme: Theme, thinking: ThinkingLevel | undefined): s
 	);
 }
 
-function workingPhaseChars(phase: number): string[] {
-	const cycleLength = WORK_RUNES.length;
-	const phaseSpacing = Math.max(1, Math.floor(cycleLength / WORK_CYCLING_WIDTH));
-	return Array.from({ length: WORK_CYCLING_WIDTH }, (_, i) =>
-		WORK_RUNES[(phase + i * phaseSpacing) % cycleLength] ?? WORK_INITIAL_CHAR,
-	);
-}
-
 function renderWorkingFrame(colors: string[], chars: string[]): string {
 	let out = "";
 	for (let i = 0; i < WORK_CYCLING_WIDTH; i++) {
@@ -588,39 +577,51 @@ function renderWorkingFrame(colors: string[], chars: string[]): string {
 	return `${out}${ANSI_FG_RESET}`;
 }
 
-function buildWorkingLoopFrames(colors: string[]): string[] {
-	const cycleLength = WORK_RUNES.length;
-	const frames: string[] = [];
-	for (let phase = 0; phase < cycleLength; phase++) {
-		frames.push(renderWorkingFrame(colors, workingPhaseChars(phase)));
-	}
-	return frames;
+function randomWorkingChars(): string[] {
+	return Array.from({ length: WORK_CYCLING_WIDTH }, () =>
+		WORK_RUNES[Math.floor(Math.random() * WORK_RUNES.length)] ?? WORK_INITIAL_CHAR,
+	);
 }
 
-function buildWorkingStartupFrames(colors: string[]): string[] {
-	const targetChars = workingPhaseChars(0);
-	const birthOffsets = Array.from({ length: WORK_CYCLING_WIDTH }, (_, i) =>
-		1 + Math.floor((i * (WORK_STARTUP_FRAMES - 1)) / WORK_CYCLING_WIDTH),
+function buildWorkingInitialFrames(colors: string[]): string[] {
+	return Array.from({ length: WORK_PRERENDERED_FRAMES }, () =>
+		renderWorkingFrame(colors, Array.from({ length: WORK_CYCLING_WIDTH }, () => WORK_INITIAL_CHAR)),
 	);
-	const frames: string[] = [];
-	for (let phase = 0; phase < WORK_STARTUP_FRAMES; phase++) {
-		const chars = targetChars.map((char, index) =>
-			phase < (birthOffsets[index] ?? 0) ? WORK_INITIAL_CHAR : char,
+}
+
+function buildWorkingLoopFrames(colors: string[]): string[] {
+	return Array.from({ length: WORK_PRERENDERED_FRAMES }, () => renderWorkingFrame(colors, randomWorkingChars()));
+}
+
+function visibleChars(frame: string): string[] {
+	return stripAnsi(frame).slice(0, WORK_CYCLING_WIDTH).split("");
+}
+
+function buildWorkingStartupFrames(colors: string[], initialFrames: string[], loopFrames: string[]): string[] {
+	const birthOffsets = Array.from({ length: WORK_CYCLING_WIDTH }, () => Math.random() * WORK_MAX_BIRTH_OFFSET_MS);
+	return Array.from({ length: WORK_STARTUP_FRAMES }, (_, frame) => {
+		const elapsedMs = frame * WORK_FRAME_MS;
+		const initialChars = visibleChars(initialFrames[frame % initialFrames.length] ?? "");
+		const cyclingChars = visibleChars(loopFrames[frame % loopFrames.length] ?? "");
+		const chars = Array.from({ length: WORK_CYCLING_WIDTH }, (_, index) =>
+			elapsedMs < (birthOffsets[index] ?? 0)
+				? (initialChars[index] ?? WORK_INITIAL_CHAR)
+				: (cyclingChars[index] ?? WORK_INITIAL_CHAR),
 		);
-		frames.push(renderWorkingFrame(colors, chars));
-	}
-	return frames;
+		return renderWorkingFrame(colors, chars);
+	});
 }
 
 function applyWorkingIndicator(pi: ExtensionAPI, ctx: ExtensionContext, startup = false): void {
 	clearWorkingIndicatorTimer();
 	const thinking = currentThinkingLevel(pi, ctx);
 	const colors = workingCellColors(ctx.ui.theme, thinking);
+	const initialFrames = buildWorkingInitialFrames(colors);
 	const loopFrames = buildWorkingLoopFrames(colors);
 	ctx.ui.setWorkingMessage(WORK_HIDDEN_MESSAGE);
 
 	if (startup) {
-		ctx.ui.setWorkingIndicator({ frames: buildWorkingStartupFrames(colors), intervalMs: WORK_FRAME_MS });
+		ctx.ui.setWorkingIndicator({ frames: buildWorkingStartupFrames(colors, initialFrames, loopFrames), intervalMs: WORK_FRAME_MS });
 		const generation = workingIndicatorGeneration;
 		workingIndicatorTimer = setTimeout(() => {
 			if (generation !== workingIndicatorGeneration) return;
