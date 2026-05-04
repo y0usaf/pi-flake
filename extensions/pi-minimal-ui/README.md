@@ -35,11 +35,10 @@ Extends Pi's `CustomEditor`, so normal editor behavior is preserved:
 ## Working spinner
 
 Replaces the default `⠋ Working...` loader via `ctx.ui.setWorkingIndicator()` with a Crush-inspired cycling-character ribbon — no label, no ellipsis, just the animation:
-
-- a 10-cell ribbon of cycling glyphs (`0-9 a-f A-F ~!@#$%^&*()+=_-`)
+- a 15-cell ribbon of cycling glyphs (`0-9 a-f A-F ~!@#$%^&*()+=_-`)
 - gradient mirrors the sidebar header: solid Pi accent when thinking is off, accent → current thinking-level color when on
-- staggered birth phase: each cell starts as `.` and ignites into the cycle on its own random offset
-- 20 fps, 40 pre-rendered frames, regenerated on `before_agent_start` / `model_select` so the gradient tracks the live thinking level
+- deterministic dot-to-ribbon startup phase: it begins from `...............` and then hands off to the seamless loop
+- 20 fps, 16 startup frames + seamless loop, regenerated on `before_agent_start` / `model_select` so the gradient tracks the live thinking level
 
 ## Usage
 
