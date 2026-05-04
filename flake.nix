@@ -24,6 +24,9 @@
     piCompact.url = "path:./extensions/pi-compact";
     piCompact.inputs.nixpkgs.follows = "nixpkgs";
 
+    piMorph.url = "path:./extensions/pi-morph";
+    piMorph.inputs.nixpkgs.follows = "nixpkgs";
+
 
     piToolManagement.url = "path:./extensions/pi-tool-management";
     piToolManagement.inputs.nixpkgs.follows = "nixpkgs";
@@ -47,6 +50,7 @@
     piGeckoWebsearch,
     piRtk,
     piCompact,
+    piMorph,
 
     piToolManagement,
     piWebfetch,
@@ -126,6 +130,7 @@
       "pi-gecko-websearch" = piGeckoWebsearch.packages.${system}.default;
       "pi-rtk" = piRtk.packages.${system}.default;
       "pi-compact" = piCompact.packages.${system}.default;
+      "pi-morph" = piMorph.packages.${system}.default;
 
 
       "pi-tool-management" = piToolManagement.packages.${system}.default;
@@ -246,12 +251,24 @@
       "gecko-websearch" = self.packages.${system}."pi-gecko-websearch";
       rtk = self.packages.${system}."pi-rtk";
       compact = self.packages.${system}."pi-compact";
+      morph = self.packages.${system}."pi-morph";
 
       "tool-management" = self.packages.${system}."pi-tool-management";
       webfetch = self.packages.${system}."pi-webfetch";
       hashline = self.packages.${system}."pi-hashline";
       "minimal-ui" = self.packages.${system}."pi-minimal-ui";
     };
+
+    lib.enabledExtensions = {
+      system,
+      extensionFlags ? {},
+    }: let
+      lib = nixpkgs.lib;
+      available = self.lib.extensionPackagesFor system;
+      unknownEnabled = lib.filterAttrs (_: enabled: enabled) (builtins.removeAttrs extensionFlags (builtins.attrNames available));
+    in
+      assert lib.assertMsg (unknownEnabled == {}) "Unknown pi extension flag(s): ${lib.concatStringsSep ", " (builtins.attrNames unknownEnabled)}";
+        lib.filterAttrs (name: _: extensionFlags.${name} or false) available;
 
     # Flag-driven builder for consumers that want conditional bundled extensions.
     lib.piWithExtensionFlags = {

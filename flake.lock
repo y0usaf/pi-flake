@@ -113,6 +113,22 @@
       },
       "parent": []
     },
+    "piMorph": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-morph",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-morph",
+        "type": "path"
+      },
+      "parent": []
+    },
     "piRtk": {
       "inputs": {
         "nixpkgs": [
@@ -188,6 +204,7 @@
         "piGeckoWebsearch": "piGeckoWebsearch",
         "piHashline": "piHashline",
         "piMinimalUi": "piMinimalUi",
+        "piMorph": "piMorph",
         "piRtk": "piRtk",
         "piSrc": "piSrc",
         "piToolManagement": "piToolManagement",
