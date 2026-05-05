@@ -1,9 +1,9 @@
 /**
  * pi-hive: Multi-agent orchestration extension for pi.
  *
- * Root agents get one orchestration tool: agent.
- * Children additionally get read, write, edit, bash, report, and a
- * descendant-scoped agent tool subject to maxDepth/maxLiveAgents.
+ * Root agents get simple orchestration tools: agent, send_message,
+ * list_agents, kill_agent, workflows, and run management.
+ * Children additionally get read, write, edit, bash, report, and descendant-scoped orchestration tools subject to maxDepth/maxLiveAgents.
  *
  * Children are in-process Agent instances that persist across interactions.
  * Report streams intermediate results to the parent via onUpdate.
@@ -109,6 +109,53 @@ const agentSchema = Type.Object({
 	workflow_name: Type.Optional(Type.String({ description: "Workflow name. Loads .pi/agent/workflows/<name>.json, falling back to ~/.pi/agent/workflows/<name>.json." })),
 }, { additionalProperties: false });
 
+const launchAgentSchema = Type.Object({
+	description: Type.String({ description: "Short 3-7 word UI label for the delegated task" }),
+	prompt: Type.String({ description: "Task for the agent to perform. Brief it like a smart colleague with no conversation context unless you include it here." }),
+	subagent_type: Type.Optional(Type.String({ description: "Named agent type from list_agent_types. Defaults to general-purpose." })),
+	name: Type.Optional(Type.String({ description: "Optional stable id/name for the agent, e.g. scout or review-1. Use this with send_message later." })),
+	system_prompt: Type.Optional(Type.String({ description: "Optional one-off system prompt. If set, subagent_type is only used as metadata/id prefix." })),
+	run_in_background: Type.Optional(Type.Boolean({ description: "Run in the background and return run_id/agent_id immediately. Root only." })),
+	run_id: Type.Optional(Type.String({ description: "Optional run id when run_in_background=true." })),
+	timeout_seconds: Type.Optional(timeoutSecondsSchema),
+}, { additionalProperties: false });
+
+const sendMessageSchema = Type.Object({
+	to: Type.String({ description: "Agent id/name returned by agent or shown by list_agents" }),
+	message: Type.String({ description: "Follow-up message for the agent" }),
+	run_in_background: Type.Optional(Type.Boolean({ description: "Queue/run this follow-up in the background. Root only." })),
+	run_id: Type.Optional(Type.String({ description: "Optional run id when run_in_background=true." })),
+	timeout_seconds: Type.Optional(timeoutSecondsSchema),
+}, { additionalProperties: false });
+
+const killAgentSchema = Type.Object({
+	id: Type.String({ description: "Agent id/name to kill" }),
+}, { additionalProperties: false });
+
+const runStatusSchema = Type.Object({
+	run_id: Type.String({ description: "Run id returned by agent/send_message/run_workflow" }),
+	wait: Type.Optional(Type.Boolean({ description: "Wait for the run to finish before returning" })),
+	timeout_seconds: Type.Optional(timeoutSecondsSchema),
+}, { additionalProperties: false });
+
+const cancelRunSchema = Type.Object({
+	run_id: Type.String({ description: "Run id to cancel" }),
+}, { additionalProperties: false });
+
+const runWorkflowSchema = Type.Object({
+	workflow: Type.Optional(workflowSchema),
+	workflow_path: Type.Optional(Type.String({ description: "Path to a workflow JSON file, relative to the workspace." })),
+	workflow_name: Type.Optional(Type.String({ description: "Workflow name. Loads .pi/agent/workflows/<name>.json, falling back to ~/.pi/agent/workflows/<name>.json." })),
+	run_in_background: Type.Optional(Type.Boolean({ description: "Run workflow in the background and return run_id immediately." })),
+	run_id: Type.Optional(Type.String({ description: "Optional run id." })),
+}, { additionalProperties: false });
+
+const showWorkflowSchema = Type.Object({
+	workflow_name: Type.String({ description: "Workflow name to show" }),
+}, { additionalProperties: false });
+
+const emptySchema = Type.Object({}, { additionalProperties: false });
+
 const reportSchema = Type.Object({
 	message: Type.String({ description: "Report content to send to the parent agent" }),
 }, { additionalProperties: false });
@@ -187,6 +234,148 @@ async function loadPiHiveConfig(cwd: string): Promise<PiHiveConfig> {
 		maxDepth: projectConfig.maxDepth ?? globalConfig.maxDepth ?? DEFAULT_MAX_DEPTH,
 		maxLiveAgents: projectConfig.maxLiveAgents ?? globalConfig.maxLiveAgents ?? DEFAULT_MAX_LIVE_AGENTS,
 	};
+}
+
+// ---------------------------------------------------------------------------
+// Agent definitions
+// ---------------------------------------------------------------------------
+
+const DEFAULT_AGENT_TYPE = "general-purpose";
+const AGENT_DEFINITION_DIRS = [
+	{ scope: "project" as const, relativePath: [".pi", "agents"] },
+	{ scope: "project" as const, relativePath: [".pi", "agent", "agents"] },
+];
+
+interface HiveAgentDefinition {
+	name: string;
+	description: string;
+	systemPrompt: string;
+	source: "built-in" | "project" | "global";
+	path?: string;
+	tools?: string[];
+}
+
+const GENERAL_PURPOSE_SYSTEM_PROMPT = `You are a focused worker agent for pi. Complete the delegated task fully, but do not gold-plate.
+
+Strengths:
+- Search and inspect code/configuration across a workspace.
+- Analyze multiple files and synthesize concise findings.
+- Perform scoped edits when explicitly asked.
+
+Guidelines:
+- Briefly state assumptions when context is missing.
+- Use tools directly; avoid asking the parent to do basic discovery.
+- Prefer editing existing files over creating new files.
+- Do not create documentation files unless explicitly requested.
+- End with a concise report: what you did, key findings, and any blockers.`;
+
+function builtInAgentDefinitions(): HiveAgentDefinition[] {
+	return [{
+		name: DEFAULT_AGENT_TYPE,
+		description: "General-purpose worker for code research, analysis, and scoped implementation tasks.",
+		systemPrompt: GENERAL_PURPOSE_SYSTEM_PROMPT,
+		source: "built-in",
+	}];
+}
+
+function stripQuotes(value: string): string {
+	const trimmed = value.trim();
+	if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+		return trimmed.slice(1, -1);
+	}
+	return trimmed;
+}
+
+function parseStringList(value: string | undefined): string[] | undefined {
+	if (value === undefined) return undefined;
+	const trimmed = value.trim();
+	if (!trimmed) return undefined;
+	const inner = trimmed.startsWith("[") && trimmed.endsWith("]") ? trimmed.slice(1, -1) : trimmed;
+	const values = inner.split(",").map((part) => stripQuotes(part).trim()).filter(Boolean);
+	return values.length > 0 ? values : undefined;
+}
+
+function parseMarkdownFrontmatter(raw: string): { frontmatter: Record<string, string>; body: string } {
+	if (!raw.startsWith("---\n") && raw.trim() !== "---") return { frontmatter: {}, body: raw.trim() };
+	const end = raw.indexOf("\n---", 4);
+	if (end === -1) return { frontmatter: {}, body: raw.trim() };
+	const block = raw.slice(4, end);
+	const body = raw.slice(end + "\n---".length).replace(/^\r?\n/, "").trim();
+	const frontmatter: Record<string, string> = {};
+	for (const line of block.split(/\r?\n/)) {
+		const trimmed = line.trim();
+		if (!trimmed || trimmed.startsWith("#")) continue;
+		const idx = trimmed.indexOf(":");
+		if (idx === -1) continue;
+		const key = trimmed.slice(0, idx).trim();
+		const value = stripQuotes(trimmed.slice(idx + 1).trim());
+		if (key) frontmatter[key] = value;
+	}
+	return { frontmatter, body };
+}
+
+function fileBaseName(path: string): string {
+	return path.split(sep).pop()!.replace(/\.md$/, "");
+}
+
+async function loadMarkdownAgentDefinition(path: string, source: "project" | "global"): Promise<HiveAgentDefinition | undefined> {
+	const raw = await readFile(path, "utf-8");
+	const { frontmatter, body } = parseMarkdownFrontmatter(raw);
+	const systemPrompt = body.trim();
+	if (!systemPrompt) return undefined;
+	const name = (frontmatter.name || fileBaseName(path)).trim();
+	if (!name) return undefined;
+	if (!/^[A-Za-z0-9_.:-]+$/.test(name)) throw new Error(`${path}: agent name may only contain letters, numbers, _, ., :, and -`);
+	return {
+		name,
+		description: frontmatter.description || `Custom ${name} agent`,
+		systemPrompt,
+		source,
+		path,
+		tools: parseStringList(frontmatter.tools),
+	};
+}
+
+async function listAgentDefinitionFiles(cwd: string): Promise<Array<{ path: string; source: "project" | "global" }>> {
+	const dirs = [
+		{ dir: join(getAgentDir(), "agents"), source: "global" as const },
+		...AGENT_DEFINITION_DIRS.map(({ relativePath, scope }) => ({ dir: resolve(cwd, ...relativePath), source: scope })),
+	];
+	const files: Array<{ path: string; source: "project" | "global" }> = [];
+	for (const { dir, source } of dirs) {
+		let entries;
+		try {
+			entries = await readdir(dir, { withFileTypes: true });
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+			throw err;
+		}
+		for (const entry of entries) {
+			if (entry.isFile() && entry.name.endsWith(".md")) files.push({ path: join(dir, entry.name), source });
+		}
+	}
+	files.sort((a, b) => a.source === b.source ? a.path.localeCompare(b.path) : a.source === "global" ? -1 : 1);
+	return files;
+}
+
+async function loadAgentDefinitions(cwd: string): Promise<HiveAgentDefinition[]> {
+	const defs = new Map<string, HiveAgentDefinition>();
+	for (const def of builtInAgentDefinitions()) defs.set(def.name, def);
+	for (const file of await listAgentDefinitionFiles(cwd)) {
+		const def = await loadMarkdownAgentDefinition(file.path, file.source);
+		if (def) defs.set(def.name, def);
+	}
+	return [...defs.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function resolveAgentDefinition(cwd: string, type: string | undefined): Promise<HiveAgentDefinition> {
+	const requested = type || DEFAULT_AGENT_TYPE;
+	const definitions = await loadAgentDefinitions(cwd);
+	const def = definitions.find((candidate) => candidate.name === requested);
+	if (!def) {
+		throw new Error(`Agent type "${requested}" not found. Available: ${definitions.map((candidate) => candidate.name).join(", ") || "(none)"}`);
+	}
+	return def;
 }
 
 // ---------------------------------------------------------------------------
@@ -597,6 +786,12 @@ function createChildTools(cwd: string): AgentTool<any>[] {
 	];
 }
 
+function filterToolsByNames(tools: AgentTool<any>[], allowed: string[] | undefined): AgentTool<any>[] {
+	if (!allowed || allowed.length === 0 || allowed.includes("*")) return tools;
+	const allowedSet = new Set(allowed);
+	return tools.filter((tool) => allowedSet.has(tool.name) || (tool.label !== undefined && allowedSet.has(tool.label)));
+}
+
 // ---------------------------------------------------------------------------
 // Child state
 // ---------------------------------------------------------------------------
@@ -623,10 +818,13 @@ interface ChildState {
 	cwd: string;
 	workspaceKey: string;
 	createdAt: number;
+	agentType?: string;
+	description?: string;
+	toolNames?: string[];
 	agent: Agent;
 	reports: string[];
 	activity: ActivityItem[];
-	locked: boolean; // D4: concurrent delegate guard
+	locked: boolean;
 	killed: boolean;
 }
 
@@ -648,6 +846,39 @@ interface AgentToolParams {
 	workflow?: WorkflowParams;
 	workflow_path?: string;
 	workflow_name?: string;
+}
+
+interface LaunchAgentParams {
+	description: string;
+	prompt: string;
+	subagent_type?: string;
+	name?: string;
+	system_prompt?: string;
+	run_in_background?: boolean;
+	run_id?: string;
+	timeout_seconds?: number;
+}
+
+interface SendMessageParams {
+	to: string;
+	message: string;
+	run_in_background?: boolean;
+	run_id?: string;
+	timeout_seconds?: number;
+}
+
+interface RunStatusParams {
+	run_id: string;
+	wait?: boolean;
+	timeout_seconds?: number;
+}
+
+interface RunWorkflowToolParams {
+	workflow?: WorkflowParams;
+	workflow_path?: string;
+	workflow_name?: string;
+	run_in_background?: boolean;
+	run_id?: string;
 }
 
 type RunKind = "spawn" | "delegate" | "chain" | "parallel" | "workflow";
@@ -1246,6 +1477,9 @@ export default function piHive(pi: ExtensionAPI) {
 			parentId: child.parentId,
 			rootId: child.rootId,
 			depth: child.depth,
+			agentType: child.agentType,
+			description: child.description,
+			tools: child.toolNames,
 			cwd: child.cwd,
 			isRunning: child.agent.state.isStreaming || child.locked,
 			reportCount: child.reports.length,
@@ -1254,11 +1488,180 @@ export default function piHive(pi: ExtensionAPI) {
 		}));
 		const text = agents.length === 0
 			? "No active child agents."
-			: agents.map((agent) =>
-				`• ${agent.id} — ${agent.isRunning ? "running" : "idle"}, depth ${agent.depth}, ` +
-				`${agent.parentId ? `parent ${agent.parentId}` : "root child"}, ${agent.reportCount} reports`,
-			).join("\n");
+			: agents.map((agent) => {
+				const type = agent.agentType ? `, type ${agent.agentType}` : "";
+				const desc = agent.description ? ` — ${agent.description}` : "";
+				return `• ${agent.id} — ${agent.isRunning ? "running" : "idle"}, depth ${agent.depth}${type}, ${agent.parentId ? `parent ${agent.parentId}` : "root child"}, ${agent.reportCount} reports${desc}`;
+			}).join("\n");
 		return { content: [{ type: "text", text }], details: { agents } };
+	}
+
+	async function listAgentTypesResult(cwd: string): Promise<AgentToolResult<unknown>> {
+		const definitions = await loadAgentDefinitions(cwd);
+		const text = definitions.length === 0
+			? "No agent types found."
+			: definitions.map((def) => {
+				const tools = def.tools && def.tools.length > 0 ? `; tools: ${def.tools.join(", ")}` : "";
+				const path = def.path ? `; ${shortenPath(def.path)}` : "";
+				return `- ${def.name}: ${def.description} (${def.source}${tools}${path})`;
+			}).join("\n");
+		return { content: [{ type: "text", text }], details: { agents: definitions } };
+	}
+
+	function killAgentResult(state: HiveState, callerId: string | undefined, id: string): AgentToolResult<unknown> {
+		const target = getAccessibleTarget(state, callerId, id, "kill", callerId === undefined);
+		const { killedIds, reportCount } = killSubtree(state, target.id);
+		return {
+			content: [{ type: "text", text: `Killed ${killedIds.length} agent(s): ${killedIds.join(", ")}.` }],
+			details: { childId: target.id, killedIds, reportCount },
+		};
+	}
+
+	function normalizeAgentId(value: string, label: string): string {
+		const trimmed = value.trim();
+		if (!trimmed) throw new Error(`${label} must not be empty.`);
+		if (!/^[A-Za-z0-9_.:-]+$/.test(trimmed)) throw new Error(`${label} may only contain letters, numbers, _, ., :, and -`);
+		return trimmed;
+	}
+
+	function slugifyAgentId(value: string): string {
+		const slug = value.toLowerCase().replace(/[^a-z0-9_.:-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+		return slug || "agent";
+	}
+
+	function makeLaunchAgentId(state: HiveState, params: LaunchAgentParams, agentType: string): string {
+		if (params.name !== undefined) return normalizeAgentId(params.name, "name");
+		const base = `${slugifyAgentId(agentType)}-${slugifyAgentId(params.description)}`.slice(0, 64).replace(/-+$/g, "") || "agent";
+		if (!state.children.has(base)) return base;
+		for (let i = 2; i < 1000; i++) {
+			const candidate = `${base}-${i}`;
+			if (!state.children.has(candidate)) return candidate;
+		}
+		return `${base}-${Date.now().toString(36)}`;
+	}
+
+	function appendAgentTrailer(result: AgentToolResult<unknown>, id: string, agentType: string): AgentToolResult<unknown> {
+		const text = runResultText(result) || "(no output)";
+		return {
+			...result,
+			content: [{
+				type: "text",
+				text: `${text}\n\nagent_id: ${id}\nagent_type: ${agentType}\nContinue with send_message({ to: ${JSON.stringify(id)}, message: ... }) if follow-up work is needed.`,
+			}],
+		};
+	}
+
+	function formatStartedAgentRun(result: AgentToolResult<unknown>, id: string, agentType: string): AgentToolResult<unknown> {
+		const details = result.details as { runId?: string; kind?: string; status?: string; children?: string[] } | undefined;
+		const runId = details?.runId || "(unknown)";
+		return {
+			...result,
+			content: [{
+				type: "text",
+				text: `Started agent "${id}" in the background.\nrun_id: ${runId}\nagent_id: ${id}\nagent_type: ${agentType}\nUse run_status({ run_id: ${JSON.stringify(runId)}, wait: true }) for the result, or send_message({ to: ${JSON.stringify(id)}, message: ... }) after it is idle.`,
+			}],
+		};
+	}
+
+	async function executeLaunchAgent(
+		state: HiveState,
+		callerId: string | undefined,
+		params: LaunchAgentParams,
+		model: Model<any> | undefined,
+		cwd: string,
+		signal?: AbortSignal,
+		onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void,
+		allowAsync = true,
+	): Promise<AgentToolResult<unknown>> {
+		const selectedModel = requireModel(model, "spawn");
+		if (params.run_in_background && !allowAsync) throw new Error("run_in_background is only supported by root-level agent calls.");
+		const definition = params.system_prompt !== undefined
+			? { name: params.subagent_type || "custom", description: params.description, systemPrompt: params.system_prompt, source: "built-in" as const, tools: undefined }
+			: await resolveAgentDefinition(cwd, params.subagent_type);
+		const id = makeLaunchAgentId(state, params, definition.name);
+		const spawnParams = {
+			id,
+			system_prompt: definition.systemPrompt,
+			task: params.prompt,
+			timeout_seconds: params.timeout_seconds,
+			agent_type: definition.name,
+			description: params.description,
+			tools: definition.tools,
+		};
+		if (params.run_in_background) {
+			const started = await startRun(state, "spawn", params.run_id, [id], (runSignal) => spawnChild(state, callerId, spawnParams, selectedModel, cwd, runSignal));
+			return formatStartedAgentRun(started, id, definition.name);
+		}
+		const result = await spawnChild(state, callerId, spawnParams, selectedModel, cwd, signal, onUpdate);
+		return appendAgentTrailer(result, id, definition.name);
+	}
+
+	async function executeSendMessage(
+		state: HiveState,
+		callerId: string | undefined,
+		params: SendMessageParams,
+		signal?: AbortSignal,
+		onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void,
+		allowAsync = true,
+	): Promise<AgentToolResult<unknown>> {
+		if (params.run_in_background && !allowAsync) throw new Error("run_in_background is only supported by root-level send_message calls.");
+		const id = normalizeAgentId(params.to, "to");
+		const target = getAccessibleTarget(state, callerId, id, "send a message to");
+		const delegateParams = { id, message: params.message, timeout_seconds: params.timeout_seconds };
+		if (params.run_in_background) {
+			const started = await startRun(state, "delegate", params.run_id, [id], (runSignal) => delegateToChild(state, callerId, delegateParams, runSignal));
+			return formatStartedAgentRun(started, id, target.agentType || "unknown");
+		}
+		const result = await delegateToChild(state, callerId, delegateParams, signal, onUpdate);
+		return appendAgentTrailer(result, id, target.agentType || "unknown");
+	}
+
+	async function executeRunWorkflowTool(
+		state: HiveState,
+		callerId: string | undefined,
+		params: RunWorkflowToolParams,
+		model: Model<any> | undefined,
+		cwd: string,
+		signal?: AbortSignal,
+	): Promise<AgentToolResult<unknown>> {
+		return await executeAgentAction(state, callerId, {
+			action: "workflow",
+			workflow: params.workflow,
+			workflow_path: params.workflow_path,
+			workflow_name: params.workflow_name,
+			async: params.run_in_background,
+			run_id: params.run_id,
+		}, model, cwd, signal, undefined, true);
+	}
+
+	async function executeRunStatus(state: HiveState, params: RunStatusParams): Promise<AgentToolResult<unknown>> {
+		const run = await loadRunById(state, params.run_id);
+		if (!run) throw new Error(`Run "${params.run_id}" not found in this workspace (it may have been evicted).`);
+		if ("abortController" in run) {
+			if (params.wait) await waitForRun(run, params.timeout_seconds);
+			return formatRunStateResult(run);
+		}
+		return formatRunRecord(run);
+	}
+
+	async function executeCancelRun(state: HiveState, runId: string): Promise<AgentToolResult<unknown>> {
+		const run = await loadRunById(state, runId);
+		if (!run) throw new Error(`Run "${runId}" not found in this workspace (it may have been evicted).`);
+		if (!("abortController" in run)) {
+			if (run.status !== "running") return formatRunRecord(run);
+			throw new Error(`Run "${runId}" is not active in this session and cannot be cancelled.`);
+		}
+		if (run.status !== "running") return formatRunStateResult(run);
+		run.abortController.abort();
+		let killed: string[] = [];
+		for (const childId of run.children) {
+			if (state.children.has(childId)) killed = killed.concat(killSubtree(state, childId).killedIds);
+		}
+		run.status = "killed";
+		run.finishedAt = Date.now();
+		await safePersistRunRecord(run);
+		evictCompletedRuns(state);
+		return { content: [{ type: "text", text: `Killed run "${run.id}" (${killed.length} agent(s): ${killed.join(", ") || "none"}).` }], details: { run: toRunDTO(run), killed } };
 	}
 
 	async function delegateToChild(
@@ -1307,18 +1710,55 @@ export default function piHive(pi: ExtensionAPI) {
 	}
 
 	function createChildManagementTools(state: HiveState, callerId: string, cwd: string, model: Model<any>): AgentTool<any>[] {
-		const agentTool: AgentTool<any> = {
+		const launchTool: AgentTool<any> = {
 			name: "agent",
 			label: "Agent",
-			description:
-				"Manage descendant agents with action=spawn|delegate|kill|list|chain|parallel|workflow. " +
-				"Async run actions are root-only.",
+			description: "Launch a new descendant agent with description+prompt. Prefer this over the legacy hive action tool.",
+			parameters: launchAgentSchema as any,
+			execute: async (_toolCallId, params, signal, onUpdate) => {
+				return await executeLaunchAgent(state, callerId, params as LaunchAgentParams, model, cwd, signal, onUpdate, false);
+			},
+		};
+		const sendTool: AgentTool<any> = {
+			name: "send_message",
+			label: "Send Message",
+			description: "Send follow-up work to one of your descendant agents.",
+			parameters: sendMessageSchema as any,
+			execute: async (_toolCallId, params, signal, onUpdate) => {
+				return await executeSendMessage(state, callerId, params as SendMessageParams, signal, onUpdate, false);
+			},
+		};
+		const listTool: AgentTool<any> = {
+			name: "list_agents",
+			label: "List Agents",
+			description: "List active descendant agents visible to this agent.",
+			parameters: emptySchema as any,
+			execute: async () => listAgentsResult(state, callerId),
+		};
+		const killTool: AgentTool<any> = {
+			name: "kill_agent",
+			label: "Kill Agent",
+			description: "Kill a descendant agent/subtree.",
+			parameters: killAgentSchema as any,
+			execute: async (_toolCallId, params) => killAgentResult(state, callerId, (params as { id: string }).id),
+		};
+		const listTypesTool: AgentTool<any> = {
+			name: "list_agent_types",
+			label: "List Agent Types",
+			description: "List available subagent_type values and their descriptions.",
+			parameters: emptySchema as any,
+			execute: async () => listAgentTypesResult(cwd),
+		};
+		const legacyTool: AgentTool<any> = {
+			name: "hive",
+			label: "Hive Legacy",
+			description: "Deprecated compatibility shim for action=spawn|delegate|kill|list|chain|parallel|workflow. Prefer agent/send_message/list_agents/kill_agent.",
 			parameters: agentSchema as any,
 			execute: async (_toolCallId, params, signal, onUpdate) => {
 				return await executeAgentAction(state, callerId, params as AgentToolParams, model, cwd, signal, onUpdate, false);
 			},
 		};
-		return [agentTool as AgentTool<any>];
+		return [launchTool, sendTool, listTool, killTool, listTypesTool, legacyTool] as AgentTool<any>[];
 	}
 
 	function buildChildAgent(
@@ -1328,13 +1768,14 @@ export default function piHive(pi: ExtensionAPI) {
 		model: Model<any>,
 		cwd: string,
 		reports: string[],
+		toolNames?: string[],
 	): Agent {
 		const reportTool = buildReportTool(childId, reports);
-		const childTools = [
+		const childTools = filterToolsByNames([
 			...createChildTools(cwd),
 			...createChildManagementTools(state, childId, cwd, model),
 			reportTool as AgentTool<any>,
-		];
+		], toolNames);
 		return new Agent({
 			initialState: { systemPrompt, model, tools: childTools },
 			getApiKey: state.getApiKey,
@@ -1344,7 +1785,7 @@ export default function piHive(pi: ExtensionAPI) {
 	async function spawnChild(
 		state: HiveState,
 		callerId: string | undefined,
-		params: { id: string; system_prompt: string; task: string; timeout_seconds?: number },
+		params: { id: string; system_prompt: string; task: string; timeout_seconds?: number; agent_type?: string; description?: string; tools?: string[] },
 		model: Model<any>,
 		cwd: string,
 		signal?: AbortSignal,
@@ -1354,8 +1795,8 @@ export default function piHive(pi: ExtensionAPI) {
 		if (signal?.aborted) throw new Error(`Agent "${params.id}" was aborted before start.`);
 		if (state.children.has(params.id)) {
 			throw new Error(
-				`Child agent "${params.id}" already exists in workspace "${state.workspaceKey}". ` +
-				`Use agent({ action: "delegate", id: "${params.id}", message: ... }) to send it more work, or agent({ action: "list" }) to inspect active agents.`,
+				`Agent "${params.id}" already exists in workspace "${state.workspaceKey}". ` +
+				`Use send_message({ to: "${params.id}", message: ... }) for follow-up work, or list_agents to inspect active agents.`,
 			);
 		}
 
@@ -1374,7 +1815,7 @@ export default function piHive(pi: ExtensionAPI) {
 		}
 
 		const reports: string[] = [];
-		const child = buildChildAgent(state, params.id, params.system_prompt, model, cwd, reports);
+		const child = buildChildAgent(state, params.id, params.system_prompt, model, cwd, reports, params.tools);
 		const childState: ChildState = {
 			id: params.id,
 			parentId: parentState?.id,
@@ -1383,6 +1824,9 @@ export default function piHive(pi: ExtensionAPI) {
 			cwd,
 			workspaceKey: state.workspaceKey,
 			createdAt: Date.now(),
+			agentType: params.agent_type,
+			description: params.description,
+			toolNames: params.tools,
 			agent: child,
 			reports,
 			activity: [],
@@ -1859,7 +2303,7 @@ export default function piHive(pi: ExtensionAPI) {
 						ctx.ui.notify("Agent is busy. Run the workflow when the current turn finishes.", "warning");
 						return;
 					}
-					pi.sendUserMessage(`Run workflow ${JSON.stringify(rest)} now. Use the agent tool with action=\"workflow\" and workflow_name=${JSON.stringify(rest)}. Do not list all workflows unless this workflow cannot be found.`);
+					pi.sendUserMessage(`Run workflow ${JSON.stringify(rest)} now. Use run_workflow({ workflow_name: ${JSON.stringify(rest)} }). Do not list all workflows unless this workflow cannot be found.`);
 					return;
 				}
 				ctx.ui.notify("Usage: /workflow [list|show <name>|run <name>|<name>]", "warning");
@@ -1869,30 +2313,223 @@ export default function piHive(pi: ExtensionAPI) {
 		},
 	});
 
-	// ── agent ─────────────────────────────────────────────────────────────
+	// ── preferred, Claude-Code-style surface ─────────────────────────────────
 
 	pi.registerTool({
 		name: "agent",
 		label: "Agent",
 		description:
-			"Single multi-agent orchestration tool with progressive workflow discovery. " +
-			"Use action=list_workflows/show_workflow to inspect saved workflows only when relevant; run with action=workflow. " +
-			"Other actions: spawn|delegate|kill|list|chain|parallel|list_runs|result. " +
-			"spawn/delegate/chain/parallel/workflow support async=true from the root session. Recursive spawning is bounded by pi-hive.json maxDepth/maxLiveAgents.",
-		parameters: agentSchema as any,
+			"Launch a new worker agent with description+prompt. Use subagent_type from list_agent_types when useful; otherwise defaults to general-purpose. " +
+			"For follow-up work, use send_message. For independent parallel work, call agent multiple times in one response.",
+		promptSnippet: "Launch focused worker agents with description+prompt; no action enum.",
+		promptGuidelines: [
+			"Use agent for complex research, reviews, or scoped implementation that can run independently.",
+			"Write the prompt like a handoff to a smart colleague who has not seen the conversation: include relevant files, constraints, and expected output.",
+			"Use name when you will need to address the agent later with send_message.",
+			"Use run_in_background for long work; check with run_status.",
+		],
+		parameters: launchAgentSchema as any,
+		renderCall(args, theme, context) {
+			const callArgs = (args ?? {}) as { description?: string; name?: string; subagent_type?: string; prompt?: string };
+			return renderAgentCall("agent", { id: callArgs.name || callArgs.subagent_type || "", task: callArgs.description || callArgs.prompt || "" }, theme, context);
+		},
+		renderResult(result, options, theme, context) {
+			return renderAgentResult(result, options, theme, context);
+		},
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			const state = getState(ctx.cwd);
+			state.getApiKey ??= (provider: string) => ctx.modelRegistry.getApiKeyForProvider(provider);
+			return await executeLaunchAgent(state, undefined, params as LaunchAgentParams, ctx.model, ctx.cwd, signal, onUpdate, true);
+		},
+	});
 
+	pi.registerTool({
+		name: "send_message",
+		label: "Send Message",
+		description: "Send follow-up work to an existing agent by id/name. Use list_agents to find active agents.",
+		parameters: sendMessageSchema as any,
+		renderCall(args, theme, context) {
+			const callArgs = (args ?? {}) as { to?: string; message?: string };
+			return renderAgentCall("send_message", { id: callArgs.to || "", task: callArgs.message || "" }, theme, context);
+		},
+		renderResult(result, options, theme, context) {
+			return renderAgentResult(result, options, theme, context);
+		},
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			const state = getState(ctx.cwd);
+			return await executeSendMessage(state, undefined, params as SendMessageParams, signal, onUpdate, true);
+		},
+	});
+
+	pi.registerTool({
+		name: "list_agents",
+		label: "List Agents",
+		description: "List active agents in this workspace.",
+		parameters: emptySchema as any,
+		renderCall(args, theme, context) {
+			return renderAgentCall("list_agents", {}, theme, context);
+		},
+		renderResult(result, options, theme, context) {
+			return renderAgentResult(result, options, theme, context);
+		},
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			return listAgentsResult(getState(ctx.cwd), undefined);
+		},
+	});
+
+	pi.registerTool({
+		name: "kill_agent",
+		label: "Kill Agent",
+		description: "Kill an agent/subtree by id/name.",
+		parameters: killAgentSchema as any,
+		renderCall(args, theme, context) {
+			const callArgs = (args ?? {}) as { id?: string };
+			return renderAgentCall("kill_agent", { id: callArgs.id || "" }, theme, context);
+		},
+		renderResult(result, options, theme, context) {
+			return renderAgentResult(result, options, theme, context);
+		},
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			return killAgentResult(getState(ctx.cwd), undefined, (params as { id: string }).id);
+		},
+	});
+
+	pi.registerTool({
+		name: "list_agent_types",
+		label: "List Agent Types",
+		description: "List available subagent_type values. Custom agents live in .pi/agents/*.md, .pi/agent/agents/*.md, or ~/.pi/agent/agents/*.md.",
+		parameters: emptySchema as any,
+		renderCall(args, theme, context) {
+			return renderAgentCall("list_agent_types", {}, theme, context);
+		},
+		renderResult(result, options, theme, context) {
+			return renderAgentResult(result, options, theme, context);
+		},
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			return await listAgentTypesResult(ctx.cwd);
+		},
+	});
+
+	pi.registerTool({
+		name: "run_workflow",
+		label: "Run Workflow",
+		description: "Run a deterministic workflow by name/path/inline object. Workflows are separate from agent launching.",
+		parameters: runWorkflowSchema as any,
+		renderCall(args, theme, context) {
+			const callArgs = (args ?? {}) as { workflow_name?: string; workflow_path?: string; run_id?: string };
+			return renderAgentCall("run_workflow", { id: callArgs.workflow_name || callArgs.workflow_path || callArgs.run_id || "" }, theme, context);
+		},
+		renderResult(result, options, theme, context) {
+			return renderAgentResult(result, options, theme, context);
+		},
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			const state = getState(ctx.cwd);
+			state.getApiKey ??= (provider: string) => ctx.modelRegistry.getApiKeyForProvider(provider);
+			return await executeRunWorkflowTool(state, undefined, params as RunWorkflowToolParams, ctx.model, ctx.cwd, signal);
+		},
+	});
+
+	pi.registerTool({
+		name: "list_workflows",
+		label: "List Workflows",
+		description: "List saved workflows without loading full workflow bodies.",
+		parameters: emptySchema as any,
+		renderCall(args, theme, context) {
+			return renderAgentCall("list_workflows", {}, theme, context);
+		},
+		renderResult(result, options, theme, context) {
+			return renderAgentResult(result, options, theme, context);
+		},
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			return await listWorkflowsResult(ctx.cwd);
+		},
+	});
+
+	pi.registerTool({
+		name: "show_workflow",
+		label: "Show Workflow",
+		description: "Show one saved workflow definition.",
+		parameters: showWorkflowSchema as any,
+		renderCall(args, theme, context) {
+			const callArgs = (args ?? {}) as { workflow_name?: string };
+			return renderAgentCall("show_workflow", { id: callArgs.workflow_name || "" }, theme, context);
+		},
+		renderResult(result, options, theme, context) {
+			return renderAgentResult(result, options, theme, context);
+		},
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			return await showWorkflowResult(params as { workflow_name: string }, ctx.cwd);
+		},
+	});
+
+	pi.registerTool({
+		name: "list_runs",
+		label: "List Runs",
+		description: "List background runs in this workspace.",
+		parameters: emptySchema as any,
+		renderCall(args, theme, context) {
+			return renderAgentCall("list_runs", {}, theme, context);
+		},
+		renderResult(result, options, theme, context) {
+			return renderAgentResult(result, options, theme, context);
+		},
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			return await listRunsResult(getState(ctx.cwd));
+		},
+	});
+
+	pi.registerTool({
+		name: "run_status",
+		label: "Run Status",
+		description: "Get or wait for a background run result.",
+		parameters: runStatusSchema as any,
+		renderCall(args, theme, context) {
+			const callArgs = (args ?? {}) as { run_id?: string };
+			return renderAgentCall("run_status", { id: callArgs.run_id || "" }, theme, context);
+		},
+		renderResult(result, options, theme, context) {
+			return renderAgentResult(result, options, theme, context);
+		},
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			return await executeRunStatus(getState(ctx.cwd), params as RunStatusParams);
+		},
+	});
+
+	pi.registerTool({
+		name: "cancel_run",
+		label: "Cancel Run",
+		description: "Cancel a background run and kill associated agents.",
+		parameters: cancelRunSchema as any,
+		renderCall(args, theme, context) {
+			const callArgs = (args ?? {}) as { run_id?: string };
+			return renderAgentCall("cancel_run", { id: callArgs.run_id || "" }, theme, context);
+		},
+		renderResult(result, options, theme, context) {
+			return renderAgentResult(result, options, theme, context);
+		},
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			return await executeCancelRun(getState(ctx.cwd), (params as { run_id: string }).run_id);
+		},
+	});
+
+	// Deprecated compatibility shim for old action-based callers.
+	pi.registerTool({
+		name: "hive",
+		label: "Hive Legacy",
+		description:
+			"Deprecated action-based compatibility tool. Prefer agent/send_message/list_agents/kill_agent/run_workflow/run_status. " +
+			"Legacy actions: spawn|delegate|kill|list|chain|parallel|workflow|list_workflows|show_workflow|list_runs|result|wait|cancel.",
+		parameters: agentSchema as any,
 		renderCall(args, theme, context) {
 			const callArgs = (args ?? {}) as { action?: string; id?: string; run_id?: string; task?: string; message?: string };
 			const action = callArgs.action || "...";
 			const id = callArgs.id || callArgs.run_id || "";
 			const taskText = callArgs.task || callArgs.message || action;
-			return renderAgentCall(`agent:${action}`, { id, task: taskText }, theme, context);
+			return renderAgentCall(`hive:${action}`, { id, task: taskText }, theme, context);
 		},
-
 		renderResult(result, options, theme, context) {
 			return renderAgentResult(result, options, theme, context);
 		},
-
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const state = getState(ctx.cwd);
 			state.getApiKey ??= (provider: string) => ctx.modelRegistry.getApiKeyForProvider(provider);
