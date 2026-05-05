@@ -12,8 +12,9 @@ const SETTINGS_PATH = join(SETTINGS_DIR, "settings.json");
 const INDEX_CUSTOM_TYPE = "context-janitor-index";
 const RESTORE_CUSTOM_TYPE = "context-janitor-restore";
 const SUMMARY_CUSTOM_TYPE = "context-janitor-summary";
+const NOTICE_CUSTOM_TYPE = "context-janitor-notice";
 const STATUS_KEY = "context-janitor";
-const JANITOR_CUSTOM_TYPES = new Set([INDEX_CUSTOM_TYPE, RESTORE_CUSTOM_TYPE, SUMMARY_CUSTOM_TYPE]);
+const JANITOR_CUSTOM_TYPES = new Set([INDEX_CUSTOM_TYPE, RESTORE_CUSTOM_TYPE, SUMMARY_CUSTOM_TYPE, NOTICE_CUSTOM_TYPE]);
 
 // Keep projected tool results protocol-valid while adding no visible transcript text.
 const CONTEXT_HIDDEN_TEXT = "\u200B";
@@ -592,6 +593,26 @@ function undoRunItems(entries: Map<string, SummaryIndexEntry>, restoredSummaryId
 		});
 }
 
+function janitorRunNoticeText(entry: SummaryIndexEntry): string {
+	const saved = Math.max(0, entry.rawChars - entry.projectedChars);
+	const lines = [
+		`Context Janitor truncated ${entry.toolCalls.length} tool output(s).`,
+		`${entry.summaryId} · ${summarizeToolNames(entry.toolCalls)} · saved ≈${formatChars(saved)} · ${entry.deciderModel}`,
+	];
+	const reasons = entry.toolCalls
+		.map(record => record.janitorReason ? `${record.toolName}: ${record.janitorReason}` : undefined)
+		.filter((reason): reason is string => typeof reason === "string")
+		.slice(0, 3);
+	if (reasons.length > 0) lines.push("", ...reasons.map(reason => `- ${truncateMiddle(reason, 180).replace(/\s+/g, " ")}`));
+	if (entry.toolCalls.length > reasons.length && reasons.length > 0) lines.push(`- +${entry.toolCalls.length - reasons.length} more`);
+	return lines.join("\n");
+}
+
+function janitorRestoreNoticeText(count: number): string {
+	return `Context Janitor restored ${count} run(s). Future model context will include those raw tool outputs again.`;
+}
+
+
 class JanitorUndoPicker implements Component {
 	#selectedIndex = 0;
 	#checked = new Set<string>();
@@ -685,6 +706,25 @@ class JanitorUndoPicker implements Component {
 	}
 }
 
+class JanitorNoticeComponent implements Component {
+	constructor(
+		private readonly text: string,
+		private readonly theme: ThemeLike,
+	) {}
+
+	invalidate(): void {}
+
+	render(width: number): string[] {
+		const safeWidth = Math.max(1, width);
+		const lines = this.text.split("\n");
+		if (lines.length === 0) return [];
+		return lines.map((line, index) => {
+			const decorated = index === 0 ? themeFg(this.theme, "accent", line) : themeFg(this.theme, "muted", line);
+			return truncateToWidth(replaceTabs(decorated), safeWidth);
+		});
+	}
+}
+
 class HiddenMessageComponent implements Component {
 	invalidate(): void {}
 	render(_width: number): string[] {
@@ -694,8 +734,11 @@ class HiddenMessageComponent implements Component {
 
 export default function contextJanitor(pi: ExtensionAPI) {
 	// Hide legacy janitor summary custom messages that were emitted by older versions.
-	// Current runs store metadata via appendEntry only, so no janitor block is displayed.
 	pi.registerMessageRenderer(SUMMARY_CUSTOM_TYPE, () => new HiddenMessageComponent());
+	pi.registerMessageRenderer(NOTICE_CUSTOM_TYPE, (message, _state, theme) => {
+		const content = typeof message.content === "string" ? message.content : textFromContent(message.content);
+		return new JanitorNoticeComponent(content, theme as ThemeLike);
+	});
 	let settings: JanitorSettings = { ...DEFAULT_SETTINGS };
 	let settingsError: string | undefined;
 	let index = new Map<string, ToolCallRecord>();
@@ -828,6 +871,13 @@ export default function contextJanitor(pi: ExtensionAPI) {
 				const entry = entryFromRun(summaryId, reason, selectedRecords, { usage: decided.usage, modelLabel: decided.modelLabel });
 				pi.appendEntry(INDEX_CUSTOM_TYPE, entry);
 				applyIndexEntry(entry, index, entries);
+				pi.sendMessage({
+					customType: NOTICE_CUSTOM_TYPE,
+					content: janitorRunNoticeText(entry),
+					display: true,
+					details: { summaryId: entry.summaryId, rawChars: entry.rawChars, projectedChars: entry.projectedChars, toolCalls: entry.toolCalls.length },
+					attribution: "agent",
+				});
 
 			} catch (error) {
 				failed = true;
@@ -862,6 +912,13 @@ export default function contextJanitor(pi: ExtensionAPI) {
 		};
 		pi.appendEntry(RESTORE_CUSTOM_TYPE, restoreEntry);
 		for (const summaryId of restorable) restoredSummaryIds.add(summaryId);
+		pi.sendMessage({
+			customType: NOTICE_CUSTOM_TYPE,
+			content: janitorRestoreNoticeText(restorable.length),
+			display: true,
+			details: { restoreId: restoreEntry.restoreId, summaryIds: restorable },
+			attribution: "user",
+		});
 		updateStatus(ctx);
 		return restorable.length;
 	}

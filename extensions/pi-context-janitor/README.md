@@ -15,7 +15,7 @@ Flow:
 
 Janitor has hysteresis: it waits for a small backlog before asking the sidecar model. By default it runs after ≥6 pending tool results, ≥16k raw chars, or when the oldest pending batch is ≥60s old.
 
-Successful janitor runs are intentionally silent: no transcript messages are injected. Future LLM context gets only a zero-width placeholder for each cleaned tool result so the tool-call protocol stays valid without bloating context. Legacy visible janitor summary messages from older versions are suppressed by a hidden renderer.
+Successful janitor runs append a visible `context-janitor-notice` chat-log entry for the user, but those notice entries are stripped from future model context. Future LLM context gets only a zero-width placeholder for each cleaned tool result so the tool-call protocol stays valid without bloating context. Legacy visible janitor summary messages from older versions are suppressed by a hidden renderer.
 
 ## Install / test
 
