@@ -16,7 +16,6 @@
         "type": "github"
       }
     },
-
     "piCodexFast": {
       "inputs": {
         "nixpkgs": [
@@ -65,7 +64,6 @@
       },
       "parent": []
     },
-
     "piGeckoWebsearch": {
       "inputs": {
         "nixpkgs": [
@@ -149,11 +147,11 @@
     "piSrc": {
       "flake": false,
       "locked": {
-        "lastModified": 1777033471,
-        "narHash": "sha256-KNpodvUvYr2sR9BI4Dgt8xyxHR4PsZ8d6g8IqwIq4Is=",
+        "lastModified": 1777927475,
+        "narHash": "sha256-yULoBblKIkN4MWQx2qYFaApn3aES87k1DuhVHNs7WdI=",
         "owner": "badlogic",
         "repo": "pi-mono",
-        "rev": "3e0ee69b5ead441e4669b123b2f98635fee7da30",
+        "rev": "bb25a3944c0a8747c99d4360d71eb659554d65a1",
         "type": "github"
       },
       "original": {
@@ -198,11 +196,9 @@
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
-
         "piCodexFast": "piCodexFast",
         "piCompact": "piCompact",
         "piContextJanitor": "piContextJanitor",
-
         "piGeckoWebsearch": "piGeckoWebsearch",
         "piHashline": "piHashline",
         "piMinimalUi": "piMinimalUi",
