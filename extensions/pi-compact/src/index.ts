@@ -922,12 +922,36 @@ function getThinkingBlocks(message: any): string[] {
     .filter((thinking: string) => thinking.length > 0);
 }
 
-function cloneWithoutThinking(message: any): any {
+function cloneWithContentFilter(message: any, predicate: (content: any, index: number) => boolean): any {
   if (!Array.isArray(message?.content)) return message;
   return {
     ...message,
-    content: message.content.filter((content: any) => content?.type !== "thinking"),
+    content: message.content.filter(predicate),
   };
+}
+
+function cloneWithoutThinking(message: any): any {
+  return cloneWithContentFilter(message, (content: any) => content?.type !== "thinking");
+}
+
+function cloneWithoutPostToolCallText(message: any): any {
+  if (!Array.isArray(message?.content)) return message;
+
+  const firstToolCallIndex = message.content.findIndex((content: any) => content?.type === "toolCall");
+  if (firstToolCallIndex < 0) return message;
+
+  // Some providers can stream text after a tool call in the same assistant
+  // message. Pi then continues after tool execution, so that post-tool text can
+  // appear as a duplicate/provisional final answer. Keep pre-tool text, hide
+  // text emitted after the first tool call from display only.
+  return cloneWithContentFilter(message, (content: any, index: number) => {
+    return !(index > firstToolCallIndex && content?.type === "text");
+  });
+}
+
+function cloneAssistantForDisplay(message: any, hideThinking: boolean): any {
+  const withoutDuplicateText = cloneWithoutPostToolCallText(message);
+  return hideThinking ? cloneWithoutThinking(withoutDuplicateText) : withoutDuplicateText;
 }
 
 function isThinkingActive(message: any): boolean {
@@ -1235,11 +1259,12 @@ function patchAssistantMessageComponent(): boolean {
 
     proto.updateContent = function piCompactAssistantUpdateContent(this: any, message: any) {
       const blocks = getThinkingBlocks(message);
+      const hideThinking = blocks.length > 0 && thinkingMode !== "normal";
       this[ASSISTANT_THINKING_APPLIED_MODE_KEY] = thinkingMode;
 
-      if (blocks.length === 0 || thinkingMode === "normal") {
+      if (!hideThinking) {
         this[ASSISTANT_THINKING_STATE_KEY] = undefined;
-        return originalUpdateContent.call(this, message);
+        return originalUpdateContent.call(this, cloneAssistantForDisplay(message, false));
       }
 
       this[ASSISTANT_THINKING_STATE_KEY] = createThinkingState(
@@ -1250,7 +1275,7 @@ function patchAssistantMessageComponent(): boolean {
       );
 
       try {
-        return originalUpdateContent.call(this, cloneWithoutThinking(message));
+        return originalUpdateContent.call(this, cloneAssistantForDisplay(message, true));
       } finally {
         this.lastMessage = message;
       }
