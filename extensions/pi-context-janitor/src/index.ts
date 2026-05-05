@@ -363,14 +363,29 @@ function buildDeciderInput(records: PendingToolCallRecord[]): { input: string; c
 
 function extractJsonObject(text: string): unknown {
 	const cleaned = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+	let parseError: unknown;
 	try {
 		return JSON.parse(cleaned) as unknown;
-	} catch {
+	} catch (error) {
+		parseError = error;
 		const start = cleaned.indexOf("{");
 		const end = cleaned.lastIndexOf("}");
-		if (start >= 0 && end > start) return JSON.parse(cleaned.slice(start, end + 1)) as unknown;
-		throw new Error("Janitor decider returned non-JSON output.");
+		if (start >= 0 && end > start) {
+			try {
+				return JSON.parse(cleaned.slice(start, end + 1)) as unknown;
+			} catch (sliceError) {
+				parseError = sliceError;
+			}
+		}
 	}
+	const detail = parseError instanceof Error && parseError.message ? `: ${parseError.message}` : "";
+	throw new Error(`Janitor decider returned invalid JSON${detail}.`);
+}
+
+function isDeciderFormatError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	return error.message.startsWith("Janitor decider returned invalid JSON")
+		|| error.message === "Janitor decider JSON must contain an actions array.";
 }
 
 function parseDeciderActions(raw: unknown, candidates: Map<string, DeciderObject>): DeciderAction[] {
@@ -424,7 +439,14 @@ async function decideRecords(ctx: ExtensionContext, records: PendingToolCallReco
 		.trim();
 	if (!text) throw new Error("Janitor decider returned no text.");
 
-	const actions = parseDeciderActions(extractJsonObject(text), candidates);
+	let actions: DeciderAction[];
+	try {
+		actions = parseDeciderActions(extractJsonObject(text), candidates);
+	} catch (error) {
+		if (!isDeciderFormatError(error)) throw error;
+		return { records: [], usage: response.usage, modelLabel: `${model.provider}/${model.id}` };
+	}
+
 	const truncateById = new Map(actions.filter(action => action.action === "truncate").map(action => [action.target.id, action] as const));
 	return {
 		records: records
