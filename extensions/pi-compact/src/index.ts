@@ -1,4 +1,4 @@
-import { AssistantMessageComponent, ToolExecutionComponent, UserMessageComponent, type ExtensionAPI, getAgentDir } from "@mariozechner/pi-coding-agent";
+import { AssistantMessageComponent, CustomMessageComponent, ToolExecutionComponent, UserMessageComponent, type ExtensionAPI, getAgentDir } from "@mariozechner/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { truncateToWidth, visibleWidth, type Component } from "@mariozechner/pi-tui";
@@ -16,6 +16,7 @@ const JANITOR_INDEX_CUSTOM_TYPE = "context-janitor-index";
 const JANITOR_RESTORE_CUSTOM_TYPE = "context-janitor-restore";
 const JANITOR_SUMMARY_CUSTOM_TYPE = "context-janitor-summary";
 const JANITOR_NOTICE_CUSTOM_TYPE = "context-janitor-notice";
+const JANITOR_CUSTOM_TYPES = new Set([JANITOR_INDEX_CUSTOM_TYPE, JANITOR_RESTORE_CUSTOM_TYPE, JANITOR_SUMMARY_CUSTOM_TYPE, JANITOR_NOTICE_CUSTOM_TYPE]);
 const PI_COMPACT_GLOBAL_KEY = "__piCompactEnabled";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
@@ -78,6 +79,7 @@ let patchPromise: Promise<boolean> | undefined;
 let lastToolPatchError: string | undefined;
 let lastUserPatchError: string | undefined;
 let lastAssistantPatchError: string | undefined;
+let lastCustomPatchError: string | undefined;
 let lastConfigError: string | undefined;
 let toolRendering = cloneGapRendering(DEFAULT_PI_COMPACT_SETTINGS.tools);
 let userRendering = cloneGapRendering(DEFAULT_PI_COMPACT_SETTINGS.user);
@@ -90,6 +92,7 @@ const TOOL_ORIGINAL_RENDER_KEY = "__piCompactOriginalToolRender";
 const TOOL_ORIGINAL_SET_EXPANDED_KEY = "__piCompactOriginalToolSetExpanded";
 const USER_ORIGINAL_RENDER_KEY = "__piCompactOriginalUserRender";
 const ASSISTANT_ORIGINAL_RENDER_KEY = "__piCompactOriginalAssistantRender";
+const CUSTOM_ORIGINAL_RENDER_KEY = "__piCompactOriginalCustomRender";
 const ASSISTANT_ORIGINAL_UPDATE_CONTENT_KEY = "__piCompactOriginalAssistantUpdateContent";
 const ASSISTANT_THINKING_STATE_KEY = "__piCompactThinkingState";
 const ASSISTANT_THINKING_APPLIED_MODE_KEY = "__piCompactThinkingAppliedMode";
@@ -1149,6 +1152,59 @@ function registerJanitorMessageRenderers(pi: ExtensionAPI): void {
   });
 }
 
+type CustomMessageComponentWithMessage = {
+  message?: { customType?: unknown };
+};
+
+function janitorCustomType(component: CustomMessageComponentWithMessage): string | undefined {
+  const customType = component.message?.customType;
+  return typeof customType === "string" && JANITOR_CUSTOM_TYPES.has(customType) ? customType : undefined;
+}
+
+function withoutLeadingBlankLines(lines: string[]): string[] {
+  let start = 0;
+  while (start < lines.length && isBlankRenderedLine(lines[start] ?? "")) start += 1;
+  return start === 0 ? lines : lines.slice(start);
+}
+
+function renderConfiguredCustomMessage(
+  component: CustomMessageComponentWithMessage,
+  width: number,
+  originalRender: (width: number) => string[],
+): string[] {
+  const lines = originalRender.call(component, width);
+  const customType = janitorCustomType(component);
+  if (!customType) return lines;
+
+  const content = withoutLeadingBlankLines(lines);
+  if (customType !== JANITOR_NOTICE_CUSTOM_TYPE || !Number.isFinite(width) || width <= 0) return content;
+
+  const bgFn = getThemeToolBgFn("toolSuccessBg");
+  return content.flatMap((line) => renderOneLine(replaceTabs(line), width, bgFn, true));
+}
+
+function patchCustomMessageComponent(): boolean {
+  try {
+    const proto = (CustomMessageComponent as any)?.prototype;
+    if (!proto || typeof proto.render !== "function") {
+      throw new Error("CustomMessageComponent unavailable");
+    }
+
+    const originalRender = typeof proto[CUSTOM_ORIGINAL_RENDER_KEY] === "function" ? proto[CUSTOM_ORIGINAL_RENDER_KEY] : proto.render;
+
+    proto.render = function piCompactCustomRender(this: CustomMessageComponentWithMessage, width: number) {
+      return renderConfiguredCustomMessage(this, width, originalRender);
+    };
+
+    proto[CUSTOM_ORIGINAL_RENDER_KEY] = originalRender;
+    lastCustomPatchError = undefined;
+    return true;
+  } catch (error) {
+    lastCustomPatchError = error instanceof Error ? error.stack ?? error.message : String(error);
+    return false;
+  }
+}
+
 function patchAssistantMessageComponent(): boolean {
   try {
     const proto = (AssistantMessageComponent as any)?.prototype;
@@ -1215,7 +1271,8 @@ async function patchPiCompactComponents(): Promise<boolean> {
     const toolsOk = patchToolExecutionComponent();
     const usersOk = patchUserMessageComponent();
     const assistantOk = patchAssistantMessageComponent();
-    return toolsOk && usersOk && assistantOk;
+    const customOk = patchCustomMessageComponent();
+    return toolsOk && usersOk && assistantOk && customOk;
   })();
 
   return patchPromise;
@@ -1226,6 +1283,7 @@ function patchErrorDetails(): string {
   if (lastToolPatchError) errors.push(`tools: ${lastToolPatchError}`);
   if (lastUserPatchError) errors.push(`user-messages: ${lastUserPatchError}`);
   if (lastAssistantPatchError) errors.push(`thinking: ${lastAssistantPatchError}`);
+  if (lastCustomPatchError) errors.push(`custom-messages: ${lastCustomPatchError}`);
   if (lastConfigError) errors.push(`config: ${lastConfigError}`);
   return errors.length > 0 ? `\n${errors.join("\n")}` : "";
 }
@@ -1238,11 +1296,12 @@ function statusMessage(): string {
   const toolsStatus = lastToolPatchError ? "failed" : formatGapRendering(toolRendering);
   const userStatus = lastUserPatchError ? "failed" : formatGapRendering(userRendering);
   const thinkingStatus = lastAssistantPatchError ? "failed" : thinkingMode;
-  return `pi-compact: tools=${toolsStatus} • user=${userStatus} • thinking=${thinkingStatus}${patchErrorDetails()}`;
+  const customStatus = lastCustomPatchError ? "failed" : "compact";
+  return `pi-compact: tools=${toolsStatus} • user=${userStatus} • thinking=${thinkingStatus} • custom=${customStatus}${patchErrorDetails()}`;
 }
 
 function hasStatusError(): boolean {
-  return Boolean(lastToolPatchError || lastUserPatchError || lastAssistantPatchError || lastConfigError);
+  return Boolean(lastToolPatchError || lastUserPatchError || lastAssistantPatchError || lastCustomPatchError || lastConfigError);
 }
 
 function parseGapRenderingArg(args: string, current: GapRendering, defaultValue: GapRendering): GapRendering | undefined {
