@@ -918,7 +918,8 @@ function getThinkingBlocks(message: any): string[] {
   if (!Array.isArray(message?.content)) return [];
   return message.content
     .filter((content: any) => content?.type === "thinking" && typeof content.thinking === "string")
-    .map((content: any) => content.thinking.trim());
+    .map((content: any) => content.thinking.trim())
+    .filter((thinking: string) => thinking.length > 0);
 }
 
 function cloneWithoutThinking(message: any): any {
