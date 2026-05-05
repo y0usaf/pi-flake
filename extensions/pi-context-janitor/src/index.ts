@@ -14,6 +14,7 @@ const RESTORE_CUSTOM_TYPE = "context-janitor-restore";
 const SUMMARY_CUSTOM_TYPE = "context-janitor-summary";
 const NOTICE_CUSTOM_TYPE = "context-janitor-notice";
 const STATUS_KEY = "context-janitor";
+const PI_COMPACT_GLOBAL_KEY = "__piCompactEnabled";
 const JANITOR_CUSTOM_TYPES = new Set([INDEX_CUSTOM_TYPE, RESTORE_CUSTOM_TYPE, SUMMARY_CUSTOM_TYPE, NOTICE_CUSTOM_TYPE]);
 
 // Keep projected tool results protocol-valid while adding no visible transcript text.
@@ -156,6 +157,10 @@ function formatCount(value: number): string {
 
 function formatChars(value: number): string {
 	return `${formatCount(value)}ch`;
+}
+
+function isPiCompactEnabled(): boolean {
+	return (globalThis as Record<string, unknown>)[PI_COMPACT_GLOBAL_KEY] === true;
 }
 
 function truncateMiddle(text: string, maxChars: number): string {
@@ -728,9 +733,29 @@ class JanitorUndoPicker implements Component {
 	}
 }
 
+function compactJanitorNoticeLine(text: string, details: unknown): string {
+	if (isRecord(details) && Array.isArray(details.summaryIds)) {
+		const count = details.summaryIds.length;
+		return `🧹 restored ${count} janitor run${count === 1 ? "" : "s"}`;
+	}
+
+	if (isRecord(details) && typeof details.toolCalls === "number") {
+		const parts = [`🧹 truncated ${details.toolCalls} tool output${details.toolCalls === 1 ? "" : "s"}`];
+		if (typeof details.rawChars === "number" && typeof details.projectedChars === "number") {
+			parts.push(`saved ≈${formatChars(Math.max(0, details.rawChars - details.projectedChars))}`);
+		}
+		if (typeof details.summaryId === "string") parts.push(details.summaryId);
+		return parts.join(" · ");
+	}
+
+	const firstLine = text.split("\n").map(line => line.trim()).find(Boolean);
+	return firstLine ? `🧹 ${truncateMiddle(firstLine.replace(/\s+/g, " "), 120)}` : "🧹 Context Janitor";
+}
+
 class JanitorNoticeComponent implements Component {
 	constructor(
 		private readonly text: string,
+		private readonly details: unknown,
 		private readonly theme: ThemeLike,
 	) {}
 
@@ -738,6 +763,10 @@ class JanitorNoticeComponent implements Component {
 
 	render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
+		if (isPiCompactEnabled()) {
+			return [truncateToWidth(replaceTabs(themeFg(this.theme, "muted", compactJanitorNoticeLine(this.text, this.details))), safeWidth)];
+		}
+
 		const lines = this.text.split("\n");
 		if (lines.length === 0) return [];
 		return lines.map((line, index) => {
@@ -759,7 +788,7 @@ export default function contextJanitor(pi: ExtensionAPI) {
 	pi.registerMessageRenderer(SUMMARY_CUSTOM_TYPE, () => new HiddenMessageComponent());
 	pi.registerMessageRenderer(NOTICE_CUSTOM_TYPE, (message, _state, theme) => {
 		const content = typeof message.content === "string" ? message.content : textFromContent(message.content);
-		return new JanitorNoticeComponent(content, theme as ThemeLike);
+		return new JanitorNoticeComponent(content, message.details, theme as ThemeLike);
 	});
 	let settings: JanitorSettings = { ...DEFAULT_SETTINGS };
 	let settingsError: string | undefined;

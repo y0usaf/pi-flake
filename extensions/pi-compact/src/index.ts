@@ -1,7 +1,7 @@
 import { AssistantMessageComponent, ToolExecutionComponent, UserMessageComponent, type ExtensionAPI, getAgentDir } from "@mariozechner/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { truncateToWidth, visibleWidth, type Component } from "@mariozechner/pi-tui";
 import { homedir } from "node:os";
 
 const MAX_SUMMARY_LENGTH = 120;
@@ -9,20 +9,26 @@ const MAX_RESULT_LENGTH = 72;
 const MAX_USER_MESSAGE_LENGTH = 512;
 const TOOL_RULE = "╱";
 const USER_PROMPT_MARKER = ":::";
-const THINKING_ACTIVE_MARKER = "⠋";
-const THINKING_DONE_MARKER = "•";
+const THINKING_MARKER = "🧠";
+const JANITOR_MARKER = "🧹";
+
+const JANITOR_INDEX_CUSTOM_TYPE = "context-janitor-index";
+const JANITOR_RESTORE_CUSTOM_TYPE = "context-janitor-restore";
+const JANITOR_SUMMARY_CUSTOM_TYPE = "context-janitor-summary";
+const JANITOR_NOTICE_CUSTOM_TYPE = "context-janitor-notice";
+const PI_COMPACT_GLOBAL_KEY = "__piCompactEnabled";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 
-type UserMessageMode = "normal" | "borderless" | "compact";
+type GapRenderingMode = "normal" | "borderless" | "compact" | "hidden";
 type ThinkingMode = "normal" | "compact" | "hidden";
 type ToolBgToken = "toolPendingBg" | "toolSuccessBg" | "toolErrorBg";
-type ThemeFgToken = "toolDiffAdded" | "toolDiffRemoved" | "thinkingText";
+type ThemeFgToken = "toolDiffAdded" | "toolDiffRemoved";
 
 interface GapRendering {
-  mode: UserMessageMode;
+  mode: GapRenderingMode;
   gap: boolean;
 }
 
@@ -119,7 +125,7 @@ function hasSettings(value: object): boolean {
   return Object.keys(value).length > 0;
 }
 
-function parseUserMessageMode(value: unknown): UserMessageMode | undefined {
+function parseGapRenderingMode(value: unknown): GapRenderingMode | undefined {
   if (typeof value !== "string") return undefined;
 
   switch (value.trim().toLowerCase()) {
@@ -129,6 +135,10 @@ function parseUserMessageMode(value: unknown): UserMessageMode | undefined {
       return "borderless";
     case "compact":
       return "compact";
+    case "hidden":
+    case "hide":
+    case "off":
+      return "hidden";
     default:
       return undefined;
   }
@@ -155,7 +165,7 @@ function parseToolsSettings(raw: unknown): Partial<ToolsSettings> | undefined {
   if (!isRecord(raw)) return undefined;
 
   const settings: Partial<ToolsSettings> = {};
-  const mode = parseUserMessageMode(raw.mode);
+  const mode = parseGapRenderingMode(raw.mode);
   if (mode) settings.mode = mode;
   if (typeof raw.gap === "boolean") settings.gap = raw.gap;
   return hasSettings(settings) ? settings : undefined;
@@ -165,7 +175,7 @@ function parseUserSettings(raw: unknown): Partial<UserSettings> | undefined {
   if (!isRecord(raw)) return undefined;
 
   const settings: Partial<UserSettings> = {};
-  const mode = parseUserMessageMode(raw.mode);
+  const mode = parseGapRenderingMode(raw.mode);
   if (mode) settings.mode = mode;
   if (typeof raw.gap === "boolean") settings.gap = raw.gap;
   return hasSettings(settings) ? settings : undefined;
@@ -252,6 +262,10 @@ function squash(value: unknown): string {
 
 function stripAnsi(value: string): string {
   return value.replace(ANSI_PATTERN, "");
+}
+
+function replaceTabs(value: string): string {
+  return value.replace(/\t/g, "    ");
 }
 
 function clip(value: string, max: number): string {
@@ -711,7 +725,7 @@ function renderConfiguredTool(component: ToolExecutionWithShells, width: number,
   const compactLine = shouldRenderCompactToolLine(component);
   syncToolSpinner(component, compactLine);
 
-  if (!Number.isFinite(width) || width <= 0) return [];
+  if (toolRendering.mode === "hidden" || !Number.isFinite(width) || width <= 0) return [];
 
   if (compactLine) return withToolGap(renderCompactToolLine(component, width));
   if (toolRendering.mode === "borderless") return renderBorderlessTool(component, width, originalRender);
@@ -785,7 +799,7 @@ function renderConfiguredUserMessage(
   width: number,
   originalRender: (width: number) => string[],
 ): string[] {
-  if (!Number.isFinite(width) || width <= 0) return [];
+  if (userRendering.mode === "hidden" || !Number.isFinite(width) || width <= 0) return [];
   if (userRendering.mode === "compact") return renderCompactUserMessage(component, width, originalRender);
   if (userRendering.mode === "borderless") return renderBorderlessUserMessage(component, width, originalRender);
   return originalRender.call(component, width);
@@ -945,18 +959,20 @@ function formatElapsedSeconds(seconds: number): string {
 }
 
 function buildThinkingLine(state: CompactThinkingState): string {
-  const marker = state.completedAtMs === undefined ? THINKING_ACTIVE_MARKER : THINKING_DONE_MARKER;
-  const status = state.completedAtMs === undefined ? "thinking" : "thought";
   const elapsed = formatElapsedSeconds(elapsedThinkingSeconds(state));
   const characters = formatCount(state.charCount, "char");
   const suffix = state.stopReason === "error" ? " → error" : state.stopReason === "aborted" ? " → aborted" : "";
 
-  return `${marker} ${status} ${TOOL_RULE} ${elapsed} · ${characters}${suffix}`;
+  return `${THINKING_MARKER} ${elapsed} · ${characters}${suffix}`;
+}
+
+function getThinkingBgFn(state: CompactThinkingState): ((text: string) => string) | undefined {
+  if (state.stopReason === "error" || state.stopReason === "aborted") return getThemeToolBgFn("toolErrorBg");
+  return getThemeToolBgFn(state.completedAtMs === undefined ? "toolPendingBg" : "toolSuccessBg");
 }
 
 function renderCompactThinkingLine(state: CompactThinkingState, width: number): string[] {
-  const line = buildThinkingLine(state);
-  return renderOneLine(activeTheme?.fg("thinkingText", line) ?? line, width, undefined, true);
+  return renderOneLine(buildThinkingLine(state), width, getThinkingBgFn(state), true);
 }
 
 function patchToolExecutionComponent(): boolean {
@@ -1014,6 +1030,123 @@ function patchUserMessageComponent(): boolean {
     lastUserPatchError = error instanceof Error ? error.stack ?? error.message : String(error);
     return false;
   }
+}
+
+
+type CustomThemeLike = {
+  fg(color: string, text: string): string;
+  bold?(text: string): string;
+};
+
+type CustomMessageLike = {
+  customType?: string;
+  content?: unknown;
+  details?: unknown;
+};
+
+function themeFg(theme: CustomThemeLike, color: string, text: string): string {
+  try {
+    return theme.fg(color, text);
+  } catch {
+    return text;
+  }
+}
+
+function textFromMessageContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+
+  const parts: string[] = [];
+  for (const part of content) {
+    if (!isRecord(part)) continue;
+    if (part.type === "text" && typeof part.text === "string") parts.push(part.text);
+    else if (part.type === "image") parts.push("[image]");
+    else if (part.type === "thinking" && typeof part.thinking === "string") parts.push(part.thinking);
+  }
+  return parts.join("\n");
+}
+
+function numberFromDetails(details: unknown, key: string): number | undefined {
+  if (!isRecord(details)) return undefined;
+  const value = details[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function arrayLengthFromDetails(details: unknown, key: string): number | undefined {
+  if (!isRecord(details)) return undefined;
+  const value = details[key];
+  return Array.isArray(value) ? value.length : undefined;
+}
+
+function plural(value: number, singular: string, pluralText = `${singular}s`): string {
+  return `${value} ${value === 1 ? singular : pluralText}`;
+}
+
+function formatCompactCount(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  return String(value);
+}
+
+function formatCompactChars(value: number): string {
+  return `${formatCompactCount(value)}ch`;
+}
+
+function compactJanitorNoticeLine(message: CustomMessageLike): string {
+  const details = message.details;
+  const rawText = squash(textFromMessageContent(message.content));
+  const rawChars = numberFromDetails(details, "rawChars");
+  const projectedChars = numberFromDetails(details, "projectedChars");
+  const savedChars = rawChars !== undefined && projectedChars !== undefined ? Math.max(0, rawChars - projectedChars) : undefined;
+  const toolCalls = numberFromDetails(details, "toolCalls");
+  const summaryId = isRecord(details) && typeof details.summaryId === "string" ? details.summaryId : undefined;
+  const restoreCount = arrayLengthFromDetails(details, "summaryIds");
+
+  if (restoreCount !== undefined) {
+    return `${JANITOR_MARKER} restored ${plural(restoreCount, "janitor run")}`;
+  }
+
+  if (toolCalls !== undefined) {
+    const parts = [`${JANITOR_MARKER} truncated ${plural(toolCalls, "tool output")}`];
+    if (savedChars !== undefined) parts.push(`saved ≈${formatCompactChars(savedChars)}`);
+    if (summaryId) parts.push(summaryId);
+    return parts.join(" · ");
+  }
+
+  if (rawText) return `${JANITOR_MARKER} ${clip(rawText, MAX_SUMMARY_LENGTH)}`;
+  return `${JANITOR_MARKER} Context Janitor`;
+}
+
+class HiddenCustomMessageComponent implements Component {
+  invalidate(): void {}
+  render(_width: number): string[] {
+    return [];
+  }
+}
+
+class CompactJanitorNoticeComponent implements Component {
+  constructor(
+    private readonly message: CustomMessageLike,
+    private readonly theme: CustomThemeLike,
+  ) {}
+
+  invalidate(): void {}
+
+  render(width: number): string[] {
+    if (!Number.isFinite(width) || width <= 0) return [];
+    const line = themeFg(this.theme, "muted", compactJanitorNoticeLine(this.message));
+    return [truncateToWidth(replaceTabs(line), Math.max(1, width), "…")];
+  }
+}
+
+function registerJanitorMessageRenderers(pi: ExtensionAPI): void {
+  const hidden = () => new HiddenCustomMessageComponent();
+  pi.registerMessageRenderer(JANITOR_INDEX_CUSTOM_TYPE, hidden);
+  pi.registerMessageRenderer(JANITOR_RESTORE_CUSTOM_TYPE, hidden);
+  pi.registerMessageRenderer(JANITOR_SUMMARY_CUSTOM_TYPE, hidden);
+  pi.registerMessageRenderer(JANITOR_NOTICE_CUSTOM_TYPE, (message, _state, theme) => {
+    return new CompactJanitorNoticeComponent(message as CustomMessageLike, theme as CustomThemeLike);
+  });
 }
 
 function patchAssistantMessageComponent(): boolean {
@@ -1098,7 +1231,7 @@ function patchErrorDetails(): string {
 }
 
 function formatGapRendering(value: GapRendering): string {
-  return value.mode === "normal" ? "normal" : `${value.mode}${value.gap ? "+gap" : "+tight"}`;
+  return value.mode === "normal" || value.mode === "hidden" ? value.mode : `${value.mode}${value.gap ? "+gap" : "+tight"}`;
 }
 
 function statusMessage(): string {
@@ -1127,16 +1260,21 @@ function parseGapRenderingArg(args: string, current: GapRendering, defaultValue:
       return { ...current, mode: "compact", gap: defaultValue.gap };
     case "compact-tight":
       return { ...current, mode: "compact", gap: false };
+    case "hidden":
+    case "hide":
+    case "off":
+      return { ...current, mode: "hidden" };
     case "gap":
       return { ...current, gap: true };
     case "no-gap":
     case "nogap":
       return { ...current, gap: false };
     case "toggle":
-      return current.mode === "normal" ? cloneGapRendering(defaultValue) : { ...current, mode: "normal" };
+      return current.mode === "normal" || current.mode === "hidden" ? cloneGapRendering(defaultValue) : { ...current, mode: "normal" };
     case "cycle":
       if (current.mode === "normal") return { ...current, mode: "borderless", gap: defaultValue.gap };
       if (current.mode === "borderless") return { ...current, mode: "compact", gap: defaultValue.gap };
+      if (current.mode === "compact") return { ...current, mode: "hidden" };
       return { ...current, mode: "normal" };
     default:
       return undefined;
@@ -1167,6 +1305,9 @@ function parseThinkingArg(args: string, current: ThinkingMode): ThinkingMode | u
 void patchPiCompactComponents();
 
 export default function (pi: ExtensionAPI) {
+  (globalThis as Record<string, unknown>)[PI_COMPACT_GLOBAL_KEY] = true;
+  registerJanitorMessageRenderers(pi);
+
   pi.on("message_update", (event) => {
     recordAssistantThinkingTiming(event.message, event.assistantMessageEvent);
   });
@@ -1184,11 +1325,11 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("compact-user", {
-    description: "Set user message rendering (normal|borderless|borderless-tight|compact|compact-tight)",
+    description: "Set user message rendering (normal|borderless|borderless-tight|compact|compact-tight|hidden)",
     handler: async (args, ctx) => {
       const next = parseGapRenderingArg(args, userRendering, DEFAULT_PI_COMPACT_SETTINGS.user);
       if (next === undefined) {
-        ctx.ui.notify("Usage: /compact-user [normal|borderless|borderless-tight|compact|compact-tight|gap|no-gap|toggle|cycle|status]", "error");
+        ctx.ui.notify("Usage: /compact-user [normal|borderless|borderless-tight|compact|compact-tight|hidden|gap|no-gap|toggle|cycle|status]", "error");
         return;
       }
 
@@ -1199,11 +1340,11 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("compact-tools", {
-    description: "Set tool rendering (normal|borderless|borderless-tight|compact|compact-tight)",
+    description: "Set tool rendering (normal|borderless|borderless-tight|compact|compact-tight|hidden)",
     handler: async (args, ctx) => {
       const next = parseGapRenderingArg(args, toolRendering, DEFAULT_PI_COMPACT_SETTINGS.tools);
       if (next === undefined) {
-        ctx.ui.notify("Usage: /compact-tools [normal|borderless|borderless-tight|compact|compact-tight|gap|no-gap|toggle|cycle|status]", "error");
+        ctx.ui.notify("Usage: /compact-tools [normal|borderless|borderless-tight|compact|compact-tight|hidden|gap|no-gap|toggle|cycle|status]", "error");
         return;
       }
 
