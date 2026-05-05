@@ -81,6 +81,7 @@ let activeTheme: ThemeWithCompactColours | undefined;
 const thinkingTimings = new Map<string, CompactThinkingTiming>();
 
 const TOOL_ORIGINAL_RENDER_KEY = "__piCompactOriginalToolRender";
+const TOOL_ORIGINAL_SET_EXPANDED_KEY = "__piCompactOriginalToolSetExpanded";
 const USER_ORIGINAL_RENDER_KEY = "__piCompactOriginalUserRender";
 const ASSISTANT_ORIGINAL_RENDER_KEY = "__piCompactOriginalAssistantRender";
 const ASSISTANT_ORIGINAL_UPDATE_CONTENT_KEY = "__piCompactOriginalAssistantUpdateContent";
@@ -596,6 +597,7 @@ type ToolExecutionWithShells = {
   contentBox?: unknown;
   contentText?: unknown;
   expanded?: boolean;
+  setExpanded?: (expanded: boolean) => void;
   isPartial?: boolean;
   ui?: { requestRender?: () => void };
   [TOOL_SPINNER_INTERVAL_KEY]?: ReturnType<typeof setInterval>;
@@ -640,9 +642,17 @@ function stopToolSpinner(component: ToolExecutionWithShells): void {
   component[TOOL_SPINNER_FRAME_KEY] = 0;
 }
 
+function shouldRenderCompactToolLine(component: ToolExecutionWithShells): boolean {
+  return toolRendering.mode === "compact" && !component.expanded;
+}
+
 function syncToolSpinner(component: ToolExecutionWithShells, compactLine: boolean): void {
   if (compactLine && component.isPartial) startToolSpinner(component);
   else stopToolSpinner(component);
+}
+
+function syncToolSpinnerForCurrentExpansion(component: ToolExecutionWithShells): void {
+  syncToolSpinner(component, shouldRenderCompactToolLine(component));
 }
 
 function getVerticalPaddingShell(value: unknown): BoxWithVerticalPadding | undefined {
@@ -698,7 +708,7 @@ function renderBorderlessTool(
 }
 
 function renderConfiguredTool(component: ToolExecutionWithShells, width: number, originalRender: (width: number) => string[]): string[] {
-  const compactLine = toolRendering.mode === "compact" && !component.expanded;
+  const compactLine = shouldRenderCompactToolLine(component);
   syncToolSpinner(component, compactLine);
 
   if (!Number.isFinite(width) || width <= 0) return [];
@@ -952,11 +962,13 @@ function renderCompactThinkingLine(state: CompactThinkingState, width: number): 
 function patchToolExecutionComponent(): boolean {
   try {
     const proto = (ToolExecutionComponent as any)?.prototype;
-    if (!proto || typeof proto.render !== "function") {
+    if (!proto || typeof proto.render !== "function" || typeof proto.setExpanded !== "function") {
       throw new Error("ToolExecutionComponent unavailable");
     }
 
     const originalRender = typeof proto[TOOL_ORIGINAL_RENDER_KEY] === "function" ? proto[TOOL_ORIGINAL_RENDER_KEY] : proto.render;
+    const originalSetExpanded =
+      typeof proto[TOOL_ORIGINAL_SET_EXPANDED_KEY] === "function" ? proto[TOOL_ORIGINAL_SET_EXPANDED_KEY] : proto.setExpanded;
 
     proto.render = function piCompactToolRender(this: ToolExecutionWithShells & { hideComponent?: boolean }, width: number) {
       if (this.hideComponent) {
@@ -966,7 +978,14 @@ function patchToolExecutionComponent(): boolean {
       return renderConfiguredTool(this, width, originalRender);
     };
 
+    proto.setExpanded = function piCompactToolSetExpanded(this: ToolExecutionWithShells, expanded: boolean) {
+      const result = originalSetExpanded.call(this, expanded);
+      syncToolSpinnerForCurrentExpansion(this);
+      return result;
+    };
+
     proto[TOOL_ORIGINAL_RENDER_KEY] = originalRender;
+    proto[TOOL_ORIGINAL_SET_EXPANDED_KEY] = originalSetExpanded;
     lastToolPatchError = undefined;
     return true;
   } catch (error) {
