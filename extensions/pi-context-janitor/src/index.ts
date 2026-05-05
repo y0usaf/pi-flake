@@ -26,6 +26,10 @@ const MAX_DECIDER_INPUT_CHARS = 60_000;
 const MAX_RECORDS_PER_PASS = 24;
 const MAX_DECIDER_TOKENS = 1_000;
 
+const STATUS_ENABLED_IDLE = "janitor ⣿";
+const STATUS_DISABLED = "janitor";
+const STATUS_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const STATUS_SPINNER_MS = 120;
 const DECIDER_SYSTEM_PROMPT = `You are Context Janitor, a conservative background context cleaner for a coding agent.
 
 You receive JSON objects representing completed tool results. Each object has an id and a hash. Decide which tool-result outputs are safe to replace with a hidden placeholder in future model context.
@@ -705,6 +709,8 @@ export default function contextJanitor(pi: ExtensionAPI) {
 	let activeController: AbortController | undefined;
 	let generation = 0;
 	let lastCtx: ExtensionContext | undefined;
+	let statusSpinner: ReturnType<typeof setInterval> | undefined;
+	let statusSpinnerIndex = 0;
 
 	function abortBackground(): void {
 		if (scheduleTimer) clearTimeout(scheduleTimer);
@@ -712,21 +718,34 @@ export default function contextJanitor(pi: ExtensionAPI) {
 		activeController?.abort();
 	}
 
+	function statusText(): string {
+		if (!settings.enabled) return STATUS_DISABLED;
+		if (flushPromise) return `janitor ${STATUS_SPINNER_FRAMES[statusSpinnerIndex]}`;
+		return STATUS_ENABLED_IDLE;
+	}
+
+	function stopStatusSpinner(): void {
+		if (statusSpinner) clearInterval(statusSpinner);
+		statusSpinner = undefined;
+		statusSpinnerIndex = 0;
+	}
+
 	function updateStatus(ctx: ExtensionContext | undefined = lastCtx): void {
 		if (!ctx) return;
 		lastCtx = ctx;
-		const pending = pendingTotals(pendingBatches);
-		const active = activeSavings(entries, restoredSummaryIds);
-		let text = settings.enabled ? "janitor: ON" : "janitor: OFF";
-		if (settings.enabled && flushPromise) text = "janitor: deciding…";
-		else if (settings.enabled && pending.toolCalls > 0) {
-			const hysteresis = pendingHysteresis(pendingBatches);
-			text = hysteresis.ready
-				? `janitor: ${pending.toolCalls} pending`
-				: `janitor: warming ${pending.toolCalls}/${HYSTERESIS_MIN_TOOL_CALLS} · ${formatChars(pending.rawChars)}`;
-		} else if (settings.enabled && active.savedChars > 0) text = `janitor: ON ↓${formatChars(active.savedChars)}`;
-		ctx.ui.setStatus(STATUS_KEY, text);
+		const spinning = settings.enabled && !!flushPromise;
+		if (spinning && !statusSpinner) {
+			statusSpinner = setInterval(() => {
+				statusSpinnerIndex = (statusSpinnerIndex + 1) % STATUS_SPINNER_FRAMES.length;
+				updateStatus();
+			}, STATUS_SPINNER_MS);
+			statusSpinner.unref?.();
+		} else if (!spinning) {
+			stopStatusSpinner();
+		}
+		ctx.ui.setStatus(STATUS_KEY, statusText());
 	}
+
 
 	function reconstruct(ctx: ExtensionContext): void {
 		index = new Map<string, ToolCallRecord>();
@@ -1005,6 +1024,7 @@ export default function contextJanitor(pi: ExtensionAPI) {
 	pi.on("session_shutdown", async (_event, ctx) => {
 		generation += 1;
 		abortBackground();
+		stopStatusSpinner();
 		ctx.ui.setStatus(STATUS_KEY, undefined);
 	});
 }
