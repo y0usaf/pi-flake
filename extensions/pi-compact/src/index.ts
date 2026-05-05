@@ -26,7 +26,7 @@ const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 type GapRenderingMode = "normal" | "borderless" | "compact" | "hidden";
 type ThinkingMode = "normal" | "compact" | "hidden";
 type ToolBgToken = "toolPendingBg" | "toolSuccessBg" | "toolErrorBg";
-type ThemeFgToken = "toolDiffAdded" | "toolDiffRemoved";
+type ThemeFgToken = "toolDiffAdded" | "toolDiffRemoved" | "muted";
 
 interface GapRendering {
   mode: GapRenderingMode;
@@ -868,37 +868,50 @@ function recordAssistantThinkingTiming(message: any, assistantEvent?: any, final
   if (message?.role !== "assistant") return;
 
   const eventType = assistantEvent?.type;
-  const hasThinkingEvent = eventType === "thinking_start" || eventType === "thinking_delta" || eventType === "thinking_end";
+  const startsThinking = eventType === "start" || eventType === "thinking_start" || eventType === "thinking_delta";
   let timing = getThinkingTiming(message);
   if (!timing) {
-    if (!hasThinkingEvent) return;
+    if (!startsThinking) return;
     timing = {};
   }
 
   const now = Date.now();
-  if (eventType === "thinking_start") {
+  if (eventType === "start") {
+    timing.startedAtMs ??= now;
+    timing.completedAtMs = undefined;
+  } else if (eventType === "thinking_start") {
     timing.startedAtMs ??= now;
     timing.completedAtMs = undefined;
   } else if (eventType === "thinking_delta") {
     timing.startedAtMs ??= now;
   } else if (eventType === "thinking_end") {
     timing.startedAtMs ??= now;
-    timing.completedAtMs = now;
   }
 
   const completesThinking =
     final ||
+    eventType === "thinking_end" ||
     eventType === "text_start" ||
     eventType === "text_delta" ||
     eventType === "text_end" ||
     eventType === "toolcall_start" ||
     eventType === "toolcall_delta" ||
-    eventType === "toolcall_end";
+    eventType === "toolcall_end" ||
+    eventType === "done" ||
+    eventType === "error";
   if (completesThinking && timing.startedAtMs !== undefined && timing.completedAtMs === undefined) {
     timing.completedAtMs = now;
   }
 
   if (timing.startedAtMs !== undefined) storeThinkingTiming(message, timing);
+}
+
+function recordAssistantThinkingTimingForEvent(event: any, final = false): void {
+  const assistantEvent = event?.assistantMessageEvent;
+  recordAssistantThinkingTiming(event?.message, assistantEvent, final);
+
+  const eventMessage = assistantEvent?.partial ?? assistantEvent?.message ?? assistantEvent?.error;
+  if (eventMessage && eventMessage !== event?.message) recordAssistantThinkingTiming(eventMessage, assistantEvent, final);
 }
 
 function getThinkingBlocks(message: any): string[] {
@@ -975,7 +988,8 @@ function getThinkingBgFn(state: CompactThinkingState): ((text: string) => string
 }
 
 function renderCompactThinkingLine(state: CompactThinkingState, width: number): string[] {
-  return renderOneLine(buildThinkingLine(state), width, getThinkingBgFn(state), true);
+  const line = activeTheme?.fg("muted", buildThinkingLine(state)) ?? buildThinkingLine(state);
+  return renderOneLine(line, width, getThinkingBgFn(state), true);
 }
 
 function patchToolExecutionComponent(): boolean {
@@ -1368,11 +1382,11 @@ export default function (pi: ExtensionAPI) {
   registerJanitorMessageRenderers(pi);
 
   pi.on("message_update", (event) => {
-    recordAssistantThinkingTiming(event.message, event.assistantMessageEvent);
+    recordAssistantThinkingTimingForEvent(event);
   });
 
   pi.on("message_end", (event) => {
-    recordAssistantThinkingTiming(event.message, undefined, true);
+    recordAssistantThinkingTimingForEvent(event, true);
   });
 
   pi.registerCommand("compact-status", {
