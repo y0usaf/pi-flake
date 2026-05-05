@@ -16,22 +16,7 @@
         "type": "github"
       }
     },
-    "piHive": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-hive",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-hive",
-        "type": "path"
-      },
-      "parent": []
-    },
+
     "piCodexFast": {
       "inputs": {
         "nixpkgs": [
@@ -213,7 +198,7 @@
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
-        "piHive": "piHive",
+
         "piCodexFast": "piCodexFast",
         "piCompact": "piCompact",
         "piContextJanitor": "piContextJanitor",
