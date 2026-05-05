@@ -9,9 +9,6 @@
       flake = false;
     };
 
-    piHive.url = "path:./extensions/pi-hive";
-    piHive.inputs.nixpkgs.follows = "nixpkgs";
-
     piCodexFast.url = "path:./extensions/pi-codex-fast";
     piCodexFast.inputs.nixpkgs.follows = "nixpkgs";
 
@@ -47,14 +44,12 @@
     self,
     nixpkgs,
     piSrc,
-    piHive,
     piCodexFast,
     piGeckoWebsearch,
     piRtk,
     piCompact,
     piContextJanitor,
     piMorph,
-
     piToolManagement,
     piWebfetch,
     piHashline,
@@ -74,7 +69,6 @@
     packages = forAllSystems (system: let
       pkgs = pkgsFor.${system};
       lib = pkgs.lib;
-
 
       canvasNativeDeps = with pkgs; [
         cairo
@@ -126,8 +120,6 @@
           mainProgram = "pi";
         };
       };
-
-      "pi-hive" = piHive.packages.${system}.default;
 
       "pi-codex-fast" = piCodexFast.packages.${system}.default;
       "pi-gecko-websearch" = piGeckoWebsearch.packages.${system}.default;
@@ -250,8 +242,6 @@
 
     # Extension package set keyed by bundled extension name.
     lib.extensionPackagesFor = system: {
-      hive = self.packages.${system}."pi-hive";
-
       "codex-fast" = self.packages.${system}."pi-codex-fast";
       "gecko-websearch" = self.packages.${system}."pi-gecko-websearch";
       rtk = self.packages.${system}."pi-rtk";
@@ -296,7 +286,10 @@
     in
       self.lib.piWithExtensions {
         inherit pkgs extensions;
-        pi = if pi == null then self.packages.${system}.pi else pi;
+        pi =
+          if pi == null
+          then self.packages.${system}.pi
+          else pi;
       };
 
     # Library function to build pi with extensions (available across systems)

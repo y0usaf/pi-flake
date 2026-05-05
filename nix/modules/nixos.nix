@@ -66,8 +66,6 @@ in {
     full = mkEnableOption "all bundled pi extensions";
 
     extensions = {
-      hive = mkEnableOption "pi-hive extension";
-
       "codex-fast" = mkEnableOption "pi-codex-fast extension";
       "gecko-websearch" = mkEnableOption "pi-gecko-websearch extension";
       rtk = mkEnableOption "pi-rtk extension";

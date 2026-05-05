@@ -46,7 +46,6 @@ nix profile install github:your-org/pi-flake#pi-full
       pi = pi-flake.packages.${system}.pi;
       extensions = {
         # Only include extensions you want
-        hive = pi-flake.packages.${system}."pi-hive";
         "codex-fast" = pi-flake.packages.${system}."pi-codex-fast";
         "gecko-websearch" = pi-flake.packages.${system}."pi-gecko-websearch";
       };
@@ -71,7 +70,6 @@ Flake `inputs` cannot pass arbitrary booleans into another flake's outputs. Use 
     packages.${system}.my-pi = pi-flake.lib.piWithExtensionFlags {
       inherit pkgs;
       extensionFlags = {
-        hive = true;
         "codex-fast" = true;
         "gecko-websearch" = false;
         rtk = false;
@@ -111,7 +109,6 @@ Only flags set to `true` are copied into the bundled wrapper.
 
             # Option 2: selected bundled extensions
             # extensions = {
-            #   hive = true;
             #   "codex-fast" = true;
             #   compact = true;
             #   "context-janitor" = true;
@@ -139,7 +136,6 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 
 | Name | Description |
 |------|-------------|
-| `pi-hive` | Multi-agent orchestration extension |
 | `pi-codex-fast` | Fast code completion tool |
 | `pi-gecko-websearch` | Web search using Firefox's engine |
 | `pi-rtk` | Real-time keyboard events |
@@ -179,14 +175,13 @@ If you want full control:
 
 2. Build your chosen extensions:
    ```bash
-   nix build .#pi-hive .#pi-codex-fast
+   nix build .#pi-codex-fast
    ```
 
 3. Add to `~/.pi/agent/settings.json`:
    ```json
    {
      "packages": [
-       "/path/to/result-pi-hive",
        "/path/to/result-pi-codex-fast"
      ]
    }
@@ -199,7 +194,6 @@ If you want full control:
 ### Extension packages
 
 ```nix
-inputs.pi-flake.packages.<system>."pi-hive"
 inputs.pi-flake.packages.<system>."pi-codex-fast"
 inputs.pi-flake.packages.<system>."pi-gecko-websearch"
 inputs.pi-flake.packages.<system>."pi-rtk"
@@ -233,8 +227,7 @@ inputs.pi-flake.packages.<system>."pi-hashline"
 nix build .#pi
 
 # Build extension
-nix build .#pi-hive
-
+nix build .#pi-codex-fast
 # Build full bundle
 nix build .#pi-full
 
