@@ -4,28 +4,22 @@ import { dirname, join } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
-const EXTENSION_KEY = "pi-pomodoro";
-const STATE_VERSION = 1;
-const DEFAULT_WORK_MINUTES = 25;
-const DEFAULT_BREAK_MINUTES = 5;
-const DEFAULT_LONG_BREAK_MINUTES = 15;
-const DEFAULT_LONG_BREAK_EVERY = 4;
+const KEY = "pi-pomodoro";
+const VERSION = 1;
 const TICK_MS = 1000;
-
+const ICON = "🍅";
+const BAR_WIDTH = Array.from(` ${ICON}  break 00:00 `).length;
 const RESET = "\x1b[0m";
-const RED = "\x1b[38;2;255;92;92m";
-const RED_BG = "\x1b[48;2;80;20;24m";
-const GREEN = "\x1b[38;2;105;220;140m";
-const DIM = "\x1b[2m";
+const TEXT = "\x1b[38;2;18;18;20m";
+const COLORS = {
+  workBg: "\x1b[48;2;105;220;140m",
+  workDim: "\x1b[48;2;49;78;62m",
+  breakBg: "\x1b[48;2;255;92;92m",
+  breakDim: "\x1b[48;2;80;20;24m",
+};
 
-/**
- * Shared runtime state defaults to XDG_RUNTIME_DIR or the OS tmp dir. Every active
- * pi process running this extension watches the same file, so phase changes
- * propagate without blocking input or requiring a central daemon.
- */
 type Phase = "work" | "break";
-
-type PomodoroState = {
+type State = {
   version: number;
   running: boolean;
   paused: boolean;
@@ -33,320 +27,224 @@ type PomodoroState = {
   cycle: number;
   startedAt: number;
   endsAt: number;
-  remainingMs?: number;
   updatedAt: number;
+  remainingMs?: number;
+  totalMs?: number;
   source?: string;
 };
-
 type Settings = {
   workMinutes: number;
   breakMinutes: number;
   longBreakMinutes: number;
   longBreakEvery: number;
   syncFile: string;
-  showWidgetDuringWork: boolean;
   notifyTransitions: boolean;
 };
 
-type RawSettings = Partial<{
-  workMinutes: unknown;
-  breakMinutes: unknown;
-  longBreakMinutes: unknown;
-  longBreakEvery: unknown;
-  syncFile: unknown;
-  showWidgetDuringWork: unknown;
-  notifyTransitions: unknown;
-}>;
+type RawSettings = Partial<Record<keyof Settings, unknown>>;
 
-let settings: Settings = defaultSettings();
-let state: PomodoroState = idleState();
+const now = () => Date.now();
+
+let settings = defaults();
+let state = idle();
 let ctxRef: ExtensionContext | undefined;
-let tickTimer: ReturnType<typeof setInterval> | undefined;
-let lastRenderedKey = "";
-let lastPhaseKey = "";
+let timer: ReturnType<typeof setInterval> | undefined;
 let watchedFile: string | undefined;
+let lastPhase = "";
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const agentDir = () => join(process.env.HOME ?? process.env.USERPROFILE ?? ".", ".pi", "agent");
 
-function agentDir(): string {
-  return join(process.env.HOME ?? process.env.USERPROFILE ?? ".", ".pi", "agent");
-}
-
-function defaultSyncFile(): string {
+function defaults(): Settings {
   const uid = typeof process.getuid === "function" ? process.getuid() : process.env.USER ?? "user";
-  return join(process.env.XDG_RUNTIME_DIR || tmpdir(), `pi-pomodoro-${uid}.json`);
-}
-
-function defaultSettings(): Settings {
   return {
-    workMinutes: DEFAULT_WORK_MINUTES,
-    breakMinutes: DEFAULT_BREAK_MINUTES,
-    longBreakMinutes: DEFAULT_LONG_BREAK_MINUTES,
-    longBreakEvery: DEFAULT_LONG_BREAK_EVERY,
-    syncFile: defaultSyncFile(),
-    showWidgetDuringWork: false,
+    workMinutes: 25,
+    breakMinutes: 5,
+    longBreakMinutes: 15,
+    longBreakEvery: 4,
+    syncFile: join(process.env.XDG_RUNTIME_DIR || tmpdir(), `pi-pomodoro-${uid}.json`),
     notifyTransitions: true,
   };
 }
 
-function idleState(): PomodoroState {
-  const now = Date.now();
-  return {
-    version: STATE_VERSION,
-    running: false,
-    paused: false,
-    phase: "work",
-    cycle: 0,
-    startedAt: now,
-    endsAt: now,
-    updatedAt: now,
-  };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function idle(): State {
+  const time = now();
+  return { version: VERSION, running: false, paused: false, phase: "work", cycle: 0, startedAt: time, endsAt: time, updatedAt: time };
 }
 
 function readJson(path: string): Record<string, unknown> | undefined {
   try {
     if (!existsSync(path)) return undefined;
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
-    return isRecord(parsed) ? parsed : undefined;
+    const value = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    return isRecord(value) ? value : undefined;
   } catch {
     return undefined;
   }
 }
 
-function positiveNumber(value: unknown, fallback: number): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return fallback;
-  return value;
+function minutes(value: unknown, fallback: number, integer = false): number {
+  const n = typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+  return integer ? Math.max(1, Math.trunc(n)) : n;
 }
 
-function positiveInteger(value: unknown, fallback: number): number {
-  const number = positiveNumber(value, fallback);
-  return Math.max(1, Math.trunc(number));
+function extensionSettings(path: string): RawSettings | undefined {
+  const raw = readJson(path)?.extensionSettings;
+  const ours = isRecord(raw) ? raw[KEY] : undefined;
+  return isRecord(ours) ? (ours as RawSettings) : undefined;
 }
 
-function parseSettings(raw: RawSettings | undefined, base: Settings): Settings {
-  if (!raw || !isRecord(raw)) return base;
+function applySettings(raw: RawSettings | undefined, base: Settings): Settings {
+  if (!raw) return base;
   return {
-    workMinutes: positiveNumber(raw.workMinutes, base.workMinutes),
-    breakMinutes: positiveNumber(raw.breakMinutes, base.breakMinutes),
-    longBreakMinutes: positiveNumber(raw.longBreakMinutes, base.longBreakMinutes),
-    longBreakEvery: positiveInteger(raw.longBreakEvery, base.longBreakEvery),
+    workMinutes: minutes(raw.workMinutes, base.workMinutes),
+    breakMinutes: minutes(raw.breakMinutes, base.breakMinutes),
+    longBreakMinutes: minutes(raw.longBreakMinutes, base.longBreakMinutes),
+    longBreakEvery: minutes(raw.longBreakEvery, base.longBreakEvery, true),
     syncFile: typeof raw.syncFile === "string" && raw.syncFile.trim() ? raw.syncFile.trim() : base.syncFile,
-    showWidgetDuringWork: typeof raw.showWidgetDuringWork === "boolean" ? raw.showWidgetDuringWork : base.showWidgetDuringWork,
     notifyTransitions: typeof raw.notifyTransitions === "boolean" ? raw.notifyTransitions : base.notifyTransitions,
   };
 }
 
-function pickExtensionSettings(root: Record<string, unknown> | undefined): RawSettings | undefined {
-  const extensionSettings = root?.extensionSettings;
-  if (!isRecord(extensionSettings)) return undefined;
-  const raw = extensionSettings[EXTENSION_KEY];
-  return isRecord(raw) ? (raw as RawSettings) : undefined;
-}
-
 function loadSettings(cwd: string): Settings {
-  let loaded = defaultSettings();
-  loaded = parseSettings(pickExtensionSettings(readJson(join(agentDir(), "settings.json"))), loaded);
-  loaded = parseSettings(pickExtensionSettings(readJson(join(cwd, ".pi", "settings.json"))), loaded);
-  return loaded;
+  return [join(agentDir(), "settings.json"), join(cwd, ".pi", "settings.json")].reduce(
+    (current, path) => applySettings(extensionSettings(path), current),
+    defaults(),
+  );
 }
 
-function isPhase(value: unknown): value is Phase {
-  return value === "work" || value === "break";
-}
-
-function parseState(raw: unknown): PomodoroState | undefined {
-  if (!isRecord(raw)) return undefined;
-  if (typeof raw.running !== "boolean" || typeof raw.paused !== "boolean" || !isPhase(raw.phase)) return undefined;
-  const cycle = typeof raw.cycle === "number" && Number.isFinite(raw.cycle) ? Math.max(0, Math.trunc(raw.cycle)) : 0;
-  const startedAt = typeof raw.startedAt === "number" && Number.isFinite(raw.startedAt) ? raw.startedAt : Date.now();
-  const endsAt = typeof raw.endsAt === "number" && Number.isFinite(raw.endsAt) ? raw.endsAt : startedAt;
-  const updatedAt = typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : Date.now();
-  const remainingMs = typeof raw.remainingMs === "number" && Number.isFinite(raw.remainingMs) ? Math.max(0, raw.remainingMs) : undefined;
+function parseState(raw: unknown): State | undefined {
+  if (!isRecord(raw) || typeof raw.running !== "boolean" || typeof raw.paused !== "boolean") return undefined;
+  if (raw.phase !== "work" && raw.phase !== "break") return undefined;
+  const finite = (value: unknown, fallback: number) => (typeof value === "number" && Number.isFinite(value) ? value : fallback);
   return {
-    version: STATE_VERSION,
+    version: VERSION,
     running: raw.running,
     paused: raw.paused,
     phase: raw.phase,
-    cycle,
-    startedAt,
-    endsAt,
-    updatedAt,
-    remainingMs,
+    cycle: Math.max(0, Math.trunc(finite(raw.cycle, 0))),
+    startedAt: finite(raw.startedAt, now()),
+    endsAt: finite(raw.endsAt, finite(raw.startedAt, now())),
+    updatedAt: finite(raw.updatedAt, now()),
+    remainingMs: raw.remainingMs === undefined ? undefined : Math.max(0, finite(raw.remainingMs, 0)),
+    totalMs: raw.totalMs === undefined ? undefined : Math.max(1, finite(raw.totalMs, 1)),
     source: typeof raw.source === "string" ? raw.source : undefined,
   };
 }
 
-function readState(): PomodoroState {
-  const parsed = parseState(readJson(settings.syncFile));
-  return parsed ?? idleState();
+function readState(): State {
+  return parseState(readJson(settings.syncFile)) ?? idle();
 }
 
-function writeState(next: PomodoroState): void {
+function writeState(next: State): void {
   mkdirSync(dirname(settings.syncFile), { recursive: true });
-  const normalized = { ...next, version: STATE_VERSION, updatedAt: Date.now() };
+  state = { ...next, version: VERSION, updatedAt: now() };
   const tmp = `${settings.syncFile}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`, "utf8");
   renameSync(tmp, settings.syncFile);
-  state = normalized;
 }
 
-function durationMs(phase: Phase, cycle: number): number {
+function duration(phase: Phase, cycle = state.cycle): number {
   if (phase === "work") return settings.workMinutes * 60_000;
-  const longBreak = settings.longBreakEvery > 0 && cycle > 0 && cycle % settings.longBreakEvery === 0;
-  return (longBreak ? settings.longBreakMinutes : settings.breakMinutes) * 60_000;
+  return (cycle > 0 && cycle % settings.longBreakEvery === 0 ? settings.longBreakMinutes : settings.breakMinutes) * 60_000;
 }
 
-function startState(phase: Phase, cycle: number, source: string, minutes?: number): PomodoroState {
-  const now = Date.now();
-  const duration = (minutes && minutes > 0 ? minutes : phase === "work" ? settings.workMinutes : durationMs("break", cycle) / 60_000) * 60_000;
-  return {
-    version: STATE_VERSION,
-    running: true,
-    paused: false,
-    phase,
-    cycle,
-    startedAt: now,
-    endsAt: now + duration,
-    updatedAt: now,
-    source,
-  };
+function start(phase: Phase, cycle: number, source: string, customMinutes?: number): State {
+  const time = now();
+  const ms = (customMinutes ?? duration(phase, cycle) / 60_000) * 60_000;
+  return { version: VERSION, running: true, paused: false, phase, cycle, startedAt: time, endsAt: time + ms, updatedAt: time, totalMs: ms, source };
 }
 
-function transition(nextPhase: Phase, source: string): void {
-  const nextCycle = nextPhase === "break" ? state.cycle + 1 : state.cycle;
-  writeState(startState(nextPhase, nextCycle, source));
-}
-
-function maybeAdvance(): void {
-  if (!state.running || state.paused) return;
-  if (Date.now() < state.endsAt) return;
-  transition(state.phase === "work" ? "break" : "work", `auto:${process.pid}`);
-}
-
-function remainingMs(): number {
+function remaining(): number {
   if (!state.running) return 0;
-  if (state.paused) return state.remainingMs ?? Math.max(0, state.endsAt - Date.now());
-  return Math.max(0, state.endsAt - Date.now());
+  return state.paused ? state.remainingMs ?? Math.max(0, state.endsAt - now()) : Math.max(0, state.endsAt - now());
 }
 
-function formatMs(ms: number): string {
-  const totalSeconds = Math.ceil(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+function advance(): void {
+  if (!state.running || state.paused || now() < state.endsAt) return;
+  const nextPhase: Phase = state.phase === "work" ? "break" : "work";
+  writeState(start(nextPhase, nextPhase === "break" ? state.cycle + 1 : state.cycle, `auto:${process.pid}`));
 }
 
-function styled(phase: Phase, text: string): string {
-  return phase === "break" ? `${RED}${text}${RESET}` : `${GREEN}${text}${RESET}`;
+function format(ms: number): string {
+  const seconds = Math.ceil(ms / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+function progress(width: number): number {
+  if (!state.running) return 0;
+  const total = Math.max(1, state.totalMs ?? state.endsAt - state.startedAt);
+  const left = remaining();
+  const elapsed = Math.max(0, total - left);
+  return Math.max(0, Math.min(width, Math.round((elapsed / total) * width)));
 }
 
-function bar(width: number): string {
-  if (!state.running) return "";
-  const total = state.paused ? (state.remainingMs ?? durationMs(state.phase, state.cycle)) : state.endsAt - state.startedAt;
-  const elapsed = state.paused ? total - (state.remainingMs ?? 0) : Date.now() - state.startedAt;
-  const filled = Math.max(0, Math.min(width, Math.round((elapsed / Math.max(1, total)) * width)));
-  return `${"█".repeat(filled)}${"░".repeat(Math.max(0, width - filled))}`;
+function colour(phase: Phase, kind: "bg" | "dim"): string {
+  return COLORS[`${phase}${kind === "bg" ? "Bg" : "Dim"}` as keyof typeof COLORS];
 }
 
-function clearUi(ctx: ExtensionContext): void {
-  ctx.ui.setStatus(EXTENSION_KEY, "");
-  ctx.ui.setWidget(EXTENSION_KEY, []);
-  ctx.ui.setTitle("");
+function bar(label: string, phase: Phase, width = BAR_WIDTH): string {
+  const chars = Array.from(` ${label} `);
+  const size = Math.max(width, chars.length);
+  const filled = progress(size);
+  const start = Math.max(0, Math.floor((size - chars.length) / 2));
+  return Array.from({ length: size }, (_, i) => {
+    const ch = i >= start && i < start + chars.length ? chars[i - start] : " ";
+    return `${colour(phase, i < filled ? "bg" : "dim")}${TEXT}${ch}`;
+  }).join("") + RESET;
 }
 
 function render(ctx: ExtensionContext): void {
-  maybeAdvance();
+  advance();
+  const phase = state.running ? state.phase : "work";
+  const label = state.running ? `${ICON}  ${phase}${state.paused ? " paused" : ""} ${format(remaining())}` : `${ICON}  idle`;
+  ctx.ui.setStatus(KEY, bar(label, phase));
 
-  if (!state.running) {
-    if (lastRenderedKey !== "idle") {
-      ctx.ui.setStatus(EXTENSION_KEY, "🍅 idle");
-      ctx.ui.setWidget(EXTENSION_KEY, []);
-      ctx.ui.setTitle("");
-      lastRenderedKey = "idle";
-      lastPhaseKey = "idle";
-    }
-    return;
+  const phaseKey = state.running && !state.paused ? `${state.phase}:${state.cycle}` : "idle";
+  if (settings.notifyTransitions && lastPhase && phaseKey !== lastPhase && phaseKey !== "idle") {
+    ctx.ui.notify(state.phase === "break" ? `${ICON} break time` : `${ICON} work time`, "info");
   }
-
-  const phaseText = state.phase === "break" ? "BREAK" : "focus";
-  const pausedText = state.paused ? " paused" : "";
-  const left = formatMs(remainingMs());
-  const status = styled(state.phase, `🍅 ${phaseText} ${left}${pausedText}`);
-  const renderKey = `${state.phase}:${left}:${state.paused}:${state.cycle}:${state.running}`;
-  const phaseKey = `${state.phase}:${state.cycle}:${state.running}`;
-
-  ctx.ui.setStatus(EXTENSION_KEY, status);
-  ctx.ui.setTitle(state.phase === "break" ? `🍅 BREAK ${left}` : "");
-
-  if (state.phase === "break" || settings.showWidgetDuringWork) {
-    const rawLine = ` 🍅 ${phaseText.toUpperCase()} ${left}${pausedText}  ${bar(18)} `;
-    const line = state.phase === "break" ? `${RED_BG}${RED}${rawLine}${RESET}` : styled(state.phase, rawLine);
-    const hint = state.phase === "break"
-      ? `${RED}break time — input remains active; /pomodoro work to skip${RESET}`
-      : `${DIM}/pomodoro pause|stop|break${RESET}`;
-    ctx.ui.setWidget(EXTENSION_KEY, [line, hint]);
-  } else {
-    ctx.ui.setWidget(EXTENSION_KEY, []);
-  }
-
-  if (settings.notifyTransitions && phaseKey !== lastPhaseKey && lastPhaseKey !== "" && state.running && !state.paused) {
-    ctx.ui.notify(state.phase === "break" ? "🍅 Pomodoro: break time" : "🍅 Pomodoro: focus time", "info");
-  }
-
-  lastRenderedKey = renderKey;
-  lastPhaseKey = phaseKey;
+  lastPhase = phaseKey;
 }
 
-function refreshFromDisk(): void {
+function refresh(): void {
   const next = readState();
-  if (next.updatedAt < state.updatedAt && next.source !== state.source) return;
-  state = next;
+  if (next.updatedAt >= state.updatedAt || next.source === state.source) state = next;
   if (ctxRef) render(ctxRef);
 }
 
-function restartWatcher(): void {
+function watchSyncFile(): void {
   if (watchedFile) unwatchFile(watchedFile);
   watchedFile = settings.syncFile;
-  watchFile(settings.syncFile, { interval: 1000 }, () => refreshFromDisk());
+  watchFile(watchedFile, { interval: 1000 }, refresh);
 }
 
 function ensureTimer(): void {
-  if (tickTimer) return;
-  tickTimer = setInterval(() => {
-    if (ctxRef) render(ctxRef);
-  }, TICK_MS);
-  if (typeof tickTimer === "object" && "unref" in tickTimer && typeof tickTimer.unref === "function") tickTimer.unref();
+  if (timer) return;
+  timer = setInterval(() => ctxRef && render(ctxRef), TICK_MS);
+  (timer as { unref?: () => void }).unref?.();
 }
 
-function parseMinutes(arg: string | undefined): number | undefined {
-  if (!arg) return undefined;
-  const value = Number(arg.trim());
-  return Number.isFinite(value) && value > 0 ? value : undefined;
-}
-
-function commandStatus(): string {
-  if (!state.running) return "🍅 pomodoro idle";
-  return `🍅 ${state.phase}${state.paused ? " paused" : ""} ${formatMs(remainingMs())} · cycle ${state.cycle}`;
-}
+const source = () => `command:${process.pid}`;
+const parseMinutes = (arg?: string) => {
+  const n = Number(arg?.trim());
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+};
+const status = () => (state.running ? `${ICON}  ${state.phase}${state.paused ? " paused" : ""} ${format(remaining())} · cycle ${state.cycle}` : `${ICON}  pomodoro idle`);
 
 export default function pomodoro(pi: ExtensionAPI) {
   pi.on("session_start", (_event, ctx) => {
     ctxRef = ctx;
     settings = loadSettings(ctx.cwd);
     state = readState();
-    restartWatcher();
+    watchSyncFile();
     ensureTimer();
     render(ctx);
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
     if (watchedFile) unwatchFile(watchedFile);
+    if (timer) clearInterval(timer);
     watchedFile = undefined;
-    if (tickTimer) clearInterval(tickTimer);
-    tickTimer = undefined;
-    clearUi(ctx);
+    timer = undefined;
+    ctx.ui.setStatus(KEY, undefined);
     ctxRef = undefined;
   });
 
@@ -355,38 +253,29 @@ export default function pomodoro(pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       ctxRef = ctx;
       settings = loadSettings(ctx.cwd);
-      restartWatcher();
-      refreshFromDisk();
+      watchSyncFile();
+      refresh();
 
       const [rawAction, rawMinutes] = args.trim().split(/\s+/, 2);
       const action = (rawAction || "start").toLowerCase();
-      const minutes = parseMinutes(rawMinutes);
+      const customMinutes = parseMinutes(rawMinutes);
 
-      if (action === "start" || action === "work") {
-        writeState(startState("work", state.cycle, `command:${process.pid}`, minutes));
-      } else if (action === "break") {
-        const cycle = state.phase === "work" ? state.cycle + 1 : state.cycle;
-        writeState(startState("break", cycle, `command:${process.pid}`, minutes));
-      } else if (action === "pause") {
-        if (state.running && !state.paused) writeState({ ...state, paused: true, remainingMs: remainingMs(), source: `command:${process.pid}` });
-      } else if (action === "resume") {
-        if (state.running && state.paused) {
-          const now = Date.now();
-          writeState({ ...state, paused: false, startedAt: now, endsAt: now + remainingMs(), remainingMs: undefined, source: `command:${process.pid}` });
-        }
-      } else if (action === "stop" || action === "reset") {
-        writeState({ ...idleState(), source: `command:${process.pid}` });
-      } else if (action === "status") {
-        ctx.ui.notify(commandStatus(), "info");
-        render(ctx);
-        return;
-      } else {
+      if (action === "start" || action === "work") writeState(start("work", state.cycle, source(), customMinutes));
+      else if (action === "break") writeState(start("break", state.phase === "work" ? state.cycle + 1 : state.cycle, source(), customMinutes));
+      else if (action === "pause" && state.running && !state.paused) writeState({ ...state, paused: true, remainingMs: remaining(), totalMs: state.totalMs ?? Math.max(1, state.endsAt - state.startedAt), source: source() });
+      else if (action === "resume" && state.running && state.paused) {
+        const time = now();
+        const left = remaining();
+        const total = Math.max(1, state.totalMs ?? state.endsAt - state.startedAt);
+        writeState({ ...state, paused: false, startedAt: time - (total - left), endsAt: time + left, remainingMs: undefined, totalMs: total, source: source() });
+      } else if (action === "stop" || action === "reset") writeState({ ...idle(), source: source() });
+      else if (action !== "status") {
         ctx.ui.notify("Usage: /pomodoro [start|stop|pause|resume|status|work|break|reset] [minutes]", "warning");
         return;
       }
 
       render(ctx);
-      ctx.ui.notify(commandStatus(), "info");
+      ctx.ui.notify(status(), "info");
     },
   });
 }

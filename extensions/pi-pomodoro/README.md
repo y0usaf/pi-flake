@@ -2,10 +2,10 @@
 
 Synced, non-blocking pomodoro timer for Pi.
 
+- Footer-only ANSI background progress bar with the tomato, phase, and countdown drawn on top.
 - Shared state file → every active Pi process running the extension stays in sync.
-- Break time indicator → red status/title/widget.
-- No input blocking → purely visual + notifications.
-
+- No widget, title mutation, theme override, glyph bar, or blocking UI.
+- Optional transition notifications.
 ## Commands
 
 ```text
@@ -31,7 +31,6 @@ Project: `.pi/settings.json`
       "breakMinutes": 5,
       "longBreakMinutes": 15,
       "longBreakEvery": 4,
-      "showWidgetDuringWork": false,
       "notifyTransitions": true,
       "syncFile": "/run/user/1000/pi-pomodoro-1000.json"
     }
