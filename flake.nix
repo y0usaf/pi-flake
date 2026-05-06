@@ -36,8 +36,11 @@
     piHashline.url = "path:./extensions/pi-hashline";
     piHashline.inputs.nixpkgs.follows = "nixpkgs";
 
-    piMinimalUi.url = "path:./extensions/pi-minimal-ui";
-    piMinimalUi.inputs.nixpkgs.follows = "nixpkgs";
+    piMinimalEditor.url = "path:./extensions/pi-minimal-editor";
+    piMinimalEditor.inputs.nixpkgs.follows = "nixpkgs";
+
+    piWorkingIndicator.url = "path:./extensions/pi-working-indicator";
+    piWorkingIndicator.inputs.nixpkgs.follows = "nixpkgs";
 
     piPomodoro.url = "path:./extensions/pi-pomodoro";
     piPomodoro.inputs.nixpkgs.follows = "nixpkgs";
@@ -56,7 +59,8 @@
     piToolManagement,
     piWebfetch,
     piHashline,
-    piMinimalUi,
+    piMinimalEditor,
+    piWorkingIndicator,
     piPomodoro,
     ...
   }: let
@@ -135,7 +139,8 @@
       "pi-tool-management" = piToolManagement.packages.${system}.default;
       "pi-webfetch" = piWebfetch.packages.${system}.default;
       "pi-hashline" = piHashline.packages.${system}.default;
-      "pi-minimal-ui" = piMinimalUi.packages.${system}.default;
+      "pi-minimal-editor" = piMinimalEditor.packages.${system}.default;
+      "pi-working-indicator" = piWorkingIndicator.packages.${system}.default;
       "pi-pomodoro" = piPomodoro.packages.${system}.default;
 
       # pi with default extensions pre-bundled. Morph is offered as an extension
@@ -257,7 +262,8 @@
       "tool-management" = self.packages.${system}."pi-tool-management";
       webfetch = self.packages.${system}."pi-webfetch";
       hashline = self.packages.${system}."pi-hashline";
-      "minimal-ui" = self.packages.${system}."pi-minimal-ui";
+      "minimal-editor" = self.packages.${system}."pi-minimal-editor";
+      "working-indicator" = self.packages.${system}."pi-working-indicator";
       pomodoro = self.packages.${system}."pi-pomodoro";
     };
 

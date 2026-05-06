@@ -1,0 +1,41 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://github.com/y0usaf/pi-flake/extensions/pi-minimal-editor/pi-minimal-editor.schema.json",
+	"title": "pi-minimal-editor extension settings",
+	"description": "Schema for the `extensionSettings[\"pi-minimal-editor\"]` block of Pi's settings.json (~/.pi/agent/settings.json globally, .pi/settings.json per-project). Project values override global values; thinking-level overrides merge.",
+	"type": "object",
+	"additionalProperties": false,
+	"properties": {
+		"colors": {
+			"type": "object",
+			"additionalProperties": false,
+			"description": "Override the Pi accent (\"pi\") and per-thinking-level border colors.",
+			"properties": {
+				"pi": {
+					"$ref": "#/$defs/hexColor",
+					"description": "Base accent color. Replaces the theme's `accent` for the `pi` label and current-path text."
+				},
+				"thinking": {
+					"type": "object",
+					"additionalProperties": false,
+					"description": "Per-thinking-level border colors. Each key replaces the corresponding theme token.",
+					"properties": {
+						"off": { "$ref": "#/$defs/hexColor" },
+						"minimal": { "$ref": "#/$defs/hexColor" },
+						"low": { "$ref": "#/$defs/hexColor" },
+						"medium": { "$ref": "#/$defs/hexColor" },
+						"high": { "$ref": "#/$defs/hexColor" },
+						"xhigh": { "$ref": "#/$defs/hexColor" }
+					}
+				}
+			}
+		}
+	},
+	"$defs": {
+		"hexColor": {
+			"type": "string",
+			"pattern": "^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$",
+			"examples": ["#00c878", "00c878", "#0c8"]
+		}
+	}
+}
