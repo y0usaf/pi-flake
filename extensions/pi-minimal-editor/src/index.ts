@@ -17,9 +17,9 @@ const COLOR: Record<Level, Parameters<Theme["fg"]>[0]> = {
 const compact = (n: number) => n < 1e3 ? `${n}` : n < 1e4 ? `${(n / 1e3).toFixed(1)}k` : n < 1e6 ? `${Math.round(n / 1e3)}k` : n < 1e7 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e6)}M`;
 const singleLine = (s: string) => s.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
 
-function statusColor(theme: Theme, color: Parameters<Theme["fg"]>[0], text: string): string {
+function statusColor(theme: Theme, text: string): string {
 	ANSI.lastIndex = 0;
-	return ANSI.test(text) ? text : theme.fg(color, text);
+	return ANSI.test(text) ? text : theme.fg("dim", text);
 }
 
 function footerStats(ctx: ExtensionContext, theme: Theme): string {
@@ -82,7 +82,7 @@ function borders(pi: ExtensionAPI, ctx: ExtensionContext, footer: Footer, theme:
 			box(theme.fg("dim", modelText), thinking && theme.fg(level === "off" ? "dim" : color, thinking)),
 			...[...footer.getExtensionStatuses().entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => {
 				const status = singleLine(value);
-				return status ? box(statusColor(theme, color, status)) : undefined;
+				return status ? box(statusColor(theme, status)) : undefined;
 			}),
 		].filter(Boolean) as string[]),
 	};
