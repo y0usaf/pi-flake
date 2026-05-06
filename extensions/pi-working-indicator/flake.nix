@@ -35,7 +35,7 @@
           runHook preInstall
           mkdir -p "$out"
           cp package.json README.md "$out"/
-          cp -r src "$out"/
+          cp -r extensions "$out"/
           runHook postInstall
         '';
 

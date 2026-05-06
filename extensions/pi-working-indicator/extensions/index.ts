@@ -1,21 +1,45 @@
 import { type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 const ANSI_FG_RESET = "\x1b[39m";
-const WORK_FRAME_MS = 50;
-const WORK_CYCLING_WIDTH = 15;
-const WORK_MAX_BIRTH_OFFSET_MS = 1000;
-const WORK_STARTUP_FRAMES = Math.ceil(WORK_MAX_BIRTH_OFFSET_MS / WORK_FRAME_MS) + 1;
-const WORK_STARTUP_SWITCH_MS = WORK_MAX_BIRTH_OFFSET_MS;
-const WORK_PRERENDERED_FRAMES = WORK_CYCLING_WIDTH * 2;
-const WORK_GRADIENT_RAMP_WIDTH = WORK_CYCLING_WIDTH * 3;
-const WORK_RUNES = "0123456789abcdefABCDEF~!@#$£€%^&*()+=_";
-const WORK_INITIAL_CHAR = ".";
-const WORK_HIDDEN_MESSAGE = "\u200B"; // zero-width: bypass pi's `||` fallback to "Working..."
+const ANSI_BASE_RGB = [
+	[0, 0, 0],
+	[128, 0, 0],
+	[0, 128, 0],
+	[128, 128, 0],
+	[0, 0, 128],
+	[128, 0, 128],
+	[0, 128, 128],
+	[192, 192, 192],
+	[128, 128, 128],
+	[255, 0, 0],
+	[0, 255, 0],
+	[255, 255, 0],
+	[0, 0, 255],
+	[255, 0, 255],
+	[0, 255, 255],
+	[255, 255, 255],
+] as const;
+const ANSI_CUBE_VALUES = [0, 95, 135, 175, 215, 255] as const;
+
+const INDICATOR = {
+	frameMs: 50,
+	width: 15,
+	maxBirthOffsetMs: 1000,
+	runes: "0123456789abcdefABCDEF~!@#$£€%^&*()+=_",
+	initialChar: ".",
+	hiddenMessage: "\u200B", // zero-width: bypass pi's `||` fallback to "Working..."
+} as const;
+
+const STARTUP_FRAMES = Math.ceil(INDICATOR.maxBirthOffsetMs / INDICATOR.frameMs) + 1;
+const STARTUP_SWITCH_MS = INDICATOR.maxBirthOffsetMs;
+const PRERENDERED_FRAMES = INDICATOR.width * 2;
+const GRADIENT_RAMP_WIDTH = INDICATOR.width * 3;
 
 type Theme = ExtensionContext["ui"]["theme"];
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 type Rgb = { r: number; g: number; b: number };
 type Hsl = { h: number; s: number; l: number };
+type Gradient = ReturnType<typeof workingGradient>;
 
 const THINKING_COLOR: Record<ThinkingLevel, Parameters<Theme["fg"]>[0]> = {
 	off: "thinkingOff",
@@ -26,11 +50,11 @@ const THINKING_COLOR: Record<ThinkingLevel, Parameters<Theme["fg"]>[0]> = {
 	xhigh: "thinkingXhigh",
 };
 
-const CUBE_VALUES = [0, 95, 135, 175, 215, 255];
-const GRAY_VALUES = Array.from({ length: 24 }, (_, i) => 8 + i * 10);
-
 let workingIndicatorTimer: ReturnType<typeof setTimeout> | undefined;
 let workingIndicatorGeneration = 0;
+
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+const rgb = ([r, g, b]: readonly [number, number, number]): Rgb => ({ r, g, b });
 
 function currentThinkingLevel(pi: ExtensionAPI, ctx: ExtensionContext): ThinkingLevel | undefined {
 	if (!ctx.model?.reasoning) return undefined;
@@ -39,36 +63,16 @@ function currentThinkingLevel(pi: ExtensionAPI, ctx: ExtensionContext): Thinking
 }
 
 function ansi256ToRgb(index: number): Rgb {
-	if (index < 16) {
-		const base: Rgb[] = [
-			{ r: 0, g: 0, b: 0 },
-			{ r: 128, g: 0, b: 0 },
-			{ r: 0, g: 128, b: 0 },
-			{ r: 128, g: 128, b: 0 },
-			{ r: 0, g: 0, b: 128 },
-			{ r: 128, g: 0, b: 128 },
-			{ r: 0, g: 128, b: 128 },
-			{ r: 192, g: 192, b: 192 },
-			{ r: 128, g: 128, b: 128 },
-			{ r: 255, g: 0, b: 0 },
-			{ r: 0, g: 255, b: 0 },
-			{ r: 255, g: 255, b: 0 },
-			{ r: 0, g: 0, b: 255 },
-			{ r: 255, g: 0, b: 255 },
-			{ r: 0, g: 255, b: 255 },
-			{ r: 255, g: 255, b: 255 },
-		];
-		return base[Math.max(0, Math.min(15, index))]!;
-	}
+	if (index < 16) return rgb(ANSI_BASE_RGB[clamp(index, 0, ANSI_BASE_RGB.length - 1)]!);
 	if (index >= 232) {
-		const gray = GRAY_VALUES[Math.max(0, Math.min(GRAY_VALUES.length - 1, index - 232))]!;
+		const gray = 8 + clamp(index - 232, 0, 23) * 10;
 		return { r: gray, g: gray, b: gray };
 	}
-	const offset = Math.max(0, Math.min(215, index - 16));
+	const offset = clamp(index - 16, 0, 215);
 	return {
-		r: CUBE_VALUES[Math.floor(offset / 36)]!,
-		g: CUBE_VALUES[Math.floor(offset / 6) % 6]!,
-		b: CUBE_VALUES[offset % 6]!,
+		r: ANSI_CUBE_VALUES[Math.floor(offset / 36)]!,
+		g: ANSI_CUBE_VALUES[Math.floor(offset / 6) % 6]!,
+		b: ANSI_CUBE_VALUES[offset % 6]!,
 	};
 }
 
@@ -127,10 +131,6 @@ function gradientAnsi(start: Rgb, end: Rgb, index: number, total: number): strin
 	return `\x1b[38;2;${rgb.r};${rgb.g};${rgb.b}m`;
 }
 
-function stripAnsi(value: string): string {
-	return value.replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|_[^\x07]*(?:\x07|\x1b\\))/g, "");
-}
-
 function clearWorkingIndicatorTimer(): void {
 	workingIndicatorGeneration++;
 	if (workingIndicatorTimer) {
@@ -147,52 +147,47 @@ function workingGradient(theme: Theme, thinking: ThinkingLevel | undefined): { a
 	return { accentAnsi, accentRgb, endRgb };
 }
 
-function workingGradientAnsi(gradient: ReturnType<typeof workingGradient>, index: number): string {
+function workingGradientAnsi(gradient: Gradient, index: number): string {
 	if (!gradient.accentRgb || !gradient.endRgb) return gradient.accentAnsi;
-	const wrapped = ((index % WORK_GRADIENT_RAMP_WIDTH) + WORK_GRADIENT_RAMP_WIDTH) % WORK_GRADIENT_RAMP_WIDTH;
-	const segment = Math.floor(wrapped / WORK_CYCLING_WIDTH);
-	const localIndex = wrapped % WORK_CYCLING_WIDTH;
+	const wrapped = ((index % GRADIENT_RAMP_WIDTH) + GRADIENT_RAMP_WIDTH) % GRADIENT_RAMP_WIDTH;
+	const segment = Math.floor(wrapped / INDICATOR.width);
+	const localIndex = wrapped % INDICATOR.width;
 	return segment === 1
-		? gradientAnsi(gradient.endRgb, gradient.accentRgb, localIndex, WORK_CYCLING_WIDTH)
-		: gradientAnsi(gradient.accentRgb, gradient.endRgb, localIndex, WORK_CYCLING_WIDTH);
+		? gradientAnsi(gradient.endRgb, gradient.accentRgb, localIndex, INDICATOR.width)
+		: gradientAnsi(gradient.accentRgb, gradient.endRgb, localIndex, INDICATOR.width);
 }
 
-function workingCellColors(gradient: ReturnType<typeof workingGradient>, offset: number): string[] {
-	return Array.from({ length: WORK_CYCLING_WIDTH }, (_, i) => workingGradientAnsi(gradient, i + offset));
+function workingCellColors(gradient: Gradient, offset: number): string[] {
+	return Array.from({ length: INDICATOR.width }, (_, i) => workingGradientAnsi(gradient, i + offset));
 }
 
 function renderWorkingFrame(colors: string[], chars: string[]): string {
-	let out = "";
-	for (let i = 0; i < WORK_CYCLING_WIDTH; i++) out += `${colors[i] ?? ""}${chars[i] ?? WORK_INITIAL_CHAR}`;
-	return `${out}${ANSI_FG_RESET}`;
+	const cells = colors.map((color, i) => `${color}${chars[i] ?? INDICATOR.initialChar}`).join("");
+	return `${cells}${ANSI_FG_RESET}`;
 }
 
 function randomWorkingChars(): string[] {
-	return Array.from({ length: WORK_CYCLING_WIDTH }, () => WORK_RUNES[Math.floor(Math.random() * WORK_RUNES.length)] ?? WORK_INITIAL_CHAR);
-}
-
-function buildWorkingInitialFrames(gradient: ReturnType<typeof workingGradient>): string[] {
-	return Array.from({ length: WORK_PRERENDERED_FRAMES }, (_, frame) =>
-		renderWorkingFrame(workingCellColors(gradient, frame), Array.from({ length: WORK_CYCLING_WIDTH }, () => WORK_INITIAL_CHAR)),
+	return Array.from(
+		{ length: INDICATOR.width },
+		() => INDICATOR.runes[Math.floor(Math.random() * INDICATOR.runes.length)] ?? INDICATOR.initialChar,
 	);
 }
 
-function buildWorkingLoopFrames(gradient: ReturnType<typeof workingGradient>): string[] {
-	return Array.from({ length: WORK_PRERENDERED_FRAMES }, (_, frame) => renderWorkingFrame(workingCellColors(gradient, frame), randomWorkingChars()));
+function renderFrames(gradient: Gradient, charFrames: string[][]): string[] {
+	return charFrames.map((chars, frame) => renderWorkingFrame(workingCellColors(gradient, frame), chars));
 }
 
-function visibleChars(frame: string): string[] {
-	return stripAnsi(frame).slice(0, WORK_CYCLING_WIDTH).split("");
+function buildWorkingLoopFrames(gradient: Gradient, charFrames = Array.from({ length: PRERENDERED_FRAMES }, randomWorkingChars)): string[] {
+	return renderFrames(gradient, charFrames);
 }
 
-function buildWorkingStartupFrames(gradient: ReturnType<typeof workingGradient>, initialFrames: string[], loopFrames: string[]): string[] {
-	const birthOffsets = Array.from({ length: WORK_CYCLING_WIDTH }, () => Math.random() * WORK_MAX_BIRTH_OFFSET_MS);
-	return Array.from({ length: WORK_STARTUP_FRAMES }, (_, frame) => {
-		const elapsedMs = frame * WORK_FRAME_MS;
-		const initialChars = visibleChars(initialFrames[frame % initialFrames.length] ?? "");
-		const cyclingChars = visibleChars(loopFrames[frame % loopFrames.length] ?? "");
-		const chars = Array.from({ length: WORK_CYCLING_WIDTH }, (_, index) =>
-			elapsedMs < (birthOffsets[index] ?? 0) ? (initialChars[index] ?? WORK_INITIAL_CHAR) : (cyclingChars[index] ?? WORK_INITIAL_CHAR),
+function buildWorkingStartupFrames(gradient: Gradient, loopCharFrames: string[][]): string[] {
+	const birthOffsets = Array.from({ length: INDICATOR.width }, () => Math.random() * INDICATOR.maxBirthOffsetMs);
+	return Array.from({ length: STARTUP_FRAMES }, (_, frame) => {
+		const elapsedMs = frame * INDICATOR.frameMs;
+		const cyclingChars = loopCharFrames[frame % loopCharFrames.length] ?? [];
+		const chars = Array.from({ length: INDICATOR.width }, (_, index) =>
+			elapsedMs < (birthOffsets[index] ?? 0) ? INDICATOR.initialChar : (cyclingChars[index] ?? INDICATOR.initialChar),
 		);
 		return renderWorkingFrame(workingCellColors(gradient, frame), chars);
 	});
@@ -201,22 +196,22 @@ function buildWorkingStartupFrames(gradient: ReturnType<typeof workingGradient>,
 function applyWorkingIndicator(pi: ExtensionAPI, ctx: ExtensionContext, startup = false): void {
 	clearWorkingIndicatorTimer();
 	const gradient = workingGradient(ctx.ui.theme, currentThinkingLevel(pi, ctx));
-	const initialFrames = buildWorkingInitialFrames(gradient);
-	const loopFrames = buildWorkingLoopFrames(gradient);
-	ctx.ui.setWorkingMessage(WORK_HIDDEN_MESSAGE);
+	const loopCharFrames = Array.from({ length: PRERENDERED_FRAMES }, randomWorkingChars);
+	const loopFrames = buildWorkingLoopFrames(gradient, loopCharFrames);
+	ctx.ui.setWorkingMessage(INDICATOR.hiddenMessage);
 
 	if (startup) {
-		ctx.ui.setWorkingIndicator({ frames: buildWorkingStartupFrames(gradient, initialFrames, loopFrames), intervalMs: WORK_FRAME_MS });
+		ctx.ui.setWorkingIndicator({ frames: buildWorkingStartupFrames(gradient, loopCharFrames), intervalMs: INDICATOR.frameMs });
 		const generation = workingIndicatorGeneration;
 		workingIndicatorTimer = setTimeout(() => {
 			if (generation !== workingIndicatorGeneration) return;
 			workingIndicatorTimer = undefined;
-			ctx.ui.setWorkingIndicator({ frames: loopFrames, intervalMs: WORK_FRAME_MS });
-		}, WORK_STARTUP_SWITCH_MS);
+			ctx.ui.setWorkingIndicator({ frames: loopFrames, intervalMs: INDICATOR.frameMs });
+		}, STARTUP_SWITCH_MS);
 		return;
 	}
 
-	ctx.ui.setWorkingIndicator({ frames: loopFrames, intervalMs: WORK_FRAME_MS });
+	ctx.ui.setWorkingIndicator({ frames: loopFrames, intervalMs: INDICATOR.frameMs });
 }
 
 export default function workingIndicator(pi: ExtensionAPI) {
