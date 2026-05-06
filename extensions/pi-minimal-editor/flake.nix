@@ -34,7 +34,7 @@
         installPhase = ''
           runHook preInstall
           mkdir -p "$out"
-          cp package.json README.md pi-minimal-editor.schema.json "$out"/
+          cp package.json README.md "$out"/
           cp -r src "$out"/
           runHook postInstall
         '';
