@@ -76,6 +76,7 @@ in {
       webfetch = mkEnableOption "pi-webfetch extension";
       hashline = mkEnableOption "pi-hashline v2 read/edit tool override";
       "minimal-ui" = mkEnableOption "pi-minimal-ui statusline and compact input box extension";
+      pomodoro = mkEnableOption "pi-pomodoro synced non-blocking timer extension";
     };
 
     extraExtensions = mkOption {
