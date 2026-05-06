@@ -17,6 +17,11 @@ const COLOR: Record<Level, Parameters<Theme["fg"]>[0]> = {
 const compact = (n: number) => n < 1e3 ? `${n}` : n < 1e4 ? `${(n / 1e3).toFixed(1)}k` : n < 1e6 ? `${Math.round(n / 1e3)}k` : n < 1e7 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e6)}M`;
 const singleLine = (s: string) => s.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
 
+function statusColor(theme: Theme, color: Parameters<Theme["fg"]>[0], text: string): string {
+	ANSI.lastIndex = 0;
+	return ANSI.test(text) ? text : theme.fg(color, text);
+}
+
 function footerStats(ctx: ExtensionContext, theme: Theme): string {
 	let input = 0, output = 0, read = 0, write = 0, cost = 0;
 	for (const entry of ctx.sessionManager.getEntries()) {
@@ -75,7 +80,10 @@ function borders(pi: ExtensionAPI, ctx: ExtensionContext, footer: Footer, theme:
 		top: line([box(theme.fg("dim", cwd)), box(theme.fg("dim", footerStats(ctx, theme)))].filter(Boolean) as string[]),
 		bottom: line([
 			box(theme.fg("dim", modelText), thinking && theme.fg(level === "off" ? "dim" : color, thinking)),
-			...[...footer.getExtensionStatuses().entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => box(singleLine(value))),
+			...[...footer.getExtensionStatuses().entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => {
+				const status = singleLine(value);
+				return status ? box(statusColor(theme, color, status)) : undefined;
+			}),
 		].filter(Boolean) as string[]),
 	};
 }
