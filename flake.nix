@@ -38,6 +38,9 @@
 
     piMinimalUi.url = "path:./extensions/pi-minimal-ui";
     piMinimalUi.inputs.nixpkgs.follows = "nixpkgs";
+
+    piPomodoro.url = "path:./extensions/pi-pomodoro";
+    piPomodoro.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs = {
@@ -54,6 +57,7 @@
     piWebfetch,
     piHashline,
     piMinimalUi,
+    piPomodoro,
     ...
   }: let
     systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
@@ -132,6 +136,7 @@
       "pi-webfetch" = piWebfetch.packages.${system}.default;
       "pi-hashline" = piHashline.packages.${system}.default;
       "pi-minimal-ui" = piMinimalUi.packages.${system}.default;
+      "pi-pomodoro" = piPomodoro.packages.${system}.default;
 
       # pi with default extensions pre-bundled. Morph is offered as an extension
       # package/flag but is excluded from pi-full by default because it requires
@@ -253,6 +258,7 @@
       webfetch = self.packages.${system}."pi-webfetch";
       hashline = self.packages.${system}."pi-hashline";
       "minimal-ui" = self.packages.${system}."pi-minimal-ui";
+      pomodoro = self.packages.${system}."pi-pomodoro";
     };
 
     # Default bundle used by pi-full. Keep remote/API-key-dependent extensions opt-in.

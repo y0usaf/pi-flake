@@ -114,6 +114,22 @@
       },
       "parent": []
     },
+    "piPomodoro": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-pomodoro",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-pomodoro",
+        "type": "path"
+      },
+      "parent": []
+    },
     "piMorph": {
       "inputs": {
         "nixpkgs": [
@@ -207,6 +223,7 @@
         "piHashline": "piHashline",
         "piMinimalUi": "piMinimalUi",
         "piMorph": "piMorph",
+        "piPomodoro": "piPomodoro",
         "piRtk": "piRtk",
         "piSrc": "piSrc",
         "piToolManagement": "piToolManagement",
