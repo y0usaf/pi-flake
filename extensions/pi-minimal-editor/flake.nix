@@ -1,5 +1,5 @@
 {
-  description = "Nix flake for pi-minimal-ui";
+  description = "Nix flake for pi-minimal-editor";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -24,8 +24,8 @@
       lib = pkgs.lib;
       packageJson = builtins.fromJSON (builtins.readFile ./package.json);
     in {
-      pi-minimal-ui = pkgs.stdenvNoCC.mkDerivation {
-        pname = "pi-minimal-ui";
+      pi-minimal-editor = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-minimal-editor";
         version = packageJson.version;
         src = lib.cleanSource ./.;
 
@@ -34,7 +34,7 @@
         installPhase = ''
           runHook preInstall
           mkdir -p "$out"
-          cp package.json README.md pi-minimal-ui.schema.json "$out"/
+          cp package.json README.md pi-minimal-editor.schema.json "$out"/
           cp -r src "$out"/
           runHook postInstall
         '';
@@ -44,13 +44,13 @@
         };
 
         meta = with lib; {
-          description = "Pi minimal UI extension with statusline and compact input box";
+          description = "Pi minimal editor border extension";
           license = licenses.mit;
           platforms = platforms.all;
         };
       };
 
-      default = self.packages.${system}.pi-minimal-ui;
+      default = self.packages.${system}.pi-minimal-editor;
     });
 
     devShells = forAllSystems (system: let
@@ -59,7 +59,7 @@
       default = pkgs.mkShell {
         packages = with pkgs; [nodejs_22];
         shellHook = ''
-          echo "pi-minimal-ui dev shell — node $(node --version)"
+          echo "pi-minimal-editor dev shell — node $(node --version)"
         '';
       };
     });

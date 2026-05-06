@@ -1,5 +1,5 @@
 {
-  "name": "pi-minimal-ui",
+  "name": "pi-working-indicator",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -7,9 +7,7 @@
     "extensions": ["./src/index.ts"]
   },
   "peerDependencies": {
-    "@mariozechner/pi-ai": "*",
-    "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-tui": "*"
+    "@mariozechner/pi-coding-agent": "*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0"

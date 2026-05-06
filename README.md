@@ -79,7 +79,8 @@ Flake `inputs` cannot pass arbitrary booleans into another flake's outputs. Use 
         "tool-management" = false;
         webfetch = true;
         hashline = true;
-        "minimal-ui" = true;
+        "minimal-editor" = true;
+        "working-indicator" = true;
       };
     };
   };
@@ -115,7 +116,8 @@ Only flags set to `true` are copied into the bundled wrapper.
             #   webfetch = true;
             #   hashline = true;
             #   # morph = true; # opt-in; not included by full/pi-full by default
-            #   "minimal-ui" = true;
+            #   "minimal-editor" = true;
+            #   "working-indicator" = true;
             # };
 
             # Option 3: concrete package
@@ -145,7 +147,8 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-tool-management` | Tool management interface |
 | `pi-webfetch` | HTTP fetching utilities |
 | `pi-hashline` | Hashline v2 read/edit tool override |
-| `pi-minimal-ui` | Minimal statusline + centered compact input box |
+| `pi-minimal-editor` | Minimal editor borders with footer/status metadata |
+| `pi-working-indicator` | Compact animated working indicator |
 
 ---
 

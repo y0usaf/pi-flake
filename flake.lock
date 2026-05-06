@@ -16,7 +16,6 @@
         "type": "github"
       }
     },
-
     "piCodexFast": {
       "inputs": {
         "nixpkgs": [
@@ -65,7 +64,6 @@
       },
       "parent": []
     },
-
     "piGeckoWebsearch": {
       "inputs": {
         "nixpkgs": [
@@ -98,34 +96,18 @@
       },
       "parent": []
     },
-    "piMinimalUi": {
+    "piMinimalEditor": {
       "inputs": {
         "nixpkgs": [
           "nixpkgs"
         ]
       },
       "locked": {
-        "path": "./extensions/pi-minimal-ui",
+        "path": "./extensions/pi-minimal-editor",
         "type": "path"
       },
       "original": {
-        "path": "./extensions/pi-minimal-ui",
-        "type": "path"
-      },
-      "parent": []
-    },
-    "piPomodoro": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-pomodoro",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-pomodoro",
+        "path": "./extensions/pi-minimal-editor",
         "type": "path"
       },
       "parent": []
@@ -142,6 +124,22 @@
       },
       "original": {
         "path": "./extensions/pi-morph",
+        "type": "path"
+      },
+      "parent": []
+    },
+    "piPomodoro": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-pomodoro",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-pomodoro",
         "type": "path"
       },
       "parent": []
@@ -211,23 +209,38 @@
       },
       "parent": []
     },
+    "piWorkingIndicator": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-working-indicator",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-working-indicator",
+        "type": "path"
+      },
+      "parent": []
+    },
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
-
         "piCodexFast": "piCodexFast",
         "piCompact": "piCompact",
         "piContextJanitor": "piContextJanitor",
-
         "piGeckoWebsearch": "piGeckoWebsearch",
         "piHashline": "piHashline",
-        "piMinimalUi": "piMinimalUi",
+        "piMinimalEditor": "piMinimalEditor",
         "piMorph": "piMorph",
         "piPomodoro": "piPomodoro",
         "piRtk": "piRtk",
         "piSrc": "piSrc",
         "piToolManagement": "piToolManagement",
-        "piWebfetch": "piWebfetch"
+        "piWebfetch": "piWebfetch",
+        "piWorkingIndicator": "piWorkingIndicator"
       }
     }
   },
