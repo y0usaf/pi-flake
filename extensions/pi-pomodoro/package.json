@@ -10,15 +10,12 @@
     "directory": "extensions/pi-pomodoro"
   },
   "keywords": ["pi", "extension", "pomodoro", "timer", "focus"],
-  "files": ["src", "README.md", "package.json"],
+  "files": ["src", "README.md"],
   "type": "module",
   "pi": {
     "extensions": ["./src/index.ts"]
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "^0.70.0"
-  },
-  "devDependencies": {
-    "@types/node": "^22.0.0"
   }
 }
