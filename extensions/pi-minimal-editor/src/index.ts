@@ -6,6 +6,7 @@ type Level = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 type Footer = {
 	getGitBranch(): string | null;
 	getExtensionStatuses(): ReadonlyMap<string, string>;
+	getAvailableProviderCount(): number;
 	onBranchChange(callback: () => void): () => void;
 };
 
@@ -13,16 +14,11 @@ const ANSI = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|_[^\x07]*(?:\
 const COLOR: Record<Level, Parameters<Theme["fg"]>[0]> = {
 	off: "thinkingOff", minimal: "thinkingMinimal", low: "thinkingLow", medium: "thinkingMedium", high: "thinkingHigh", xhigh: "thinkingXhigh",
 };
-const compact = (n: number) => n < 1e3 ? `${n}` : n < 1e4 ? `${(n / 1e3).toFixed(1)}K` : n < 1e6 ? `${Math.round(n / 1e3)}K` : n < 1e7 ? `${(n / 1e6).toFixed(1)}M` : n < 1e9 ? `${Math.round(n / 1e6)}M` : n < 1e10 ? `${(n / 1e9).toFixed(1)}B` : `${Math.round(n / 1e9)}B`;
-const sanitize = (s: string) => s.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x9d[^\x07\x9c]*(?:\x07|\x9c)/g, "").replace(/\x1b(?:P|_|\^)[\s\S]*?\x1b\\|[\x90\x9e\x9f][\s\S]*?\x9c/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]|\x9b[0-?]*[ -/]*[@-~]/g, "").replace(/\x1b[@-Z\\-_]/g, "").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/ +/g, " ").trim();
-
-function contextColor(pct: number, contextWindow: number): Parameters<Theme["fg"]>[0] | undefined {
-	const reaches = (percent: number, tokens: number) => Number.isFinite(pct) && pct > 0 && (Number.isFinite(contextWindow) && contextWindow > 0 ? pct >= Math.min(percent, (tokens / contextWindow) * 100) : pct >= percent);
-	return reaches(90, 500_000) ? "error" : reaches(70, 270_000) ? "thinkingHigh" : reaches(50, 150_000) ? "warning" : undefined;
-}
+const compact = (n: number) => n < 1e3 ? `${n}` : n < 1e4 ? `${(n / 1e3).toFixed(1)}k` : n < 1e6 ? `${Math.round(n / 1e3)}k` : n < 1e7 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e6)}M`;
+const singleLine = (s: string) => s.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
 
 function footerStats(ctx: ExtensionContext, theme: Theme): string {
-	let input = 0, output = 0, read = 0, write = 0, cost = 0, premium = 0;
+	let input = 0, output = 0, read = 0, write = 0, cost = 0;
 	for (const entry of ctx.sessionManager.getEntries()) {
 		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
 		input += entry.message.usage?.input ?? 0;
@@ -30,16 +26,20 @@ function footerStats(ctx: ExtensionContext, theme: Theme): string {
 		read += entry.message.usage?.cacheRead ?? 0;
 		write += entry.message.usage?.cacheWrite ?? 0;
 		cost += entry.message.usage?.cost?.total ?? 0;
-		premium += (entry.message.usage as { premiumRequests?: number } | undefined)?.premiumRequests ?? 0;
 	}
 	const context = ctx.getContextUsage();
 	const contextWindow = context?.contextWindow ?? ctx.model?.contextWindow ?? 0;
 	const pct = context?.percent ?? 0;
 	const pctText = context?.percent !== null ? `${pct.toFixed(1)}%/${compact(contextWindow)} (auto)` : `?/${compact(contextWindow)} (auto)`;
-	const color = contextColor(pct, contextWindow);
 	const sub = ctx.model ? ctx.modelRegistry.isUsingOAuth(ctx.model) : false;
-	const billing = [cost && `$${cost.toFixed(3)}`, Math.round((premium + Number.EPSILON) * 100) / 100 || undefined, sub && "(sub)"].filter(Boolean).map(x => typeof x === "number" ? `★ ${compact(x)}` : x).join(" ");
-	return [input && `↑${compact(input)}`, output && `↓${compact(output)}`, read && `R${compact(read)}`, write && `W${compact(write)}`, billing, color ? theme.fg(color, pctText) : pctText].filter(Boolean).join(" ");
+	return [
+		input && `↑${compact(input)}`,
+		output && `↓${compact(output)}`,
+		read && `R${compact(read)}`,
+		write && `W${compact(write)}`,
+		(cost || sub) && `$${cost.toFixed(3)}${sub ? " (sub)" : ""}`,
+		pct > 90 ? theme.fg("error", pctText) : pct > 70 ? theme.fg("warning", pctText) : pctText,
+	].filter(Boolean).join(" ");
 }
 
 
@@ -61,20 +61,25 @@ function borders(pi: ExtensionAPI, ctx: ExtensionContext, footer: Footer, theme:
 	if (home && cwd.startsWith(home)) cwd = `~${cwd.slice(home.length)}`;
 	const branch = footer.getGitBranch();
 	if (branch) cwd += ` (${branch})`;
+	const session = ctx.sessionManager.getSessionName();
+	if (session) cwd += ` • ${session}`;
 	if (cwd.length > width) {
 		const half = Math.floor(width / 2) - 1;
 		cwd = half > 1 ? `${cwd.slice(0, half)}…${cwd.slice(-(half - 1))}` : cwd.slice(0, Math.max(1, width));
 	}
 
+	const model = ctx.model?.id || "no-model";
+	const modelText = footer.getAvailableProviderCount() > 1 && ctx.model ? `(${ctx.model.provider}) ${model}` : model;
+	const thinking = ctx.model?.reasoning ? level === "off" ? "thinking off" : level : undefined;
 	return {
 		top: line([box(theme.fg("dim", cwd)), box(theme.fg("dim", footerStats(ctx, theme)))].filter(Boolean) as string[]),
 		bottom: line([
-			box(theme.fg("dim", ctx.model?.id || "no-model"), ctx.model?.reasoning && level !== "off" && theme.fg(color, level)),
-			...[...footer.getExtensionStatuses().entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => box(theme.fg("dim", sanitize(value)))),
+			box(theme.fg("dim", modelText), thinking && theme.fg(level === "off" ? "dim" : color, thinking)),
+			...[...footer.getExtensionStatuses().entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => box(singleLine(value))),
 		].filter(Boolean) as string[]),
-
 	};
 }
+
 
 class MinimalEditor extends CustomEditor {
 	constructor(private readonly getBorders: (width: number) => { top: string; bottom: string }, ...args: ConstructorParameters<typeof CustomEditor>) { super(...args); }
