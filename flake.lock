@@ -163,11 +163,11 @@
     "piSrc": {
       "flake": false,
       "locked": {
-        "lastModified": 1777033471,
-        "narHash": "sha256-KNpodvUvYr2sR9BI4Dgt8xyxHR4PsZ8d6g8IqwIq4Is=",
+        "lastModified": 1778060089,
+        "narHash": "sha256-Phuc09uqReI87DLLykvcyLWWrXlamv+v/1zXsTPQWOQ=",
         "owner": "badlogic",
         "repo": "pi-mono",
-        "rev": "3e0ee69b5ead441e4669b123b2f98635fee7da30",
+        "rev": "ace3fd7e301baf3bcc9d2de1ddf81533f3161954",
         "type": "github"
       },
       "original": {
