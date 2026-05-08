@@ -1,6 +1,6 @@
 # pi-flake
 
-Nix flake for building [pi](https://github.com/badlogic/pi-mono) with optional extension bundles.
+Nix flake for building [pi](https://github.com/earendil-works/pi) with optional extension bundles.
 
 **Features:**
 - Base `pi` package built from source
