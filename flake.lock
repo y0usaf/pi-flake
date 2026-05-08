@@ -144,6 +144,22 @@
       },
       "parent": []
     },
+    "piRlm": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-rlm",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-rlm",
+        "type": "path"
+      },
+      "parent": []
+    },
     "piRtk": {
       "inputs": {
         "nixpkgs": [
@@ -236,6 +252,7 @@
         "piMinimalEditor": "piMinimalEditor",
         "piMorph": "piMorph",
         "piPomodoro": "piPomodoro",
+        "piRlm": "piRlm",
         "piRtk": "piRtk",
         "piSrc": "piSrc",
         "piToolManagement": "piToolManagement",
