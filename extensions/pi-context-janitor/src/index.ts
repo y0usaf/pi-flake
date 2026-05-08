@@ -1,787 +1,35 @@
-import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { completeSimple as complete, type Model, type ToolResultMessage, type Usage } from "@mariozechner/pi-ai";
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { Component } from "@mariozechner/pi-tui";
-import { truncateToWidth } from "@mariozechner/pi-tui";
-
-const SETTINGS_DIR = join(getAgentDir(), "context-janitor");
-const SETTINGS_PATH = join(SETTINGS_DIR, "settings.json");
-
-const INDEX_CUSTOM_TYPE = "context-janitor-index";
-const RESTORE_CUSTOM_TYPE = "context-janitor-restore";
-const SUMMARY_CUSTOM_TYPE = "context-janitor-summary";
-const NOTICE_CUSTOM_TYPE = "context-janitor-notice";
-const STATUS_KEY = "context-janitor";
-const PI_COMPACT_GLOBAL_KEY = "__piCompactEnabled";
-const JANITOR_CUSTOM_TYPES = new Set([INDEX_CUSTOM_TYPE, RESTORE_CUSTOM_TYPE, SUMMARY_CUSTOM_TYPE, NOTICE_CUSTOM_TYPE]);
-
-// Keep projected tool results protocol-valid while adding no visible transcript text.
-const CONTEXT_HIDDEN_TEXT = "\u200B";
-const DEBOUNCE_MS = 900;
-const HYSTERESIS_MIN_TOOL_CALLS = 6;
-const HYSTERESIS_MIN_RAW_CHARS = 16_000;
-const HYSTERESIS_MAX_AGE_MS = 60_000;
-const HYSTERESIS_RECHECK_MS = 5_000;
-const MAX_DECIDER_INPUT_CHARS = 60_000;
-const MAX_RECORDS_PER_PASS = 24;
-const MAX_DECIDER_TOKENS = 1_000;
-
-const STATUS_ENABLED_IDLE = "janitor ⣿";
-const STATUS_DISABLED = "janitor";
-const STATUS_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const STATUS_SPINNER_MS = 120;
-const DECIDER_SYSTEM_PROMPT = `You are Context Janitor, a conservative background context cleaner for a coding agent.
-
-You receive JSON objects representing completed tool results. Each object has an id and a hash. Decide which tool-result outputs are safe to replace with a hidden placeholder in future model context.
-
-Output JSON only:
-{"actions":[{"target":{"id":"...","hash":"..."},"action":"truncate|keep","reason":"..."}]}
-
-Policy:
-- Truncate only operational clutter: duplicate/noisy output, progress logs, stale failed attempts that were corrected, typo commands, irrelevant exploration, or huge output with no durable fact.
-- Keep unresolved errors, the latest test/build/lint result, file contents/snippets likely needed, command outputs with side effects, permission/network failures, and anything uncertain.
-- Be conservative. If unsure, keep.
-- Never invent ids or hashes. Use only the provided id/hash pairs.`;
-
-interface JanitorSettings {
-	enabled: boolean;
-}
-
-interface ToolCallRecord {
-	toolCallId: string;
-	toolName: string;
-	args: unknown;
-	resultText: string;
-	isError: boolean;
-	turnIndex: number;
-	timestamp: number;
-	summaryId: string;
-	hash?: string;
-	janitorReason?: string;
-}
-
-interface PendingToolCallRecord extends Omit<ToolCallRecord, "summaryId"> {}
-
-interface CapturedBatch {
-	turnIndex: number;
-	toolCalls: PendingToolCallRecord[];
-	rawChars: number;
-	capturedAt: number;
-}
-
-interface SummaryIndexEntry {
-	version: 1;
-	summaryId: string;
-	createdAt: string;
-	reason: string;
-	rawChars: number;
-	projectedChars: number;
-	deciderModel: string;
-	usage?: Usage;
-	toolCalls: ToolCallRecord[];
-}
-
-interface RestoreIndexEntry {
-	version: 1;
-	restoreId: string;
-	createdAt: string;
-	reason: string;
-	summaryIds: string[];
-}
-
-interface DeciderObject {
-	id: string;
-	hash: string;
-	kind: "tool_result";
-	toolName: string;
-	status: "ok" | "error";
-	turnIndex: number;
-	rawChars: number;
-	argsPreview: string;
-	outputPreview: string;
-}
-
-interface DeciderAction {
-	target: { id: string; hash: string };
-	action: "truncate" | "keep";
-	reason: string;
-}
-
-const DEFAULT_SETTINGS: JanitorSettings = {
-	enabled: true,
-};
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function parseSettings(raw: unknown): Partial<JanitorSettings> {
-	if (typeof raw === "boolean") return { enabled: raw };
-	if (!isRecord(raw)) return {};
-	return typeof raw.enabled === "boolean" ? { enabled: raw.enabled } : {};
-}
-
-async function loadSettings(): Promise<{ settings: JanitorSettings; error?: string }> {
-	try {
-		const raw = await readFile(SETTINGS_PATH, "utf-8");
-		try {
-			return { settings: { ...DEFAULT_SETTINGS, ...parseSettings(JSON.parse(raw) as unknown) } };
-		} catch (error) {
-			return {
-				settings: { ...DEFAULT_SETTINGS },
-				error: `Failed to parse ${SETTINGS_PATH}: ${error instanceof Error ? error.message : String(error)}`,
-			};
-		}
-	} catch (error) {
-		const err = error as NodeJS.ErrnoException;
-		if (err?.code === "ENOENT") return { settings: { ...DEFAULT_SETTINGS } };
-		return {
-			settings: { ...DEFAULT_SETTINGS },
-			error: `Failed to read ${SETTINGS_PATH}: ${err?.message ?? String(error)}`,
-		};
-	}
-}
-
-async function saveSettings(settings: JanitorSettings): Promise<void> {
-	await mkdir(SETTINGS_DIR, { recursive: true });
-	await writeFile(SETTINGS_PATH, `${JSON.stringify(settings, null, 2)}\n`, "utf-8");
-}
-
-function formatCount(value: number): string {
-	if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-	if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
-	return String(value);
-}
-
-function formatChars(value: number): string {
-	return `${formatCount(value)}ch`;
-}
-
-function isPiCompactEnabled(): boolean {
-	return (globalThis as Record<string, unknown>)[PI_COMPACT_GLOBAL_KEY] === true;
-}
-
-function truncateMiddle(text: string, maxChars: number): string {
-	if (text.length <= maxChars) return text;
-	if (maxChars <= 1) return "…".slice(0, Math.max(0, maxChars));
-	const marker = `\n...[truncated ${text.length - maxChars} chars]...\n`;
-	if (marker.length >= maxChars) return `${text.slice(0, maxChars - 1)}…`;
-	const head = Math.max(0, Math.floor((maxChars - marker.length) * 0.58));
-	const tail = Math.max(0, maxChars - marker.length - head);
-	return `${text.slice(0, head)}${marker}${text.slice(text.length - tail)}`;
-}
-
-function safeJson(value: unknown, maxChars = 4_000): string {
-	try {
-		const text = JSON.stringify(value, null, 2);
-		return truncateMiddle(text === undefined ? "undefined" : text, maxChars);
-	} catch {
-		return truncateMiddle(String(value), maxChars);
-	}
-}
-
-
-function stableJson(value: unknown): string {
-	if (value === undefined) return "undefined";
-	if (value === null || typeof value !== "object") return JSON.stringify(value) ?? String(value);
-	if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-	const record = value as Record<string, unknown>;
-	return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
-}
-
-function hashObject(value: unknown): string {
-	return createHash("sha256").update(stableJson(value)).digest("hex").slice(0, 16);
-}
-
-function textFromContent(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	const parts: string[] = [];
-	for (const part of content) {
-		if (!isRecord(part)) continue;
-		if (part.type === "text" && typeof part.text === "string") parts.push(part.text);
-		else if (part.type === "image") parts.push("[image]");
-		else if (part.type === "thinking" && typeof part.thinking === "string") parts.push(part.thinking);
-		else if (part.type === "toolCall") parts.push(`[toolCall ${String(part.name ?? "")}]`);
-	}
-	return parts.join("\n");
-}
-
-function assistantToolArgs(message: unknown): Map<string, unknown> {
-	const out = new Map<string, unknown>();
-	if (!isRecord(message) || message.role !== "assistant" || !Array.isArray(message.content)) return out;
-	for (const part of message.content) {
-		if (!isRecord(part) || part.type !== "toolCall" || typeof part.id !== "string") continue;
-		out.set(part.id, part.arguments);
-	}
-	return out;
-}
-
-function captureBatch(turnIndex: number, message: unknown, toolResults: ToolResultMessage[] | undefined, indexed: Map<string, ToolCallRecord>): CapturedBatch | undefined {
-	if (!Array.isArray(toolResults) || toolResults.length === 0) return undefined;
-	const argsById = assistantToolArgs(message);
-	const toolCalls: PendingToolCallRecord[] = [];
-
-	for (const result of toolResults) {
-		if (!result?.toolCallId || indexed.has(result.toolCallId)) continue;
-		const resultText = textFromContent(result.content);
-		if (resultText.trim().length === 0) continue;
-		toolCalls.push({
-			toolCallId: result.toolCallId,
-			toolName: result.toolName,
-			args: argsById.get(result.toolCallId),
-			resultText,
-			isError: result.isError,
-			turnIndex,
-			timestamp: result.timestamp ?? Date.now(),
-		});
-	}
-
-	if (toolCalls.length === 0) return undefined;
-	return {
-		turnIndex,
-		toolCalls,
-		rawChars: toolCalls.reduce((sum, tool) => sum + tool.resultText.length, 0),
-		capturedAt: Date.now(),
-	};
-}
-
-function pendingTotals(pendingBatches: CapturedBatch[]): { toolCalls: number; rawChars: number } {
-	let toolCalls = 0;
-	let rawChars = 0;
-	for (const batch of pendingBatches) {
-		toolCalls += batch.toolCalls.length;
-		rawChars += batch.rawChars;
-	}
-	return { toolCalls, rawChars };
-}
-
-function pendingHysteresis(pendingBatches: CapturedBatch[], now = Date.now()): { ready: boolean; nextDelayMs: number; reason: string } {
-	const totals = pendingTotals(pendingBatches);
-	const oldestCapturedAt = Math.min(...pendingBatches.map(batch => batch.capturedAt));
-	const ageMs = Number.isFinite(oldestCapturedAt) ? Math.max(0, now - oldestCapturedAt) : 0;
-	if (totals.toolCalls >= HYSTERESIS_MIN_TOOL_CALLS) return { ready: true, nextDelayMs: DEBOUNCE_MS, reason: "tool-count" };
-	if (totals.rawChars >= HYSTERESIS_MIN_RAW_CHARS) return { ready: true, nextDelayMs: DEBOUNCE_MS, reason: "raw-size" };
-	if (ageMs >= HYSTERESIS_MAX_AGE_MS) return { ready: true, nextDelayMs: DEBOUNCE_MS, reason: "age" };
-	return {
-		ready: false,
-		nextDelayMs: Math.max(DEBOUNCE_MS, Math.min(HYSTERESIS_RECHECK_MS, HYSTERESIS_MAX_AGE_MS - ageMs)),
-		reason: "warming",
-	};
-}
-
-function batchFromRecords(records: PendingToolCallRecord[]): CapturedBatch | undefined {
-	if (records.length === 0) return undefined;
-	return {
-		turnIndex: Math.min(...records.map(record => record.turnIndex)),
-		toolCalls: records,
-		rawChars: records.reduce((sum, record) => sum + record.resultText.length, 0),
-		capturedAt: Date.now(),
-	};
-}
-
-function makeSummaryId(): string {
-	return `cj-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function makeRestoreId(): string {
-	return `cj-restore-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-const AUTO_MODEL_CANDIDATES = [
-	{ provider: "openai", modelId: "gpt-5.4-mini" },
-	{ provider: "anthropic", modelId: "claude-haiku-4-5" },
-	{ provider: "vercel-ai-gateway", modelId: "openai/gpt-5-nano" },
-] as const;
-
-function modelKey(provider: string, modelId: string): string {
-	return `${provider}/${modelId}`.toLowerCase();
-}
-
-function findAutoCandidate(ctx: ExtensionContext, provider: string, modelId: string): Model<any> | undefined {
-	const model = ctx.modelRegistry.find(provider, modelId) as Model<any> | undefined;
-	if (!model) return undefined;
-	const available = ctx.modelRegistry.getAvailable() as Model<any>[];
-	const availableKeys = new Set(available.map(item => modelKey(String(item.provider), String(item.id))));
-	return availableKeys.has(modelKey(provider, modelId)) ? model : undefined;
-}
-
-function resolveLightweightModel(ctx: ExtensionContext): Model<any> {
-	const activeProvider = ctx.model?.provider;
-	if (activeProvider) {
-		const activeCandidate = AUTO_MODEL_CANDIDATES.find(candidate => candidate.provider === activeProvider);
-		if (activeCandidate) {
-			const model = findAutoCandidate(ctx, activeCandidate.provider, activeCandidate.modelId);
-			if (model) return model;
-		}
-	}
-
-	for (const candidate of AUTO_MODEL_CANDIDATES) {
-		const model = findAutoCandidate(ctx, candidate.provider, candidate.modelId);
-		if (model) return model;
-	}
-
-	if (ctx.model) return ctx.model as Model<any>;
-	throw new Error("No lightweight janitor model is available. Configure OpenAI, Anthropic, Vercel AI Gateway, or select an active Pi model.");
-}
-
-function deciderObject(record: PendingToolCallRecord, argsBudget: number, outputBudget: number): DeciderObject {
-	const object = {
-		id: record.toolCallId,
-		kind: "tool_result" as const,
-		toolName: record.toolName,
-		status: record.isError ? "error" as const : "ok" as const,
-		turnIndex: record.turnIndex,
-		rawChars: record.resultText.length,
-		argsPreview: safeJson(record.args, argsBudget),
-		outputPreview: truncateMiddle(record.resultText, outputBudget),
-	};
-	return { ...object, hash: hashObject(object) };
-}
-
-function buildDeciderInput(records: PendingToolCallRecord[]): { input: string; candidates: Map<string, DeciderObject> } {
-	let argsBudget = 1_200;
-	let outputBudget = 2_000;
-	let objects: DeciderObject[] = [];
-	let input = "";
-
-	for (let attempt = 0; attempt < 8; attempt += 1) {
-		objects = records.map(record => deciderObject(record, argsBudget, outputBudget));
-		input = JSON.stringify({
-			instruction: "For each tool_result object, choose action=truncate only if its output is safe to replace with a hidden placeholder in future context. Otherwise choose keep.",
-			actions: ["truncate", "keep"],
-			objects,
-		}, null, 2);
-		if (input.length <= MAX_DECIDER_INPUT_CHARS) break;
-		argsBudget = Math.max(160, Math.floor(argsBudget * 0.55));
-		outputBudget = Math.max(240, Math.floor(outputBudget * 0.55));
-	}
-
-	if (input.length > MAX_DECIDER_INPUT_CHARS) {
-		throw new Error(`Janitor decider input is too large (${formatChars(input.length)}).`);
-	}
-
-	return { input, candidates: new Map(objects.map(object => [object.id, object] as const)) };
-}
-
-function extractJsonObject(text: string): unknown {
-	const cleaned = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
-	let parseError: unknown;
-	try {
-		return JSON.parse(cleaned) as unknown;
-	} catch (error) {
-		parseError = error;
-		const start = cleaned.indexOf("{");
-		const end = cleaned.lastIndexOf("}");
-		if (start >= 0 && end > start) {
-			try {
-				return JSON.parse(cleaned.slice(start, end + 1)) as unknown;
-			} catch (sliceError) {
-				parseError = sliceError;
-			}
-		}
-	}
-	const detail = parseError instanceof Error && parseError.message ? `: ${parseError.message}` : "";
-	throw new Error(`Janitor decider returned invalid JSON${detail}.`);
-}
-
-function isDeciderFormatError(error: unknown): boolean {
-	if (!(error instanceof Error)) return false;
-	return error.message.startsWith("Janitor decider returned invalid JSON")
-		|| error.message === "Janitor decider JSON must contain an actions array.";
-}
-
-function parseDeciderActions(raw: unknown, candidates: Map<string, DeciderObject>): DeciderAction[] {
-	if (!isRecord(raw) || !Array.isArray(raw.actions)) throw new Error("Janitor decider JSON must contain an actions array.");
-	const out: DeciderAction[] = [];
-	for (const item of raw.actions) {
-		if (!isRecord(item) || !isRecord(item.target)) continue;
-		const id = typeof item.target.id === "string" ? item.target.id : undefined;
-		const hash = typeof item.target.hash === "string" ? item.target.hash : undefined;
-		const action = item.action === "truncate" || item.action === "hide" ? "truncate" : item.action === "keep" ? "keep" : undefined;
-		if (!id || !hash || !action) continue;
-		const candidate = candidates.get(id);
-		if (!candidate || candidate.hash !== hash) continue;
-		out.push({
-			target: { id, hash },
-			action,
-			reason: typeof item.reason === "string" && item.reason.trim() ? item.reason.trim().slice(0, 160) : action,
-		});
-	}
-	return out;
-}
-
-async function decideRecords(ctx: ExtensionContext, records: PendingToolCallRecord[], signal: AbortSignal): Promise<{ records: PendingToolCallRecord[]; usage?: Usage; modelLabel: string }> {
-	const model = resolveLightweightModel(ctx);
-	const apiKey = await ctx.modelRegistry.getApiKeyForProvider(model.provider);
-	const { input, candidates } = buildDeciderInput(records);
-	const response = await complete(
-		model,
-		{
-			systemPrompt: DECIDER_SYSTEM_PROMPT,
-			messages: [
-				{
-					role: "user",
-					content: input,
-					timestamp: Date.now(),
-				},
-			],
-		},
-		{
-			apiKey,
-			signal,
-			maxTokens: MAX_DECIDER_TOKENS,
-			temperature: 0,
-		},
-	);
-
-	const text = response.content
-		.filter((part): part is { type: "text"; text: string } => part.type === "text")
-		.map(part => part.text)
-		.join("\n")
-		.trim();
-	if (!text) throw new Error("Janitor decider returned no text.");
-
-	let actions: DeciderAction[];
-	try {
-		actions = parseDeciderActions(extractJsonObject(text), candidates);
-	} catch (error) {
-		if (!isDeciderFormatError(error)) throw error;
-		return { records: [], usage: response.usage, modelLabel: `${model.provider}/${model.id}` };
-	}
-
-	const truncateById = new Map(actions.filter(action => action.action === "truncate").map(action => [action.target.id, action] as const));
-	return {
-		records: records
-			.filter(record => truncateById.has(record.toolCallId))
-			.map(record => {
-				const action = truncateById.get(record.toolCallId)!;
-				return { ...record, hash: action.target.hash, janitorReason: action.reason };
-			}),
-		usage: response.usage,
-		modelLabel: `${model.provider}/${model.id}`,
-	};
-}
-
-function summarizeToolNames(records: ReadonlyArray<{ toolName: string }>, maxNames = 5): string {
-	const counts = new Map<string, number>();
-	for (const record of records) counts.set(record.toolName, (counts.get(record.toolName) ?? 0) + 1);
-	const parts = Array.from(counts.entries())
-		.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-		.map(([name, count]) => count > 1 ? `${name}×${count}` : name);
-	if (parts.length <= maxNames) return parts.join(", ");
-	return `${parts.slice(0, maxNames).join(", ")} +${parts.length - maxNames} more`;
-}
-
-// Do not expose janitor metadata to the main model. Restore metadata lives in hidden custom entries.
-function projectionText(_record: ToolCallRecord): string {
-	return CONTEXT_HIDDEN_TEXT;
-}
-
-function entryFromRun(summaryId: string, reason: string, records: PendingToolCallRecord[], result: { usage?: Usage; modelLabel: string }): SummaryIndexEntry {
-	const toolCalls = records.map(record => ({ ...record, summaryId }));
-	return {
-		version: 1,
-		summaryId,
-		createdAt: new Date().toISOString(),
-		reason,
-		rawChars: toolCalls.reduce((sum, record) => sum + record.resultText.length, 0),
-		projectedChars: toolCalls.reduce((sum, record) => sum + projectionText(record).length, 0),
-		deciderModel: result.modelLabel,
-		usage: result.usage,
-		toolCalls,
-	};
-}
-
-function applyIndexEntry(entry: SummaryIndexEntry, index: Map<string, ToolCallRecord>, entries: Map<string, SummaryIndexEntry>): void {
-	entries.set(entry.summaryId, entry);
-
-	for (const record of entry.toolCalls) {
-		if (!record.toolCallId || typeof record.resultText !== "string") continue;
-		index.set(record.toolCallId, record);
-	}
-}
-
-function parseIndexEntry(raw: unknown): SummaryIndexEntry | undefined {
-	if (!isRecord(raw) || raw.version !== 1 || typeof raw.summaryId !== "string" || !Array.isArray(raw.toolCalls)) return undefined;
-	const toolCalls: ToolCallRecord[] = [];
-	for (const item of raw.toolCalls) {
-		if (!isRecord(item)) continue;
-		if (typeof item.toolCallId !== "string" || typeof item.toolName !== "string" || typeof item.resultText !== "string") continue;
-		toolCalls.push({
-			toolCallId: item.toolCallId,
-			toolName: item.toolName,
-			args: item.args,
-			resultText: item.resultText,
-			isError: item.isError === true,
-			turnIndex: typeof item.turnIndex === "number" ? item.turnIndex : 0,
-			timestamp: typeof item.timestamp === "number" ? item.timestamp : Date.now(),
-			summaryId: typeof item.summaryId === "string" ? item.summaryId : raw.summaryId,
-			hash: typeof item.hash === "string" ? item.hash : undefined,
-			janitorReason: typeof item.janitorReason === "string" ? item.janitorReason : undefined,
-		});
-	}
-	if (toolCalls.length === 0 || toolCalls.some(record => typeof record.hash !== "string")) return undefined;
-	return {
-		version: 1,
-		summaryId: raw.summaryId,
-		createdAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString(),
-		reason: typeof raw.reason === "string" ? raw.reason : "reconstruct",
-		rawChars: typeof raw.rawChars === "number" ? raw.rawChars : toolCalls.reduce((sum, record) => sum + record.resultText.length, 0),
-		projectedChars: toolCalls.reduce((sum, record) => sum + projectionText(record).length, 0),
-		deciderModel: typeof raw.deciderModel === "string" ? raw.deciderModel : "unknown",
-		usage: isRecord(raw.usage) ? raw.usage as unknown as Usage : undefined,
-		toolCalls,
-	};
-}
-
-function parseRestoreEntry(raw: unknown): RestoreIndexEntry | undefined {
-	if (!isRecord(raw) || raw.version !== 1 || typeof raw.restoreId !== "string" || !Array.isArray(raw.summaryIds)) return undefined;
-	const summaryIds = raw.summaryIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0).map(id => id.trim());
-	if (summaryIds.length === 0) return undefined;
-	return {
-		version: 1,
-		restoreId: raw.restoreId,
-		createdAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString(),
-		reason: typeof raw.reason === "string" ? raw.reason : "restore",
-		summaryIds: [...new Set(summaryIds)],
-	};
-}
-
-function activeSavings(entries: Map<string, SummaryIndexEntry>, restoredSummaryIds: Set<string>): { activeRuns: number; restoredRuns: number; rawChars: number; projectedChars: number; savedChars: number } {
-	let activeRuns = 0;
-	let restoredRuns = 0;
-	let rawChars = 0;
-	let projectedChars = 0;
-	for (const entry of entries.values()) {
-		if (restoredSummaryIds.has(entry.summaryId)) {
-			restoredRuns += 1;
-			continue;
-		}
-		activeRuns += 1;
-		rawChars += entry.rawChars;
-		projectedChars += entry.projectedChars;
-	}
-	return { activeRuns, restoredRuns, rawChars, projectedChars, savedChars: Math.max(0, rawChars - projectedChars) };
-}
-
-function splitArgs(args: string): string[] {
-	return args.trim().split(/\s+/).filter(Boolean);
-}
-
-function replaceTabs(text: string): string {
-	return text.replace(/\t/g, "    ");
-}
-
-type KeybindingsLike = { matches(data: string, action: string): boolean };
-type ThemeLike = ExtensionContext["ui"]["theme"];
-
-interface UndoRunItem {
-	summaryId: string;
-	label: string;
-	description: string;
-}
-
-function themeFg(theme: ThemeLike, color: string, text: string): string {
-	try {
-		return theme.fg(color as never, text);
-	} catch {
-		return text;
-	}
-}
-
-function themeBold(theme: ThemeLike, text: string): string {
-	try {
-		return theme.bold(text);
-	} catch {
-		return text;
-	}
-}
-
-function shortTimestamp(iso: string): string {
-	const date = new Date(iso);
-	if (Number.isNaN(date.getTime())) return iso;
-	return date.toLocaleString(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
-}
-
-function undoRunItems(entries: Map<string, SummaryIndexEntry>, restoredSummaryIds: Set<string>): UndoRunItem[] {
-	return Array.from(entries.values())
-		.filter(entry => !restoredSummaryIds.has(entry.summaryId) && entry.rawChars > 0)
-		.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-		.map(entry => {
-			const saved = Math.max(0, entry.rawChars - entry.projectedChars);
-			return {
-				summaryId: entry.summaryId,
-				label: `${shortTimestamp(entry.createdAt)}  truncated ${entry.toolCalls.length} tool output(s)`,
-				description: `${entry.summaryId} · ${summarizeToolNames(entry.toolCalls)} · saved ≈${formatChars(saved)}`,
-			};
-		});
-}
-
-function janitorRunNoticeText(entry: SummaryIndexEntry): string {
-	const saved = Math.max(0, entry.rawChars - entry.projectedChars);
-	const lines = [
-		`Context Janitor truncated ${entry.toolCalls.length} tool output(s).`,
-		`${entry.summaryId} · ${summarizeToolNames(entry.toolCalls)} · saved ≈${formatChars(saved)} · ${entry.deciderModel}`,
-	];
-	const reasons = entry.toolCalls
-		.map(record => record.janitorReason ? `${record.toolName}: ${record.janitorReason}` : undefined)
-		.filter((reason): reason is string => typeof reason === "string")
-		.slice(0, 3);
-	if (reasons.length > 0) lines.push("", ...reasons.map(reason => `- ${truncateMiddle(reason, 180).replace(/\s+/g, " ")}`));
-	if (entry.toolCalls.length > reasons.length && reasons.length > 0) lines.push(`- +${entry.toolCalls.length - reasons.length} more`);
-	return lines.join("\n");
-}
-
-function janitorRestoreNoticeText(count: number): string {
-	return `Context Janitor restored ${count} run(s). Future model context will include those raw tool outputs again.`;
-}
-
-
-class JanitorUndoPicker implements Component {
-	#selectedIndex = 0;
-	#checked = new Set<string>();
-
-	constructor(
-		private readonly items: UndoRunItem[],
-		private readonly theme: ThemeLike,
-		private readonly keybindings: KeybindingsLike,
-		private readonly done: (result: string[] | undefined) => void,
-	) {}
-
-	invalidate(): void {
-		// No cached layout.
-	}
-
-	render(width: number): string[] {
-		const safeWidth = Math.max(1, width);
-		const lines: string[] = [themeBold(this.theme, "Restore janitor actions"), ""];
-		if (this.items.length === 0) {
-			lines.push("  Nothing to restore.", "", themeFg(this.theme, "muted", "  Esc = close"));
-			return lines.map(line => truncateToWidth(replaceTabs(line), safeWidth));
-		}
-
-		const maxVisible = Math.min(10, Math.max(4, this.items.length));
-		const startIndex = Math.max(0, Math.min(this.#selectedIndex - Math.floor(maxVisible / 2), this.items.length - maxVisible));
-		const endIndex = Math.min(startIndex + maxVisible, this.items.length);
-		for (let i = startIndex; i < endIndex; i += 1) {
-			const item = this.items[i];
-			if (!item) continue;
-			const selected = i === this.#selectedIndex;
-			const checked = this.#checked.has(item.summaryId);
-			const prefix = selected ? "›" : " ";
-			const mark = checked ? "[x]" : "[ ]";
-			const line = `${prefix} ${mark} ${item.label}`;
-			lines.push(selected ? themeFg(this.theme, "accent", line) : line);
-			if (selected) lines.push(themeFg(this.theme, "muted", `      ${item.description}`));
-		}
-		if (startIndex > 0 || endIndex < this.items.length) lines.push(themeFg(this.theme, "muted", `  (${this.#selectedIndex + 1}/${this.items.length})`));
-		lines.push("", themeFg(this.theme, "muted", `  Space = toggle · a = all · Enter = restore ${this.#checked.size} selected · Esc = cancel`));
-		return lines.map(line => truncateToWidth(replaceTabs(line), safeWidth));
-	}
-
-	handleInput(data: string): void {
-		if (this.#matches(data, "tui.select.cancel") || this.#matches(data, "interrupt") || data === "\u001b" || data === "\u0003") {
-			this.done(undefined);
-			return;
-		}
-		if (this.items.length === 0) return;
-		if (this.#matches(data, "tui.select.up") || data === "\u001b[A") {
-			this.#selectedIndex = this.#selectedIndex === 0 ? this.items.length - 1 : this.#selectedIndex - 1;
-			return;
-		}
-		if (this.#matches(data, "tui.select.down") || data === "\u001b[B") {
-			this.#selectedIndex = this.#selectedIndex === this.items.length - 1 ? 0 : this.#selectedIndex + 1;
-			return;
-		}
-		if (this.#matches(data, "tui.select.pageUp")) {
-			this.#selectedIndex = Math.max(0, this.#selectedIndex - 10);
-			return;
-		}
-		if (this.#matches(data, "tui.select.pageDown")) {
-			this.#selectedIndex = Math.min(this.items.length - 1, this.#selectedIndex + 10);
-			return;
-		}
-		if (data === " ") {
-			this.#toggle(this.items[this.#selectedIndex]?.summaryId);
-			return;
-		}
-		if (data.toLowerCase() === "a") {
-			if (this.#checked.size === this.items.length) this.#checked.clear();
-			else for (const item of this.items) this.#checked.add(item.summaryId);
-			return;
-		}
-		if (this.#matches(data, "tui.select.confirm") || data === "\r" || data === "\n") {
-			this.done([...this.#checked]);
-		}
-	}
-
-	#toggle(summaryId: string | undefined): void {
-		if (!summaryId) return;
-		if (this.#checked.has(summaryId)) this.#checked.delete(summaryId);
-		else this.#checked.add(summaryId);
-	}
-
-	#matches(data: string, action: string): boolean {
-		try {
-			return this.keybindings.matches(data, action);
-		} catch {
-			return false;
-		}
-	}
-}
-
-function compactJanitorNoticeLine(text: string, details: unknown): string {
-	if (isRecord(details) && Array.isArray(details.summaryIds)) {
-		const count = details.summaryIds.length;
-		return `🧹 restored ${count} janitor run${count === 1 ? "" : "s"}`;
-	}
-
-	if (isRecord(details) && typeof details.toolCalls === "number") {
-		const parts = [`🧹 truncated ${details.toolCalls} tool output${details.toolCalls === 1 ? "" : "s"}`];
-		if (typeof details.rawChars === "number" && typeof details.projectedChars === "number") {
-			parts.push(`saved ≈${formatChars(Math.max(0, details.rawChars - details.projectedChars))}`);
-		}
-		if (typeof details.summaryId === "string") parts.push(details.summaryId);
-		return parts.join(" · ");
-	}
-
-	const firstLine = text.split("\n").map(line => line.trim()).find(Boolean);
-	return firstLine ? `🧹 ${truncateMiddle(firstLine.replace(/\s+/g, " "), 120)}` : "🧹 Context Janitor";
-}
-
-class JanitorNoticeComponent implements Component {
-	constructor(
-		private readonly text: string,
-		private readonly details: unknown,
-		private readonly theme: ThemeLike,
-	) {}
-
-	invalidate(): void {}
-
-	render(width: number): string[] {
-		const safeWidth = Math.max(1, width);
-		if (isPiCompactEnabled()) {
-			return [truncateToWidth(replaceTabs(themeFg(this.theme, "muted", compactJanitorNoticeLine(this.text, this.details))), safeWidth)];
-		}
-
-		const lines = this.text.split("\n");
-		if (lines.length === 0) return [];
-		return lines.map((line, index) => {
-			const decorated = index === 0 ? themeFg(this.theme, "accent", line) : themeFg(this.theme, "muted", line);
-			return truncateToWidth(replaceTabs(decorated), safeWidth);
-		});
-	}
-}
-
-class HiddenMessageComponent implements Component {
-	invalidate(): void {}
-	render(_width: number): string[] {
-		return [];
-	}
-}
+import type { ToolResultMessage } from "@mariozechner/pi-ai";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { batchFromRecords, captureBatch, pendingHysteresis } from "./capture.js";
+import {
+	DEFAULT_SETTINGS,
+	DEBOUNCE_MS,
+	INDEX_CUSTOM_TYPE,
+	JANITOR_CUSTOM_TYPES,
+	MAX_RECORDS_PER_PASS,
+	NOTICE_CUSTOM_TYPE,
+	RESTORE_CUSTOM_TYPE,
+	STATUS_DISABLED,
+	STATUS_ENABLED_IDLE,
+	STATUS_KEY,
+	STATUS_SPINNER_FRAMES,
+	STATUS_SPINNER_MS,
+	SUMMARY_CUSTOM_TYPE,
+} from "./constants.js";
+import { decideRecords } from "./decider.js";
+import {
+	applyIndexEntry,
+	entryFromRun,
+	makeRestoreId,
+	makeSummaryId,
+	parseIndexEntry,
+	parseRestoreEntry,
+	projectionText,
+} from "./index-store.js";
+import { loadSettings, saveSettings } from "./settings.js";
+import type { CapturedBatch, JanitorSettings, KeybindingsLike, SummaryIndexEntry, ThemeLike, ToolCallRecord } from "./types.js";
+import { HiddenMessageComponent, JanitorNoticeComponent, JanitorUndoPicker, janitorRestoreNoticeText, janitorRunNoticeText, undoRunItems } from "./ui.js";
+import { isRecord, splitArgs, textFromContent } from "./utils.js";
 
 export default function contextJanitor(pi: ExtensionAPI) {
 	// Hide legacy janitor summary custom messages that were emitted by older versions.
@@ -790,6 +38,7 @@ export default function contextJanitor(pi: ExtensionAPI) {
 		const content = typeof message.content === "string" ? message.content : textFromContent(message.content);
 		return new JanitorNoticeComponent(content, message.details, theme as ThemeLike);
 	});
+
 	let settings: JanitorSettings = { ...DEFAULT_SETTINGS };
 	let settingsError: string | undefined;
 	let index = new Map<string, ToolCallRecord>();
@@ -839,7 +88,6 @@ export default function contextJanitor(pi: ExtensionAPI) {
 		}
 		ctx.ui.setStatus(STATUS_KEY, statusText());
 	}
-
 
 	function reconstruct(ctx: ExtensionContext): void {
 		index = new Map<string, ToolCallRecord>();
@@ -922,13 +170,14 @@ export default function contextJanitor(pi: ExtensionAPI) {
 				const entry = entryFromRun(summaryId, reason, selectedRecords, { usage: decided.usage, modelLabel: decided.modelLabel });
 				pi.appendEntry(INDEX_CUSTOM_TYPE, entry);
 				applyIndexEntry(entry, index, entries);
-				pi.sendMessage({
+				const noticeMessage = {
 					customType: NOTICE_CUSTOM_TYPE,
 					content: janitorRunNoticeText(entry),
 					display: true,
 					details: { summaryId: entry.summaryId, rawChars: entry.rawChars, projectedChars: entry.projectedChars, toolCalls: entry.toolCalls.length },
 					attribution: "agent",
-				});
+				} as Parameters<ExtensionAPI["sendMessage"]>[0] & { attribution: "agent" };
+				pi.sendMessage(noticeMessage);
 
 			} catch (error) {
 				failed = true;
@@ -954,8 +203,8 @@ export default function contextJanitor(pi: ExtensionAPI) {
 		const uniqueIds = [...new Set(summaryIds.map(id => id.trim()).filter(Boolean))];
 		const restorable = uniqueIds.filter(summaryId => entries.has(summaryId) && !restoredSummaryIds.has(summaryId));
 		if (restorable.length === 0) return 0;
-		const restoreEntry: RestoreIndexEntry = {
-			version: 1,
+		const restoreEntry = {
+			version: 1 as const,
 			restoreId: makeRestoreId(),
 			createdAt: new Date().toISOString(),
 			reason,
@@ -963,13 +212,14 @@ export default function contextJanitor(pi: ExtensionAPI) {
 		};
 		pi.appendEntry(RESTORE_CUSTOM_TYPE, restoreEntry);
 		for (const summaryId of restorable) restoredSummaryIds.add(summaryId);
-		pi.sendMessage({
+		const restoreMessage = {
 			customType: NOTICE_CUSTOM_TYPE,
 			content: janitorRestoreNoticeText(restorable.length),
 			display: true,
 			details: { restoreId: restoreEntry.restoreId, summaryIds: restorable },
 			attribution: "user",
-		});
+		} as Parameters<ExtensionAPI["sendMessage"]>[0] & { attribution: "user" };
+		pi.sendMessage(restoreMessage);
 		updateStatus(ctx);
 		return restorable.length;
 	}
