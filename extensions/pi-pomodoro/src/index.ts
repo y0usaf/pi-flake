@@ -8,15 +8,9 @@ const KEY = "pi-pomodoro";
 const VERSION = 1;
 const TICK_MS = 1000;
 const ICON = "🍅";
-const BAR_WIDTH = Array.from(` ${ICON}  break 00:00 `).length;
-const RESET = "\x1b[0m";
-const TEXT = "\x1b[38;2;18;18;20m";
-const COLORS = {
-  workBg: "\x1b[48;2;105;220;140m",
-  workDim: "\x1b[48;2;49;78;62m",
-  breakBg: "\x1b[48;2;255;92;92m",
-  breakDim: "\x1b[48;2;80;20;24m",
-};
+const BAR_LEN = 10;
+const FILLED = "▰";
+const EMPTY = "▱";
 
 type Phase = "work" | "break";
 type State = {
@@ -176,26 +170,24 @@ function progress(width: number): number {
   return Math.max(0, Math.min(width, Math.round((elapsed / total) * width)));
 }
 
-function colour(phase: Phase, kind: "bg" | "dim"): string {
-  return COLORS[`${phase}${kind === "bg" ? "Bg" : "Dim"}` as keyof typeof COLORS];
-}
-
-function bar(label: string, phase: Phase, width = BAR_WIDTH): string {
-  const chars = Array.from(` ${label} `);
-  const size = Math.max(width, chars.length);
-  const filled = progress(size);
-  const start = Math.max(0, Math.floor((size - chars.length) / 2));
-  return Array.from({ length: size }, (_, i) => {
-    const ch = i >= start && i < start + chars.length ? chars[i - start] : " ";
-    return `${colour(phase, i < filled ? "bg" : "dim")}${TEXT}${ch}`;
-  }).join("") + RESET;
+function bar(label: string, phase: Phase, theme: ExtensionContext["ui"]["theme"], paused: boolean): string {
+  const filled = progress(BAR_LEN);
+  const tint = !paused && phase === "break" ? "warning" : "dim";
+  return `${theme.fg(tint, label)} ${theme.fg(tint, FILLED.repeat(filled))}${theme.fg("dim", EMPTY.repeat(BAR_LEN - filled))}`;
 }
 
 function render(ctx: ExtensionContext): void {
   advance();
-  const phase = state.running ? state.phase : "work";
-  const label = state.running ? `${ICON}  ${phase}${state.paused ? " paused" : ""} ${format(remaining())}` : `${ICON}  idle`;
-  ctx.ui.setStatus(KEY, bar(label, phase));
+  const { theme } = ctx.ui;
+
+  if (!state.running) {
+    ctx.ui.setStatus(KEY, theme.fg("dim", "idle"));
+  } else {
+    const phase = state.phase;
+    const time = format(remaining());
+    const label = `${phase}${state.paused ? " ⏸" : ""} ${time}`;
+    ctx.ui.setStatus(KEY, bar(label, phase, theme, state.paused));
+  }
 
   const phaseKey = state.running && !state.paused ? `${state.phase}:${state.cycle}` : "idle";
   if (settings.notifyTransitions && lastPhase && phaseKey !== lastPhase && phaseKey !== "idle") {
