@@ -44,6 +44,8 @@
 
     piPomodoro.url = "path:./extensions/pi-pomodoro";
     piPomodoro.inputs.nixpkgs.follows = "nixpkgs";
+    piRlm.url = "path:./extensions/pi-rlm";
+    piRlm.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs = {
@@ -62,6 +64,7 @@
     piMinimalEditor,
     piWorkingIndicator,
     piPomodoro,
+    piRlm,
     ...
   }: let
     systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
@@ -142,6 +145,7 @@
       "pi-minimal-editor" = piMinimalEditor.packages.${system}.default;
       "pi-working-indicator" = piWorkingIndicator.packages.${system}.default;
       "pi-pomodoro" = piPomodoro.packages.${system}.default;
+      "pi-rlm" = piRlm.packages.${system}.default;
 
       # pi with default extensions pre-bundled. Morph is offered as an extension
       # package/flag but is excluded from pi-full by default because it requires
@@ -265,6 +269,7 @@
       "minimal-editor" = self.packages.${system}."pi-minimal-editor";
       "working-indicator" = self.packages.${system}."pi-working-indicator";
       pomodoro = self.packages.${system}."pi-pomodoro";
+      rlm = self.packages.${system}."pi-rlm";
     };
 
     # Default bundle used by pi-full. Keep remote/API-key-dependent extensions opt-in.

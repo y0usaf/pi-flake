@@ -81,6 +81,7 @@ Flake `inputs` cannot pass arbitrary booleans into another flake's outputs. Use 
         hashline = true;
         "minimal-editor" = true;
         "working-indicator" = true;
+        rlm = true;
       };
     };
   };
@@ -118,6 +119,7 @@ Only flags set to `true` are copied into the bundled wrapper.
             #   # morph = true; # opt-in; not included by full/pi-full by default
             #   "minimal-editor" = true;
             #   "working-indicator" = true;
+            #   rlm = true;
             # };
 
             # Option 3: concrete package
@@ -149,6 +151,7 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-hashline` | Hashline v2 read/edit tool override |
 | `pi-minimal-editor` | Minimal editor borders with footer/status metadata |
 | `pi-working-indicator` | Compact animated working indicator |
+| `pi-rlm` | Recursive Pi/RLM-style child-agent calls via `pi_recurse` |
 
 ---
 
@@ -206,6 +209,7 @@ inputs.pi-flake.packages.<system>."pi-morph"
 inputs.pi-flake.packages.<system>."pi-tool-management"
 inputs.pi-flake.packages.<system>."pi-webfetch"
 inputs.pi-flake.packages.<system>."pi-hashline"
+inputs.pi-flake.packages.<system>."pi-rlm"
 ```
 
 ### Variants
