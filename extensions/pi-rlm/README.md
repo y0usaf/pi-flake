@@ -44,6 +44,8 @@ Root tools:
 bash, read, edit, write, rlm
 ```
 
+When `rlm` is active, pi-rlm replaces the root system prompt with an RLM-first coordinator prompt instead of appending guidance to Pi's default prompt. The replacement keeps core Pi tool/edit rules and makes broad exploration/decomposition delegate-first.
+
 Child tools:
 
 ```text
