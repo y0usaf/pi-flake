@@ -5,7 +5,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     piSrc = {
-      url = "github:badlogic/pi-mono?ref=main";
+      url = "github:earendil-works/pi?ref=main";
       flake = false;
     };
 
@@ -126,7 +126,7 @@
 
         meta = with lib; {
           description = packageJson.description;
-          homepage = "https://github.com/badlogic/pi-mono";
+          homepage = "https://github.com/earendil-works/pi";
           license = licenses.mit;
           mainProgram = "pi";
         };

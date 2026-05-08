@@ -1,6 +1,6 @@
 # pi-rtk
 
-[Pi](https://github.com/badlogic/pi-mono) coding agent extension that uses [rtk](https://github.com/rtk-ai/rtk) to reduce LLM token usage for shell command execution.
+[Pi](https://github.com/earendil-works/pi) coding agent extension that uses [rtk](https://github.com/rtk-ai/rtk) to reduce LLM token usage for shell command execution.
 
 When `pi-rtk` is loaded, it participates in two Pi shell paths:
 
