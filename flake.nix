@@ -44,6 +44,7 @@
 
     piPomodoro.url = "path:./extensions/pi-pomodoro";
     piPomodoro.inputs.nixpkgs.follows = "nixpkgs";
+
     piRlm.url = "path:./extensions/pi-rlm";
     piRlm.inputs.nixpkgs.follows = "nixpkgs";
   };
@@ -146,6 +147,33 @@
       "pi-working-indicator" = piWorkingIndicator.packages.${system}.default;
       "pi-pomodoro" = piPomodoro.packages.${system}.default;
       "pi-rlm" = piRlm.packages.${system}.default;
+      "pi-review" = let
+        reviewPackageJson = builtins.fromJSON (builtins.readFile ./extensions/earendil_pi-review/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-review";
+          version = reviewPackageJson.version;
+          src = lib.cleanSource ./extensions/earendil_pi-review;
+
+          dontBuild = true;
+
+          installPhase = ''
+            runHook preInstall
+
+            mkdir -p "$out"
+            cp package.json README.md LICENSE review.ts "$out"/
+
+            runHook postInstall
+          '';
+
+          passthru.packageName = reviewPackageJson.name;
+
+          meta = with lib; {
+            description = reviewPackageJson.description;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
 
       # pi with default extensions pre-bundled. Morph is offered as an extension
       # package/flag but is excluded from pi-full by default because it requires
@@ -270,6 +298,7 @@
       "working-indicator" = self.packages.${system}."pi-working-indicator";
       pomodoro = self.packages.${system}."pi-pomodoro";
       rlm = self.packages.${system}."pi-rlm";
+      review = self.packages.${system}."pi-review";
     };
 
     # Default bundle used by pi-full. Keep remote/API-key-dependent extensions opt-in.

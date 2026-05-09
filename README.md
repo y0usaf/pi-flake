@@ -82,6 +82,7 @@ Flake `inputs` cannot pass arbitrary booleans into another flake's outputs. Use 
         "minimal-editor" = true;
         "working-indicator" = true;
         rlm = true;
+        review = true;
       };
     };
   };
@@ -120,6 +121,7 @@ Only flags set to `true` are copied into the bundled wrapper.
             #   "minimal-editor" = true;
             #   "working-indicator" = true;
             #   rlm = true;
+            #   review = true;
             # };
 
             # Option 3: concrete package
@@ -152,6 +154,7 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-minimal-editor` | Minimal editor borders with footer/status metadata |
 | `pi-working-indicator` | Compact animated working indicator |
 | `pi-rlm` | Recursive Pi/RLM-style child-agent calls via `pi_recurse` |
+| `pi-review` | `/review` and `/end-review` code review workflow |
 
 ---
 
@@ -210,7 +213,10 @@ inputs.pi-flake.packages.<system>."pi-tool-management"
 inputs.pi-flake.packages.<system>."pi-webfetch"
 inputs.pi-flake.packages.<system>."pi-hashline"
 inputs.pi-flake.packages.<system>."pi-rlm"
+inputs.pi-flake.packages.<system>."pi-review"
 ```
+
+`pi-review` PR review mode shells out to `gh`; install and authenticate GitHub CLI separately if you want `/review pr ...`.
 
 ### Variants
 
