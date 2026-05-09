@@ -1,0 +1,19 @@
+--- a/packages/coding-agent/src/core/package-manager.ts
++++ b/packages/coding-agent/src/core/package-manager.ts
+@@ -176,0 +177,1 @@
++const DEFAULT_PACKAGE_SOURCES_ENV = "PI_DEFAULT_PACKAGES";
+@@ -196,0 +198,10 @@
++function getDefaultPackageSourcesFromEnv(): PackageSource[] {
++	const raw = process.env[DEFAULT_PACKAGE_SOURCES_ENV];
++	if (!raw?.trim()) return [];
++
++	return raw
++		.split(process.platform === "win32" ? ";" : ":")
++		.map((source) => source.trim())
++		.filter(Boolean);
++}
++
+@@ -851,0 +863,3 @@
++		for (const pkg of getDefaultPackageSourcesFromEnv()) {
++			allPackages.push({ pkg, scope: "temporary" });
++		}

@@ -76,6 +76,7 @@
       ./patches/disable-install-telemetry.patch
       ./patches/avoid-network-model-regeneration.patch
       ./patches/remove-tree-filter-backcycle.patch
+      ./patches/default-package-sources-env.patch
     ];
   in {
     packages = forAllSystems (system: let
@@ -242,6 +243,23 @@
           runHook postInstall
         '';
       };
+
+      patch-default-package-sources-env = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-patch-default-package-sources-env";
+        version = packageJson.version;
+        src = piSrc;
+        patches = piPatches;
+        nativeBuildInputs = [pkgs.gnugrep];
+        dontConfigure = true;
+        dontBuild = true;
+        installPhase = ''
+          runHook preInstall
+          grep -q 'PI_DEFAULT_PACKAGES' packages/coding-agent/src/core/package-manager.ts
+          grep -q 'getDefaultPackageSourcesFromEnv' packages/coding-agent/src/core/package-manager.ts
+          touch $out
+          runHook postInstall
+        '';
+      };
     });
 
     apps = forAllSystems (system: {
@@ -268,12 +286,13 @@
           [
             nodejs_22
             bun
+            python3
             pkg-config
           ]
           ++ canvasNativeDeps;
 
         shellHook = ''
-          echo "pi-flake dev shell — node $(node --version), bun v$(bun --version)"
+          echo "pi-flake dev shell — node $(node --version), bun v$(bun --version), python $(python3 --version)"
         '';
       };
     });
@@ -369,101 +388,21 @@
             '')
             extensions)}
 
-                  # Create a helper script for merging default extensions
-                  cat > $out/share/pi/merge-default-extensions.js << 'script'
-          const fs = require('fs');
-          const path = require('path');
-
-          const defaultExtensionsPath = process.env.PI_DEFAULT_EXTENSIONS;
-          const settingsPath = process.env.PI_SETTINGS_PATH;
-
-          if (!defaultExtensionsPath) {
-            console.error('Error: PI_DEFAULT_EXTENSIONS not set');
-            process.exit(1);
-          }
-
-          if (!settingsPath) {
-            console.error('Error: PI_SETTINGS_PATH not set');
-            process.exit(1);
-          }
-
-          function isExtensionDir(p) {
-            return fs.existsSync(path.join(p, 'index.ts')) || fs.existsSync(path.join(p, 'package.json'));
-          }
-
-          const defaultExtensions = !fs.existsSync(defaultExtensionsPath)
-            ? []
-            : fs.readdirSync(defaultExtensionsPath)
-                .map(p => path.join(defaultExtensionsPath, p))
-                .filter(p => {
-                  try {
-                    return fs.statSync(p).isDirectory() && isExtensionDir(p);
-                  } catch {
-                    return false;
-                  }
-                });
-
-          if (defaultExtensions.length === 0) process.exit(0);
-
-          let existingSettings = {};
-          if (fs.existsSync(settingsPath)) {
-            try {
-              const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-              if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) existingSettings = parsed;
-            } catch {
-              // Replace corrupt settings with a minimal valid file.
-            }
-          }
-
-          const existingExtensions = Array.isArray(existingSettings.extensions) ? existingSettings.extensions : [];
-          const missingExtensions = defaultExtensions.filter(ext => !existingExtensions.includes(ext));
-
-          // If settings already contain the bundled extensions, do not rewrite the file.
-          // This keeps declarative/symlinked NixOS settings untouched.
-          if (missingExtensions.length === 0) process.exit(0);
-
-          const mergedSettings = {
-            ...existingSettings,
-            extensions: [...existingExtensions, ...missingExtensions],
-          };
-          const next = JSON.stringify(mergedSettings, null, 2) + '\n';
-
-          try {
-            fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-            fs.writeFileSync(settingsPath, next);
-          } catch (err) {
-            if (err && ['EROFS', 'EACCES', 'EPERM'].includes(err.code)) {
-              console.error(`Warning: cannot update pi settings at ''${settingsPath}: ''${err.code}`);
-              console.error('Bundled extensions were not auto-registered; make settings writable or add them declaratively.');
-              process.exit(0);
-            }
-            throw err;
-          }
-          script
-
-                  # Create wrapper that auto-discovers bundled extensions
+                  # Create wrapper that exposes bundled extensions without mutating settings.
                   cat > $out/bin/.pi-wrapped << 'wrapper'
           #!/bin/bash
           set -euo pipefail
 
-          # Set defaults
           export PI_PACKAGE_DIR="${pi}/share/pi"
-          export PI_DEFAULT_EXTENSIONS="@out@/share/pi/extensions"
           export PI_SKIP_VERSION_CHECK=1
+          export PI_RLM_PYTHON="${pkgs.python3}/bin/python3"
+          export PATH="${pkgs.python3}/bin:$PATH"
 
-          # Determine settings path
-          AGENT_DIR="$HOME/.pi/agent"
-          PROJECT_SETTINGS="$(pwd)/.pi/settings.json"
-
-          if [ -f "$PROJECT_SETTINGS" ]; then
-            export PI_SETTINGS_PATH="$PROJECT_SETTINGS"
+          if [ -n "''${PI_DEFAULT_PACKAGES:-}" ]; then
+            export PI_DEFAULT_PACKAGES="@out@/share/pi:''${PI_DEFAULT_PACKAGES}"
           else
-            mkdir -p "$AGENT_DIR"
-            export PI_SETTINGS_PATH="$AGENT_DIR/settings.json"
+            export PI_DEFAULT_PACKAGES="@out@/share/pi"
           fi
-
-          # Merge bundled extensions with user settings.
-          ${pkgs.nodejs}/bin/node @out@/share/pi/merge-default-extensions.js
 
           # Run pi
           exec "@out@/bin/.pi-real" "$@"

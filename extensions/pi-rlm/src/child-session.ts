@@ -7,7 +7,7 @@ import {
   type ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 
-import { CTX_TOOL_NAME, MAX_INLINE_CHILD_CONTEXT_CHARS, RETURN_TOOL_NAME, RLM_TOOL_NAME } from "./constants.js";
+import { CTX_TOOL_NAME, MAX_INLINE_CHILD_CONTEXT_CHARS, REPL_TOOL_NAME, RETURN_TOOL_NAME, RLM_TOOL_NAME } from "./constants.js";
 import type { ContextMode, ContextStore, Details, RunState } from "./constants.js";
 import {
   cleanupContextStore,
@@ -25,6 +25,7 @@ import {
   leafPrompt,
   normalizeContextMode,
   normPaths,
+  normSources,
   resolveModel,
   textOf,
   traceOf,
@@ -34,7 +35,7 @@ import {
 
 export function childSystemPrompt(depth: number, state: RunState, hasContextStore: boolean): string {
   const ctxTool = hasContextStore
-    ? `- ${CTX_TOOL_NAME}: inspect file-backed context with capped outputs. Actions: manifest, grep, peek. Prefer this before raw bash/read on large sources.`
+    ? `- ${CTX_TOOL_NAME}: inspect file-backed context with capped outputs. Actions: manifest, grep, peek, extract, note, artifact. Prefer this before raw bash/read on large sources.`
     : "";
   const inspectTools = hasContextStore ? `${CTX_TOOL_NAME}/bash/read` : "bash/read";
   const compactAccessRule = hasContextStore
@@ -43,24 +44,26 @@ export function childSystemPrompt(depth: number, state: RunState, hasContextStor
 
   return `Recursive Pi child RLM. Depth ${depth}/${state.maxDepth}. Calls ${state.budget.calls}/${state.budget.maxCalls}. Queries ${state.budget.queries}/${state.budget.maxQueries}.
 
-You are a child RLM sub-call. Pi's bash/read tools are your REPL/toolkit. When a file-backed context store is provided, the large context is outside your chat; inspect it through ${inspectTools} and only bring compact observations back.
+You are a child RLM sub-call. Pi's ${REPL_TOOL_NAME} is your programmable control plane; bash/read are focused inspection tools. When a file-backed context store is provided, the large context is outside your chat; inspect it through ${inspectTools} or ${REPL_TOOL_NAME}'s ctx helper and only bring compact observations back.
 
 Tools:
-- bash: run commands, search, transform. Your primary REPL/toolkit.
+- ${REPL_TOOL_NAME}: Python REPL with persistent globals/state, bash/read helpers, ctx helper when available, llm_query/rlm_query functions, FINAL/FINAL_VAR.
+- bash: run commands, search, transform. Prefer compact outputs.
 - read: read file contents directly; avoid on large files unless reading a small anchored section.
 ${ctxTool}
 - ${RLM_TOOL_NAME}({ call:"llm_query", prompt }): RLM's llm_query(). Single-shot LM completion, NO tools. Include all relevant context inline.
 - ${RLM_TOOL_NAME}({ call:"llm_query_batched", prompts/items }): RLM's llm_query_batched(). Batched one-shot LM completions.
-- ${RLM_TOOL_NAME}({ call:"rlm_query", prompt, paths?, contextMode? }): recursive child RLM sub-call.
-- ${RLM_TOOL_NAME}({ call:"rlm_query_batched", prompts/items, paths?, contextMode? }): batched recursive child RLM sub-calls.
+- ${RLM_TOOL_NAME}({ call:"rlm_query", prompt, paths?, sources?, contextName?, contextMode? }): recursive child RLM sub-call.
+- ${RLM_TOOL_NAME}({ call:"rlm_query_batched", prompts/items, paths?, sources?, contextName?, contextMode? }): batched recursive child RLM sub-calls.
 - ${RETURN_TOOL_NAME}: FINAL(). Call exactly once when done.
 
 The Pi-native RLM pattern:
-1. Inspect context externally: use ${inspectTools} to peek, grep, count, and extract only relevant text.
-2. Store intermediate state under the provided scratch dir when available.
-3. Use rlm(call:"llm_query"/"llm_query_batched") for one-shot reasoning over extracted text.
-4. Use rlm(call:"rlm_query"/"rlm_query_batched") only when a sub-call needs its own bash/read/context-store session.
-5. Synthesize results and call ${RETURN_TOOL_NAME}.
+1. Use ${REPL_TOOL_NAME} when you need loops, batches, state, or synthesis.
+2. Inspect context externally: use ${inspectTools}, ${REPL_TOOL_NAME}'s bash/read helpers, or ctx.grep/peek to extract only relevant text.
+3. Store intermediate state in REPL state or under the provided scratch dir when available.
+4. Use llm_query/llm_query_batched for one-shot reasoning over extracted text.
+5. Use rlm_query/rlm_query_batched only when a sub-call needs its own bash/read/context-store session.
+6. Synthesize results and call ${RETURN_TOOL_NAME} or FINAL(...) in ${REPL_TOOL_NAME}.
 
 Rules:
 - The context problem matters: do NOT dump large context into chat. Print compact observations only.
@@ -68,7 +71,7 @@ ${compactAccessRule}
 - Prefer llm_query over rlm_query when you already have relevant text.
 - Prefer batched calls for independent chunks/sub-calls.
 - Writing temporary files under scratch is allowed. Do not modify project files unless explicitly allowed.
-- If turn budget runs low, call ${RETURN_TOOL_NAME} with partial answer + remaining work.
+- If turn budget runs low, call ${RETURN_TOOL_NAME} with partial answer + remaining work. If you do not, the parent harness will abort at the hard cap and synthesize a checkpoint from your transcript.
 - If a child returns incomplete, recurse narrower on uncovered parts.`;
 }
 
@@ -80,20 +83,37 @@ export function childPrompt(prompt: string, context?: string, paths?: string[], 
   const ctxBlock = context?.trim() && !contextMaterialized(store) ? `\nInline context:\n${clip(context, MAX_INLINE_CHILD_CONTEXT_CHARS)}\n` : "";
   const storeBlock = store ? contextStorePromptBlock(store) : "";
 
-  return `Prompt:\n${prompt}\n${ctxBlock}${storeBlock}\nPaths to inspect:\n${pathBlock}\n\nUse bash/read${store ? `/${CTX_TOOL_NAME}` : ""} as the REPL/toolkit, rlm(call:\"llm_query\"/\"llm_query_batched\") for one-shot sub-LM calls, rlm(call:\"rlm_query\"/\"rlm_query_batched\") for recursive child RLM sub-calls, and ${RETURN_TOOL_NAME} when done.`;
+  return `Prompt:\n${prompt}\n${ctxBlock}${storeBlock}\nPaths to inspect:\n${pathBlock}\n\nUse ${REPL_TOOL_NAME} for programmable orchestration (Python; call llm_query/rlm_query synchronously, persist state, FINAL when done). Use bash/read${store ? `/${CTX_TOOL_NAME}` : ""} for focused inspection, ${RLM_TOOL_NAME}(call:\"llm_query\"/\"llm_query_batched\") for one-shot sub-LM calls, ${RLM_TOOL_NAME}(call:\"rlm_query\"/\"rlm_query_batched\") for recursive child RLM sub-calls, and ${RETURN_TOOL_NAME} when done.`;
 }
 
 export function childToolList(allowWrites?: boolean, hasContextStore = false): string[] {
   const tools = ["bash", "read"];
   if (hasContextStore) tools.push(CTX_TOOL_NAME);
-  tools.push(RLM_TOOL_NAME, RETURN_TOOL_NAME);
+  tools.push(REPL_TOOL_NAME, RLM_TOOL_NAME, RETURN_TOOL_NAME);
   if (allowWrites) tools.push("edit", "write");
   return tools;
 }
 
+
+function childTranscript(messages: any[], maxChars = 120_000): string {
+  const lines: string[] = [];
+  for (const m of messages) {
+    const role = typeof m?.role === "string" ? m.role : "?";
+    const tool = typeof m?.toolName === "string" ? `:${m.toolName}` : "";
+    const body = textOf(m?.content).trim();
+    if (!body) continue;
+    lines.push(`## ${role}${tool}\n${body}`);
+  }
+  return clip(lines.join("\n\n"), maxChars);
+}
+
+function deterministicFinalPrompt(originalPrompt: string, messages: any[], reason: string): string {
+  return `A recursive Pi child RLM did not complete normally (${reason}). Produce the best possible deterministic checkpoint/final answer from the transcript below. Do not claim work that is not evidenced. If incomplete, explicitly say what remains unchecked. Include changed files or artifacts if the transcript mentions any.\n\nOriginal child task:\n${originalPrompt}\n\nChild transcript:\n${childTranscript(messages)}`;
+}
+
 export async function runRlmQuery(
   ctx: ExtensionContext,
-  params: { prompt: string; context?: string; contextMode?: ContextMode; paths?: string[]; allowWrites?: boolean },
+  params: { prompt: string; context?: string; contextMode?: ContextMode; paths?: string[]; sources?: Array<{ name?: string; path: string }>; contextName?: string; allowWrites?: boolean },
   depth: number,
   state: RunState,
   signal: AbortSignal | undefined,
@@ -104,10 +124,12 @@ export async function runRlmQuery(
   // RLM semantics: at max depth, rlm_query falls back to a plain LM leaf call.
   if (depth >= state.maxDepth) {
     return runLlmQuery(ctx, {
-      prompt: leafPrompt(params.prompt, params.paths),
+      prompt: leafPrompt(params.prompt, params.paths, params.sources),
       context: params.context,
       contextMode,
       paths: params.paths,
+      sources: params.sources,
+      contextName: params.contextName,
     }, state.budget, depth, state, signal, onUpdate, "rlm_query");
   }
 
@@ -145,6 +167,7 @@ export async function runRlmQuery(
         model: `${model.provider}/${model.id}`,
         prompt: params.prompt,
         paths: normPaths(params.paths),
+        sources: normSources(params.sources),
         contextMode,
         scratchDir: contextStore?.scratchDir,
         contextSources: sourceSummaries,
@@ -168,8 +191,9 @@ export async function runRlmQuery(
     });
     await loader.reload();
 
-    const customTools: any[] = [createRlmTool(state, depth), createReturnTool()];
-    if (contextStore) customTools.splice(1, 0, createContextTool(ctx.cwd, contextStore));
+    const { createRlmReplTool } = await import("./repl.js");
+    const customTools: any[] = [createRlmTool(state, depth), createRlmReplTool(state, depth, contextStore), createReturnTool()];
+    if (contextStore) customTools.splice(2, 0, createContextTool(ctx.cwd, contextStore));
 
     const created = await createAgentSession({
       cwd: ctx.cwd,
@@ -194,21 +218,9 @@ export async function runRlmQuery(
         const ret = Array.isArray(ev.toolResults) && ev.toolResults.some((r: any) => r?.toolName === RETURN_TOOL_NAME);
         const more = ev.message?.stopReason === "toolUse" && !ret;
         if (turns >= state.maxTurns && more) {
-          if (!finalizationRequested) {
-            finalizationRequested = true;
-            emit(`depth ${depth}: turn budget reached; requesting ${RETURN_TOOL_NAME}`);
-            void session
-              .steer(
-                `Turn budget reached (${state.maxTurns}). Stop exploring. Call ${RETURN_TOOL_NAME} NOW with your best partial answer and list what remains unchecked.`,
-              )
-              .catch(() => {
-                abortedByTurnLimit = true;
-                void session.abort();
-              });
-          } else {
-            abortedByTurnLimit = true;
-            void session.abort();
-          }
+          abortedByTurnLimit = true;
+          emit(`depth ${depth}: turn budget reached; aborting child for deterministic parent-side finalization`);
+          void session.abort();
         }
       }
     });
@@ -221,19 +233,27 @@ export async function runRlmQuery(
 
     let msgs = [...(session.messages as any[])];
     let completed = hasReturn(msgs);
+    let deterministicFinalized = false;
+    let deterministicFinalizationReason: string | undefined;
+    let answer = "";
 
-    if (!completed && !abortedByTurnLimit && !signal?.aborted) {
+    if (completed) {
+      answer = clip(extractAnswer(msgs));
+    } else if (!signal?.aborted) {
       finalizationRequested = true;
-      emit(`depth ${depth}: forcing ${RETURN_TOOL_NAME}`);
-      await session.prompt(
-        `You ended without calling ${RETURN_TOOL_NAME}. Call ${RETURN_TOOL_NAME} now with your best answer.`,
-      );
-      msgs = [...(session.messages as any[])];
-      completed = hasReturn(msgs);
+      deterministicFinalized = true;
+      deterministicFinalizationReason = abortedByTurnLimit ? `maxTurns=${state.maxTurns}` : `missing ${RETURN_TOOL_NAME}`;
+      emit(`depth ${depth}: synthesizing deterministic final answer (${deterministicFinalizationReason})`);
+      const synthesized = await runLlmQuery(ctx, {
+        prompt: deterministicFinalPrompt(params.prompt, msgs, deterministicFinalizationReason),
+        contextMode: "inline",
+      }, state.budget, depth, state, signal, onUpdate, "rlm_query");
+      answer = clip(textOf(synthesized.content).trim() || extractAnswer(msgs));
+    } else {
+      answer = clip(extractAnswer(msgs));
     }
 
-    const answer = clip(extractAnswer(msgs));
-    const incomplete = abortedByTurnLimit || !completed;
+    const incomplete = !completed;
     const details: Details = {
       call: "rlm_query",
       kind: "rlm",
@@ -248,6 +268,7 @@ export async function runRlmQuery(
       model: `${model.provider}/${model.id}`,
       prompt: params.prompt,
       paths: normPaths(params.paths),
+      sources: normSources(params.sources),
       contextMode,
       scratchDir: contextStore?.scratchDir,
       contextSources: sourceSummaries,
@@ -255,14 +276,18 @@ export async function runRlmQuery(
       trace: traceOf(msgs),
       completedWithReturn: completed,
       finalizationRequested,
+      deterministicFinalized,
+      deterministicFinalizationReason,
       abortedByTurnLimit,
       incomplete,
     };
 
     const note = abortedByTurnLimit
-      ? `\n\n[stopped after maxTurns=${state.maxTurns}; result may be partial]`
+      ? `\n\n[stopped after maxTurns=${state.maxTurns}; synthesized checkpoint may be partial]`
       : !completed
-        ? `\n\n[child ended without ${RETURN_TOOL_NAME}; using last available text]`
+        ? deterministicFinalized
+          ? `\n\n[child ended without ${RETURN_TOOL_NAME}; synthesized checkpoint from transcript]`
+          : `\n\n[child ended without ${RETURN_TOOL_NAME}; using last available text]`
         : "";
     return { content: [{ type: "text", text: `${answer}${note}` }], details };
   } finally {

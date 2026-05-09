@@ -27,6 +27,7 @@ export const HARD_CTX_GREP_MATCHES = 200;
 export const MAX_CTX_GREP_FILES = 5_000;
 
 export const RLM_TOOL_NAME = "rlm";
+export const REPL_TOOL_NAME = "rlm_repl";
 export const RETURN_TOOL_NAME = "pi_return";
 export const CTX_TOOL_NAME = "ctx";
 
@@ -37,13 +38,14 @@ export type ExecutionKind = "llm" | "rlm";
 export const CONTEXT_MODES = ["auto", "inline", "file_backed"] as const;
 export type ContextMode = typeof CONTEXT_MODES[number];
 
-export const CTX_ACTIONS = ["manifest", "peek", "grep"] as const;
+export const CTX_ACTIONS = ["manifest", "peek", "grep", "extract", "note", "artifact"] as const;
 export type CtxAction = typeof CTX_ACTIONS[number];
 
 export type ContextSourceKind = "inline" | "file" | "dir" | "missing" | "other";
 
 export interface ContextSource {
   id: string;
+  name?: string;
   label: string;
   input?: string;
   path: string;
@@ -57,6 +59,8 @@ export interface ContextSource {
 export interface ContextStore {
   dir: string;
   scratchDir: string;
+  notesDir: string;
+  artifactsDir: string;
   manifestPath: string;
   manifestJsonPath: string;
   readmePath: string;
@@ -84,6 +88,8 @@ export interface BatchItem {
   context?: string;
   contextMode?: ContextMode;
   paths?: string[];
+  sources?: Array<{ name?: string; path: string }>;
+  contextName?: string;
   allowWrites?: boolean;
 }
 
@@ -101,6 +107,7 @@ export interface Details {
   model: string;
   prompt: string;
   paths: string[];
+  sources?: Array<{ name?: string; path: string }>;
   contextMode?: ContextMode;
   scratchDir?: string;
   contextSources?: string[];
@@ -108,6 +115,8 @@ export interface Details {
   trace?: Array<{ role: string; toolName?: string; text: string }>;
   completedWithReturn?: boolean;
   finalizationRequested?: boolean;
+  deterministicFinalized?: boolean;
+  deterministicFinalizationReason?: string;
   abortedByTurnLimit?: boolean;
   incomplete?: boolean;
   error?: string;
