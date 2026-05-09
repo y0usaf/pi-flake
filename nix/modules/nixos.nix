@@ -114,7 +114,7 @@ in {
       type = types.listOf types.str;
       readOnly = true;
       internal = true;
-      description = "Extension paths bundled into finalPackage, suitable for pi settings.json extensions.";
+      description = "Extension paths bundled into finalPackage, exposed for introspection; the wrapper loads them without settings.json entries.";
     };
   };
 

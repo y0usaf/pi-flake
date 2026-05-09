@@ -61,10 +61,11 @@
       default = pkgs.mkShell {
         packages = with pkgs; [
           nodejs_22
+          python3
         ];
 
         shellHook = ''
-          echo "pi-rlm dev shell — node $(node --version)"
+          echo "pi-rlm dev shell — node $(node --version), python $(python3 --version)"
         '';
       };
     });

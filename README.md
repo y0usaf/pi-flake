@@ -7,7 +7,7 @@ Nix flake for building [pi](https://github.com/earendil-works/pi) with optional 
 - Pre-configured extension packages
 - **Builder functions** for custom extension combinations
 - Flag-driven extension selection for downstream flakes
-- Auto-discovery wrapper: bundled extensions are registered through `settings.json`
+- Bundled extensions load automatically without writing to `settings.json`
 
 ---
 
@@ -134,7 +134,7 @@ Only flags set to `true` are copied into the bundled wrapper.
 }
 ```
 
-The module installs `config.programs.pi.finalPackage` into `environment.systemPackages` and sets `PI_SKIP_VERSION_CHECK=1`.
+The module installs `config.programs.pi.finalPackage` into `environment.systemPackages` and sets `PI_SKIP_VERSION_CHECK=1`. Bundled extensions are loaded by the installed wrapper; no `settings.json` entries or extra Nix config are needed.
 
 ---
 
@@ -160,16 +160,16 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 
 ## How Extension Auto-Discovery Works
 
-**Bundled** extensions are copied into `$out/share/pi/extensions/<name>/`; the wrapper registers those paths in `settings.json` on first run.
+**Bundled** extensions are copied into `$out/share/pi/extensions/<name>/`. The wrapper exposes `$out/share/pi` through `PI_DEFAULT_PACKAGES`, and the patched Pi package manager treats that path as a temporary/default package source at runtime.
 
 When you run the wrapped `pi`:
 
-1. Wrapper sets `PI_DEFAULT_EXTENSIONS` to the bundled extensions path
-2. Wrapper creates/updates `~/.pi/agent/settings.json` (or `.pi/settings.json` for projects)
-3. The merge script appends bundled extensions to your existing `extensions` array (if not already present)
-4. pi loads extensions from `settings.json` on first run per directory/project
+1. The wrapper prepends its bundled package root to `PI_DEFAULT_PACKAGES`.
+2. Pi resolves resources from that package root using the same package/convention discovery as normal package sources.
+3. The extensions are loaded for that process only.
+4. User/project `settings.json` files are not created or modified.
 
-**Important:** Extensions from `pi-full` get written to your settings file on first run. If you want to disable them later, edit `~/.pi/agent/settings.json` and remove entries from the `extensions` array.
+`--no-extensions` still disables these bundled defaults because they enter through the normal package resolution path, not as CLI-forced extension paths.
 
 ---
 
@@ -221,7 +221,7 @@ inputs.pi-flake.packages.<system>."pi-review"
 ### Variants
 
 - `pi` - Base pi, no extensions
-- `pi-full` - pi with default extensions bundled (registered via settings merge); excludes opt-in `pi-morph`
+- `pi-full` - pi with default extensions bundled and loaded at runtime; excludes opt-in `pi-morph`
 - `pi-morph` - standalone Morph edit extension package, available for explicit bundling/flags
 
 ### Library helpers / modules
@@ -258,6 +258,7 @@ Current patch set applied to upstream `pi-mono`:
 - `disable-install-telemetry.patch` - Disables install/update telemetry
 - `avoid-network-model-regeneration.patch` - Uses checked-in model registry during builds
 - `remove-tree-filter-backcycle.patch` - Removes extra `Ctrl+Shift+O` shortcut
+- `default-package-sources-env.patch` - Adds non-persistent `PI_DEFAULT_PACKAGES` package sources for Nix-bundled resources
 
 ---
 

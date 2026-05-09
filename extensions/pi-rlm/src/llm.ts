@@ -3,13 +3,13 @@ import { completeSimple } from "@mariozechner/pi-ai";
 
 import { MAX_QUERY_CONTEXT_CHARS } from "./constants.js";
 import type { Budget, ContextMode, Details, RlmCall, RunState } from "./constants.js";
-import { clip, normalizeContextMode, rejectPathsForLlm, resolveModel } from "./utils.js";
+import { clip, normalizeContextMode, normPaths, normSources, rejectPathsForLlm, resolveModel } from "./utils.js";
 
 // ── Plain LM call: llm_query ────────────────────────────────────────
 
 export async function runLlmQuery(
   ctx: ExtensionContext,
-  params: { prompt: string; context?: string; contextMode?: ContextMode; paths?: string[] },
+  params: { prompt: string; context?: string; contextMode?: ContextMode; paths?: string[]; sources?: Array<{ name?: string; path: string }>; contextName?: string },
   budget: Budget,
   depth: number,
   state: RunState,
@@ -17,7 +17,7 @@ export async function runLlmQuery(
   onUpdate: any,
   call: RlmCall = "llm_query",
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: Details }> {
-  if (call === "llm_query") rejectPathsForLlm(call, params.paths, params.contextMode);
+  if (call === "llm_query" || call === "llm_query_batched") rejectPathsForLlm(call, params.paths, params.contextMode, params.sources);
 
   budget.queries++;
   if (budget.queries > budget.maxQueries) throw new Error(`llm_query budget exhausted (${budget.maxQueries}).`);
@@ -67,7 +67,8 @@ export async function runLlmQuery(
     maxTurns: 0,
     model: `${model.provider}/${model.id}`,
     prompt: params.prompt,
-    paths: [],
+    paths: call === "llm_query" || call === "llm_query_batched" ? [] : normPaths(params.paths),
+    sources: call === "llm_query" || call === "llm_query_batched" ? [] : normSources(params.sources),
     contextMode: normalizeContextMode(params.contextMode),
     answer: clip(text),
   };

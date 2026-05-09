@@ -31,11 +31,18 @@ export const ContextModeParam = Type.Optional(StringEnum(CONTEXT_MODES, {
     'Context handling for recursive RLM calls. "auto" keeps short inline context in chat but materializes large context into a temp file; paths are always file-backed. "inline" preserves old inline behavior for context. "file_backed" materializes context into the temp context store.',
 }));
 
+export const SourceParam = Type.Object({
+  name: Type.Optional(Type.String({ description: "Optional stable source name/alias for ctx selection." })),
+  path: Type.String({ description: "File or directory path for this file-backed context source." }),
+});
+
 export const RlmBatchItem = Type.Object({
   prompt: Type.String({ description: "Prompt for this batch item." }),
   context: Type.Optional(Type.String({ description: "Optional inline context for this item." })),
   contextMode: ContextModeParam,
   paths: Type.Optional(Type.Array(Type.String(), { description: "Paths for this child RLM to inspect. Used by rlm_query_batched only. Paths are file-backed context sources." })),
+  sources: Type.Optional(Type.Array(SourceParam, { description: "Named file-backed sources for this child RLM. Not accepted for llm_query calls." })),
+  contextName: Type.Optional(Type.String({ description: "Optional name/label for materialized inline context." })),
   allowWrites: Type.Optional(Type.Boolean({ description: "Also give this child edit/write tools. Used by rlm_query_batched only." })),
 });
 
@@ -52,16 +59,24 @@ export const RlmParams = Type.Object({
   paths: Type.Optional(
     Type.Array(Type.String(), { description: "Paths for rlm_query/rlm_query_batched children to inspect via ctx/bash/read. Not accepted for llm_query calls. Paths are kept outside chat as file-backed context." }),
   ),
+  sources: Type.Optional(Type.Array(SourceParam, { description: "Named file-backed sources for rlm_query/rlm_query_batched children. Not accepted for llm_query calls." })),
+  contextName: Type.Optional(Type.String({ description: "Optional source name/label for materialized inline context." })),
   prompts: Type.Optional(
     Type.Array(Type.String(), { description: "Prompts for batched calls. Shared context/paths apply to each item." }),
   ),
   items: Type.Optional(
-    Type.Array(RlmBatchItem, { description: "Structured batch items with per-item prompt/context/contextMode/paths." }),
+    Type.Array(RlmBatchItem, { description: "Structured batch items with per-item prompt/context/contextMode/paths/sources/contextName." }),
   ),
   allowWrites: Type.Optional(
     Type.Boolean({ description: "Recursive child RLM calls: also give edit/write tools. Default false. Temporary scratch writes are always allowed inside the RLM context store." }),
   ),
   ...LimitParams,
+});
+
+export const ReplParams = Type.Object({
+  code: Type.String({ description: "Python code to run inside the RLM-aware REPL. Use synchronous llm_query/rlm_query helpers, globals/state for persistence, and FINAL(value) when done." }),
+  reset: Type.Optional(Type.Boolean({ description: "Clear persistent REPL state before running this code. Default false." })),
+  timeoutMs: Type.Optional(Type.Number({ description: "Local Python execution timeout. Paused while synchronous bridge helpers (llm_query/rlm_query/bash/ctx/read_file) are running. Default 30000, hard cap 120000." })),
 });
 
 export const ReturnParams = Type.Object({
@@ -70,15 +85,34 @@ export const ReturnParams = Type.Object({
 
 export const CtxParams = Type.Object({
   action: StringEnum(CTX_ACTIONS, {
-    description: 'Context-store action: "manifest" returns source metadata, "peek" returns a capped slice, "grep" searches sources with capped matches.',
+    description: 'Context-store action: "manifest", "peek", "grep", "extract", "note", or "artifact".',
   }),
   source: Type.Optional(Type.String({ description: "Optional source id/name/path, e.g. s0, s1, docs/. Omit for all sources on grep or first source on peek." })),
+  format: Type.Optional(Type.String({ description: "manifest format: text (default) or json." })),
+  file: Type.Optional(Type.String({ description: "File inside a directory source for peek/extract. Must stay inside source dir." })),
+  line: Type.Optional(Type.Number({ description: "1-based start line for line-aware peek/extract." })),
+  endLine: Type.Optional(Type.Number({ description: "1-based end line for line-aware peek/extract." })),
+  lines: Type.Optional(Type.Number({ description: "Number of lines for line-aware peek/extract." })),
+  numbers: Type.Optional(Type.Boolean({ description: "Include line numbers for line-aware output. Default true." })),
   query: Type.Optional(Type.String({ description: "Search query for action='grep'. Plain substring by default; set regex=true for regular expressions." })),
   regex: Type.Optional(Type.Boolean({ description: "Treat query as a JavaScript regular expression for grep. Default false." })),
+  literal: Type.Optional(Type.Boolean({ description: "Force literal grep. Default true unless regex=true." })),
   caseSensitive: Type.Optional(Type.Boolean({ description: "Case-sensitive grep. Default false." })),
   chars: Type.Optional(Type.Number({ description: `Max bytes for peek output. Default ${DEFAULT_CTX_PEEK_CHARS}, hard cap ${HARD_CTX_PEEK_CHARS}.` })),
   offset: Type.Optional(Type.Number({ description: "Byte offset for peek. Default 0." })),
   maxMatches: Type.Optional(Type.Number({ description: `Max grep matches. Default ${DEFAULT_CTX_GREP_MATCHES}, hard cap ${HARD_CTX_GREP_MATCHES}.` })),
+  contextLines: Type.Optional(Type.Number({ description: "Grep context lines before and after each match." })),
+  before: Type.Optional(Type.Number({ description: "Grep context lines before each match." })),
+  after: Type.Optional(Type.Number({ description: "Grep context lines after each match." })),
+  ranges: Type.Optional(Type.Array(Type.Object({
+    source: Type.Optional(Type.String()),
+    file: Type.Optional(Type.String()),
+    line: Type.Number(),
+    endLine: Type.Optional(Type.Number()),
+    lines: Type.Optional(Type.Number()),
+  }), { description: "Ranges for extract action." })),
+  text: Type.Optional(Type.String({ description: "Text content for note/artifact action." })),
+  name: Type.Optional(Type.String({ description: "Safe relative file name for note/artifact." })),
 });
 
 export const RLM_PARAM_KEYS = new Set([
@@ -87,6 +121,8 @@ export const RLM_PARAM_KEYS = new Set([
   "context",
   "contextMode",
   "paths",
+  "sources",
+  "contextName",
   "prompts",
   "items",
   "allowWrites",
@@ -97,5 +133,6 @@ export const RLM_PARAM_KEYS = new Set([
   "maxConcurrent",
 ]);
 
-export const RLM_ITEM_KEYS = new Set(["prompt", "context", "contextMode", "paths", "allowWrites"]);
+export const RLM_ITEM_KEYS = new Set(["prompt", "context", "contextMode", "paths", "sources", "contextName", "allowWrites"]);
+export const REPL_PARAM_KEYS = new Set(["code", "reset", "timeoutMs"]);
 

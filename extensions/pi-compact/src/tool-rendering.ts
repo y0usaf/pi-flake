@@ -1,6 +1,6 @@
 import { ToolExecutionComponent } from "@mariozechner/pi-coding-agent";
 import { state } from "./state.js";
-import { BRAILLE_SPINNER_FRAMES, MAX_RESULT_LENGTH, MAX_SUMMARY_LENGTH, TOOL_ORIGINAL_RENDER_KEY, TOOL_ORIGINAL_SET_EXPANDED_KEY, TOOL_RULE, TOOL_SPINNER_FRAME_KEY, TOOL_SPINNER_INTERVAL_KEY, TOOL_SPINNER_INTERVAL_MS, type ToolBgToken } from "./types.js";
+import { MAX_RESULT_LENGTH, MAX_SUMMARY_LENGTH, TOOL_ORIGINAL_RENDER_KEY, TOOL_ORIGINAL_SET_EXPANDED_KEY, TOOL_RULE, TOOL_SPINNER_FRAME_KEY, TOOL_SPINNER_INTERVAL_KEY, type ToolBgToken } from "./types.js";
 import { clip, colourDiffAdded, colourDiffRemoved, countDetailsLineDiff, firstTextLine, formatScalar, getThemeToolBgFn, isBlankRenderedLine, isRecord, lineCount, normalizePath, renderOneLine, replaceTabs, squash, textLineCount } from "./shared.js";
 
 export function summarizeArgs(toolName: string, args: any): string {
@@ -159,11 +159,11 @@ export function summarizeResult(toolName: string, result: any): string {
   return ` → ${clip(line, MAX_RESULT_LENGTH)}`;
 }
 
-export function getToolSpinnerFrame(state: any): string {
-  const rawFrame = typeof state?.[TOOL_SPINNER_FRAME_KEY] === "number" ? state[TOOL_SPINNER_FRAME_KEY] : 0;
-  const frame = Number.isFinite(rawFrame) ? Math.trunc(rawFrame) : 0;
-  const index = ((frame % BRAILLE_SPINNER_FRAMES.length) + BRAILLE_SPINNER_FRAMES.length) % BRAILLE_SPINNER_FRAMES.length;
-  return BRAILLE_SPINNER_FRAMES[index] ?? BRAILLE_SPINNER_FRAMES[0];
+export function getToolSpinnerFrame(_state: any): string {
+  // Keep pending compact tool rows static. An animated spinner repeatedly
+  // requested renders while tools were collapsed, which made browser-side
+  // scroll anchoring/observers loop when Ctrl+O expanded tool uses.
+  return "⠋";
 }
 
 export function toolStatusPrefix(state: any): string {
@@ -237,20 +237,12 @@ export function requestToolRender(component: ToolExecutionWithShells): void {
 }
 
 export function startToolSpinner(component: ToolExecutionWithShells): void {
-  if (component[TOOL_SPINNER_INTERVAL_KEY] !== undefined) return;
-  if (typeof component.ui?.requestRender !== "function") return;
-  component[TOOL_SPINNER_FRAME_KEY] ??= 0;
-
-  const interval = setInterval(() => {
-    component[TOOL_SPINNER_FRAME_KEY] = ((component[TOOL_SPINNER_FRAME_KEY] ?? 0) + 1) % BRAILLE_SPINNER_FRAMES.length;
-    requestToolRender(component);
-  }, TOOL_SPINNER_INTERVAL_MS);
-
-  if (typeof interval === "object" && interval && "unref" in interval && typeof interval.unref === "function") {
-    interval.unref();
-  }
-
-  component[TOOL_SPINNER_INTERVAL_KEY] = interval;
+  // Historical cleanup/no-op: compact pending tools used to start a render
+  // interval here. The interval could keep mutating output while expansion was
+  // toggled, causing an infinite scrolling loop in the UI. Leave the exported
+  // helper in place, but ensure any old interval is cleared and render static
+  // pending indicators instead.
+  stopToolSpinner(component);
 }
 
 export function stopToolSpinner(component: ToolExecutionWithShells): void {
@@ -264,9 +256,8 @@ export function shouldRenderCompactToolLine(component: ToolExecutionWithShells):
   return state.toolRendering.mode === "compact" && !component.expanded;
 }
 
-export function syncToolSpinner(component: ToolExecutionWithShells, compactLine: boolean): void {
-  if (compactLine && component.isPartial) startToolSpinner(component);
-  else stopToolSpinner(component);
+export function syncToolSpinner(component: ToolExecutionWithShells, _compactLine: boolean): void {
+  stopToolSpinner(component);
 }
 
 export function syncToolSpinnerForCurrentExpansion(component: ToolExecutionWithShells): void {

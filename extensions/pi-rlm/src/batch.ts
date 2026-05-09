@@ -11,10 +11,12 @@ import {
   errorText,
   modelNameFromDetails,
   normPaths,
+  normSources,
   resolveModel,
   runLimited,
   textOf,
   uniquePathsFromDetails,
+  uniqueSourcesFromDetails,
 } from "./utils.js";
 import type { RunState } from "./constants.js";
 
@@ -61,6 +63,7 @@ export async function runBatch(
         model: model ? `${model.provider}/${model.id}` : "unknown",
         prompt: item.prompt,
         paths: normPaths(item.paths),
+        sources: normSources(item.sources),
         answer: msg,
         error: errorText(e),
         incomplete: true,
@@ -93,6 +96,7 @@ export async function runBatch(
     model: modelNameFromDetails(childDetails),
     prompt: `rlm(${call}) (${items.length} item${items.length === 1 ? "" : "s"})`,
     paths: uniquePathsFromDetails(childDetails),
+    sources: uniqueSourcesFromDetails(childDetails),
     answer,
     batch: true,
     batchSize: items.length,

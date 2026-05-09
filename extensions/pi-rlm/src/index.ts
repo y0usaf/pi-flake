@@ -6,19 +6,46 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
-import { RLM_TOOL_NAME } from "./constants.js";
+import { REPL_TOOL_NAME, RLM_TOOL_NAME } from "./constants.js";
 import { rootSystemPrompt } from "./guidance.js";
+import { createRlmReplTool } from "./repl.js";
 import { createRlmTool } from "./tools.js";
+
+type RootMode = "hybrid" | "repl" | "rlm" | "classic";
+
+function rootMode(): RootMode {
+  const raw = process.env.PI_RLM_ROOT_MODE?.toLowerCase().trim();
+  if (raw === "classic" || raw === "tools" || raw === "default") return "classic";
+  if (raw === "repl" || raw === "repl-only") return "repl";
+  if (raw === "rlm" || raw === "rlm-only") return "rlm";
+  return "hybrid";
+}
+
+function rootTools(mode: RootMode): string[] {
+  if (mode === "classic") return ["bash", "read", "edit", "write", REPL_TOOL_NAME, RLM_TOOL_NAME];
+  if (mode === "repl") return [REPL_TOOL_NAME];
+  if (mode === "rlm") return [RLM_TOOL_NAME];
+  return [REPL_TOOL_NAME, RLM_TOOL_NAME];
+}
+
+function enforceRootTools(pi: ExtensionAPI): RootMode {
+  const mode = rootMode();
+  pi.setActiveTools(rootTools(mode));
+  return mode;
+}
 
 export default function piRlmExtension(pi: ExtensionAPI) {
   pi.registerTool(createRlmTool());
+  pi.registerTool(createRlmReplTool());
 
-  pi.on("session_start", () => {
-    pi.setActiveTools(["bash", "read", "edit", "write", RLM_TOOL_NAME]);
-  });
+  for (const event of ["session_start", "session_tree", "before_provider_request"] as const) {
+    pi.on(event, () => {
+      enforceRootTools(pi);
+    });
+  }
 
   pi.on("before_agent_start", (_event, ctx) => {
-    if (!pi.getActiveTools().includes(RLM_TOOL_NAME)) return;
-    return { systemPrompt: rootSystemPrompt(ctx.cwd) };
+    const mode = enforceRootTools(pi);
+    return { systemPrompt: rootSystemPrompt(ctx.cwd, undefined, mode, rootTools(mode)) };
   });
 }

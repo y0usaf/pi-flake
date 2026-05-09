@@ -4,18 +4,11 @@ import { Text } from "@mariozechner/pi-tui";
 import { CTX_ACTIONS, CTX_TOOL_NAME, MAX_CTX_OUTPUT_CHARS, RETURN_TOOL_NAME, RLM_TOOL_NAME } from "./constants.js";
 import type { ContextStore, CtxAction, Details, RunState } from "./constants.js";
 import { CtxParams, ReturnParams, RlmParams } from "./params.js";
-import { ctxGrep, ctxManifest, ctxPeek, contextSourceSummary } from "./context-store.js";
-import { runBatch } from "./batch.js";
-import { runLlmQuery } from "./llm.js";
-import { runRlmQuery } from "./child-session.js";
+import { ctxExtract, ctxGrep, ctxManifest, ctxPeek, ctxWriteText, contextSourceSummary } from "./context-store.js";
+import { dispatchRlmCall } from "./dispatcher.js";
 import {
-  childDepth,
   clip,
-  currentDepth,
   normalizeCall,
-  rejectUnknownParams,
-  singleItemFromParams,
-  stateFor,
   textOf,
 } from "./utils.js";
 
@@ -25,12 +18,14 @@ export function createContextTool(cwd: string, store: ContextStore) {
   return defineTool({
     name: CTX_TOOL_NAME,
     label: "RLM Context",
-    description: "Inspect the file-backed RLM context store with capped outputs. Use manifest, grep, and peek to avoid dumping large context into chat.",
-    promptSnippet: "Inspect file-backed RLM context with capped manifest/grep/peek",
+    description: "Inspect the file-backed RLM context store with capped outputs. Use manifest, grep, peek, extract, note, and artifact to avoid dumping large context into chat.",
+    promptSnippet: "Inspect file-backed RLM context with capped manifest/grep/peek/extract",
     promptGuidelines: [
       `${CTX_TOOL_NAME}({ action:"manifest" }): list context sources, manifest path, and scratch dir.`,
       `${CTX_TOOL_NAME}({ action:"grep", query:"...", source?, maxMatches? }): search context with capped matches. Prefer before peeking.`,
-      `${CTX_TOOL_NAME}({ action:"peek", source:"s0", chars?:4000, offset?:0 }): read a capped slice from one source.`,
+      `${CTX_TOOL_NAME}({ action:"peek", source:"s0", chars?:4000, offset?:0, line?, endLine?, file? }): read a capped slice/range from one source.`,
+      `${CTX_TOOL_NAME}({ action:"extract", source?, ranges? }): extract line ranges.`,
+      `${CTX_TOOL_NAME}({ action:"note"|"artifact", name?, text }): write safe files under notes/artifacts.`,
       `Never use ${CTX_TOOL_NAME} to dump large context. Store intermediate artifacts under ${store.scratchDir}.`,
     ],
     parameters: CtxParams,
@@ -39,10 +34,16 @@ export function createContextTool(cwd: string, store: ContextStore) {
       if (!CTX_ACTIONS.includes(action)) throw new Error(`Unknown ctx action: ${String(params.action)}.`);
 
       const text = action === "manifest"
-        ? await ctxManifest(store)
+        ? await ctxManifest(store, params)
         : action === "peek"
           ? await ctxPeek(cwd, store, params)
-          : await ctxGrep(cwd, store, params);
+          : action === "grep"
+            ? await ctxGrep(cwd, store, params)
+            : action === "extract"
+              ? await ctxExtract(cwd, store, params)
+              : action === "note" || action === "artifact"
+                ? await ctxWriteText(store, action, params)
+                : (() => { throw new Error(`Unknown ctx action: ${String(params.action)}.`); })();
 
       return {
         content: [{ type: "text", text: clip(text, MAX_CTX_OUTPUT_CHARS) }],
@@ -172,20 +173,7 @@ export function createRlmTool(inherited?: RunState, parentDepth?: number) {
     ],
     parameters: RlmParams,
     async execute(_id, params, signal, onUpdate, ctx) {
-      rejectUnknownParams(params);
-      const state = stateFor(params, inherited, ctx.model);
-      const call = normalizeCall(params.call);
-
-      if (call === "llm_query") {
-        return runLlmQuery(ctx, singleItemFromParams(params), state.budget, currentDepth(parentDepth), state, signal, onUpdate, "llm_query");
-      }
-      if (call === "llm_query_batched") {
-        return runBatch(ctx, params, "llm_query_batched", currentDepth(parentDepth), state, signal, onUpdate);
-      }
-      if (call === "rlm_query") {
-        return runRlmQuery(ctx, singleItemFromParams(params), childDepth(parentDepth), state, signal, onUpdate);
-      }
-      return runBatch(ctx, params, "rlm_query_batched", childDepth(parentDepth), state, signal, onUpdate);
+      return dispatchRlmCall(ctx, params, inherited, parentDepth, signal, onUpdate);
     },
     renderCall(args, theme) {
       return renderRlmCall(args, theme);

@@ -16,8 +16,9 @@ import {
   RLM_CALLS,
 } from "./constants.js";
 import type { BatchItem, ContextMode, Details, RlmCall, RunState } from "./constants.js";
-
 import { RLM_ITEM_KEYS, RLM_PARAM_KEYS } from "./params.js";
+
+export interface NamedSourceInput { name?: string; path: string }
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -56,6 +57,22 @@ export function normPaths(paths: unknown): string[] {
   return [...new Set(
     paths.filter((p): p is string => typeof p === "string" && p.trim().length > 0).map((p) => p.trim()),
   )];
+}
+
+export function normSources(sources: unknown): NamedSourceInput[] {
+  if (!Array.isArray(sources)) return [];
+  const out: NamedSourceInput[] = [];
+  const seen = new Set<string>();
+  for (const src of sources) {
+    if (!isRecord(src) || typeof src.path !== "string" || !src.path.trim()) continue;
+    const path = src.path.trim();
+    const name = typeof src.name === "string" && src.name.trim() ? src.name.trim() : undefined;
+    const key = `${name ?? ""}\0${path}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ name, path });
+  }
+  return out;
 }
 
 export function textOf(content: unknown): string {
@@ -164,10 +181,10 @@ export function normalizeContextMode(raw: unknown): ContextMode {
   throw new Error(`Unknown contextMode: ${String(raw)}. Expected one of: ${CONTEXT_MODES.join(", ")}.`);
 }
 
-export function rejectPathsForLlm(call: RlmCall, paths: unknown, contextMode?: unknown): void {
+export function rejectPathsForLlm(call: RlmCall, paths: unknown, contextMode?: unknown, sources?: unknown): void {
   if (call !== "llm_query" && call !== "llm_query_batched") return;
-  if (normPaths(paths).length > 0) {
-    throw new Error(`${call} has no bash/read/ctx access and cannot consume paths. Extract text first, pass it as context/prompt, or use rlm_query.`);
+  if (normPaths(paths).length > 0 || normSources(sources).length > 0) {
+    throw new Error(`${call} has no bash/read/ctx access and cannot consume paths/sources. Extract text first, pass it as context/prompt, or use rlm_query.`);
   }
   if (normalizeContextMode(contextMode) === "file_backed") {
     throw new Error(`${call} has no environment and cannot use contextMode:"file_backed". Use inline context or rlm_query.`);
@@ -177,23 +194,27 @@ export function rejectPathsForLlm(call: RlmCall, paths: unknown, contextMode?: u
 export function singleItemFromParams(params: any): BatchItem {
   const call = normalizeCall(params?.call);
   const contextMode = normalizeContextMode(params?.contextMode);
-  rejectPathsForLlm(call, params?.paths, contextMode);
+  rejectPathsForLlm(call, params?.paths, contextMode, params?.sources);
   return {
     prompt: requiredPrompt(params),
     context: typeof params?.context === "string" ? params.context : undefined,
     contextMode,
     paths: normPaths(params?.paths),
+    sources: normSources(params?.sources),
+    contextName: typeof params?.contextName === "string" ? params.contextName : undefined,
     allowWrites: params?.allowWrites === true,
   };
 }
 
 export function batchItemsFromParams(params: any, call: RlmCall): BatchItem[] {
   const sharedContextMode = normalizeContextMode(params?.contextMode);
-  rejectPathsForLlm(call, params?.paths, sharedContextMode);
+  rejectPathsForLlm(call, params?.paths, sharedContextMode, params?.sources);
   const shared = {
     context: typeof params?.context === "string" ? params.context : undefined,
     contextMode: sharedContextMode,
     paths: normPaths(params?.paths),
+    sources: normSources(params?.sources),
+    contextName: typeof params?.contextName === "string" ? params.contextName : undefined,
     allowWrites: params?.allowWrites === true,
   };
 
@@ -204,13 +225,16 @@ export function batchItemsFromParams(params: any, call: RlmCall): BatchItem[] {
         throw new Error(`Batch item ${index} missing required prompt.`);
       }
       const contextMode = normalizeContextMode(item?.contextMode ?? shared.contextMode);
-      rejectPathsForLlm(call, item?.paths, contextMode);
+      rejectPathsForLlm(call, item?.paths, contextMode, item?.sources);
       const itemPaths = normPaths(item?.paths);
+      const itemSources = normSources(item?.sources);
       return {
         prompt: item.prompt,
         context: typeof item?.context === "string" ? item.context : shared.context,
         contextMode,
         paths: itemPaths.length ? itemPaths : shared.paths,
+        sources: itemSources.length ? itemSources : shared.sources,
+        contextName: typeof item?.contextName === "string" ? item.contextName : shared.contextName,
         allowWrites: typeof item?.allowWrites === "boolean" ? item.allowWrites : shared.allowWrites,
       };
     });
@@ -251,9 +275,20 @@ export function uniquePathsFromDetails(details: Details[]): string[] {
   return [...new Set(details.flatMap((d) => d.paths || []))];
 }
 
-export function leafPrompt(prompt: string, paths?: string[]): string {
+export function uniqueSourcesFromDetails(details: Details[]): NamedSourceInput[] {
+  return normSources(details.flatMap((d) => d.sources || []));
+}
+
+export function leafPrompt(prompt: string, paths?: string[], sources?: unknown): string {
   const ps = normPaths(paths);
-  if (!ps.length) return prompt;
-  return `${prompt}\n\nNote: max RLM depth reached; this is a plain llm_query leaf call with no bash/read access. Paths requested by parent (not directly readable in this call):\n${ps.map((p) => `- ${p}`).join("\n")}`;
+  const ss = normSources(sources);
+  if (!ps.length && !ss.length) return prompt;
+  const lines = [
+    `${prompt}\n`,
+    "Note: max RLM depth reached; this is a plain llm_query leaf call with no bash/read/ctx access.",
+  ];
+  if (ps.length) lines.push("Paths requested by parent (not directly readable in this call):", ...ps.map((p) => `- ${p}`));
+  if (ss.length) lines.push("Sources requested by parent (not directly readable in this call):", ...ss.map((s) => `- ${s.name ? `${s.name}: ` : ""}${s.path}`));
+  return lines.join("\n");
 }
 
