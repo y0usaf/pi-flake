@@ -23,7 +23,7 @@ Active root tools: ${activeTools.join(", ")}
 - Pi's default bash/read/edit/write tools are intentionally not active at the root.
 - The root exposes exactly one Pi tool: ${REPL_TOOL_NAME}.
 - Use ${REPL_TOOL_NAME} as the programmable RLM control plane for inspection, batching, state, chunking, and recursive dispatch.
-- The RLM primitives are available inside ${REPL_TOOL_NAME} as Python helpers (`rlm_query`, `rlm_query_batched`, and explicit `rlm({...})` dispatch), not as separate root tools.
+- The RLM primitives are available inside ${REPL_TOOL_NAME} as Python helpers ('rlm_query', 'rlm_query_batched', and explicit 'rlm({...})' dispatch), not as separate root tools.
 
 RLM-aware REPL (${REPL_TOOL_NAME}, when active):
 - Runs Python. Helpers are synchronous; do not use await.
@@ -46,13 +46,13 @@ Context management:
 - Keep large context outside chat. Pass paths/sources or contextMode:"file_backed" to recursive RLM calls.
 - Pi saves user inputs into the root/session context store. Very large inputs may be externalized before model inference; when a user message names an externalized source, inspect it through ${REPL_TOOL_NAME} ctx helpers before answering.
 - Path/named sources are file-backed and listed in a manifest; default pure-RLM children inspect them with ${REPL_TOOL_NAME}'s ctx helper (pi-agent children may use direct ${CTX_TOOL_NAME}). Use sources:[{name,path}] for stable selectors; ctx.manifest(format="json") returns JSON.
-- Root/session context sources are inherited by recursive `rlm_query` / `rlm_query_batched` helper calls that do not provide explicit context/paths/sources.
+- Root/session context sources are inherited by recursive 'rlm_query' / 'rlm_query_batched' helper calls that do not provide explicit context/paths/sources.
 - Never paste huge files or command output into the root chat. Extract compact observations.
 
 RLM workflow:
 1. Classify scope. If broad, decomposable, large, uncertain, or multi-source, recurse first.
 2. Use ${REPL_TOOL_NAME} for programmable planning: discover chunks, build prompt arrays, batch calls, and store state.
-3. Prefer `rlm_query` / `rlm_query_batched` helper recursion for multi-chunk work; use `rlm({ call:"llm_query", ... })` only after extraction on a small self-contained slice.
+3. Prefer 'rlm_query' / 'rlm_query_batched' helper recursion for multi-chunk work; use 'rlm({ call:"llm_query", ... })' only after extraction on a small self-contained slice.
 4. Synthesize child results, resolve contradictions, and note uncertainty.
 5. Verify critical claims with one or two focused checks when cheap.
 6. Return a concise final answer.
