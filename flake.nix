@@ -176,6 +176,34 @@
           };
         };
 
+      "pi-vcc" = let
+        vccPackageJson = builtins.fromJSON (builtins.readFile ./extensions/sting8k_pi-vcc/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-vcc";
+          version = vccPackageJson.version;
+          src = lib.cleanSource ./extensions/sting8k_pi-vcc;
+
+          dontBuild = true;
+
+          installPhase = ''
+            runHook preInstall
+
+            mkdir -p "$out"
+            cp package.json README.md demo.gif index.ts "$out"/
+            cp -r src "$out"/
+
+            runHook postInstall
+          '';
+
+          passthru.packageName = vccPackageJson.name;
+
+          meta = with lib; {
+            description = vccPackageJson.description;
+            platforms = platforms.all;
+          };
+        };
+
       # pi with default extensions pre-bundled. Morph is offered as an extension
       # package/flag but is excluded from pi-full by default because it requires
       # remote credentials and is best opted into explicitly.
@@ -318,6 +346,7 @@
       pomodoro = self.packages.${system}."pi-pomodoro";
       rlm = self.packages.${system}."pi-rlm";
       review = self.packages.${system}."pi-review";
+      vcc = self.packages.${system}."pi-vcc";
     };
 
     # Default bundle used by pi-full. Keep remote/API-key-dependent extensions opt-in.

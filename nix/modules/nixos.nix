@@ -80,6 +80,7 @@ in {
       pomodoro = mkEnableOption "pi-pomodoro synced non-blocking timer extension";
       rlm = mkEnableOption "pi-rlm recursive Pi/RLM-style child RLM calls";
       review = mkEnableOption "pi-review /review and /end-review code review workflow extension";
+      vcc = mkEnableOption "pi-vcc algorithmic conversation compactor and vcc_recall history search";
     };
 
     extraExtensions = mkOption {
