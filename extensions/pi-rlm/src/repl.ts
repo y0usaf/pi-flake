@@ -8,6 +8,7 @@ import { Text } from "@mariozechner/pi-tui";
 
 import { ctxExtract, ctxGrep, ctxManifest, ctxPeek, ctxWriteText, contextSourceSummary, readFileSlice } from "./context-store.js";
 import { dispatchRlmCall } from "./dispatcher.js";
+import { inheritSessionContextParams } from "./session-context.js";
 import { CTX_TOOL_NAME, MAX_RESULT_CHARS, REPL_TOOL_NAME, RLM_TOOL_NAME } from "./constants.js";
 import type { ContextStore, RunState } from "./constants.js";
 import { ReplParams, REPL_PARAM_KEYS } from "./params.js";
@@ -40,6 +41,9 @@ state = {}
 history = []
 context = None
 context_0 = None
+latest_input = None
+latest_input_text = None
+inline_inputs = []
 _context_count = 0
 _context_key = None
 cwd = os.getcwd()
@@ -161,6 +165,10 @@ class _Ctx:
     notesDir = None
     artifactsDir = None
     sources = []
+    sourceObjects = []
+    inlineInputs = []
+    latestInput = None
+    latestInputText = None
 
     def _update(self, info):
         info = info or {}
@@ -168,6 +176,10 @@ class _Ctx:
         self.notesDir = info.get("notesDir")
         self.artifactsDir = info.get("artifactsDir")
         self.sources = info.get("sources") or []
+        self.sourceObjects = info.get("sourceObjects") or []
+        self.inlineInputs = info.get("inlineInputs") or []
+        self.latestInput = info.get("latestInput")
+        self.latestInputText = self.latestInput.get("text") if isinstance(self.latestInput, dict) else None
 
     def manifest(self, **kwargs):
         return _call("ctx_manifest", dict(kwargs))
@@ -266,9 +278,15 @@ def _restore_reserved_values():
         globals()[k] = v
 
 def _update_context_vars(info):
-    global context, context_0, _context_count, _context_key
+    global context, context_0, latest_input, latest_input_text, inline_inputs, _context_count, _context_key
     if info is None:
         return
+    latest_input = info.get("latestInput") if isinstance(info, dict) else None
+    latest_input_text = latest_input.get("text") if isinstance(latest_input, dict) else None
+    inline_inputs = info.get("inlineInputs") if isinstance(info, dict) and isinstance(info.get("inlineInputs"), list) else []
+    globals()["latest_input"] = latest_input
+    globals()["latest_input_text"] = latest_input_text
+    globals()["inline_inputs"] = inline_inputs
     key = json.dumps(info, sort_keys=True, default=str)
     if key == _context_key:
         context = info
@@ -388,6 +406,14 @@ interface BridgeContext {
   inherited?: RunState;
   parentDepth?: number;
   store?: ContextStore;
+}
+
+type ReplStoreProvider = ContextStore | ((ctx: any) => ContextStore | undefined | Promise<ContextStore | undefined>);
+
+async function resolveReplStore(provider: ReplStoreProvider | undefined, ctx: any): Promise<ContextStore | undefined> {
+  if (!provider) return undefined;
+  if (typeof provider === "function") return await provider(ctx);
+  return provider;
 }
 
 interface PendingEval {
@@ -514,6 +540,9 @@ class PythonReplWorker {
           notesDir: bridge.store.notesDir,
           artifactsDir: bridge.store.artifactsDir,
           sources: bridge.store.sources.map(contextSourceSummary),
+          sourceObjects: bridge.store.sources,
+          inlineInputs: bridge.store.inlineInputs ?? [],
+          latestInput: bridge.store.latestInput,
         }
       : undefined;
 
@@ -675,7 +704,8 @@ class PythonReplWorker {
 async function handleBridgeCall(method: unknown, params: unknown, bridge: BridgeContext): Promise<unknown> {
   const p = objectExtra(params);
   if (method === "rlm") {
-    const result = await dispatchRlmCall(bridge.ctx, p, bridge.inherited, bridge.parentDepth, bridge.signal, bridge.onUpdate);
+    const paramsForDispatch = inheritSessionContextParams(p, bridge.store);
+    const result = await dispatchRlmCall(bridge.ctx, paramsForDispatch, bridge.inherited, bridge.parentDepth, bridge.signal, bridge.onUpdate);
     return { text: textOf(result.content).trim(), content: result.content, details: result.details };
   }
 
@@ -737,7 +767,7 @@ async function handleBridgeCall(method: unknown, params: unknown, bridge: Bridge
   throw new Error(`Unknown Python REPL bridge method: ${String(method)}.`);
 }
 
-export function createRlmReplTool(inherited?: RunState, parentDepth?: number, store?: ContextStore) {
+export function createRlmReplTool(inherited?: RunState, parentDepth?: number, store?: ReplStoreProvider) {
   let worker: PythonReplWorker | undefined;
   let workerCwd: string | undefined;
   let evals = 0;
@@ -776,7 +806,8 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
 
       onUpdate?.({ content: [{ type: "text", text: `${REPL_TOOL_NAME}: evaluating Python via ${pythonCommand()} (${timeoutMs}ms local timeout; bridge calls excluded)...` }] });
 
-      const result = await worker.eval(params.code, timeoutMs, { ctx, signal, onUpdate, inherited, parentDepth, store }, { data: params.data, setup: params.setup, resetHistory: params.resetHistory === true });
+      const effectiveStore = await resolveReplStore(store, ctx);
+      const result = await worker.eval(params.code, timeoutMs, { ctx, signal, onUpdate, inherited, parentDepth, store: effectiveStore }, { data: params.data, setup: params.setup, resetHistory: params.resetHistory === true });
       if (!result.ok) {
         const text = clip([result.logs?.trim(), result.traceback || result.error].filter(Boolean).join("\n\n"), MAX_RESULT_CHARS);
         return {
@@ -793,8 +824,8 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
             historyLength: result.historyLength ?? 0,
             contextKeys: result.contextKeys ?? [],
             error: result.error,
-            scratchDir: store?.scratchDir,
-            contextSources: store?.sources.map(contextSourceSummary),
+            scratchDir: effectiveStore?.scratchDir,
+            contextSources: effectiveStore?.sources.map(contextSourceSummary),
           },
         };
       }
@@ -819,8 +850,8 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
           varKeys: result.varKeys ?? [],
           historyLength: result.historyLength ?? 0,
           contextKeys: result.contextKeys ?? [],
-          scratchDir: store?.scratchDir,
-          contextSources: store?.sources.map(contextSourceSummary),
+          scratchDir: effectiveStore?.scratchDir,
+          contextSources: effectiveStore?.sources.map(contextSourceSummary),
         },
         terminate: result.final === true,
       };

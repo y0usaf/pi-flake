@@ -68,6 +68,15 @@ export interface ContextSource {
   error?: string;
 }
 
+export interface ContextInlineInput {
+  id: string;
+  name?: string;
+  label: string;
+  path: string;
+  chars: number;
+  text: string;
+}
+
 export interface ContextStore {
   dir: string;
   scratchDir: string;
@@ -78,6 +87,9 @@ export interface ContextStore {
   readmePath: string;
   manifestText: string;
   sources: ContextSource[];
+  /** Small session inputs mirrored into the local Python REPL context only, never into model messages unless printed. */
+  inlineInputs?: ContextInlineInput[];
+  latestInput?: ContextInlineInput;
 }
 
 export interface Budget {

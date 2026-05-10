@@ -215,7 +215,7 @@ export async function runRlmQuery(
     const { createRlmReplTool } = await import("./repl.js");
     const customTools: any[] = childMode === "pure-rlm"
       ? [createRlmReplTool(state, depth, contextStore), createReturnTool()]
-      : [createRlmTool(state, depth), createRlmReplTool(state, depth, contextStore), createReturnTool()];
+      : [createRlmTool(state, depth, contextStore), createRlmReplTool(state, depth, contextStore), createReturnTool()];
     if (contextStore && childMode === "pi-agent") customTools.splice(2, 0, createContextTool(ctx.cwd, contextStore));
 
     const created = await createAgentSession({

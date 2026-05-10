@@ -28,6 +28,7 @@ RLM-aware REPL (${REPL_TOOL_NAME}, when active):
 - Persistent cross-call state lives in Python globals or the state dict, e.g. state["results"] = rlm_query_batched([...]).
 - Helpers: llm_query(prompt_or_params), rlm_query(prompt_or_params) return strings; llm_query_batched(...), rlm_query_batched(...) return list[str]; rlm(params) and *_details helpers return rich dicts with text/content/details.
 - Local helpers: bash(command), read_file(path, offset=?, chars=?), list_dir(path), stat_file(path), SHOW_VARS(). REPL variables include state, history, context/context_N when attached.
+- In root RLM mode, a session context store is attached to ${REPL_TOOL_NAME} as ctx.*; use ctx.manifest(), ctx.grep(), ctx.peek(), and ctx.extract() to inspect saved prompts/sources. Recent small inputs are available locally as latest_input_text/latest_input/inline_inputs.
 - Finalization: FINAL(value) or FINAL_VAR("name").
 - Prefer ${REPL_TOOL_NAME} when you need to generate many prompts, loop over files/chunks, aggregate results, compare contradictions, or maintain intermediate state.
 
@@ -39,7 +40,9 @@ Direct RLM tool (${RLM_TOOL_NAME}, when active):
 
 Context management:
 - Keep large context outside chat. Pass paths/sources or contextMode:"file_backed" to recursive RLM calls.
+- Pi saves user inputs into the root/session context store. Very large inputs may be externalized before model inference; when a user message names an externalized source, inspect it through ${REPL_TOOL_NAME} ctx helpers before answering.
 - Path/named sources are file-backed and listed in a manifest; default pure-RLM children inspect them with ${REPL_TOOL_NAME}'s ctx helper (pi-agent children may use direct ${CTX_TOOL_NAME}). Use sources:[{name,path}] for stable selectors; ctx.manifest(format="json") returns JSON.
+- Root/session context sources are inherited by recursive ${RLM_TOOL_NAME} calls that do not provide explicit context/paths/sources.
 - Never paste huge files or command output into the root chat. Extract compact observations.
 
 RLM workflow:
