@@ -1,4 +1,4 @@
-import { defineTool } from "@mariozechner/pi-coding-agent";
+import { defineTool, type ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 
 import { CTX_ACTIONS, CTX_TOOL_NAME, MAX_CTX_OUTPUT_CHARS, REPL_TOOL_NAME, RETURN_TOOL_NAME, RLM_TOOL_NAME } from "./constants.js";
@@ -6,6 +6,7 @@ import type { ContextStore, CtxAction, Details, RunState } from "./constants.js"
 import { CtxParams, ReturnParams, RlmParams } from "./params.js";
 import { ctxExtract, ctxGrep, ctxManifest, ctxPeek, ctxWriteText, contextSourceSummary } from "./context-store.js";
 import { dispatchRlmCall } from "./dispatcher.js";
+import { inheritSessionContextParams } from "./session-context.js";
 import {
   clip,
   normalizeCall,
@@ -157,7 +158,15 @@ export function renderRlmResult(result: any, { expanded, isPartial }: any, theme
   );
 }
 
-export function createRlmTool(inherited?: RunState, parentDepth?: number) {
+type RlmStoreProvider = ContextStore | ((ctx: ExtensionContext) => ContextStore | undefined | Promise<ContextStore | undefined>);
+
+async function resolveRlmStore(provider: RlmStoreProvider | undefined, ctx: ExtensionContext): Promise<ContextStore | undefined> {
+  if (!provider) return undefined;
+  if (typeof provider === "function") return await provider(ctx);
+  return provider;
+}
+
+export function createRlmTool(inherited?: RunState, parentDepth?: number, store?: RlmStoreProvider) {
   return defineTool({
     name: RLM_TOOL_NAME,
     label: "RLM",
@@ -171,11 +180,14 @@ export function createRlmTool(inherited?: RunState, parentDepth?: number) {
       `${RLM_TOOL_NAME}({ call:"rlm_query_batched", prompts/items, paths?, contextMode?, childMode? }): batched child RLMs for independent sub-calls.`,
       `Runtime controls include maxTimeoutMs/maxTokens/maxBudget/maxErrors and JSONL logs via logPath/logDir. Configure RLM models in extensionSettings.pi-rlm, not per call.`,
       `For large context, prefer paths or contextMode:"file_backed" so the child sees a manifest; in pure-RLM access it through ${REPL_TOOL_NAME} ctx helpers.`,
+      store ? `When a root/session context store is attached, rlm_query / rlm_query_batched calls without explicit context/paths/sources inherit its sources automatically.` : undefined,
       `Prefer llm_query over rlm_query when you already have small relevant text. Prefer batched calls for independent chunks/sub-calls.`,
-    ],
+    ].filter((line): line is string => typeof line === "string"),
     parameters: RlmParams,
     async execute(_id, params, signal, onUpdate, ctx) {
-      return dispatchRlmCall(ctx, params, inherited, parentDepth, signal, onUpdate);
+      const effectiveStore = await resolveRlmStore(store, ctx);
+      const paramsForDispatch = inheritSessionContextParams(params, effectiveStore);
+      return dispatchRlmCall(ctx, paramsForDispatch, inherited, parentDepth, signal, onUpdate);
     },
     renderCall(args, theme) {
       return renderRlmCall(args, theme);

@@ -106,7 +106,14 @@ ctx.artifact(json_text, name="data.json")
 ctx.scratchDir
 ctx.notesDir
 ctx.artifactsDir
-ctx.sources
+ctx.sources        # compact source summaries
+ctx.sourceObjects  # structured source metadata including paths
+ctx.inlineInputs   # recent small inputs mirrored into the local REPL
+ctx.latestInput
+ctx.latestInputText
+latest_input       # top-level alias for ctx.latestInput
+latest_input_text  # top-level alias for ctx.latestInputText
+inline_inputs      # top-level alias for ctx.inlineInputs
 ```
 
 The Python executable is resolved as `PI_RLM_PYTHON` if set, otherwise `python3`. The repo's `pi-full` wrapper sets this to its Nix `python3`.
@@ -165,6 +172,39 @@ ctx({ action: "extract", source: "s0", line: 20, endLine: 60 })
 ctx({ action: "note", name: "findings.md", text: "..." })
 ctx({ action: "artifact", name: "data.json", text: "..." })
 ```
+
+
+## Root/session RLM context store
+
+`pi-rlm` now creates a persistent context store for the active Pi session and attaches it to the root `rlm_repl`. This makes the root closer to the RLM paper/article design: large inputs live outside the model prompt, while the model explores them through Python.
+
+What changes at the root:
+
+- `rlm_repl` usually has `ctx.manifest()`, `ctx.grep(...)`, `ctx.peek(...)`, `ctx.extract(...)`, `ctx.note(...)`, and `ctx.artifact(...)` even outside child RLM calls.
+- User inputs are saved as file-backed session context sources.
+- Very large user inputs are externalized before the agent turn by default (`PI_RLM_ROOT_EXTERNALIZE_CHARS`, default `20000`). The model receives a compact replacement message naming the source id/path plus a small preview.
+- Smaller inputs remain in the normal user message but are also mirrored into the local REPL when under `PI_RLM_ROOT_INLINE_REPL_CHARS` (default `20000`) as `latest_input_text`, `latest_input`, `inline_inputs`, and `ctx.latestInputText`.
+- The full saved input is written under the session context store; externalized large inputs are not copied into the model context.
+- Root `rlm` calls and `rlm_repl` calls to `rlm_query` / `rlm_query_batched` inherit session context sources when the call does not provide explicit `context`, `paths`, or `sources`.
+
+Example after a large prompt is externalized:
+
+```python
+print(ctx.manifest())
+print(latest_input_text[:1000] if latest_input_text else "large input: use ctx.peek")
+print(ctx.peek("s0", chars=4000))
+print(ctx.grep("festival", source="s0", maxMatches=20))
+
+answer = rlm_query("Answer the user's question by inspecting the inherited session context.")
+FINAL(answer)
+```
+
+Notes:
+
+- The Python variable `context` is still metadata, not the whole document string. Use `latest_input_text` for the latest small input and `ctx.peek`/`ctx.grep`/`ctx.extract` for file-backed content.
+- Set `PI_RLM_ROOT_EXTERNALIZE_CHARS=0` to disable root input replacement while still saving inputs to the session store.
+- Set `PI_RLM_ROOT_INLINE_REPL_CHARS=0` to disable mirroring small inputs into REPL variables.
+- Session context stores are kept under Pi's session directory (`.../rlm-context/<session-id>/`) so transformed session history can be replayed with its externalized sources.
 
 ## File-backed context mode
 
