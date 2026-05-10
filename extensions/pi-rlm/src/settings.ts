@@ -24,7 +24,9 @@ function nonEmptyString(v: unknown): string | undefined {
 function providerModel(provider: unknown, model: unknown): string | undefined {
   const p = nonEmptyString(provider);
   const m = nonEmptyString(model);
-  return p && m ? `${p}/${m}` : undefined;
+  if (!m) return undefined;
+  if (!p || m.includes("/")) return m;
+  return `${p}/${m}`;
 }
 
 function parseModels(raw: unknown): { models?: string[]; roleModels?: Partial<Record<RlmModelRole, string>> } {
@@ -35,7 +37,7 @@ function parseModels(raw: unknown): { models?: string[]; roleModels?: Partial<Re
   if (!isRecord(raw)) return {};
 
   const roleModels: Partial<Record<RlmModelRole, string>> = {};
-  const def = nonEmptyString(raw.default) ?? nonEmptyString(raw.model) ?? providerModel(raw.provider, raw.modelId ?? raw.model);
+  const def = nonEmptyString(raw.default) ?? providerModel(raw.provider, raw.modelId ?? raw.model) ?? nonEmptyString(raw.model) ?? nonEmptyString(raw.modelId);
   const llm = nonEmptyString(raw.llm) ?? nonEmptyString(raw.leaf) ?? nonEmptyString(raw.llmModel);
   const rlm = nonEmptyString(raw.rlm) ?? nonEmptyString(raw.child) ?? nonEmptyString(raw.rlmModel) ?? nonEmptyString(raw.childModel);
   if (def) roleModels.default = def;
@@ -48,7 +50,7 @@ export function parseRlmSettings(raw: unknown): RlmSettings {
   if (typeof raw === "string" && raw.trim()) return { models: [raw.trim()] };
   if (!isRecord(raw)) return {};
 
-  const model = nonEmptyString(raw.model) ?? providerModel(raw.provider, raw.modelId);
+  const model = providerModel(raw.provider, raw.modelId ?? raw.model) ?? nonEmptyString(raw.model) ?? nonEmptyString(raw.modelId);
   const parsedModels = parseModels(raw.models);
   const roleModels: Partial<Record<RlmModelRole, string>> = { ...parsedModels.roleModels };
 
