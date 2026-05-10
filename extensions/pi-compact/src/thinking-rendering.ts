@@ -1,6 +1,6 @@
 import { AssistantMessageComponent } from "@mariozechner/pi-coding-agent";
 import { state, thinkingTimings } from "./state.js";
-import { ASSISTANT_ORIGINAL_RENDER_KEY, ASSISTANT_ORIGINAL_UPDATE_CONTENT_KEY, ASSISTANT_THINKING_APPLIED_MODE_KEY, ASSISTANT_THINKING_STATE_KEY, ASSISTANT_THINKING_TIMING_KEY, THINKING_MARKER, type CompactThinkingState, type CompactThinkingTiming } from "./types.js";
+import { ASSISTANT_ORIGINAL_RENDER_KEY, ASSISTANT_ORIGINAL_UPDATE_CONTENT_KEY, ASSISTANT_THINKING_APPLIED_MODE_KEY, ASSISTANT_THINKING_STATE_KEY, ASSISTANT_THINKING_TIMING_KEY, THINKING_MARKER, type CompactThinkingState, type CompactThinkingTiming, type ThinkingMode } from "./types.js";
 import { clip, getThemeToolBgFn, isCompactThinkingTiming, isRecord, renderOneLine, stripAnsi } from "./shared.js";
 
 export function assistantThinkingTimingKeys(message: any): string[] {
@@ -212,6 +212,11 @@ export function renderCompactThinkingLine(compactState: CompactThinkingState, wi
   return renderOneLine(line, width, getThinkingBgFn(compactState), true);
 }
 
+// Honor Pi's Ctrl+T visibility toggle: when the core UI hides thinking blocks,
+// pi-compact should suppress its compact thinking row too.
+export function getAssistantThinkingMode(component: any): ThinkingMode {
+  return component?.hideThinkingBlock ? "hidden" : state.thinkingMode;
+}
 
 export function patchAssistantMessageComponent(): boolean {
   try {
@@ -227,9 +232,11 @@ export function patchAssistantMessageComponent(): boolean {
         : proto.updateContent;
 
     proto.updateContent = function piCompactAssistantUpdateContent(this: any, message: any) {
+      const thinkingMode = getAssistantThinkingMode(this);
       const blocks = getThinkingBlocks(message);
-      const hideThinking = blocks.length > 0 && state.thinkingMode !== "normal";
-      this[ASSISTANT_THINKING_APPLIED_MODE_KEY] = state.thinkingMode;
+      const hideThinking = blocks.length > 0 && thinkingMode !== "normal";
+      this[ASSISTANT_THINKING_APPLIED_MODE_KEY] = thinkingMode;
+      this.lastMessage = message;
 
       if (!hideThinking) {
         this[ASSISTANT_THINKING_STATE_KEY] = undefined;
@@ -243,21 +250,18 @@ export function patchAssistantMessageComponent(): boolean {
         getThinkingTiming(message),
       );
 
-      try {
-        return originalUpdateContent.call(this, cloneAssistantForDisplay(message, true));
-      } finally {
-        this.lastMessage = message;
-      }
+      return originalUpdateContent.call(this, cloneAssistantForDisplay(message, true));
     };
 
     proto.render = function piCompactAssistantRender(this: any, width: number) {
-      if (this[ASSISTANT_THINKING_APPLIED_MODE_KEY] !== state.thinkingMode && this.lastMessage) {
+      const thinkingMode = getAssistantThinkingMode(this);
+      if (this[ASSISTANT_THINKING_APPLIED_MODE_KEY] !== thinkingMode && this.lastMessage) {
         this.updateContent(this.lastMessage);
       }
 
       const lines = originalRender.call(this, width);
       const thinkingState = this[ASSISTANT_THINKING_STATE_KEY] as CompactThinkingState | undefined;
-      if (state.thinkingMode !== "compact" || !thinkingState) return lines;
+      if (thinkingMode !== "compact" || !thinkingState) return lines;
 
       const thinkingLines = renderCompactThinkingLine(thinkingState, width);
       return thinkingLines.length > 0 ? [...thinkingLines, ...lines] : lines;
