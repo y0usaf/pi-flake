@@ -83,6 +83,7 @@ Flake `inputs` cannot pass arbitrary booleans into another flake's outputs. Use 
         "working-indicator" = true;
         rlm = true;
         review = true;
+        vcc = true;
       };
     };
   };
@@ -122,6 +123,7 @@ Only flags set to `true` are copied into the bundled wrapper.
             #   "working-indicator" = true;
             #   rlm = true;
             #   review = true;
+            #   vcc = true;
             # };
 
             # Option 3: concrete package
@@ -155,6 +157,7 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-working-indicator` | Compact animated working indicator |
 | `pi-rlm` | Recursive Pi/RLM-style child-agent calls via `pi_recurse` |
 | `pi-review` | `/review` and `/end-review` code review workflow |
+| `pi-vcc` | Algorithmic conversation compactor with `/pi-vcc`, `/pi-vcc-recall`, and `vcc_recall` |
 
 ---
 
@@ -214,9 +217,12 @@ inputs.pi-flake.packages.<system>."pi-webfetch"
 inputs.pi-flake.packages.<system>."pi-hashline"
 inputs.pi-flake.packages.<system>."pi-rlm"
 inputs.pi-flake.packages.<system>."pi-review"
+inputs.pi-flake.packages.<system>."pi-vcc"
 ```
 
 `pi-review` PR review mode shells out to `gh`; install and authenticate GitHub CLI separately if you want `/review pr ...`.
+
+`pi-vcc` registers `/pi-vcc`, `/pi-vcc-recall`, `vcc_recall`, and a `session_before_compact` hook. By default it does not override Pi's normal `/compact`; set `overrideDefaultCompaction: true` in `~/.pi/agent/pi-vcc-config.json` to make VCC handle all compaction paths.
 
 ### Variants
 
