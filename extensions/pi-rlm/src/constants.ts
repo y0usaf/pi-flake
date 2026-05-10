@@ -35,7 +35,7 @@ export const HARD_CTX_GREP_MATCHES = 200;
 export const MAX_CTX_GREP_FILES = 5_000;
 
 export const RLM_TOOL_NAME = "rlm";
-export const REPL_TOOL_NAME = "rlm_repl";
+export const REPL_TOOL_NAME = "REPL";
 export const RETURN_TOOL_NAME = "pi_return";
 export const CTX_TOOL_NAME = "ctx";
 

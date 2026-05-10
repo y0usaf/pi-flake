@@ -61,7 +61,7 @@ export const SourceParam = Type.Object({
 
 export const ChildModeParam = Type.Optional(StringEnum(CHILD_MODES, {
   description:
-    `Recursive child session profile. Default ${DEFAULT_CHILD_MODE}: exposes only rlm_repl plus pi_return; context access goes through REPL helpers. "pi-agent" preserves broader child bash/read/ctx/rlm (+ edit/write when allowed).`,
+    `Recursive child session profile. Default ${DEFAULT_CHILD_MODE}: exposes only REPL and pi_return; context access goes through REPL helpers. "pi-agent" preserves broader child bash/read/ctx/rlm (+ edit/write when allowed).`,
 }));
 
 export const RlmBatchItem = Type.Object({
@@ -91,7 +91,7 @@ export const RlmParams = Type.Object({
   contextMode: ContextModeParam,
   childMode: ChildModeParam,
   paths: Type.Optional(
-    Type.Array(Type.String(), { description: "Paths for rlm_query/rlm_query_batched children to inspect via rlm_repl helpers by default (childMode='pure-rlm') or direct ctx/bash/read in childMode='pi-agent'. Not accepted for llm_query calls. Paths are kept outside chat as file-backed context." }),
+    Type.Array(Type.String(), { description: "Paths for rlm_query/rlm_query_batched children to inspect via REPL helpers by default (childMode='pure-rlm') or direct ctx/bash/read in childMode='pi-agent'. Not accepted for llm_query calls. Paths are kept outside chat as file-backed context." }),
   ),
   sources: Type.Optional(Type.Array(SourceParam, { description: "Named file-backed sources for rlm_query/rlm_query_batched children. Not accepted for llm_query calls." })),
   contextName: Type.Optional(Type.String({ description: "Optional source name/label for materialized inline context." })),

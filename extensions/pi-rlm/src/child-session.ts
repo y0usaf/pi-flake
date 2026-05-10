@@ -47,7 +47,7 @@ export function childSystemPrompt(depth: number, state: RunState, hasContextStor
     ? `- ${CTX_TOOL_NAME}: inspect file-backed context with capped outputs. Actions: manifest, grep, peek, extract, note, artifact. Prefer this before raw bash/read on large sources.`
     : "";
   const inspectTools = pure ? `${REPL_TOOL_NAME}'s bash/read${hasContextStore ? "/ctx" : ""} helpers` : (hasContextStore ? `${CTX_TOOL_NAME}/bash/read` : "bash/read");
-  const directToolText = pure ? "Only rlm_repl and pi_return are exposed directly; use REPL helpers for bash/read/ctx and llm_query/llm_query_batched/rlm_query/rlm_query_batched." : "bash/read are direct focused inspection tools.";
+  const directToolText = pure ? "Only REPL and pi_return are exposed directly; use REPL helpers for bash/read/ctx and llm_query/llm_query_batched/rlm_query/rlm_query_batched." : "bash/read are direct focused inspection tools.";
   const compactAccessRule = hasContextStore
     ? `- Prefer ${pure ? `${REPL_TOOL_NAME}'s ctx.grep/ctx.peek helpers` : `${CTX_TOOL_NAME} grep/peek or bash pipelines`} over full reads.`
     : `- Prefer compact ${pure ? `${REPL_TOOL_NAME} bash(...)` : "bash"} pipelines (rg/head/tail/wc/jq/python) over full reads.`;
@@ -82,7 +82,7 @@ ${compactAccessRule}
 export function childPrompt(prompt: string, context?: string, paths?: string[], store?: ContextStore, childMode: ChildMode = "pure-rlm", rootPrompt?: string): string {
   const ps = normPaths(paths);
   const pathBlock = store
-    ? (childMode === "pure-rlm" ? "(file-backed context store sources above; use rlm_repl ctx.manifest() for inventory)" : "(file-backed context store sources above; use ctx({action:\"manifest\"}) for inventory)")
+    ? (childMode === "pure-rlm" ? "(file-backed context store sources above; use REPL ctx.manifest() for inventory)" : "(file-backed context store sources above; use ctx({action:\"manifest\"}) for inventory)")
     : ps.length ? ps.map((p) => `- ${p}`).join("\n") : `(none — use ${childMode === "pure-rlm" ? `${REPL_TOOL_NAME} bash(...)` : "bash"} to discover if needed)`;
   const ctxBlock = context?.trim() && !contextMaterialized(store) ? `\nInline context:\n${clip(context, MAX_INLINE_CHILD_CONTEXT_CHARS)}\n` : "";
   const rootPromptBlock = rootPrompt?.trim() ? `\nRoot prompt / question:\n${rootPrompt}\n` : "";
