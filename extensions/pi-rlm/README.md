@@ -49,19 +49,26 @@ Use normal Python capabilities instead: `import os`, `pathlib`, `json`, `subproc
 - `llm_query` / `llm_query_batched` are one-shot leaf LM calls.
 - `rlm_query` / `rlm_query_batched` spawn recursive child RLM sessions.
 - At max depth, `rlm_query` falls back to a plain LM leaf call.
+- Leaf calls are sent with an explicit system prompt/instructions payload so providers that require an `instructions` field (for example Codex Responses) work correctly.
 - Finalization is done by assigning the answer to a variable or `state` key and calling `FINAL_VAR("name")`.
+
+## Recursive-default policy
+
+`pi-rlm` is intended to behave like the upstream RLM control loop, not like a normal chat agent that happens to have a REPL. The prompts and tool guidance make recursion the default path for broad work:
+
+- Use `rlm_query` / `rlm_query_batched` for multi-file, multi-source, audit/review, uncertain, long-context, or naturally parallel subtasks.
+- Use `llm_query` / `llm_query_batched` only for narrow one-shot leaf extraction/classification/summarization over already extracted text.
+- Prefer batched recursive child calls for independent chunks/subtasks.
+- Final answers should come through `FINAL_VAR`, not a direct chat answer.
 
 Example:
 
 ```python
 chunks = ["...", "..."]
 state["summaries"] = llm_query_batched([
-    "Summarize this chunk:
-" + chunk for chunk in chunks
+    "Summarize this chunk:\n" + chunk for chunk in chunks
 ])
-answer = "
-
-".join(state["summaries"])
+answer = "\n\n".join(state["summaries"])
 FINAL_VAR("answer")
 ```
 
@@ -73,8 +80,7 @@ prompts = [
     "Analyze part B using the available context.",
 ]
 state["findings"] = rlm_query_batched(prompts)
-answer = llm_query("Synthesize:
-" + repr(state["findings"]))
+answer = llm_query("Synthesize:\n" + repr(state["findings"]))
 FINAL_VAR("answer")
 ```
 
