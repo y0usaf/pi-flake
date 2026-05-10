@@ -47,7 +47,7 @@ export function childSystemPrompt(depth: number, state: RunState, hasContextStor
     ? `- ${CTX_TOOL_NAME}: inspect file-backed context with capped outputs. Actions: manifest, grep, peek, extract, note, artifact. Prefer this before raw bash/read on large sources.`
     : "";
   const inspectTools = pure ? `${REPL_TOOL_NAME}'s bash/read${hasContextStore ? "/ctx" : ""} helpers` : (hasContextStore ? `${CTX_TOOL_NAME}/bash/read` : "bash/read");
-  const directToolText = pure ? "Only rlm_repl and pi_return are exposed directly; use REPL helpers for bash/read/ctx and llm_query/rlm_query." : "bash/read are direct focused inspection tools.";
+  const directToolText = pure ? "Only rlm_repl and pi_return are exposed directly; use REPL helpers for bash/read/ctx and llm_query/llm_query_batched/rlm_query/rlm_query_batched." : "bash/read are direct focused inspection tools.";
   const compactAccessRule = hasContextStore
     ? `- Prefer ${pure ? `${REPL_TOOL_NAME}'s ctx.grep/ctx.peek helpers` : `${CTX_TOOL_NAME} grep/peek or bash pipelines`} over full reads.`
     : `- Prefer compact ${pure ? `${REPL_TOOL_NAME} bash(...)` : "bash"} pipelines (rg/head/tail/wc/jq/python) over full reads.`;
@@ -57,7 +57,7 @@ export function childSystemPrompt(depth: number, state: RunState, hasContextStor
 You are a child RLM sub-call. Pi's ${REPL_TOOL_NAME} is your programmable control plane. ${directToolText} When a file-backed context store is provided, the large context is outside your chat; inspect it through ${inspectTools} and only bring compact observations back.
 
 Tools:
-- ${REPL_TOOL_NAME}: Python REPL with persistent globals/state, bash/read helpers, ctx helper when available, and llm_query/rlm_query functions. Call FINAL(value) or FINAL_VAR("name") when done.
+- ${REPL_TOOL_NAME}: Python REPL with persistent globals/state, bash/read helpers, ctx helper when available, and llm_query/llm_query_batched/rlm_query/rlm_query_batched functions. Call FINAL(value) or FINAL_VAR("name") when done.
 ${pure ? "" : `- bash: run commands, search, transform. Prefer compact outputs.\n- read: read file contents directly; avoid on large files unless reading a small anchored section.\n${ctxTool}\n- ${RLM_TOOL_NAME}({ call:\"llm_query\", prompt }): RLM's llm_query(). Single-shot LM completion, NO tools. Include all relevant context inline.\n- ${RLM_TOOL_NAME}({ call:\"llm_query_batched\", prompts/items }): RLM's llm_query_batched(). Batched one-shot LM completions.\n- ${RLM_TOOL_NAME}({ call:\"rlm_query\", prompt, paths?, sources?, contextName?, contextMode?, childMode? }): recursive child RLM sub-call.\n- ${RLM_TOOL_NAME}({ call:\"rlm_query_batched\", prompts/items, paths?, sources?, contextName?, contextMode?, childMode? }): batched recursive child RLM sub-calls.`}
 - ${RETURN_TOOL_NAME}: Final answer for this child. Equivalent to FINAL(...). Call exactly once as the last action if not using REPL FINAL.
 
@@ -72,7 +72,7 @@ The Pi-native RLM pattern:
 Rules:
 - The context problem matters: do NOT dump large context into chat. Print compact observations only.
 ${compactAccessRule}
-- Prefer llm_query over rlm_query when you already have relevant text.
+- Prefer llm_query only on already-extracted, self-contained text; recurse with rlm_query/rlm_query_batched when the subproblem still decomposes.
 - Prefer batched calls for independent chunks/sub-calls.
 - Writing temporary files under scratch is allowed. Do not modify project files unless explicitly allowed.
 - If turn budget runs low, call ${RETURN_TOOL_NAME} or FINAL(...) with partial answer + remaining work.

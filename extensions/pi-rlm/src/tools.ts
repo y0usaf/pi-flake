@@ -171,17 +171,17 @@ export function createRlmTool(inherited?: RunState, parentDepth?: number, store?
     name: RLM_TOOL_NAME,
     label: "RLM",
     description:
-      'One Pi-native RLM primitive. call:"llm_query" = one-shot LM, call:"llm_query_batched" = batched one-shot LMs, call:"rlm_query" = recursive child RLM with file-backed context, call:"rlm_query_batched" = batched recursive child RLMs.',
-    promptSnippet: 'RLM call dispatcher: llm_query / llm_query_batched / rlm_query / rlm_query_batched',
+      'One Pi-native RLM primitive. call:"llm_query" = leaf-only one-shot LM on already-extracted small text, call:"llm_query_batched" = leaf-only batched one-shot LMs after chunking, call:"rlm_query" = recursive child RLM with file-backed context, call:"rlm_query_batched" = batched recursive child RLMs.',
+    promptSnippet: 'RLM call dispatcher: leaf llm_query / recursive rlm_query / batched recursion',
     promptGuidelines: [
-      `${RLM_TOOL_NAME}({ call:"llm_query", prompt, rootPrompt? }): one-shot completion. No tools. Include ALL context inline.`,
-      `${RLM_TOOL_NAME}({ call:"llm_query_batched", prompts/items }): batched one-shot completions for independent chunks.`,
+      `${RLM_TOOL_NAME}({ call:"llm_query", prompt, rootPrompt? }): leaf-only completion on already-extracted small text. If you are inside the root REPL, prefer explicit rlm({ call:"llm_query", ... }) dispatch rather than a local shortcut.`,
+      `${RLM_TOOL_NAME}({ call:"llm_query_batched", prompts/items }): leaf-only batched completions after chunking. Use this only after extraction; for multi-source reasoning prefer recursive child calls.`,
       `${RLM_TOOL_NAME}({ call:"rlm_query", prompt, rootPrompt?, paths?, context?, contextMode?, childMode? }): child RLM. Default childMode:"pure-rlm" exposes only ${REPL_TOOL_NAME} + ${RETURN_TOOL_NAME}; use childMode:"pi-agent" for direct bash/read/${CTX_TOOL_NAME}/${RLM_TOOL_NAME}.`,
       `${RLM_TOOL_NAME}({ call:"rlm_query_batched", prompts/items, paths?, contextMode?, childMode? }): batched child RLMs for independent sub-calls.`,
       `Runtime controls include maxTimeoutMs/maxTokens/maxBudget/maxErrors and JSONL logs via logPath/logDir. Configure RLM models in extensionSettings.pi-rlm, not per call.`,
       `For large context, prefer paths or contextMode:"file_backed" so the child sees a manifest; in pure-RLM access it through ${REPL_TOOL_NAME} ctx helpers.`,
       store ? `When a root/session context store is attached, rlm_query / rlm_query_batched calls without explicit context/paths/sources inherit its sources automatically.` : undefined,
-      `Prefer llm_query over rlm_query when you already have small relevant text. Prefer batched calls for independent chunks/sub-calls.`,
+      `Prefer rlm_query/rlm_query_batched over repeated local REPL reasoning whenever the work can be partitioned. Use llm_query only after extraction and for narrow verification.`,
     ].filter((line): line is string => typeof line === "string"),
     parameters: RlmParams,
     async execute(_id, params, signal, onUpdate, ctx) {

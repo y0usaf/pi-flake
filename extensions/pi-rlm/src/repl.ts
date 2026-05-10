@@ -47,6 +47,8 @@ inline_inputs = []
 _context_count = 0
 _context_key = None
 cwd = os.getcwd()
+_repl_role = "root"
+_allow_direct_llm = False
 
 class _Capture:
     def __init__(self, name):
@@ -111,15 +113,21 @@ def _batch_answers(result):
         return [d.get("answer", "") if isinstance(d, dict) else "" for d in child_results]
     return [result.get("text", "") if isinstance(result, dict) else str(result)]
 
+def _guard_direct_llm(name):
+    if _repl_role == "root" and not _allow_direct_llm:
+        raise RuntimeError(name + " is disabled in the root RLM REPL; use rlm({'call':'llm_query', ...}) for an explicit leaf call or recurse with rlm_query/rlm_query_batched.")
+
 def rlm(params):
     if not isinstance(params, dict):
         raise TypeError("rlm(params) expects a dict")
     return _call("rlm", params)
 
 def llm_query(prompt_or_params, **kwargs):
+    _guard_direct_llm("llm_query")
     return rlm(_single_params("llm_query", prompt_or_params, **kwargs)).get("text", "")
 
 def llm_query_batched(prompts_or_params, **kwargs):
+    _guard_direct_llm("llm_query_batched")
     return _batch_answers(rlm(_batch_params("llm_query_batched", prompts_or_params, **kwargs)))
 
 def rlm_query(prompt_or_params, **kwargs):
@@ -131,9 +139,11 @@ def rlm_details(params):
     return rlm(params)
 
 def llm_query_details(prompt_or_params, **kwargs):
+    _guard_direct_llm("llm_query_details")
     return rlm(_single_params("llm_query", prompt_or_params, **kwargs))
 
 def llm_query_batched_details(prompts_or_params, **kwargs):
+    _guard_direct_llm("llm_query_batched_details")
     return rlm(_batch_params("llm_query_batched", prompts_or_params, **kwargs))
 
 def rlm_query_details(prompt_or_params, **kwargs):
@@ -141,7 +151,6 @@ def rlm_query_details(prompt_or_params, **kwargs):
 
 def rlm_query_batched_details(prompts_or_params, **kwargs):
     return rlm(_batch_params("rlm_query_batched", prompts_or_params, **kwargs))
-
 def bash(command, **kwargs):
     if not isinstance(command, str) or not command.strip():
         raise TypeError("bash(command) requires a non-empty string")
@@ -302,6 +311,18 @@ def _update_context_vars(info):
     _context_count += 1
     _context_key = key
 
+
+def _update_policy(info):
+    global _repl_role, _allow_direct_llm
+    if not isinstance(info, dict):
+        return
+    role = info.get("replRole")
+    if isinstance(role, str) and role:
+        _repl_role = role
+    if "allowDirectLlm" in info:
+        _allow_direct_llm = bool(info.get("allowDirectLlm"))
+
+
 def _inject_data(data):
     if not isinstance(data, dict):
         return
@@ -319,6 +340,7 @@ def _run_eval(msg):
     code = msg.get("code") or ""
     setup = msg.get("setup") or ""
     cwd = msg.get("cwd") or cwd
+    _update_policy(msg.get("policy"))
     if msg.get("resetHistory"):
         history.clear()
     ctx._update(msg.get("context"))
@@ -406,6 +428,7 @@ interface BridgeContext {
   inherited?: RunState;
   parentDepth?: number;
   store?: ContextStore;
+  policy?: { replRole: "root" | "child"; allowDirectLlm: boolean };
 }
 
 type ReplStoreProvider = ContextStore | ((ctx: any) => ContextStore | undefined | Promise<ContextStore | undefined>);
@@ -566,7 +589,7 @@ class PythonReplWorker {
       bridge.signal?.addEventListener("abort", onAbort, { once: true });
       this.pending.set(id, pending);
       this.armEvalTimeout(id, pending);
-      if (!this.write({ type: "eval", id, code, cwd: bridge.ctx.cwd, context, data: options.data, setup: options.setup, resetHistory: options.resetHistory })) {
+      if (!this.write({ type: "eval", id, code, cwd: bridge.ctx.cwd, context, policy: bridge.policy, data: options.data, setup: options.setup, resetHistory: options.resetHistory })) {
         this.failAll(new Error("Python REPL stdin is closed."));
       }
     }).finally(() => {
@@ -768,6 +791,7 @@ async function handleBridgeCall(method: unknown, params: unknown, bridge: Bridge
 }
 
 export function createRlmReplTool(inherited?: RunState, parentDepth?: number, store?: ReplStoreProvider) {
+  const rootLike = inherited === undefined && parentDepth === undefined;
   let worker: PythonReplWorker | undefined;
   let workerCwd: string | undefined;
   let evals = 0;
@@ -775,17 +799,30 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
   return defineTool({
     name: REPL_TOOL_NAME,
     label: "RLM Python REPL",
-    description:
-      "Python RLM-aware REPL. Use it as a programmable control plane with persistent state, bash/read helpers, ctx helpers when present, and llm_query/rlm_query functions.",
-    promptSnippet: "Python RLM REPL with llm_query/rlm_query/batching, state, bash/read helpers, FINAL/FINAL_VAR",
-    promptGuidelines: [
-      `Use ${REPL_TOOL_NAME} for non-trivial orchestration: loops, batching, state, synthesis, and finalization.`,
-      `Write Python code. Helpers are synchronous: llm_query(...), llm_query_batched(...), rlm_query(...), rlm_query_batched(...), or rlm({...}). Batched helpers return list[str]; rlm({...}) and *_details helpers return { text, content, details }.`,
-      `Persist cross-call variables in Python globals or in state. The REPL also exposes history/context/context_N variables when available; SHOW_VARS() summarizes variables/state.`,
-      `Call FINAL(value) or FINAL_VAR("name") when the REPL result is the final answer.`,
-      `Use bash(command), read_file(path), list_dir(path) for focused local inspection. Prefer recursive ${RLM_TOOL_NAME} calls for broad exploration.`,
-      store ? `Use ctx.manifest(), ctx.grep(...), ctx.peek(...), ctx.extract(...), ctx.note(...), ctx.artifact(...) for file-backed RLM context.` : `No file-backed ${CTX_TOOL_NAME} context is attached to this REPL call unless a recursive RLM child supplied one.`,
-    ],
+    description: rootLike
+      ? "Python RLM control plane with persistent state, bash/read helpers, ctx helpers when present, and explicit RLM dispatch. Direct llm_query helpers are child-only."
+      : "Python RLM-aware REPL. Use it as a programmable control plane with persistent state, bash/read helpers, ctx helpers when present, and llm_query/llm_query_batched/rlm_query/rlm_query_batched functions.",
+    promptSnippet: rootLike
+      ? "Python RLM control plane with explicit rlm(...) dispatch, state, bash/read helpers, FINAL/FINAL_VAR"
+      : "Python RLM REPL with llm_query/rlm_query/batching, state, bash/read helpers, FINAL/FINAL_VAR",
+    promptGuidelines: rootLike
+      ? [
+          `Use ${REPL_TOOL_NAME} as the orchestration layer: inspect, chunk, batch, and synthesize state; do not do broad reasoning locally.`,
+          `Use rlm_query(...) / rlm_query_batched(...) as the primary model-call helpers in the root REPL. Use rlm(...) only when you need an explicit leaf llm_query dispatch or the details-rich form. Direct llm_query* helpers are disabled here.`,
+          `Prefer rlm_query(...) / rlm_query_batched(...) whenever the work can be partitioned into independent subproblems.`,
+          `Persist cross-call variables in Python globals or in state. The REPL also exposes history/context/context_N variables when available; SHOW_VARS() summarizes variables/state.`,
+          `Use bash(command), read_file(path), list_dir(path) for focused local inspection. Prefer recursive ${RLM_TOOL_NAME} calls for broad exploration.`,
+          store ? `Use ctx.manifest(), ctx.grep(...), ctx.peek(...), ctx.extract(...), ctx.note(...), ctx.artifact(...) for file-backed RLM context.` : `No file-backed ${CTX_TOOL_NAME} context is attached to this REPL call unless a recursive RLM child supplied one.`,
+          `Call FINAL(value) or FINAL_VAR("name") when the recursive plan is complete.`,
+        ]
+      : [
+          `Use ${REPL_TOOL_NAME} for non-trivial orchestration: loops, batching, state, synthesis, and finalization.`,
+          `Write Python code. Helpers are synchronous: llm_query(...), llm_query_batched(...), rlm_query(...), rlm_query_batched(...), or rlm({...}). Batched helpers return list[str]; rlm({...}) and *_details helpers return { text, content, details }.`,
+          `Persist cross-call variables in Python globals or in state. The REPL also exposes history/context/context_N variables when available; SHOW_VARS() summarizes variables/state.`,
+          `Call FINAL(value) or FINAL_VAR("name") when the REPL result is the final answer.`,
+          `Use bash(command), read_file(path), list_dir(path) for focused local inspection. Prefer recursive ${RLM_TOOL_NAME} calls for broad exploration.`,
+          store ? `Use ctx.manifest(), ctx.grep(...), ctx.peek(...), ctx.extract(...), ctx.note(...), ctx.artifact(...) for file-backed RLM context.` : `No file-backed ${CTX_TOOL_NAME} context is attached to this REPL call unless a recursive RLM child supplied one.`,
+        ],
     parameters: ReplParams,
     async execute(_id, params, signal, onUpdate, ctx) {
       rejectUnknownReplParams(params);
@@ -807,7 +844,8 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
       onUpdate?.({ content: [{ type: "text", text: `${REPL_TOOL_NAME}: evaluating Python via ${pythonCommand()} (${timeoutMs}ms local timeout; bridge calls excluded)...` }] });
 
       const effectiveStore = await resolveReplStore(store, ctx);
-      const result = await worker.eval(params.code, timeoutMs, { ctx, signal, onUpdate, inherited, parentDepth, store: effectiveStore }, { data: params.data, setup: params.setup, resetHistory: params.resetHistory === true });
+      const policy: { replRole: "root" | "child"; allowDirectLlm: boolean } = { replRole: rootLike ? "root" : "child", allowDirectLlm: !rootLike };
+      const result = await worker.eval(params.code, timeoutMs, { ctx, signal, onUpdate, inherited, parentDepth, store: effectiveStore, policy }, { data: params.data, setup: params.setup, resetHistory: params.resetHistory === true });
       if (!result.ok) {
         const text = clip([result.logs?.trim(), result.traceback || result.error].filter(Boolean).join("\n\n"), MAX_RESULT_CHARS);
         return {

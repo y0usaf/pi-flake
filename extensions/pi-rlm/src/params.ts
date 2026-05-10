@@ -32,7 +32,7 @@ export const LimitParams = {
   maxDepth: Type.Optional(Type.Number({ description: `Recursive depth cap. Default ${DEFAULT_MAX_DEPTH}. At the cap, rlm_query falls back to a plain LM call.` })),
   maxTurns: Type.Optional(Type.Number({ description: `Recursive child turn cap. Default ${DEFAULT_MAX_TURNS}.` })),
   maxCalls: Type.Optional(Type.Number({ description: `Total recursive child RLM calls across this run. Default ${DEFAULT_MAX_CALLS}.` })),
-  maxQueries: Type.Optional(Type.Number({ description: `Total llm_query calls across this run. Default ${DEFAULT_MAX_QUERIES}.` })),
+  maxQueries: Type.Optional(Type.Number({ description: `Total llm_query leaf calls across this run. Default ${DEFAULT_MAX_QUERIES}.` })),
   maxConcurrent: Type.Optional(Type.Number({ description: `Batch concurrency cap. Default ${DEFAULT_MAX_CONCURRENT}.` })),
   maxTimeoutMs: Type.Optional(Type.Number({ description: `Wall-clock timeout for the whole recursive RLM tree in milliseconds. Default ${DEFAULT_MAX_TIMEOUT_MS} (unlimited). Hard cap ${HARD_MAX_TIMEOUT_MS}.` })),
   maxTimeout: Type.Optional(Type.Number({ description: "Upstream-style wall-clock timeout in seconds. Alias for maxTimeoutMs." })),
@@ -110,9 +110,9 @@ export const RlmParams = Type.Object({
 });
 
 export const ReplParams = Type.Object({
-  code: Type.String({ description: "Python code to run inside the RLM-aware REPL. Use synchronous llm_query/rlm_query helpers, globals/state for persistence, and FINAL(value) when done." }),
+  code: Type.String({ description: "Python code to run inside the RLM-aware REPL. Use synchronous rlm_query/rlm_query_batched helpers in the root REPL, child-only llm_query helpers when available, globals/state for persistence, and FINAL(value) when done." }),
   reset: Type.Optional(Type.Boolean({ description: "Clear persistent REPL state before running this code. Default false." })),
-  timeoutMs: Type.Optional(Type.Number({ description: "Local Python execution timeout. Paused while synchronous bridge helpers (llm_query/rlm_query/bash/ctx/read_file) are running. Default 30000, hard cap 120000." })),
+  timeoutMs: Type.Optional(Type.Number({ description: "Local Python execution timeout. Paused while synchronous bridge helpers (rlm_query/rlm_query_batched, child-only llm_query helpers, bash/ctx/read_file) are running. Default 30000, hard cap 120000." })),
   data: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "Optional JSON-serializable variables to inject into the Python REPL globals before running code." })),
   setup: Type.Optional(Type.String({ description: "Optional Python setup code to execute before the main code in this eval." })),
   resetHistory: Type.Optional(Type.Boolean({ description: "Clear REPL history variables before running this code. Default false." })),
