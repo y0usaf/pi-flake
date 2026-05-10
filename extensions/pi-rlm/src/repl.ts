@@ -488,7 +488,7 @@ function objectExtra(extra: unknown): Record<string, unknown> {
 }
 
 function rejectUnknownReplParams(params: unknown): void {
-  rejectUnknownKeys("rlm_repl params", params, REPL_PARAM_KEYS);
+  rejectUnknownKeys("REPL params", params, REPL_PARAM_KEYS);
 }
 
 function renderCodePreview(code: unknown): string {
@@ -798,13 +798,13 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
 
   return defineTool({
     name: REPL_TOOL_NAME,
-    label: "RLM Python REPL",
+    label: "REPL",
     description: rootLike
-      ? "Python RLM control plane with persistent state, bash/read helpers, ctx helpers when present, and explicit RLM dispatch. Direct llm_query helpers are child-only."
-      : "Python RLM-aware REPL. Use it as a programmable control plane with persistent state, bash/read helpers, ctx helpers when present, and llm_query/llm_query_batched/rlm_query/rlm_query_batched functions.",
+      ? "Python REPL control plane with persistent state, bash/read helpers, ctx helpers when present, and explicit RLM dispatch. Direct llm_query helpers are child-only."
+      : "Python REPL. Use it as a programmable control plane with persistent state, bash/read helpers, ctx helpers when present, and llm_query/llm_query_batched/rlm_query/rlm_query_batched functions.",
     promptSnippet: rootLike
-      ? "Python RLM control plane with explicit rlm(...) dispatch, state, bash/read helpers, FINAL/FINAL_VAR"
-      : "Python RLM REPL with llm_query/rlm_query/batching, state, bash/read helpers, FINAL/FINAL_VAR",
+      ? "Python REPL control plane with explicit rlm(...) dispatch, state, bash/read helpers, FINAL/FINAL_VAR"
+      : "Python REPL with llm_query/rlm_query/batching, state, bash/read helpers, FINAL/FINAL_VAR",
     promptGuidelines: rootLike
       ? [
           `Use ${REPL_TOOL_NAME} as the orchestration layer: inspect, chunk, batch, and synthesize state; do not do broad reasoning locally.`,

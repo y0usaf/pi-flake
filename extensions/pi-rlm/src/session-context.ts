@@ -49,7 +49,7 @@ This directory is managed by pi-rlm and persists with the Pi session.
 - artifacts/: ctx artifact outputs
 
 Use compact observations only. Do not dump whole context files into chat.
-Prefer ctx.manifest(), ctx.grep(...), ctx.peek(...), and ctx.extract(...) from rlm_repl.
+Prefer ctx.manifest(), ctx.grep(...), ctx.peek(...), and ctx.extract(...) from REPL.
 Recursive rlm_query calls made without explicit context inherit these sources.
 
 Sources:
@@ -274,7 +274,7 @@ Source:
 - name: ${source.name ?? "(none)"}
 - path: ${source.path}
 
-Use ${"`"}rlm_repl${"`"} and inspect it with:
+Use ${"`"}REPL${"`"} to inspect it:
 
 ${"```python"}
 print(ctx.manifest())
@@ -333,13 +333,13 @@ export function sessionContextPromptBlock(store?: ContextStore): string {
   const sourceLines = store.sources.length
     ? store.sources.map((s) => `- ${contextSourceSummary(s)}`).join("\n")
     : "(no sources yet)";
-  return clip(`Root/session RLM context store is attached to ${"`"}rlm_repl${"`"} as ctx.*.
+  return clip(`Root/session RLM context store is attached to ${"`"}REPL${"`"} as ctx.*.
 - Store dir: ${store.dir}
 - Scratch dir: ${store.scratchDir}
 - Manifest: ${store.manifestPath}
-- Use ctx.manifest(), ctx.grep(...), ctx.peek(...), ctx.extract(...) from ${"`"}rlm_repl${"`"}; do not dump whole sources into chat.
+- Use ctx.manifest(), ctx.grep(...), ctx.peek(...), ctx.extract(...) from ${"`"}REPL${"`"}; do not dump whole sources into chat.
 - If a user prompt was externalized, the transformed user message names the source id; inspect that source before answering.
-- Recursive rlm_query / rlm_query_batched calls made from the root ${"`"}rlm${"`"} tool or from ${"`"}rlm_repl${"`"} inherit these sources when no explicit context/paths/sources are provided.
+- Recursive rlm_query / rlm_query_batched calls made from ${"`"}REPL${"`"} inherit these sources when no explicit context/paths/sources are provided.
 
 Session context sources:
 ${sourceLines}`, MAX_SESSION_CONTEXT_PROMPT_CHARS);
