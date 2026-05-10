@@ -45,12 +45,11 @@ This directory is managed by pi-rlm and persists with the Pi session.
 - manifest.json: machine-readable source metadata
 - ${SESSION_SOURCES_DIR}/: externalized user prompts or other session-local sources
 - scratch/: temporary workspace for RLM exploration
-- notes/: ctx note outputs
-- artifacts/: ctx artifact outputs
+- notes/: note outputs
+- artifacts/: artifact outputs
 
 Use compact observations only. Do not dump whole context files into chat.
-Prefer ctx.manifest(), ctx.grep(...), ctx.peek(...), and ctx.extract(...) from REPL.
-Recursive rlm_query calls made without explicit context inherit these sources.
+REPL calls receive saved sources as context/context_N payloads. Use SHOW_VARS() and normal Python inspection. Recursive rlm_query calls made without explicit context inherit these sources.
 
 Sources:
 ${store.sources.length ? store.sources.map((s) => `- ${contextSourceSummary(s)}`).join("\n") : "(none yet)"}
@@ -265,6 +264,7 @@ export async function externalizeLargeInput(ctx: ExtensionContext, text: string)
     label: `externalized user input (${new Date().toISOString()})`,
   });
   const preview = headTailPreview(text);
+  const contextVar = /^s\d+$/.test(source.id) ? `context_${source.id.slice(1)}` : "context";
   const replacement = `[pi-rlm externalized large user input]
 
 The user's full input was ${text.length.toLocaleString()} characters (${formatBytes(Buffer.byteLength(text, "utf8"))}) and has been stored outside the model context in the session RLM context store.
@@ -273,17 +273,20 @@ Source:
 - id: ${source.id}
 - name: ${source.name ?? "(none)"}
 - path: ${source.path}
+- REPL variable: ${contextVar} once REPL loads session context
 
-Use ${"`"}REPL${"`"} to inspect it:
+Use ${"`"}REPL${"`"} to inspect it with the upstream-style REPL contract:
 
 ${"```python"}
-print(ctx.manifest())
-print(ctx.peek(${JSON.stringify(source.id)}, chars=4000))
-# ctx.grep("needle", source=${JSON.stringify(source.id)})
-# ctx.extract(source=${JSON.stringify(source.id)}, line=1, lines=80)
+print(SHOW_VARS())
+# The externalized source is loaded as ${contextVar}; print compact slices only.
+print(${contextVar}[:4000] if isinstance(${contextVar}, str) else ${contextVar})
+# Search example:
+# import re
+# print([m.start() for m in re.finditer("needle", ${contextVar})][:20])
 ${"```"}
 
-Do not answer from this preview alone unless the task is fully captured by it. Treat the source as the authoritative user input; it may contain both instructions and data.
+Do not answer from this preview alone unless the task is fully captured by it. Treat ${contextVar} as the authoritative user input; it may contain both instructions and data.
 
 Preview only:
 ${"```text"}
@@ -331,15 +334,16 @@ export function inheritSessionContextParams(params: unknown, store?: ContextStor
 export function sessionContextPromptBlock(store?: ContextStore): string {
   if (!store) return "";
   const sourceLines = store.sources.length
-    ? store.sources.map((s) => `- ${contextSourceSummary(s)}`).join("\n")
+    ? store.sources.map((s, i) => `- context_${i}: ${contextSourceSummary(s)}`).join("\n")
     : "(no sources yet)";
-  return clip(`Root/session RLM context store is attached to ${"`"}REPL${"`"} as ctx.*.
+  return clip(`Root/session RLM context store is attached to ${"`"}REPL${"`"} as actual context variables.
 - Store dir: ${store.dir}
 - Scratch dir: ${store.scratchDir}
 - Manifest: ${store.manifestPath}
-- Use ctx.manifest(), ctx.grep(...), ctx.peek(...), ctx.extract(...) from ${"`"}REPL${"`"}; do not dump whole sources into chat.
-- If a user prompt was externalized, the transformed user message names the source id; inspect that source before answering.
-- Recursive rlm_query / rlm_query_batched calls made from ${"`"}REPL${"`"} inherit these sources when no explicit context/paths/sources are provided.
+- Public REPL context is context/context_0/context_N, not ctx.*.
+- Use SHOW_VARS(), Python slicing/searching, and normal modules such as os/pathlib/json/open/subprocess to inspect context. Do not dump whole sources into chat.
+- If a user prompt was externalized, the transformed user message names the source id and corresponding context_N variable; inspect that variable before answering.
+- Recursive rlm_query / rlm_query_batched calls made from REPL inherit these sources when no explicit context/paths/sources are provided.
 
 Session context sources:
 ${sourceLines}`, MAX_SESSION_CONTEXT_PROMPT_CHARS);

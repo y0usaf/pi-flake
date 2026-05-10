@@ -9,7 +9,7 @@ import { budgetDetails, checkRunLimits, clip, modelLabel, normalizeContextMode, 
 
 export async function runLlmQuery(
   ctx: ExtensionContext,
-  params: { prompt: string; rootPrompt?: string; context?: string; contextMode?: ContextMode; paths?: string[]; sources?: Array<{ name?: string; path: string }>; contextName?: string },
+  params: { prompt: string; rootPrompt?: string; model?: string; context?: string; contextMode?: ContextMode; paths?: string[]; sources?: Array<{ name?: string; path: string }>; contextName?: string },
   budget: Budget,
   depth: number,
   state: RunState,
@@ -23,7 +23,7 @@ export async function runLlmQuery(
   if (budget.queries > budget.maxQueries) throw new Error(`llm_query budget exhausted (${budget.maxQueries}).`);
 
   checkRunLimits(state);
-  const model = resolveModel(ctx, state, "llm");
+  const model = resolveModel(ctx, state, "llm", params.model);
   if (!model) throw new Error("Cannot resolve current session model for RLM call.");
 
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
@@ -46,7 +46,7 @@ ${params.context}`;
     prompt = prompt.slice(0, MAX_QUERY_CONTEXT_CHARS) + `\n\n[truncated: ${prompt.length - MAX_QUERY_CONTEXT_CHARS} chars omitted]`;
   }
 
-  onUpdate?.({ content: [{ type: "text", text: `rlm(${call}): calling ${modelLabel(model)}...` }] });
+  onUpdate?.({ content: [{ type: "text", text: `${call}: calling ${modelLabel(model)}...` }] });
 
   const timed = withTimeoutSignal(signal, state);
   let result;
