@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { getSettingsListTheme, getAgentDir, type ExtensionAPI, type ToolInfo } from "@mariozechner/pi-coding-agent";
+import { getSettingsListTheme, getAgentDir, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Container, type SettingItem, SettingsList, Text } from "@mariozechner/pi-tui";
 
 // ── Types & constants ──────────────────────────────────────────────
@@ -10,8 +10,19 @@ interface ToolSettingsFile {
 	disabledTools: string[];
 }
 
+interface ToolRecord {
+	name: string;
+	sourceInfo?: {
+		source?: string;
+		scope?: string;
+	};
+}
+
 const SETTINGS_VERSION = 1;
 const SETTINGS_PATH = join(getAgentDir(), "tool-settings.json");
+const ALLOWED = "allowed";
+const BLOCKED_BY_THIS_EXTENSION = "blocked by this extension";
+const ALLOWED_BUT_INACTIVE = "allowed here (blocked by another extension)";
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -22,6 +33,43 @@ function uniqueSorted(arr: string[]): string[] {
 function toStringArray(value: unknown): string[] {
 	if (!Array.isArray(value)) return [];
 	return value.filter((v): v is string => typeof v === "string").map((s) => s.trim()).filter(Boolean);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeTool(tool: unknown): ToolRecord | undefined {
+	if (typeof tool === "string") {
+		const name = tool.trim();
+		return name ? { name } : undefined;
+	}
+	if (!isRecord(tool) || typeof tool.name !== "string") return undefined;
+
+	const name = tool.name.trim();
+	if (!name) return undefined;
+
+	const sourceInfo = isRecord(tool.sourceInfo) ? {
+		source: typeof tool.sourceInfo.source === "string" ? tool.sourceInfo.source : undefined,
+		scope: typeof tool.sourceInfo.scope === "string" ? tool.sourceInfo.scope : undefined,
+	} : undefined;
+
+	return sourceInfo ? { name, sourceInfo } : { name };
+}
+
+function getAllToolRecords(pi: ExtensionAPI): ToolRecord[] {
+	const rawTools = pi.getAllTools() as unknown;
+	if (!Array.isArray(rawTools)) return [];
+
+	const seen = new Set<string>();
+	const tools: ToolRecord[] = [];
+	for (const rawTool of rawTools) {
+		const tool = normalizeTool(rawTool);
+		if (!tool || seen.has(tool.name)) continue;
+		seen.add(tool.name);
+		tools.push(tool);
+	}
+	return tools;
 }
 
 // ── Settings I/O ───────────────────────────────────────────────────
@@ -84,35 +132,49 @@ async function saveSettings(): Promise<void> {
 
 // ── Tool sorting & enforcement ─────────────────────────────────────
 
-function getToolCategory(tool: ToolInfo): string {
-	if (tool.sourceInfo.source === "builtin") return "Built-in";
-	if (tool.sourceInfo.source === "sdk") return "SDK";
-	if (tool.sourceInfo.scope === "project") return "Project extension";
-	if (tool.sourceInfo.scope === "user") return "User extension";
-	return "Extension";
+function getToolCategory(tool: ToolRecord): string {
+	if (tool.sourceInfo?.source === "builtin") return "Built-in";
+	if (tool.sourceInfo?.source === "sdk") return "SDK";
+	if (tool.sourceInfo?.scope === "project") return "Project extension";
+	if (tool.sourceInfo?.scope === "user") return "User extension";
+	return tool.sourceInfo ? "Extension" : "Tool";
 }
 
-function sortTools(tools: ToolInfo[]): ToolInfo[] {
-	const rank = (t: ToolInfo) =>
-		t.sourceInfo.source === "builtin" ? 0 :
-		t.sourceInfo.source === "sdk" ? 1 :
-		t.sourceInfo.scope === "project" ? 2 :
-		t.sourceInfo.scope === "user" ? 3 : 4;
+function sortTools(tools: ToolRecord[]): ToolRecord[] {
+	const rank = (t: ToolRecord) =>
+		t.sourceInfo?.source === "builtin" ? 0 :
+		t.sourceInfo?.source === "sdk" ? 1 :
+		t.sourceInfo?.scope === "project" ? 2 :
+		t.sourceInfo?.scope === "user" ? 3 : 4;
 	return [...tools].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
 }
 
-function enforceDisabledTools(pi: ExtensionAPI): void {
-	const allNames = new Set(pi.getAllTools().map((t) => t.name));
+function getToolValue(name: string, activeTools: Set<string>): string {
+	if (disabledTools.has(name)) return BLOCKED_BY_THIS_EXTENSION;
+	if (!activeTools.has(name)) return ALLOWED_BUT_INACTIVE;
+	return ALLOWED;
+}
+
+function getToolValues(currentValue: string): string[] {
+	if (currentValue === BLOCKED_BY_THIS_EXTENSION) return [BLOCKED_BY_THIS_EXTENSION, ALLOWED];
+	if (currentValue === ALLOWED_BUT_INACTIVE) return [ALLOWED_BUT_INACTIVE, BLOCKED_BY_THIS_EXTENSION];
+	return [ALLOWED, BLOCKED_BY_THIS_EXTENSION];
+}
+
+async function enforceDisabledTools(pi: ExtensionAPI): Promise<void> {
+	const allNames = new Set(getAllToolRecords(pi).map((t) => t.name));
+	if (allNames.size === 0) return;
+
 	const active = pi.getActiveTools().filter((n) => allNames.has(n));
 	const filtered = active.filter((n) => !disabledTools.has(n));
 	if (active.length !== filtered.length || active.some((n, i) => n !== filtered[i])) {
-		pi.setActiveTools(filtered);
+		await pi.setActiveTools(filtered);
 	}
 }
 
 async function reloadAndEnforce(pi: ExtensionAPI): Promise<void> {
 	await loadSettings();
-	enforceDisabledTools(pi);
+	await enforceDisabledTools(pi);
 }
 
 // ── Extension entry point ──────────────────────────────────────────
@@ -124,25 +186,39 @@ export default function toolManagementExtension(pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			await reloadAndEnforce(pi);
 
-			const allTools = sortTools(pi.getAllTools());
+			const allTools = sortTools(getAllToolRecords(pi));
 			if (allTools.length === 0) {
 				ctx.ui.notify("No tools available", "info");
 				return;
 			}
 
 			await ctx.ui.custom((tui, theme, _kb, done) => {
-				const items: SettingItem[] = allTools.map((tool) => ({
-					id: tool.name,
-					label: `${tool.name} · ${getToolCategory(tool)}`,
-					currentValue: disabledTools.has(tool.name) ? "blocked by this extension" : "allowed",
-					values: ["allowed", "blocked by this extension"],
-				}));
+				const activeTools = new Set(pi.getActiveTools());
+				const externallyBlocked = allTools
+					.map((tool) => tool.name)
+					.filter((name) => !disabledTools.has(name) && !activeTools.has(name));
+				const items: SettingItem[] = allTools.map((tool) => {
+					const currentValue = getToolValue(tool.name, activeTools);
+					const blockedElsewhere = currentValue === ALLOWED_BUT_INACTIVE;
+					return {
+						id: tool.name,
+						label: `${tool.name} · ${getToolCategory(tool)}`,
+						description: blockedElsewhere
+							? "This extension allows this tool, but it is missing from Pi's active tool set. Another extension or runtime mode is currently hiding it."
+							: undefined,
+						currentValue,
+						values: getToolValues(currentValue),
+					};
+				});
 
 				const container = new Container();
 				container.addChild(new Text(theme.fg("accent", theme.bold("Tool Management"))));
 				container.addChild(new Text(theme.fg("dim", SETTINGS_PATH)));
 				container.addChild(new Text(theme.fg("muted", "This menu edits this extension's global disabled-tools list.")));
 				container.addChild(new Text(theme.fg("muted", "Allowed here = not blocked by this extension; another extension may still hide or re-add a tool later.")));
+				if (externallyBlocked.length > 0) {
+					container.addChild(new Text(theme.fg("warning", `Blocked elsewhere now: ${externallyBlocked.join(", ")}`)));
+				}
 				container.addChild(new Text(theme.fg("muted", "Scans built-in + extension tools each time this menu opens.")));
 				container.addChild(new Text(theme.fg("muted", "Close + reopen to refresh tools added while this menu is open.")));
 
@@ -151,13 +227,21 @@ export default function toolManagementExtension(pi: ExtensionAPI) {
 					Math.min(items.length + 2, 15),
 					getSettingsListTheme(),
 					(id, newValue) => {
-						if (newValue === "allowed") {
-							disabledTools.delete(id);
-						} else {
+						if (newValue === BLOCKED_BY_THIS_EXTENSION) {
 							disabledTools.add(id);
+						} else {
+							disabledTools.delete(id);
 						}
-						enforceDisabledTools(pi);
-						saveSettings().then(() => {
+
+						void enforceDisabledTools(pi)
+							.then(() => {
+								settingsList.updateValue(id, getToolValue(id, new Set(pi.getActiveTools())));
+								tui.requestRender();
+							})
+							.catch((e) => {
+								ctx.ui.notify(`Failed to apply tool changes: ${e instanceof Error ? e.message : String(e)}`, "error");
+							});
+						void saveSettings().then(() => {
 							if (lastSaveError) ctx.ui.notify(`${lastSaveError}\nChanges remain applied in this session.`, "error");
 						});
 					},
@@ -182,17 +266,22 @@ export default function toolManagementExtension(pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			await reloadAndEnforce(pi);
 
-			const allTools = sortTools(pi.getAllTools());
+			const allTools = sortTools(getAllToolRecords(pi));
 			const activeTools = new Set(pi.getActiveTools());
 			const knownNames = new Set(allTools.map((t) => t.name));
+			const activeKnown = [...activeTools].filter((n) => knownNames.has(n));
 			const disabled = uniqueSorted([...disabledTools]);
 			const unresolved = disabled.filter((n) => !knownNames.has(n));
+			const blockedElsewhere = allTools
+				.map((tool) => tool.name)
+				.filter((name) => !disabledTools.has(name) && !activeTools.has(name));
 
 			const lines = [
 				`settings: ${SETTINGS_PATH}`,
-				`currentlyActiveAfterAllFilters: ${activeTools.size}/${allTools.length}`,
+				`currentlyActiveAfterAllFilters: ${activeKnown.length}/${allTools.length}`,
 				`disabledTools: ${disabled.join(", ") || "(none)"}`,
-				"note: active count reflects the current runtime tool set after this extension and any other extensions have applied their filters",
+				`blockedByOtherExtensions: ${blockedElsewhere.join(", ") || "(none)"}`,
+				"note: blockedByOtherExtensions means a known tool is allowed here but absent from the current runtime active-tool set",
 			];
 			if (unresolved.length > 0) lines.push(`unresolvedDisabledTools: ${unresolved.join(", ")}`);
 			if (lastWarning) lines.push(`loadWarning: ${lastWarning}`);
