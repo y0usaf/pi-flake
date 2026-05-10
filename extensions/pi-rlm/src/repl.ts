@@ -201,10 +201,25 @@ def _context_value(entry):
         return entry.get("value")
     return entry
 
+def _clear_contexts():
+    global context, context_0, _context_count
+    for key in list(globals().keys()):
+        if key == "context" or key.startswith("context_"):
+            try:
+                del globals()[key]
+            except Exception:
+                pass
+    context = None
+    context_0 = None
+    _context_count = 0
+    _context_keys.clear()
+
+
 def _load_contexts(entries):
     global context, context_0, _context_count
     if entries is None:
         return
+    _clear_contexts()
     if not isinstance(entries, list):
         entries = [{"key": "context", "value": entries}]
     for index, entry in enumerate(entries):
@@ -336,7 +351,9 @@ async function contextEntriesFromStore(store?: ContextStore): Promise<Array<{ ke
     const key = `${source.id}:${source.path}:${source.sizeBytes ?? ""}:${source.entries ?? ""}`;
     if (source.kind === "inline" || source.kind === "file") {
       try {
-        entries.push({ key, value: await readFile(source.path, "utf8") });
+        const text = await readFile(source.path, "utf8");
+        source.sizeBytes = Buffer.byteLength(text, "utf8");
+        entries.push({ key, value: text });
       } catch (e) {
         entries.push({ key, value: { path: source.path, relPath: source.relPath, kind: source.kind, error: errorText(e) } });
       }
@@ -649,8 +666,10 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
     description: "Python REPL using the upstream RLM helper contract: llm_query, llm_query_batched, rlm_query, rlm_query_batched, FINAL_VAR, SHOW_VARS, state/history/context variables, and injected custom data.",
     promptSnippet: "Python REPL with upstream RLM helpers and context/history/state",
     promptGuidelines: [
-      `Use ${REPL_TOOL_NAME} as the only control plane: write Python code, inspect context variables, chunk work, batch calls, synthesize, and finalize.`,
+      `Use ${REPL_TOOL_NAME} as the only control plane: write Python code, inspect context variables, chunk work, batch recursive calls, synthesize, and finalize.`,
       `Available model-call helpers are llm_query(prompt), llm_query_batched(prompts), rlm_query(prompt), and rlm_query_batched(prompts). Helpers are synchronous and return str/list[str].`,
+      `Default to recursive decomposition for broad, multi-file, uncertain, audit/review, or naturally parallel work: use rlm_query/rlm_query_batched before final synthesis.`,
+      `Use llm_query/llm_query_batched only for narrow one-shot leaf reasoning over already extracted self-contained text; they do not get their own REPL.`,
       `The REPL exposes state, history, context/context_0/context_N, and any injected variables. Use SHOW_VARS() to inspect visible variables.`,
       `Use normal Python capabilities such as imports, open(), os, pathlib, subprocess, json, and standard libraries for local computation or file/process access.`,
       `To finish, assign the answer to a variable or state key, then call FINAL_VAR("name").`,

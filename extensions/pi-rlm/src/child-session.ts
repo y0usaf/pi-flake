@@ -46,20 +46,25 @@ export function childSystemPrompt(depth: number, state: RunState, hasContextStor
 
   return `Recursive Pi child RLM. Depth ${depth}/${state.maxDepth}. Calls ${state.budget.calls}/${state.budget.maxCalls}. Queries ${state.budget.queries}/${state.budget.maxQueries}.
 
-You are an upstream-style RLM sub-call. Your only tool is ${REPL_TOOL_NAME}, a Python REPL exposing exactly: llm_query, llm_query_batched, rlm_query, rlm_query_batched, FINAL_VAR, SHOW_VARS, state, history, context/context_N, and injected values.
+You are an upstream-style recursive RLM worker, not a normal chat assistant. Your only tool is ${REPL_TOOL_NAME}, a Python REPL exposing exactly: llm_query, llm_query_batched, rlm_query, rlm_query_batched, FINAL_VAR, SHOW_VARS, state, history, context/context_N, and injected values.
 
 ${contextLine}
 
-The RLM pattern:
-1. Use ${REPL_TOOL_NAME} for all computation, inspection, batching, and synthesis.
-2. Inspect context with SHOW_VARS(), Python slicing/searching, and normal Python modules such as json, os, pathlib, subprocess, and open().
-3. Use llm_query/llm_query_batched for one-shot reasoning over already extracted text.
-4. Use rlm_query/rlm_query_batched only when a subproblem needs another recursive RLM session.
-5. Put the final answer in a variable or state key and call FINAL_VAR("name").
+Execution contract:
+- You are queried iteratively by Pi until you finalize. Do not answer directly from chat when a REPL action is possible.
+- Your first substantive action must be a ${REPL_TOOL_NAME} call to inspect context/state, run code, or launch subcalls.
+- Put the final answer in a Python variable or state key and call FINAL_VAR("name") inside ${REPL_TOOL_NAME}.
+
+Recursive default policy:
+1. Break the task into digestible components.
+2. Use ${REPL_TOOL_NAME} for all computation, inspection, batching, and synthesis.
+3. Use rlm_query/rlm_query_batched for subtasks that need their own exploration, code execution, multi-step reasoning, repo/document inspection, verification, or uncertain synthesis.
+4. Use llm_query/llm_query_batched only for narrow one-shot reasoning over already extracted self-contained text.
+5. Prefer batched child calls for independent chunks/subtasks.
+6. If child results are incomplete or contradictory, recurse narrower before finalizing.
 
 Rules:
 - Do not dump large context values into chat; print compact observations only.
-- Prefer batched calls for independent chunks/sub-calls.
 - Do not modify project files unless explicitly asked.
 - If turn budget runs low, call FINAL_VAR with a partial answer and remaining work.`;
 }
@@ -82,7 +87,7 @@ ${rootPromptBlock}${ctxBlock}${storeBlock}
 Paths to inspect with Python if relevant:
 ${pathBlock}
 
-Use ${REPL_TOOL_NAME} only. Finalize by assigning the answer to a variable or state key and calling FINAL_VAR("name").`;
+Use ${REPL_TOOL_NAME} only. Think step-by-step in the REPL environment, inspect the available context/files, decompose when useful, use rlm_query/rlm_query_batched for deeper subtasks, and finalize by assigning the answer to a variable or state key and calling FINAL_VAR("name"). Your next action should be a ${REPL_TOOL_NAME} call.`;
 }
 
 export function childToolList(): string[] {
@@ -104,6 +109,149 @@ function childTranscript(messages: any[], maxChars = 120_000): string {
 function deterministicFinalPrompt(originalPrompt: string, messages: any[], reason: string): string {
   return `A recursive Pi child RLM did not complete normally (${reason}). Produce the best possible deterministic checkpoint/final answer from the transcript below. Do not claim work that is not evidenced. If incomplete, explicitly say what remains unchecked. Include changed files or artifacts if the transcript mentions any.\n\nOriginal child task:\n${originalPrompt}\n\nChild transcript:\n${childTranscript(messages)}`;
 }
+
+// ── Structural decomposition ─────────────────────────────────────────
+
+const DECOMPOSE_SYSTEM = `You are a recursive task decomposition engine inside an RLM (Recursive Language Model).
+Given a task, determine if it should be decomposed into independent subtasks that can be worked on in parallel, or handled as a single unit.
+
+Rules:
+- Decompose when the task involves multiple files, multiple independent questions, audit/review across sources, comparison, or naturally parallel work.
+- Do NOT decompose simple questions, single-file edits, narrow lookups, or tasks that are already focused enough for one worker.
+- Each subtask must be self-contained and independently answerable.
+- Keep subtask count reasonable (2-8 subtasks).
+- Respond with ONLY valid JSON, no markdown fences.`;
+
+function decomposeUserPrompt(prompt: string, context?: string, paths?: string[]): string {
+  const parts = [`Task:\n${prompt}`];
+  if (paths?.length) parts.push("Paths available:\n" + paths.map((p) => "- " + p).join("\n"));
+  if (context?.trim()) parts.push(`Context excerpt (first 2000 chars):\n${context.slice(0, 2000)}`);
+  parts.push(`\nRespond with ONLY valid JSON:\n{"decompose": true, "subtasks": ["...", "..."]}\nor\n{"decompose": false, "reason": "..."}`);
+  return parts.join("\n\n");
+}
+
+interface DecomposeResult {
+  decompose: boolean;
+  subtasks?: string[];
+  reason?: string;
+}
+
+function parseDecomposeResponse(text: string): DecomposeResult | undefined {
+  try {
+    // Strip markdown fences if present
+    const cleaned = text.replace(/^```(?:json)?\s*/m, "").replace(/```\s*$/m, "").trim();
+    const parsed = JSON.parse(cleaned);
+    if (typeof parsed?.decompose !== "boolean") return undefined;
+    if (parsed.decompose && (!Array.isArray(parsed.subtasks) || parsed.subtasks.length < 2)) return undefined;
+    if (parsed.decompose && parsed.subtasks.some((s: unknown) => typeof s !== "string" || !s)) return undefined;
+    return parsed as DecomposeResult;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Attempt structural decomposition: ask a leaf LLM whether this task should
+ * be split, and if so, automatically fan out child rlm_query calls.
+ *
+ * Returns the synthesized result if decomposition was performed, or undefined
+ * if the task should be handled as a single interactive session.
+ */
+async function tryStructuralDecompose(
+  ctx: ExtensionContext,
+  params: { prompt: string; rootPrompt?: string; model?: string; context?: string; contextMode?: ContextMode; paths?: string[]; sources?: Array<{ name?: string; path: string }>; contextName?: string },
+  depth: number,
+  state: RunState,
+  signal: AbortSignal | undefined,
+  onUpdate: any,
+): Promise<{ content: Array<{ type: "text"; text: string }>; details: Details } | undefined> {
+  // Don't decompose if we're already near limits
+  if (depth + 1 >= state.maxDepth) return undefined;
+  if (state.budget.calls + 2 >= state.budget.maxCalls) return undefined;
+  if (state.budget.queries + 2 >= state.budget.maxQueries) return undefined;
+
+  onUpdate?.({ content: [{ type: "text", text: `depth ${depth}: checking structural decomposition...` }] });
+
+  // Ask leaf LLM to decompose
+  const decomposeResult = await runLlmQuery(ctx, {
+    prompt: DECOMPOSE_SYSTEM + "\n\n" + decomposeUserPrompt(params.prompt, params.context, params.paths),
+  }, state.budget, depth, state, signal, onUpdate, "llm_query");
+
+  const decomposeText = textOf(decomposeResult.content).trim();
+  const decision = parseDecomposeResponse(decomposeText);
+
+  if (!decision?.decompose || !decision.subtasks?.length) {
+    onUpdate?.({ content: [{ type: "text", text: `depth ${depth}: no decomposition needed${decision?.reason ? ` (${decision.reason})` : ""}` }] });
+    return undefined;
+  }
+
+  // ── Fan out: spawn parallel child rlm_query calls ──
+  const subtasks = decision.subtasks;
+  onUpdate?.({ content: [{ type: "text", text: `depth ${depth}: structural decomposition into ${subtasks.length} subtasks` }] });
+
+  const { runBatch } = await import("./batch.js");
+  const batchParams = {
+    call: "rlm_query_batched" as const,
+    items: subtasks.map((subtask) => ({
+      prompt: subtask,
+      rootPrompt: params.rootPrompt ?? params.prompt,
+      model: params.model,
+      context: params.context,
+      contextMode: params.contextMode,
+      paths: params.paths,
+      sources: params.sources,
+      contextName: params.contextName,
+    })),
+  };
+
+  const batchResult = await runBatch(ctx, batchParams, "rlm_query_batched", depth + 1, state, signal, onUpdate);
+
+  // ── Synthesize: combine child results ──
+  const childAnswers = textOf(batchResult.content).trim();
+  onUpdate?.({ content: [{ type: "text", text: `depth ${depth}: synthesizing ${subtasks.length} child results...` }] });
+
+  const synthesizePrompt = `You are synthesizing the results of ${subtasks.length} parallel subtask workers in a Recursive Language Model.
+
+Original task:
+${params.prompt}
+
+Subtask results:
+${childAnswers}
+
+Produce a coherent, complete final answer that integrates all subtask findings. Note any gaps, contradictions, or incomplete areas. Be concise but thorough.`;
+
+  const synthesized = await runLlmQuery(ctx, {
+    prompt: synthesizePrompt,
+    rootPrompt: params.rootPrompt,
+  }, state.budget, depth, state, signal, onUpdate, "llm_query");
+
+  const answer = clip(textOf(synthesized.content).trim());
+  const details: Details = {
+    call: "rlm_query",
+    kind: "rlm",
+    depth,
+    maxDepth: state.maxDepth,
+    callsUsed: state.budget.calls,
+    maxCalls: state.budget.maxCalls,
+    queriesUsed: state.budget.queries,
+    maxQueries: state.budget.maxQueries,
+    turns: (batchResult.details.turns || 0) + 2, // decompose + synthesize
+    maxTurns: state.maxTurns,
+    model: batchResult.details.model,
+    status: batchResult.details.incomplete ? "partial" : "completed",
+    ...budgetDetails(state),
+    prompt: params.prompt,
+    rootPrompt: params.rootPrompt,
+    paths: normPaths(params.paths),
+    sources: normSources(params.sources),
+    answer,
+    incomplete: batchResult.details.incomplete,
+  };
+
+  return { content: [{ type: "text", text: answer }], details };
+}
+
+// ── Main entry point ─────────────────────────────────────────────────
 
 export async function runRlmQuery(
   ctx: ExtensionContext,
@@ -130,6 +278,12 @@ export async function runRlmQuery(
       contextName: params.contextName,
     }, state.budget, depth, state, signal, onUpdate, "rlm_query");
   }
+
+  // ── Structural decomposition: try auto-decompose before interactive session ──
+  const structuralResult = await tryStructuralDecompose(ctx, { ...params, contextMode }, depth, state, signal, onUpdate);
+  if (structuralResult) return structuralResult;
+
+  // ── Interactive child session (single-unit tasks) ──
 
   state.budget.calls++;
   if (state.budget.calls > state.budget.maxCalls) throw new Error(`Max recursive child RLM calls (${state.budget.maxCalls}).`);
@@ -192,7 +346,8 @@ export async function runRlmQuery(
       noSkills: true,
       noPromptTemplates: true,
       noThemes: true,
-      appendSystemPrompt: [childSystemPrompt(depth, state, hasContextStore)],
+      noContextFiles: true,
+      systemPrompt: childSystemPrompt(depth, state, hasContextStore),
     });
     await loader.reload();
 
@@ -314,4 +469,3 @@ export async function runRlmQuery(
     await cleanupContextStore(contextStore);
   }
 }
-
