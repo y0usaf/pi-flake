@@ -25,6 +25,8 @@ const MAX_CTX_LINE_COUNT = 400;
 const MAX_CTX_GREP_CONTEXT_LINES = 10;
 const NESTED_QUANTIFIER_PATTERN = /\([^)]*[+*][^)]*\)\s*(?:[+*?]|\{)/;
 
+const MAX_CTX_GREP_FILE_BYTES = 5_000_000;
+const BINARY_SNIFF_BYTES = 4_096;
 function validateCtxRegex(query: string): RegExp {
   if (NESTED_QUANTIFIER_PATTERN.test(query)) {
     throw new Error("ctx grep rejected a potentially unsafe regex with nested quantifiers.");
@@ -315,16 +317,46 @@ export function selectContextSources(store: ContextStore, selector?: string): Co
   return selected;
 }
 
-export async function collectFiles(source: ContextSource, state: { count: number; truncated: boolean }, out: string[] = []): Promise<string[]> {
+async function isProbablyBinary(file: string): Promise<boolean> {
+  const fh = await fs.open(file, "r");
+  try {
+    const buf = Buffer.alloc(BINARY_SNIFF_BYTES);
+    const { bytesRead } = await fh.read(buf, 0, BINARY_SNIFF_BYTES, 0);
+    for (let i = 0; i < bytesRead; i++) {
+      if (buf[i] === 0) return true;
+    }
+    return false;
+  } finally {
+    await fh.close();
+  }
+}
+
+async function shouldSkipGrepFile(file: string): Promise<boolean> {
+  try {
+    const st = await fs.stat(file);
+    if (!st.isFile()) return true;
+    if (st.size > MAX_CTX_GREP_FILE_BYTES) return true;
+    return await isProbablyBinary(file);
+  } catch {
+    return true;
+  }
+}
+
+export async function collectFiles(source: ContextSource, state: { count: number; truncated: boolean; skipped?: number }, out: string[] = []): Promise<string[]> {
   if (state.count >= MAX_CTX_GREP_FILES) {
     state.truncated = true;
     return out;
   }
   if (source.kind === "inline" || source.kind === "file") {
+    if (source.kind !== "inline" && await shouldSkipGrepFile(source.path)) {
+      state.skipped = (state.skipped ?? 0) + 1;
+      return out;
+    }
     out.push(source.path);
     state.count++;
     return out;
   }
+
   if (source.kind !== "dir") return out;
 
   let entries;
@@ -343,6 +375,10 @@ export async function collectFiles(source: ContextSource, state: { count: number
       if (state.count >= MAX_CTX_GREP_FILES) {
         state.truncated = true;
         break;
+      }
+      if (await shouldSkipGrepFile(child)) {
+        state.skipped = (state.skipped ?? 0) + 1;
+        continue;
       }
       out.push(child);
       state.count++;
@@ -487,7 +523,7 @@ export async function ctxGrep(cwd: string, store: ContextStore, params: any): Pr
   const before = clamp(params.before, contextLines, 0, MAX_CTX_GREP_CONTEXT_LINES);
   const after = clamp(params.after, contextLines, 0, MAX_CTX_GREP_CONTEXT_LINES);
   const sources = selectContextSources(store, typeof params.source === "string" ? params.source : undefined);
-  const fileState = { count: 0, truncated: false };
+  const fileState: { count: number; truncated: boolean; skipped?: number } = { count: 0, truncated: false };
   const files: string[] = [];
   for (const source of sources) await collectFiles(source, fileState, files);
 
@@ -505,7 +541,7 @@ export async function ctxGrep(cwd: string, store: ContextStore, params: any): Pr
 
   const header = `# ctx grep ${JSON.stringify(query)} across ${files.length} file(s), max ${maxMatches} match(es), context ${before}/${after}`;
   const body = matches.slice(0, cap);
-  const tail = `${fileState.truncated ? `\n[file listing truncated after ${fileState.count} files]` : ""}${matches.length >= cap ? `\n[output capped after ${cap} lines]` : ""}\nScratch dir: ${store.scratchDir}`;
+  const tail = `${fileState.truncated ? `\n[file listing truncated after ${fileState.count} files]` : ""}${fileState.skipped ? `\n[skipped ${fileState.skipped} large/binary/unreadable file(s)]` : ""}${matches.length >= cap ? `\n[output capped after ${cap} lines]` : ""}\nScratch dir: ${store.scratchDir}`;
   if (!body.length) return `${header}\nNo matches.${tail}`;
   return clip(`${header}\n${body.join("\n")}${tail}`, MAX_CTX_OUTPUT_CHARS);
 }

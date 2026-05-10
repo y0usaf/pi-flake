@@ -37,6 +37,11 @@ _final_value = None
 _last = None
 last = None
 state = {}
+history = []
+context = None
+context_0 = None
+_context_count = 0
+_context_key = None
 cwd = os.getcwd()
 
 class _Capture:
@@ -118,6 +123,20 @@ def rlm_query(prompt_or_params, **kwargs):
 
 def rlm_query_batched(prompts_or_params, **kwargs):
     return _batch_answers(rlm(_batch_params("rlm_query_batched", prompts_or_params, **kwargs)))
+def rlm_details(params):
+    return rlm(params)
+
+def llm_query_details(prompt_or_params, **kwargs):
+    return rlm(_single_params("llm_query", prompt_or_params, **kwargs))
+
+def llm_query_batched_details(prompts_or_params, **kwargs):
+    return rlm(_batch_params("llm_query_batched", prompts_or_params, **kwargs))
+
+def rlm_query_details(prompt_or_params, **kwargs):
+    return rlm(_single_params("rlm_query", prompt_or_params, **kwargs))
+
+def rlm_query_batched_details(prompts_or_params, **kwargs):
+    return rlm(_batch_params("rlm_query_batched", prompts_or_params, **kwargs))
 
 def bash(command, **kwargs):
     if not isinstance(command, str) or not command.strip():
@@ -200,7 +219,7 @@ def FINAL_VAR(name):
     if not isinstance(name, str) or not name.strip():
         raise TypeError("FINAL_VAR(name) requires a variable/state key string")
     g = globals()
-    if name in g and name not in _RESERVED:
+    if name in g and not _is_reserved_name(name):
         return FINAL(g[name])
     if name in state:
         return FINAL(state[name])
@@ -223,8 +242,11 @@ def SHOW_VARS():
 class _FinalSignal(Exception):
     pass
 
+def _is_reserved_name(name):
+    return name in _RESERVED or name.startswith("context_") or name.startswith("history_")
+
 def _user_var_keys():
-    return sorted(k for k in globals().keys() if k not in _RESERVED and not k.startswith("_"))
+    return sorted(k for k in globals().keys() if not _is_reserved_name(k) and not k.startswith("_"))
 
 def _compile_user(code):
     tree = ast.parse(code, filename="<pi-rlm-repl>", mode="exec")
@@ -235,18 +257,63 @@ def _compile_user(code):
         ast.fix_missing_locations(tree)
     return compile(tree, "<pi-rlm-repl>", "exec"), captures_expr
 
+def _refresh_reserved_values():
+    global _RESERVED_VALUES
+    _RESERVED_VALUES = {k: globals().get(k) for k in _RESERVED if k in globals()}
+
+def _restore_reserved_values():
+    for k, v in _RESERVED_VALUES.items():
+        globals()[k] = v
+
+def _update_context_vars(info):
+    global context, context_0, _context_count, _context_key
+    if info is None:
+        return
+    key = json.dumps(info, sort_keys=True, default=str)
+    if key == _context_key:
+        context = info
+        globals()["context"] = info
+        return
+    name = "context_" + str(_context_count)
+    globals()[name] = info
+    context = info
+    globals()["context"] = info
+    if _context_count == 0:
+        context_0 = info
+        globals()["context_0"] = info
+    _context_count += 1
+    _context_key = key
+
+def _inject_data(data):
+    if not isinstance(data, dict):
+        return
+    for key, value in data.items():
+        if not isinstance(key, str) or not key.isidentifier() or _is_reserved_name(key) or key.startswith("_"):
+            raise ValueError("Invalid or reserved injected variable name: " + repr(key))
+        globals()[key] = value
+
 _RESERVED = set(globals().keys()) | {"_RESERVED", "line", "msg"}
+_refresh_reserved_values()
 
 def _run_eval(msg):
-    global _final_called, _final_value, _last, last, cwd
+    global _final_called, _final_value, _last, last, cwd, history
     eval_id = msg.get("id")
     code = msg.get("code") or ""
+    setup = msg.get("setup") or ""
     cwd = msg.get("cwd") or cwd
+    if msg.get("resetHistory"):
+        history.clear()
     ctx._update(msg.get("context"))
+    _update_context_vars(msg.get("context"))
+    _inject_data(msg.get("data"))
+    _refresh_reserved_values()
     _logs.clear()
     _final_called = False
     _final_value = None
     try:
+        if setup:
+            exec(compile(setup, "<pi-rlm-repl-setup>", "exec"), globals(), globals())
+            _restore_reserved_values()
         compiled, captures_expr = _compile_user(code)
         try:
             exec(compiled, globals(), globals())
@@ -254,6 +321,7 @@ def _run_eval(msg):
             pass
         value = _final_value if _final_called else (_last if captures_expr else None)
         last = value
+        history.append({"code": code, "final": _final_called, "value": value, "logs": "".join(_logs)})
         _send({
             "type": "result",
             "id": eval_id,
@@ -263,7 +331,11 @@ def _run_eval(msg):
             "logs": "".join(_logs),
             "stateKeys": sorted(str(k) for k in state.keys()),
             "varKeys": _user_var_keys(),
+            "historyLength": len(history),
+            "contextKeys": sorted(k for k in globals().keys() if k == "context" or k.startswith("context_")),
         })
+        _restore_reserved_values()
+        _refresh_reserved_values()
     except Exception as exc:
         _send({
             "type": "result",
@@ -274,7 +346,11 @@ def _run_eval(msg):
             "logs": "".join(_logs),
             "stateKeys": sorted(str(k) for k in state.keys()),
             "varKeys": _user_var_keys(),
+            "historyLength": len(history),
+            "contextKeys": sorted(k for k in globals().keys() if k == "context" or k.startswith("context_")),
         })
+        _restore_reserved_values()
+        _refresh_reserved_values()
 
 _send({"type": "ready"})
 
@@ -301,6 +377,8 @@ interface PythonEvalResult {
   traceback?: string;
   stateKeys?: string[];
   varKeys?: string[];
+  historyLength?: number;
+  contextKeys?: string[];
 }
 
 interface BridgeContext {
@@ -412,7 +490,7 @@ class PythonReplWorker {
     return !this.exited && !this.proc.killed && !this.proc.stdin?.destroyed;
   }
 
-  async eval(code: string, timeoutMs: number, bridge: BridgeContext): Promise<PythonEvalResult> {
+  async eval(code: string, timeoutMs: number, bridge: BridgeContext, options: { data?: unknown; setup?: string; resetHistory?: boolean } = {}): Promise<PythonEvalResult> {
     if (!this.isAlive()) throw new Error("Python REPL is not running.");
     if (this.current) throw new Error("Python REPL is already evaluating code.");
     if (bridge.signal?.aborted) {
@@ -430,6 +508,9 @@ class PythonReplWorker {
     const context = bridge.store
       ? {
           scratchDir: bridge.store.scratchDir,
+          manifest: bridge.store.manifestText,
+          manifestPath: bridge.store.manifestPath,
+          manifestJsonPath: bridge.store.manifestJsonPath,
           notesDir: bridge.store.notesDir,
           artifactsDir: bridge.store.artifactsDir,
           sources: bridge.store.sources.map(contextSourceSummary),
@@ -456,7 +537,7 @@ class PythonReplWorker {
       bridge.signal?.addEventListener("abort", onAbort, { once: true });
       this.pending.set(id, pending);
       this.armEvalTimeout(id, pending);
-      if (!this.write({ type: "eval", id, code, cwd: bridge.ctx.cwd, context })) {
+      if (!this.write({ type: "eval", id, code, cwd: bridge.ctx.cwd, context, data: options.data, setup: options.setup, resetHistory: options.resetHistory })) {
         this.failAll(new Error("Python REPL stdin is closed."));
       }
     }).finally(() => {
@@ -669,8 +750,8 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
     promptSnippet: "Python RLM REPL with llm_query/rlm_query/batching, state, bash/read helpers, FINAL/FINAL_VAR",
     promptGuidelines: [
       `Use ${REPL_TOOL_NAME} for non-trivial orchestration: loops, batching, state, synthesis, and finalization.`,
-      `Write Python code. Helpers are synchronous: llm_query(...), llm_query_batched(...), rlm_query(...), rlm_query_batched(...), or rlm({...}). Batched helpers return list[str]; rlm({...}) returns { text, content, details }.`,
-      `Persist cross-call variables in Python globals or in state, e.g. state["results"] = rlm_query_batched([...]). SHOW_VARS() summarizes variables/state.`,
+      `Write Python code. Helpers are synchronous: llm_query(...), llm_query_batched(...), rlm_query(...), rlm_query_batched(...), or rlm({...}). Batched helpers return list[str]; rlm({...}) and *_details helpers return { text, content, details }.`,
+      `Persist cross-call variables in Python globals or in state. The REPL also exposes history/context/context_N variables when available; SHOW_VARS() summarizes variables/state.`,
       `Call FINAL(value) or FINAL_VAR("name") when the REPL result is the final answer.`,
       `Use bash(command), read_file(path), list_dir(path) for focused local inspection. Prefer recursive ${RLM_TOOL_NAME} calls for broad exploration.`,
       store ? `Use ctx.manifest(), ctx.grep(...), ctx.peek(...), ctx.extract(...), ctx.note(...), ctx.artifact(...) for file-backed RLM context.` : `No file-backed ${CTX_TOOL_NAME} context is attached to this REPL call unless a recursive RLM child supplied one.`,
@@ -695,7 +776,7 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
 
       onUpdate?.({ content: [{ type: "text", text: `${REPL_TOOL_NAME}: evaluating Python via ${pythonCommand()} (${timeoutMs}ms local timeout; bridge calls excluded)...` }] });
 
-      const result = await worker.eval(params.code, timeoutMs, { ctx, signal, onUpdate, inherited, parentDepth, store });
+      const result = await worker.eval(params.code, timeoutMs, { ctx, signal, onUpdate, inherited, parentDepth, store }, { data: params.data, setup: params.setup, resetHistory: params.resetHistory === true });
       if (!result.ok) {
         const text = clip([result.logs?.trim(), result.traceback || result.error].filter(Boolean).join("\n\n"), MAX_RESULT_CHARS);
         return {
@@ -709,6 +790,8 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
             cwd: ctx.cwd,
             stateKeys: result.stateKeys ?? [],
             varKeys: result.varKeys ?? [],
+            historyLength: result.historyLength ?? 0,
+            contextKeys: result.contextKeys ?? [],
             error: result.error,
             scratchDir: store?.scratchDir,
             contextSources: store?.sources.map(contextSourceSummary),
@@ -734,6 +817,8 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
           cwd: ctx.cwd,
           stateKeys: result.stateKeys ?? [],
           varKeys: result.varKeys ?? [],
+          historyLength: result.historyLength ?? 0,
+          contextKeys: result.contextKeys ?? [],
           scratchDir: store?.scratchDir,
           contextSources: store?.sources.map(contextSourceSummary),
         },
