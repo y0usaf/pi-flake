@@ -5,12 +5,20 @@ export const DEFAULT_MAX_TURNS = 20;
 export const DEFAULT_MAX_CALLS = 32;
 export const DEFAULT_MAX_QUERIES = 64;
 export const DEFAULT_MAX_CONCURRENT = 4;
+export const DEFAULT_MAX_TIMEOUT_MS = 0; // 0 = unlimited
+export const DEFAULT_MAX_TOKENS = 0; // 0 = unlimited
+export const DEFAULT_MAX_BUDGET = 0; // USD, 0 = unlimited
+export const DEFAULT_MAX_ERRORS = 0; // 0 = unlimited
 
 export const HARD_MAX_DEPTH = 8;
 export const HARD_MAX_TURNS = 80;
 export const HARD_MAX_CALLS = 128;
 export const HARD_MAX_QUERIES = 256;
 export const HARD_MAX_CONCURRENT = 32;
+export const HARD_MAX_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+export const HARD_MAX_TOKENS = 20_000_000;
+export const HARD_MAX_BUDGET = 10_000;
+export const HARD_MAX_ERRORS = 1_000;
 
 export const MAX_RESULT_CHARS = 50_000;
 export const MAX_QUERY_CONTEXT_CHARS = 500_000;
@@ -37,6 +45,10 @@ export type ExecutionKind = "llm" | "rlm";
 
 export const CONTEXT_MODES = ["auto", "inline", "file_backed"] as const;
 export type ContextMode = typeof CONTEXT_MODES[number];
+
+export const CHILD_MODES = ["pure-rlm", "pi-agent"] as const;
+export type ChildMode = typeof CHILD_MODES[number];
+export const DEFAULT_CHILD_MODE: ChildMode = "pure-rlm";
 
 export const CTX_ACTIONS = ["manifest", "peek", "grep", "extract", "note", "artifact"] as const;
 export type CtxAction = typeof CTX_ACTIONS[number];
@@ -73,20 +85,34 @@ export interface Budget {
   maxCalls: number;
   queries: number;
   maxQueries: number;
+  tokens: number;
+  maxTokens: number; // 0 = unlimited
+  cost: number;
+  maxBudget: number; // USD, 0 = unlimited
+  errors: number;
+  maxErrors: number; // 0 = unlimited
+  startTimeMs: number;
+  maxTimeoutMs: number; // 0 = unlimited
 }
 
 export interface RunState {
+  runId: string;
   maxDepth: number;
   maxTurns: number;
   budget: Budget;
-  /** The model of the parent Pi session that started this RLM run. No overrides. */
+  /** The model of the parent Pi session that started this RLM run. */
   model?: any;
+
+  logPath?: string;
 }
 
 export interface BatchItem {
   prompt: string;
+  rootPrompt?: string;
+
   context?: string;
   contextMode?: ContextMode;
+  childMode?: ChildMode;
   paths?: string[];
   sources?: Array<{ name?: string; path: string }>;
   contextName?: string;
@@ -105,10 +131,23 @@ export interface Details {
   turns: number;
   maxTurns: number;
   model: string;
+  status?: "completed" | "partial" | "error" | "aborted" | "budget_exhausted";
+  tokensUsed?: number;
+  maxTokens?: number;
+  costUsed?: number;
+  maxBudget?: number;
+  errorsUsed?: number;
+  maxErrors?: number;
+  elapsedMs?: number;
+  maxTimeoutMs?: number;
   prompt: string;
+  rootPrompt?: string;
+
+  usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number; cost: number };
   paths: string[];
   sources?: Array<{ name?: string; path: string }>;
   contextMode?: ContextMode;
+  childMode?: ChildMode;
   scratchDir?: string;
   contextSources?: string[];
   answer?: string;

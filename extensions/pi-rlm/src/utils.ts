@@ -1,22 +1,36 @@
+import { promises as fs } from "node:fs";
+import * as path from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 import {
+  CHILD_MODES,
   CONTEXT_MODES,
+  DEFAULT_CHILD_MODE,
   DEFAULT_MAX_CALLS,
   DEFAULT_MAX_DEPTH,
   DEFAULT_MAX_QUERIES,
   DEFAULT_MAX_TURNS,
+  DEFAULT_MAX_TIMEOUT_MS,
+  DEFAULT_MAX_TOKENS,
+  DEFAULT_MAX_BUDGET,
+  DEFAULT_MAX_ERRORS,
   HARD_MAX_CALLS,
   HARD_MAX_DEPTH,
   HARD_MAX_QUERIES,
   HARD_MAX_TURNS,
+  HARD_MAX_TIMEOUT_MS,
+  HARD_MAX_TOKENS,
+  HARD_MAX_BUDGET,
+  HARD_MAX_ERRORS,
   MAX_RESULT_CHARS,
   MAX_TRACE_TEXT_CHARS,
+  REPL_TOOL_NAME,
   RETURN_TOOL_NAME,
   RLM_CALLS,
 } from "./constants.js";
-import type { BatchItem, ContextMode, Details, RlmCall, RunState } from "./constants.js";
+import type { BatchItem, ChildMode, ContextMode, Details, RlmCall, RunState } from "./constants.js";
 import { RLM_ITEM_KEYS, RLM_PARAM_KEYS } from "./params.js";
+import { loadRlmSettings, modelSelectorForRole, type RlmModelRole } from "./settings.js";
 
 export interface NamedSourceInput { name?: string; path: string }
 
@@ -30,7 +44,7 @@ export function rejectUnknownKeys(label: string, value: unknown, allowed: Set<st
   if (!isRecord(value)) return;
   const unknown = Object.keys(value).filter((key) => !allowed.has(key));
   if (unknown.length > 0) {
-    throw new Error(`${label} contains unsupported field(s): ${unknown.join(", ")}. This tool intentionally has no compatibility aliases.`);
+    throw new Error(`${label} contains unsupported field(s): ${unknown.join(", ")}. This tool uses a strict schema; only documented RLM fields and aliases are accepted.`);
   }
 }
 
@@ -93,9 +107,23 @@ export function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+function isReplFinalResult(m: any): boolean {
+  if (m?.role !== "toolResult" || m.toolName !== REPL_TOOL_NAME) return false;
+  if (m.details?.final === true) return true;
+  return /^FINAL:\s*/m.test(textOf(m.content).trim());
+}
+
+function replFinalText(m: any): string {
+  const t = textOf(m?.content).trim();
+  const match = t.match(/(?:^|\n)FINAL:\s*\n?([\s\S]*)$/);
+  return (match?.[1] ?? t).trim();
+}
+
 export function hasReturn(messages: any[]): boolean {
   return messages.some(
-    (m) => m?.role === "toolResult" && m.toolName === RETURN_TOOL_NAME && textOf(m.content).trim().length > 0,
+    (m) => (
+      m?.role === "toolResult" && m.toolName === RETURN_TOOL_NAME && textOf(m.content).trim().length > 0
+    ) || (isReplFinalResult(m) && replFinalText(m).length > 0),
   );
 }
 
@@ -104,6 +132,10 @@ export function extractAnswer(messages: any[]): string {
     const m = messages[i];
     if (m?.role === "toolResult" && m.toolName === RETURN_TOOL_NAME) {
       const t = textOf(m.content).trim();
+      if (t) return t;
+    }
+    if (isReplFinalResult(m)) {
+      const t = replFinalText(m);
       if (t) return t;
     }
   }
@@ -132,27 +164,215 @@ export function traceOf(messages: any[]) {
   }));
 }
 
-export function resolveModel(ctx: ExtensionContext, state: RunState) {
+export function modelLabel(model: any): string {
+  return model ? `${model.provider}/${model.id}` : "unknown";
+}
+
+function findConfiguredModel(ctx: ExtensionContext, selector: string) {
+  const slash = selector.indexOf("/");
+  if (slash > 0) {
+    const provider = selector.slice(0, slash);
+    const id = selector.slice(slash + 1);
+    const found = ctx.modelRegistry.find(provider, id);
+    if (found) return found;
+  }
+
+  const all = ctx.modelRegistry.getAll();
+  return all.find((m: any) => m.id === selector || m.name === selector || `${m.provider}/${m.id}` === selector || `${m.provider}/${m.name}` === selector);
+}
+
+export function resolveModel(ctx: ExtensionContext, state: RunState, role: RlmModelRole = "default") {
   if (!state.model) state.model = ctx.model;
-  return state.model;
+  const selector = modelSelectorForRole(loadRlmSettings(ctx.cwd), role);
+  if (!selector) return state.model;
+  const found = findConfiguredModel(ctx, selector);
+  if (found) return found;
+  throw new Error(`Unknown pi-rlm extensionSettings model selector ${JSON.stringify(selector)}. Use provider/model-id or a model id/name known to Pi.`);
+}
+
+function optionalCap(raw: unknown, fallback: number, hard: number): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) return fallback;
+  return Math.max(1, Math.min(hard, raw));
+}
+
+function timeoutMsFromParams(params: any): number {
+  if (typeof params?.maxTimeoutMs === "number") return optionalCap(params.maxTimeoutMs, DEFAULT_MAX_TIMEOUT_MS, HARD_MAX_TIMEOUT_MS);
+  const seconds = params?.maxTimeout ?? params?.max_timeout;
+  if (typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0) {
+    return optionalCap(seconds * 1000, DEFAULT_MAX_TIMEOUT_MS, HARD_MAX_TIMEOUT_MS);
+  }
+  return DEFAULT_MAX_TIMEOUT_MS;
+}
+
+function runId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 export function createRunState(params: any, model?: any): RunState {
   return {
-    maxDepth: clamp(params?.maxDepth, DEFAULT_MAX_DEPTH, 1, HARD_MAX_DEPTH),
-    maxTurns: clamp(params?.maxTurns, DEFAULT_MAX_TURNS, 1, HARD_MAX_TURNS),
+    runId: runId(),
+    maxDepth: clamp(params?.maxDepth ?? params?.max_depth, DEFAULT_MAX_DEPTH, 1, HARD_MAX_DEPTH),
+    maxTurns: clamp(params?.maxTurns ?? params?.maxIterations ?? params?.max_iterations, DEFAULT_MAX_TURNS, 1, HARD_MAX_TURNS),
     budget: {
       calls: 0,
       maxCalls: clamp(params?.maxCalls, DEFAULT_MAX_CALLS, 1, HARD_MAX_CALLS),
       queries: 0,
       maxQueries: clamp(params?.maxQueries, DEFAULT_MAX_QUERIES, 1, HARD_MAX_QUERIES),
+      tokens: 0,
+      maxTokens: optionalCap(params?.maxTokens ?? params?.max_tokens, DEFAULT_MAX_TOKENS, HARD_MAX_TOKENS),
+      cost: 0,
+      maxBudget: optionalCap(params?.maxBudget ?? params?.max_budget, DEFAULT_MAX_BUDGET, HARD_MAX_BUDGET),
+      errors: 0,
+      maxErrors: optionalCap(params?.maxErrors ?? params?.max_errors, DEFAULT_MAX_ERRORS, HARD_MAX_ERRORS),
+      startTimeMs: Date.now(),
+      maxTimeoutMs: timeoutMsFromParams(params),
     },
     model,
+
   };
 }
 
 export function stateFor(params: any, inherited?: RunState, model?: any): RunState {
   return inherited ?? createRunState(params, model);
+}
+export function elapsedMs(state: RunState): number {
+  return Math.max(0, Date.now() - state.budget.startTimeMs);
+}
+
+export function remainingTimeoutMs(state: RunState): number | undefined {
+  if (!state.budget.maxTimeoutMs) return undefined;
+  return Math.max(0, state.budget.maxTimeoutMs - elapsedMs(state));
+}
+
+export function checkRunLimits(state: RunState): void {
+  const b = state.budget;
+  if (b.maxTimeoutMs && elapsedMs(state) > b.maxTimeoutMs) throw new Error(`RLM maxTimeoutMs exhausted (${b.maxTimeoutMs}ms).`);
+  if (b.maxTokens && b.tokens > b.maxTokens) throw new Error(`RLM maxTokens exhausted (${b.tokens}/${b.maxTokens}).`);
+  if (b.maxBudget && b.cost > b.maxBudget) throw new Error(`RLM maxBudget exhausted ($${b.cost.toFixed(6)}/$${b.maxBudget}).`);
+  if (b.maxErrors && b.errors >= b.maxErrors) throw new Error(`RLM maxErrors exhausted (${b.errors}/${b.maxErrors}).`);
+}
+
+export function recordError(state: RunState): void {
+  state.budget.errors++;
+  checkRunLimits(state);
+}
+
+export interface UsageSummary {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  totalTokens: number;
+  cost: number;
+}
+
+function n(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+export function usageSummary(usage: any): UsageSummary {
+  const input = n(usage?.input);
+  const output = n(usage?.output);
+  const cacheRead = n(usage?.cacheRead);
+  const cacheWrite = n(usage?.cacheWrite);
+  const totalTokens = n(usage?.totalTokens) || input + output + cacheRead + cacheWrite;
+  const cost = n(typeof usage?.cost === "number" ? usage.cost : usage?.cost?.total);
+  return { input, output, cacheRead, cacheWrite, totalTokens, cost };
+}
+
+export function addUsage(a: UsageSummary, b: UsageSummary): UsageSummary {
+  return {
+    input: a.input + b.input,
+    output: a.output + b.output,
+    cacheRead: a.cacheRead + b.cacheRead,
+    cacheWrite: a.cacheWrite + b.cacheWrite,
+    totalTokens: a.totalTokens + b.totalTokens,
+    cost: a.cost + b.cost,
+  };
+}
+
+export function recordUsage(state: RunState, usage: any): UsageSummary {
+  const summary = usageSummary(usage);
+  state.budget.tokens += summary.totalTokens;
+  state.budget.cost += summary.cost;
+  checkRunLimits(state);
+  return summary;
+}
+
+export function usageFromMessages(messages: any[]): UsageSummary {
+  return messages.reduce((acc, m) => {
+    if (m?.role !== "assistant" || !m.usage) return acc;
+    return addUsage(acc, usageSummary(m.usage));
+  }, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 });
+}
+
+export function budgetDetails(state: RunState) {
+  return {
+    tokensUsed: state.budget.tokens,
+    maxTokens: state.budget.maxTokens,
+    costUsed: state.budget.cost,
+    maxBudget: state.budget.maxBudget,
+    errorsUsed: state.budget.errors,
+    maxErrors: state.budget.maxErrors,
+    elapsedMs: elapsedMs(state),
+    maxTimeoutMs: state.budget.maxTimeoutMs,
+  };
+}
+
+export function withTimeoutSignal(signal: AbortSignal | undefined, state: RunState): { signal?: AbortSignal; dispose: () => void } {
+  checkRunLimits(state);
+  const remaining = remainingTimeoutMs(state);
+  if (remaining === undefined) return { signal, dispose: () => undefined };
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const abortFromParent = () => {
+    if (!controller.signal.aborted) controller.abort(signal?.reason ?? new Error("Aborted."));
+  };
+  if (signal?.aborted) abortFromParent();
+  else signal?.addEventListener("abort", abortFromParent, { once: true });
+  timer = setTimeout(() => {
+    if (!controller.signal.aborted) controller.abort(new Error(`RLM maxTimeoutMs exhausted (${state.budget.maxTimeoutMs}ms).`));
+  }, Math.max(1, remaining));
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", abortFromParent);
+    },
+  };
+}
+function safeLogFilePart(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "run";
+}
+
+export function configureRunLogging(cwd: string, params: any, state: RunState): void {
+  if (state.logPath) return;
+  const explicitPath = typeof params?.logPath === "string" && params.logPath.trim() ? params.logPath.trim() : process.env.PI_RLM_LOG_PATH?.trim();
+  if (explicitPath) {
+    state.logPath = path.isAbsolute(explicitPath) ? explicitPath : path.resolve(cwd, explicitPath);
+    return;
+  }
+
+  const rawDir = typeof params?.logDir === "string" && params.logDir.trim() ? params.logDir.trim() : process.env.PI_RLM_LOG_DIR?.trim();
+  if (!rawDir) return;
+  const dir = path.isAbsolute(rawDir) ? rawDir : path.resolve(cwd, rawDir);
+  state.logPath = path.join(dir, `${safeLogFilePart(state.runId)}.jsonl`);
+}
+
+export async function logEvent(state: RunState, type: string, payload: Record<string, unknown> = {}): Promise<void> {
+  if (!state.logPath) return;
+  const event = {
+    ts: new Date().toISOString(),
+    runId: state.runId,
+    type,
+    ...payload,
+  };
+  try {
+    await fs.mkdir(path.dirname(state.logPath), { recursive: true });
+    await fs.appendFile(state.logPath, `${JSON.stringify(event, (_key, value) => typeof value === "string" ? clip(value, 20_000) : value)}\n`, "utf8");
+  } catch (e) {
+    process.emitWarning?.(`pi-rlm logEvent failed: ${errorText(e)}`);
+  }
 }
 
 export function currentDepth(parentDepth?: number): number {
@@ -181,6 +401,12 @@ export function normalizeContextMode(raw: unknown): ContextMode {
   throw new Error(`Unknown contextMode: ${String(raw)}. Expected one of: ${CONTEXT_MODES.join(", ")}.`);
 }
 
+export function normalizeChildMode(raw: unknown): ChildMode {
+  if (raw === undefined || raw === null || raw === "") return DEFAULT_CHILD_MODE;
+  if (CHILD_MODES.includes(raw as ChildMode)) return raw as ChildMode;
+  throw new Error(`Unknown childMode: ${String(raw)}. Expected one of: ${CHILD_MODES.join(", ")}.`);
+}
+
 export function rejectPathsForLlm(call: RlmCall, paths: unknown, contextMode?: unknown, sources?: unknown): void {
   if (call !== "llm_query" && call !== "llm_query_batched") return;
   if (normPaths(paths).length > 0 || normSources(sources).length > 0) {
@@ -197,8 +423,11 @@ export function singleItemFromParams(params: any): BatchItem {
   rejectPathsForLlm(call, params?.paths, contextMode, params?.sources);
   return {
     prompt: requiredPrompt(params),
+    rootPrompt: typeof params?.rootPrompt === "string" ? params.rootPrompt : undefined,
+
     context: typeof params?.context === "string" ? params.context : undefined,
     contextMode,
+    childMode: normalizeChildMode(params?.childMode),
     paths: normPaths(params?.paths),
     sources: normSources(params?.sources),
     contextName: typeof params?.contextName === "string" ? params.contextName : undefined,
@@ -210,8 +439,11 @@ export function batchItemsFromParams(params: any, call: RlmCall): BatchItem[] {
   const sharedContextMode = normalizeContextMode(params?.contextMode);
   rejectPathsForLlm(call, params?.paths, sharedContextMode, params?.sources);
   const shared = {
+    rootPrompt: typeof params?.rootPrompt === "string" ? params.rootPrompt : undefined,
+
     context: typeof params?.context === "string" ? params.context : undefined,
     contextMode: sharedContextMode,
+    childMode: normalizeChildMode(params?.childMode),
     paths: normPaths(params?.paths),
     sources: normSources(params?.sources),
     contextName: typeof params?.contextName === "string" ? params.contextName : undefined,
@@ -230,8 +462,11 @@ export function batchItemsFromParams(params: any, call: RlmCall): BatchItem[] {
       const itemSources = normSources(item?.sources);
       return {
         prompt: item.prompt,
+        rootPrompt: typeof item?.rootPrompt === "string" ? item.rootPrompt : shared.rootPrompt,
+
         context: typeof item?.context === "string" ? item.context : shared.context,
         contextMode,
+        childMode: normalizeChildMode(item?.childMode ?? shared.childMode),
         paths: itemPaths.length ? itemPaths : shared.paths,
         sources: itemSources.length ? itemSources : shared.sources,
         contextName: typeof item?.contextName === "string" ? item.contextName : shared.contextName,

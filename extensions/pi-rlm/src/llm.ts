@@ -3,13 +3,13 @@ import { completeSimple } from "@mariozechner/pi-ai";
 
 import { MAX_QUERY_CONTEXT_CHARS } from "./constants.js";
 import type { Budget, ContextMode, Details, RlmCall, RunState } from "./constants.js";
-import { clip, normalizeContextMode, normPaths, normSources, rejectPathsForLlm, resolveModel } from "./utils.js";
+import { budgetDetails, checkRunLimits, clip, modelLabel, normalizeContextMode, normPaths, normSources, recordError, recordUsage, rejectPathsForLlm, resolveModel, withTimeoutSignal } from "./utils.js";
 
 // ── Plain LM call: llm_query ────────────────────────────────────────
 
 export async function runLlmQuery(
   ctx: ExtensionContext,
-  params: { prompt: string; context?: string; contextMode?: ContextMode; paths?: string[]; sources?: Array<{ name?: string; path: string }>; contextName?: string },
+  params: { prompt: string; rootPrompt?: string; context?: string; contextMode?: ContextMode; paths?: string[]; sources?: Array<{ name?: string; path: string }>; contextName?: string },
   budget: Budget,
   depth: number,
   state: RunState,
@@ -22,7 +22,8 @@ export async function runLlmQuery(
   budget.queries++;
   if (budget.queries > budget.maxQueries) throw new Error(`llm_query budget exhausted (${budget.maxQueries}).`);
 
-  const model = resolveModel(ctx, state);
+  checkRunLimits(state);
+  const model = resolveModel(ctx, state, "llm");
   if (!model) throw new Error("Cannot resolve current session model for RLM call.");
 
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
@@ -32,27 +33,47 @@ export async function runLlmQuery(
   if (params.context?.trim()) {
     prompt += `\n\nContext:\n${params.context}`;
   }
+  if (params.rootPrompt?.trim()) {
+    prompt += `\n\nRoot prompt / question:\n${params.rootPrompt}`;
+  }
   if (prompt.length > MAX_QUERY_CONTEXT_CHARS) {
     prompt = prompt.slice(0, MAX_QUERY_CONTEXT_CHARS) + `\n\n[truncated: ${prompt.length - MAX_QUERY_CONTEXT_CHARS} chars omitted]`;
   }
 
-  onUpdate?.({ content: [{ type: "text", text: `rlm(${call}): calling ${model.provider}/${model.id}...` }] });
+  onUpdate?.({ content: [{ type: "text", text: `rlm(${call}): calling ${modelLabel(model)}...` }] });
 
-  const result = await completeSimple(
-    model,
-    { messages: [{ role: "user", content: prompt, timestamp: Date.now() }] },
-    {
-      apiKey: auth.apiKey,
-      headers: auth.headers,
-      signal,
-      reasoning: model.reasoning ? "low" : undefined,
-    },
-  );
+  const timed = withTimeoutSignal(signal, state);
+  let result;
+  try {
+    result = await completeSimple(
+      model,
+      { messages: [{ role: "user", content: prompt, timestamp: Date.now() }] },
+      {
+        apiKey: auth.apiKey,
+        headers: auth.headers,
+        signal: timed.signal,
+        timeoutMs: state.budget.maxTimeoutMs ? Math.max(1, state.budget.maxTimeoutMs - (Date.now() - state.budget.startTimeMs)) : undefined,
+        reasoning: model.reasoning ? "low" : undefined,
+      },
+    );
+  } finally {
+    timed.dispose();
+  }
 
-  const text = result.content
+  const contentText = result.content
     .filter((b): b is { type: "text"; text: string } => b.type === "text")
     .map((b) => b.text)
     .join("\n");
+  const failed = result.stopReason === "error" || result.stopReason === "aborted";
+  const failureText = failed
+    ? `${result.stopReason === "aborted" ? "Aborted" : "Error"}: ${result.errorMessage || `Provider returned ${result.stopReason}.`}`
+    : "";
+  const text = failed
+    ? [contentText.trim(), failureText].filter(Boolean).join("\n")
+    : contentText;
+
+  const usage = recordUsage(state, result.usage);
+  if (failed) recordError(state);
 
   const details: Details = {
     call,
@@ -65,13 +86,22 @@ export async function runLlmQuery(
     maxQueries: budget.maxQueries,
     turns: 0,
     maxTurns: 0,
-    model: `${model.provider}/${model.id}`,
+    model: modelLabel(model),
+    status: failed ? (result.stopReason === "aborted" ? "aborted" : "error") : result.stopReason === "length" ? "partial" : "completed",
+    ...budgetDetails(state),
     prompt: params.prompt,
+    rootPrompt: params.rootPrompt,
+
     paths: call === "llm_query" || call === "llm_query_batched" ? [] : normPaths(params.paths),
     sources: call === "llm_query" || call === "llm_query_batched" ? [] : normSources(params.sources),
     contextMode: normalizeContextMode(params.contextMode),
+    usage,
     answer: clip(text),
   };
+  if (failed) {
+    details.error = result.errorMessage || `Provider returned ${result.stopReason}.`;
+    details.incomplete = true;
+  }
 
   return { content: [{ type: "text", text: clip(text) }], details };
 }

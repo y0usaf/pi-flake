@@ -1,0 +1,99 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { getAgentDir } from "@mariozechner/pi-coding-agent";
+
+export type RlmModelRole = "default" | "llm" | "rlm";
+
+export interface RlmSettings {
+  model?: string;
+  provider?: string;
+  modelId?: string;
+  models?: string[];
+  roleModels?: Partial<Record<RlmModelRole, string>>;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function nonEmptyString(v: unknown): string | undefined {
+  return typeof v === "string" && v.trim() ? v.trim() : undefined;
+}
+
+function providerModel(provider: unknown, model: unknown): string | undefined {
+  const p = nonEmptyString(provider);
+  const m = nonEmptyString(model);
+  return p && m ? `${p}/${m}` : undefined;
+}
+
+function parseModels(raw: unknown): { models?: string[]; roleModels?: Partial<Record<RlmModelRole, string>> } {
+  if (Array.isArray(raw)) {
+    const models = raw.map(nonEmptyString).filter((v): v is string => Boolean(v));
+    return models.length ? { models } : {};
+  }
+  if (!isRecord(raw)) return {};
+
+  const roleModels: Partial<Record<RlmModelRole, string>> = {};
+  const def = nonEmptyString(raw.default) ?? nonEmptyString(raw.model) ?? providerModel(raw.provider, raw.modelId ?? raw.model);
+  const llm = nonEmptyString(raw.llm) ?? nonEmptyString(raw.leaf) ?? nonEmptyString(raw.llmModel);
+  const rlm = nonEmptyString(raw.rlm) ?? nonEmptyString(raw.child) ?? nonEmptyString(raw.rlmModel) ?? nonEmptyString(raw.childModel);
+  if (def) roleModels.default = def;
+  if (llm) roleModels.llm = llm;
+  if (rlm) roleModels.rlm = rlm;
+  return Object.keys(roleModels).length ? { roleModels } : {};
+}
+
+export function parseRlmSettings(raw: unknown): RlmSettings {
+  if (typeof raw === "string" && raw.trim()) return { models: [raw.trim()] };
+  if (!isRecord(raw)) return {};
+
+  const model = nonEmptyString(raw.model) ?? providerModel(raw.provider, raw.modelId);
+  const parsedModels = parseModels(raw.models);
+  const roleModels: Partial<Record<RlmModelRole, string>> = { ...parsedModels.roleModels };
+
+  const llm = nonEmptyString(raw.llmModel) ?? nonEmptyString(raw.leafModel);
+  const rlm = nonEmptyString(raw.rlmModel) ?? nonEmptyString(raw.childModel);
+  if (llm) roleModels.llm = llm;
+  if (rlm) roleModels.rlm = rlm;
+
+  return {
+    model,
+    provider: nonEmptyString(raw.provider),
+    modelId: nonEmptyString(raw.modelId),
+    models: parsedModels.models,
+    roleModels: Object.keys(roleModels).length ? roleModels : undefined,
+  };
+}
+
+function pickSettings(parsed: Record<string, unknown>): unknown {
+  const extensionSettings = parsed.extensionSettings;
+  if (!isRecord(extensionSettings)) return undefined;
+  return extensionSettings["pi-rlm"] ?? extensionSettings.rlm;
+}
+
+function readSettingsFile(path: string): RlmSettings {
+  if (!existsSync(path)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown;
+    if (!isRecord(parsed)) return {};
+    return parseRlmSettings(pickSettings(parsed));
+  } catch {
+    return {};
+  }
+}
+
+export function loadRlmSettings(cwd: string): RlmSettings {
+  return {
+    ...readSettingsFile(join(getAgentDir(), "settings.json")),
+    ...readSettingsFile(join(cwd, ".pi", "settings.json")),
+  };
+}
+
+export function modelSelectorForRole(settings: RlmSettings, role: RlmModelRole = "default"): string | undefined {
+  return settings.roleModels?.[role]
+    ?? settings.roleModels?.default
+    ?? settings.model
+    ?? settings.models?.[0]
+    ?? providerModel(settings.provider, settings.modelId);
+}

@@ -6,12 +6,16 @@ import { runRlmQuery } from "./child-session.js";
 import { runLlmQuery } from "./llm.js";
 import {
   batchItemsFromParams,
+  budgetDetails,
+  checkRunLimits,
   clamp,
   clip,
   errorText,
+  modelLabel,
   modelNameFromDetails,
   normPaths,
   normSources,
+  recordError,
   resolveModel,
   runLimited,
   textOf,
@@ -34,7 +38,8 @@ export async function runBatch(
   const primitiveCall = call === "llm_query_batched" ? "llm_query" : "rlm_query";
   const kind: ExecutionKind = call === "llm_query_batched" ? "llm" : "rlm";
   const items = batchItemsFromParams(params, call);
-  const maxConcurrent = clamp(params?.maxConcurrent, DEFAULT_MAX_CONCURRENT, 1, HARD_MAX_CONCURRENT);
+  const maxConcurrent = clamp(params?.maxConcurrent ?? params?.max_concurrent_subcalls, DEFAULT_MAX_CONCURRENT, 1, HARD_MAX_CONCURRENT);
+  checkRunLimits(state);
 
   onUpdate?.({ content: [{ type: "text", text: `rlm(${call}): ${items.length} item(s), concurrency=${maxConcurrent}` }] });
 
@@ -47,6 +52,7 @@ export async function runBatch(
       }
       return await runRlmQuery(ctx, item, depth, state, signal, onUpdate);
     } catch (e) {
+      try { recordError(state); } catch { /* keep original error details */ }
       const model = resolveModel(ctx, state);
       const msg = `Error: ${errorText(e)}`;
       const details: Details = {
@@ -60,8 +66,12 @@ export async function runBatch(
         maxQueries: state.budget.maxQueries,
         turns: 0,
         maxTurns: kind === "rlm" ? state.maxTurns : 0,
-        model: model ? `${model.provider}/${model.id}` : "unknown",
+        model: modelLabel(model),
+        status: "error",
+        ...budgetDetails(state),
         prompt: item.prompt,
+        rootPrompt: item.rootPrompt,
+
         paths: normPaths(item.paths),
         sources: normSources(item.sources),
         answer: msg,
@@ -97,6 +107,8 @@ export async function runBatch(
     prompt: `rlm(${call}) (${items.length} item${items.length === 1 ? "" : "s"})`,
     paths: uniquePathsFromDetails(childDetails),
     sources: uniqueSourcesFromDetails(childDetails),
+    status: childDetails.some((d) => d.incomplete || d.status === "error" || d.status === "aborted" || d.status === "budget_exhausted") ? "partial" : "completed",
+    ...budgetDetails(state),
     answer,
     batch: true,
     batchSize: items.length,
