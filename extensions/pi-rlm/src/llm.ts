@@ -5,6 +5,21 @@ import { MAX_QUERY_CONTEXT_CHARS } from "./constants.js";
 import type { Budget, ContextMode, Details, RlmCall, RunState } from "./constants.js";
 import { budgetDetails, checkRunLimits, clip, modelLabel, normalizeContextMode, normPaths, normSources, recordError, recordUsage, rejectPathsForLlm, resolveModel, withTimeoutSignal } from "./utils.js";
 
+const LEAF_SYSTEM_PROMPT = `You are a precise one-shot leaf LLM call inside a Recursive Language Model (RLM) run.
+You do not have a REPL, filesystem, tools, or iteration in this call.
+Answer only the requested subproblem using the supplied prompt/context.
+If the evidence is insufficient, say so compactly instead of inventing details.`;
+
+function leafSystemPrompt(rootPrompt?: string): string {
+  const root = rootPrompt?.trim();
+  return root
+    ? `${LEAF_SYSTEM_PROMPT}
+
+Root instruction / question from the parent RLM:
+${root}`
+    : LEAF_SYSTEM_PROMPT;
+}
+
 // ── Plain LM call: llm_query ────────────────────────────────────────
 
 export async function runLlmQuery(
@@ -53,7 +68,7 @@ ${params.context}`;
   try {
     result = await completeSimple(
       model,
-      { messages: [{ role: "user", content: prompt, timestamp: Date.now() }] },
+      { systemPrompt: leafSystemPrompt(params.rootPrompt), messages: [{ role: "user", content: prompt, timestamp: Date.now() }] },
       {
         apiKey: auth.apiKey,
         headers: auth.headers,
@@ -71,12 +86,16 @@ ${params.context}`;
     .map((b) => b.text)
     .join("\n");
   const failed = result.stopReason === "error" || result.stopReason === "aborted";
+  const truncated = result.stopReason === "length";
   const failureText = failed
     ? `${result.stopReason === "aborted" ? "Aborted" : "Error"}: ${result.errorMessage || `Provider returned ${result.stopReason}.`}`
     : "";
+  const truncationText = truncated ? "[truncated: provider hit its output limit]" : "";
   const text = failed
     ? [contentText.trim(), failureText].filter(Boolean).join("\n")
-    : contentText;
+    : truncated
+      ? [truncationText, contentText.trim()].filter(Boolean).join("\n\n")
+      : contentText;
 
   const usage = recordUsage(state, result.usage);
   if (failed) recordError(state);
@@ -104,8 +123,10 @@ ${params.context}`;
     usage,
     answer: clip(text),
   };
-  if (failed) {
-    details.error = result.errorMessage || `Provider returned ${result.stopReason}.`;
+  if (failed || truncated) {
+    if (failed) {
+      details.error = result.errorMessage || `Provider returned ${result.stopReason}.`;
+    }
     details.incomplete = true;
   }
 

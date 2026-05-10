@@ -107,14 +107,14 @@ export async function runBatch(
     prompt: `${call} (${items.length} item${items.length === 1 ? "" : "s"})`,
     paths: uniquePathsFromDetails(childDetails),
     sources: uniqueSourcesFromDetails(childDetails),
-    status: childDetails.some((d) => d.incomplete || d.status === "error" || d.status === "aborted" || d.status === "budget_exhausted") ? "partial" : "completed",
+    status: childDetails.some((d) => d.incomplete || d.status === "partial" || d.status === "error" || d.status === "aborted" || d.status === "budget_exhausted") ? "partial" : "completed",
     ...budgetDetails(state),
     answer,
     batch: true,
     batchSize: items.length,
     maxConcurrent,
     results: childDetails,
-    incomplete: childDetails.some((d) => d.incomplete),
+    incomplete: childDetails.some((d) => d.incomplete || d.status === "partial"),
   };
 
   return { content: [{ type: "text", text: answer }], details };

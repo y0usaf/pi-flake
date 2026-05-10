@@ -85,11 +85,41 @@ function readSettingsFile(path: string): RlmSettings {
   }
 }
 
-export function loadRlmSettings(cwd: string): RlmSettings {
+function mergeRoleModels(
+  base?: Partial<Record<RlmModelRole, string>>,
+  override?: Partial<Record<RlmModelRole, string>>,
+): Partial<Record<RlmModelRole, string>> | undefined {
+  const merged: Partial<Record<RlmModelRole, string>> = { ...(base ?? {}) };
+  if (override) {
+    for (const [role, model] of Object.entries(override) as Array<[RlmModelRole, string | undefined]>) {
+      if (typeof model === "string" && model.trim()) {
+        merged[role] = model.trim();
+      }
+    }
+  }
+  return Object.keys(merged).length ? merged : undefined;
+}
+
+function mergeRlmSettings(base: RlmSettings, override: RlmSettings): RlmSettings {
+  const roleModels = mergeRoleModels(base.roleModels, override.roleModels);
+  if (roleModels && override.roleModels?.default === undefined && (override.model !== undefined || (override.models?.length ?? 0) > 0)) {
+    delete roleModels.default;
+  }
+
   return {
-    ...readSettingsFile(join(getAgentDir(), "settings.json")),
-    ...readSettingsFile(join(cwd, ".pi", "settings.json")),
+    model: override.model !== undefined ? override.model : (override.models?.length ? undefined : base.model),
+    provider: override.provider ?? base.provider,
+    modelId: override.modelId ?? base.modelId,
+    models: override.models?.length ? override.models : base.models,
+    roleModels: roleModels && Object.keys(roleModels).length ? roleModels : undefined,
   };
+}
+
+export function loadRlmSettings(cwd: string): RlmSettings {
+  return mergeRlmSettings(
+    readSettingsFile(join(getAgentDir(), "settings.json")),
+    readSettingsFile(join(cwd, ".pi", "settings.json")),
+  );
 }
 
 export function modelSelectorForRole(settings: RlmSettings, role: RlmModelRole = "default"): string | undefined {
