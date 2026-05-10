@@ -214,6 +214,10 @@ export type BoxWithVerticalPadding = Record<string, unknown> & {
 export type ToolExecutionWithShells = {
   contentBox?: unknown;
   contentText?: unknown;
+  /**
+   * Older Pi builds exposed expansion as a public field. Current Pi stores it
+   * in a private #expanded slot, so pi-compact must not rely on this existing.
+   */
   expanded?: boolean;
   setExpanded?: (expanded: boolean) => void;
   isPartial?: boolean;
@@ -221,6 +225,18 @@ export type ToolExecutionWithShells = {
   [TOOL_SPINNER_INTERVAL_KEY]?: ReturnType<typeof setInterval>;
   [TOOL_SPINNER_FRAME_KEY]?: number;
 };
+
+const toolExpandedState = new WeakMap<object, boolean>();
+
+export function getToolExpanded(component: ToolExecutionWithShells): boolean {
+  const tracked = toolExpandedState.get(component);
+  if (tracked !== undefined) return tracked;
+  return component.expanded === true;
+}
+
+export function setToolExpandedState(component: ToolExecutionWithShells, expanded: boolean): void {
+  toolExpandedState.set(component, expanded);
+}
 
 export function requestToolRender(component: ToolExecutionWithShells): void {
   const requestRender = component.ui?.requestRender;
@@ -253,7 +269,7 @@ export function stopToolSpinner(component: ToolExecutionWithShells): void {
 }
 
 export function shouldRenderCompactToolLine(component: ToolExecutionWithShells): boolean {
-  return state.toolRendering.mode === "compact" && !component.expanded;
+  return state.toolRendering.mode === "compact" && !getToolExpanded(component);
 }
 
 export function syncToolSpinner(component: ToolExecutionWithShells, _compactLine: boolean): void {
@@ -343,6 +359,12 @@ export function patchToolExecutionComponent(): boolean {
     };
 
     proto.setExpanded = function piCompactToolSetExpanded(this: ToolExecutionWithShells, expanded: boolean) {
+      // Ctrl+O should still use Pi's native expansion implementation. We only
+      // mirror the requested state because modern ToolExecutionComponent keeps
+      // its actual expansion flag in a private #expanded field that patches
+      // cannot read. Without this mirror, compact rendering always thinks the
+      // tool is collapsed and fights the native expanded display.
+      setToolExpandedState(this, expanded);
       const result = originalSetExpanded.call(this, expanded);
       syncToolSpinnerForCurrentExpansion(this);
       return result;
