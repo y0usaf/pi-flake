@@ -21,8 +21,8 @@ interface ToolRecord {
 const SETTINGS_VERSION = 1;
 const SETTINGS_PATH = join(getAgentDir(), "tool-settings.json");
 const ALLOWED = "allowed";
-const BLOCKED_BY_THIS_EXTENSION = "blocked by this extension";
-const ALLOWED_BUT_INACTIVE = "allowed here (blocked by another extension)";
+const BLOCKED = "blocked";
+const BLOCKED_EXTERNALLY = "blocked (external)";
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -150,15 +150,15 @@ function sortTools(tools: ToolRecord[]): ToolRecord[] {
 }
 
 function getToolValue(name: string, activeTools: Set<string>): string {
-	if (disabledTools.has(name)) return BLOCKED_BY_THIS_EXTENSION;
-	if (!activeTools.has(name)) return ALLOWED_BUT_INACTIVE;
+	if (disabledTools.has(name)) return BLOCKED;
+	if (!activeTools.has(name)) return BLOCKED_EXTERNALLY;
 	return ALLOWED;
 }
 
 function getToolValues(currentValue: string): string[] {
-	if (currentValue === BLOCKED_BY_THIS_EXTENSION) return [BLOCKED_BY_THIS_EXTENSION, ALLOWED];
-	if (currentValue === ALLOWED_BUT_INACTIVE) return [ALLOWED_BUT_INACTIVE, BLOCKED_BY_THIS_EXTENSION];
-	return [ALLOWED, BLOCKED_BY_THIS_EXTENSION];
+	if (currentValue === BLOCKED) return [BLOCKED, ALLOWED];
+	if (currentValue === BLOCKED_EXTERNALLY) return [BLOCKED_EXTERNALLY, BLOCKED];
+	return [ALLOWED, BLOCKED];
 }
 
 async function enforceDisabledTools(pi: ExtensionAPI): Promise<void> {
@@ -194,17 +194,17 @@ export default function toolManagementExtension(pi: ExtensionAPI) {
 
 			await ctx.ui.custom((tui, theme, _kb, done) => {
 				const activeTools = new Set(pi.getActiveTools());
-				const externallyBlocked = allTools
+				const blockedExternallyNames = allTools
 					.map((tool) => tool.name)
 					.filter((name) => !disabledTools.has(name) && !activeTools.has(name));
 				const items: SettingItem[] = allTools.map((tool) => {
 					const currentValue = getToolValue(tool.name, activeTools);
-					const blockedElsewhere = currentValue === ALLOWED_BUT_INACTIVE;
+					const isBlockedExternally = currentValue === BLOCKED_EXTERNALLY;
 					return {
 						id: tool.name,
 						label: `${tool.name} · ${getToolCategory(tool)}`,
-						description: blockedElsewhere
-							? "This extension allows this tool, but it is missing from Pi's active tool set. Another extension or runtime mode is currently hiding it."
+						description: isBlockedExternally
+							? "Blocked (external)."
 							: undefined,
 						currentValue,
 						values: getToolValues(currentValue),
@@ -215,9 +215,9 @@ export default function toolManagementExtension(pi: ExtensionAPI) {
 				container.addChild(new Text(theme.fg("accent", theme.bold("Tool Management"))));
 				container.addChild(new Text(theme.fg("dim", SETTINGS_PATH)));
 				container.addChild(new Text(theme.fg("muted", "This menu edits this extension's global disabled-tools list.")));
-				container.addChild(new Text(theme.fg("muted", "Allowed here = not blocked by this extension; another extension may still hide or re-add a tool later.")));
-				if (externallyBlocked.length > 0) {
-					container.addChild(new Text(theme.fg("warning", `Blocked elsewhere now: ${externallyBlocked.join(", ")}`)));
+				container.addChild(new Text(theme.fg("muted", "Blocked = disabled by this extension. Blocked (external) = hidden by another extension or runtime mode.")));
+				if (blockedExternallyNames.length > 0) {
+					container.addChild(new Text(theme.fg("warning", `Blocked (external) now: ${blockedExternallyNames.join(", ")}`)));
 				}
 				container.addChild(new Text(theme.fg("muted", "Scans built-in + extension tools each time this menu opens.")));
 				container.addChild(new Text(theme.fg("muted", "Close + reopen to refresh tools added while this menu is open.")));
@@ -227,7 +227,7 @@ export default function toolManagementExtension(pi: ExtensionAPI) {
 					Math.min(items.length + 2, 15),
 					getSettingsListTheme(),
 					(id, newValue) => {
-						if (newValue === BLOCKED_BY_THIS_EXTENSION) {
+						if (newValue === BLOCKED) {
 							disabledTools.add(id);
 						} else {
 							disabledTools.delete(id);
@@ -272,7 +272,7 @@ export default function toolManagementExtension(pi: ExtensionAPI) {
 			const activeKnown = [...activeTools].filter((n) => knownNames.has(n));
 			const disabled = uniqueSorted([...disabledTools]);
 			const unresolved = disabled.filter((n) => !knownNames.has(n));
-			const blockedElsewhere = allTools
+			const blockedExternallyNames = allTools
 				.map((tool) => tool.name)
 				.filter((name) => !disabledTools.has(name) && !activeTools.has(name));
 
@@ -280,8 +280,8 @@ export default function toolManagementExtension(pi: ExtensionAPI) {
 				`settings: ${SETTINGS_PATH}`,
 				`currentlyActiveAfterAllFilters: ${activeKnown.length}/${allTools.length}`,
 				`disabledTools: ${disabled.join(", ") || "(none)"}`,
-				`blockedByOtherExtensions: ${blockedElsewhere.join(", ") || "(none)"}`,
-				"note: blockedByOtherExtensions means a known tool is allowed here but absent from the current runtime active-tool set",
+				`blockedExternally: ${blockedExternallyNames.join(", ") || "(none)"}`,
+				"note: blockedExternally means a known tool this extension allows is shown as blocked (external) when it is absent from the current runtime active-tool set (another extension or runtime mode may be hiding it)",
 			];
 			if (unresolved.length > 0) lines.push(`unresolvedDisabledTools: ${unresolved.join(", ")}`);
 			if (lastWarning) lines.push(`loadWarning: ${lastWarning}`);
