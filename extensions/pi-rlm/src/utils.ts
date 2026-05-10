@@ -108,11 +108,8 @@ export function errorText(e: unknown): string {
 }
 
 function isReplFinalResult(m: any): boolean {
-  if (m?.role !== "toolResult" || m.toolName !== REPL_TOOL_NAME) return false;
-  if (m.details?.final === true) return true;
-  return /^FINAL:\s*/m.test(textOf(m.content).trim());
+  return m?.role === "toolResult" && m.toolName === REPL_TOOL_NAME && m.details?.final === true;
 }
-
 function replFinalText(m: any): string {
   const t = textOf(m?.content).trim();
   const match = t.match(/(?:^|\n)FINAL:\s*\n?([\s\S]*)$/);

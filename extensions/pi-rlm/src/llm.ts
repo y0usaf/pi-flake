@@ -30,11 +30,17 @@ export async function runLlmQuery(
   if (!auth.ok) throw new Error(`Auth failed: ${auth.error}`);
 
   let prompt = params.prompt;
-  if (params.context?.trim()) {
-    prompt += `\n\nContext:\n${params.context}`;
-  }
   if (params.rootPrompt?.trim()) {
-    prompt += `\n\nRoot prompt / question:\n${params.rootPrompt}`;
+    prompt += `
+
+Root prompt / question:
+${params.rootPrompt}`;
+  }
+  if (params.context?.trim()) {
+    prompt += `
+
+Context:
+${params.context}`;
   }
   if (prompt.length > MAX_QUERY_CONTEXT_CHARS) {
     prompt = prompt.slice(0, MAX_QUERY_CONTEXT_CHARS) + `\n\n[truncated: ${prompt.length - MAX_QUERY_CONTEXT_CHARS} chars omitted]`;
