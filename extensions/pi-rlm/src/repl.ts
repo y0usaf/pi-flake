@@ -1,58 +1,42 @@
-import { execFile, spawn } from "node:child_process";
-import { readdir, stat } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
-import * as path from "node:path";
 
 import { defineTool } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 
-import { ctxExtract, ctxGrep, ctxManifest, ctxPeek, ctxWriteText, contextSourceSummary, readFileSlice } from "./context-store.js";
+import { contextSourceSummary } from "./context-store.js";
 import { dispatchRlmCall } from "./dispatcher.js";
 import { inheritSessionContextParams } from "./session-context.js";
-import { CTX_TOOL_NAME, MAX_RESULT_CHARS, REPL_TOOL_NAME, RLM_TOOL_NAME } from "./constants.js";
+import { MAX_RESULT_CHARS, REPL_TOOL_NAME, RLM_CALLS } from "./constants.js";
 import type { ContextStore, RunState } from "./constants.js";
 import { ReplParams, REPL_PARAM_KEYS } from "./params.js";
 import { clamp, clip, errorText, isRecord, rejectUnknownKeys, textOf } from "./utils.js";
 
 const DEFAULT_REPL_TIMEOUT_MS = 30_000;
 const HARD_REPL_TIMEOUT_MS = 120_000;
-const DEFAULT_BASH_TIMEOUT_MS = 30_000;
-const HARD_BASH_TIMEOUT_MS = 120_000;
-const DEFAULT_BASH_MAX_BUFFER = 5_000_000;
-const HARD_BASH_MAX_BUFFER = 20_000_000;
-
 const PYTHON_WORKER = String.raw`
-import ast
-import builtins
-import json
-import os
-import sys
-import traceback
+import ast as _ast
+import json as _json
+import sys as _sys
+import traceback as _traceback
 
-_ORIG_STDIN = sys.stdin
-_ORIG_STDOUT = sys.stdout
+_ORIG_STDIN = _sys.stdin
+_ORIG_STDOUT = _sys.stdout
 _logs = []
 _call_seq = 0
 _final_called = False
 _final_value = None
 _last = None
-last = None
 state = {}
 history = []
 context = None
 context_0 = None
-latest_input = None
-latest_input_text = None
-inline_inputs = []
 _context_count = 0
-_context_key = None
-cwd = os.getcwd()
-_repl_role = "root"
-_allow_direct_llm = False
+_context_keys = set()
+_RESERVED_VALUES = {}
 
 class _Capture:
-    def __init__(self, name):
-        self.name = name
     def write(self, text):
         if text:
             _logs.append(str(text))
@@ -60,11 +44,11 @@ class _Capture:
     def flush(self):
         pass
 
-sys.stdout = _Capture("stdout")
-sys.stderr = _Capture("stderr")
+_sys.stdout = _Capture()
+_sys.stderr = _Capture()
 
 def _send(obj):
-    _ORIG_STDOUT.write(json.dumps(obj, ensure_ascii=False, default=str) + "\n")
+    _ORIG_STDOUT.write(_json.dumps(obj, ensure_ascii=False, default=str) + "\n")
     _ORIG_STDOUT.flush()
 
 def _call(method, params=None):
@@ -76,175 +60,109 @@ def _call(method, params=None):
         line = _ORIG_STDIN.readline()
         if not line:
             raise RuntimeError("RLM REPL bridge closed")
-        msg = json.loads(line)
+        msg = _json.loads(line)
         if msg.get("type") != "call_result" or msg.get("id") != call_id:
             raise RuntimeError("Unexpected bridge response: " + repr(msg))
         if msg.get("ok"):
             return msg.get("result")
         raise RuntimeError(msg.get("error") or "RLM REPL bridge call failed")
 
-def _single_params(call, prompt_or_params=None, **kwargs):
-    if isinstance(prompt_or_params, dict):
-        params = dict(prompt_or_params)
-        params["call"] = call
-    elif isinstance(prompt_or_params, str):
-        params = {"call": call, "prompt": prompt_or_params}
-    else:
-        raise TypeError(call + " expects a prompt string or params dict")
-    params.update(kwargs)
+def _require_prompt(prompt, name):
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise TypeError(name + " expects a non-empty prompt string")
+    return prompt
+
+def _require_prompts(prompts, name):
+    if not isinstance(prompts, list) or not all(isinstance(p, str) and p.strip() for p in prompts):
+        raise TypeError(name + " expects a list of non-empty prompt strings")
+    return prompts
+
+def _single_params(prompt, model=None):
+    params = {"prompt": prompt}
+    if model is not None:
+        params["model"] = model
     return params
 
-def _batch_params(call, prompts_or_params=None, **kwargs):
-    if isinstance(prompts_or_params, dict):
-        params = dict(prompts_or_params)
-        params["call"] = call
-    elif isinstance(prompts_or_params, list):
-        key = "prompts" if all(isinstance(x, str) for x in prompts_or_params) else "items"
-        params = {"call": call, key: prompts_or_params}
-    else:
-        raise TypeError(call + " expects a list or params dict")
-    params.update(kwargs)
+def _batch_params(prompts, model=None):
+    params = {"prompts": prompts}
+    if model is not None:
+        params["model"] = model
     return params
+
+def _text(result):
+    if isinstance(result, dict):
+        return result.get("text", "")
+    return str(result)
 
 def _batch_answers(result):
     details = result.get("details") if isinstance(result, dict) else None
     child_results = details.get("results") if isinstance(details, dict) else None
     if isinstance(child_results, list):
         return [d.get("answer", "") if isinstance(d, dict) else "" for d in child_results]
-    return [result.get("text", "") if isinstance(result, dict) else str(result)]
+    if isinstance(result, list):
+        return [str(x) for x in result]
+    return [_text(result)]
 
-def _guard_direct_llm(name):
-    if _repl_role == "root" and not _allow_direct_llm:
-        raise RuntimeError(name + " is disabled in the root RLM REPL; use rlm({'call':'llm_query', ...}) for an explicit leaf call or recurse with rlm_query/rlm_query_batched.")
+def llm_query(prompt, model=None):
+    return _text(_call("llm_query", _single_params(_require_prompt(prompt, "llm_query"), model)))
 
-def rlm(params):
-    if not isinstance(params, dict):
-        raise TypeError("rlm(params) expects a dict")
-    return _call("rlm", params)
+def llm_query_batched(prompts, model=None):
+    return _batch_answers(_call("llm_query_batched", _batch_params(_require_prompts(prompts, "llm_query_batched"), model)))
 
-def llm_query(prompt_or_params, **kwargs):
-    _guard_direct_llm("llm_query")
-    return rlm(_single_params("llm_query", prompt_or_params, **kwargs)).get("text", "")
+def rlm_query(prompt, model=None):
+    return _text(_call("rlm_query", _single_params(_require_prompt(prompt, "rlm_query"), model)))
 
-def llm_query_batched(prompts_or_params, **kwargs):
-    _guard_direct_llm("llm_query_batched")
-    return _batch_answers(rlm(_batch_params("llm_query_batched", prompts_or_params, **kwargs)))
+def rlm_query_batched(prompts, model=None):
+    return _batch_answers(_call("rlm_query_batched", _batch_params(_require_prompts(prompts, "rlm_query_batched"), model)))
 
-def rlm_query(prompt_or_params, **kwargs):
-    return rlm(_single_params("rlm_query", prompt_or_params, **kwargs)).get("text", "")
-
-def rlm_query_batched(prompts_or_params, **kwargs):
-    return _batch_answers(rlm(_batch_params("rlm_query_batched", prompts_or_params, **kwargs)))
-def rlm_details(params):
-    return rlm(params)
-
-def llm_query_details(prompt_or_params, **kwargs):
-    _guard_direct_llm("llm_query_details")
-    return rlm(_single_params("llm_query", prompt_or_params, **kwargs))
-
-def llm_query_batched_details(prompts_or_params, **kwargs):
-    _guard_direct_llm("llm_query_batched_details")
-    return rlm(_batch_params("llm_query_batched", prompts_or_params, **kwargs))
-
-def rlm_query_details(prompt_or_params, **kwargs):
-    return rlm(_single_params("rlm_query", prompt_or_params, **kwargs))
-
-def rlm_query_batched_details(prompts_or_params, **kwargs):
-    return rlm(_batch_params("rlm_query_batched", prompts_or_params, **kwargs))
-def bash(command, **kwargs):
-    if not isinstance(command, str) or not command.strip():
-        raise TypeError("bash(command) requires a non-empty string")
-    params = dict(kwargs)
-    params["command"] = command
-    return _call("bash", params)
-
-def read_file(file, **kwargs):
-    params = dict(kwargs)
-    params["path"] = file
-    return _call("read_file", params)
-
-def list_dir(directory="."):
-    return _call("list_dir", {"path": directory})
-
-def stat_file(file):
-    return _call("stat_file", {"path": file})
-
-class _Ctx:
-    scratchDir = None
-    notesDir = None
-    artifactsDir = None
-    sources = []
-    sourceObjects = []
-    inlineInputs = []
-    latestInput = None
-    latestInputText = None
-
-    def _update(self, info):
-        info = info or {}
-        self.scratchDir = info.get("scratchDir")
-        self.notesDir = info.get("notesDir")
-        self.artifactsDir = info.get("artifactsDir")
-        self.sources = info.get("sources") or []
-        self.sourceObjects = info.get("sourceObjects") or []
-        self.inlineInputs = info.get("inlineInputs") or []
-        self.latestInput = info.get("latestInput")
-        self.latestInputText = self.latestInput.get("text") if isinstance(self.latestInput, dict) else None
-
-    def manifest(self, **kwargs):
-        return _call("ctx_manifest", dict(kwargs))
-
-    def grep(self, query=None, **kwargs):
-        if isinstance(query, dict):
-            params = dict(query)
-        else:
-            params = dict(kwargs)
-            if query is not None:
-                params["query"] = query
-        return _call("ctx_grep", params)
-
-    def peek(self, source=None, **kwargs):
-        if isinstance(source, dict):
-            params = dict(source)
-        else:
-            params = dict(kwargs)
-            if source is not None:
-                params["source"] = source
-        return _call("ctx_peek", params)
-
-    def extract(self, **kwargs):
-        return _call("ctx_extract", dict(kwargs))
-
-    def note(self, text, name=None):
-        params = {"text": text}
-        if name is not None:
-            params["name"] = name
-        return _call("ctx_note", params)
-
-    def artifact(self, text, name=None):
-        params = {"text": text}
-        if name is not None:
-            params["name"] = name
-        return _call("ctx_artifact", params)
-
-ctx = _Ctx()
-
-def FINAL(value):
-    global _final_called, _final_value, _last, last
+def _set_final(value):
+    global _final_called, _final_value, _last
     _final_called = True
     _final_value = value
     _last = value
-    last = value
-    raise _FinalSignal()
+    return value
 
-def FINAL_VAR(name):
-    if not isinstance(name, str) or not name.strip():
+def FINAL_VAR(variable_name):
+    if not isinstance(variable_name, str) or not variable_name.strip():
         raise TypeError("FINAL_VAR(name) requires a variable/state key string")
+    name = variable_name.strip().strip("\"'")
     g = globals()
-    if name in g and not _is_reserved_name(name):
-        return FINAL(g[name])
+    if name in g and not _is_protected_name(name):
+        return _set_final(g[name])
     if name in state:
-        return FINAL(state[name])
-    raise KeyError(name + " is not defined")
+        return _set_final(state[name])
+    available = _visible_var_keys()
+    raise KeyError(name + " is not defined. Available variables: " + repr(available))
+
+def SHOW_VARS():
+    available = {k: type(globals()[k]).__name__ for k in _visible_var_keys()}
+    if not available:
+        return "No variables created yet. Use REPL code to create variables."
+    return "Available variables: " + repr(available)
+
+_HELPER_NAMES = {
+    "llm_query",
+    "llm_query_batched",
+    "rlm_query",
+    "rlm_query_batched",
+    "FINAL_VAR",
+    "SHOW_VARS",
+}
+_PROTECTED_DATA_NAMES = {"state", "history", "context"}
+
+def _is_context_name(name):
+    return name.startswith("context_") or name.startswith("history_")
+
+def _is_protected_name(name):
+    return name in _HELPER_NAMES or name in _PROTECTED_DATA_NAMES or _is_context_name(name)
+
+def _visible_var_keys():
+    keys = []
+    for key in globals().keys():
+        if key.startswith("_") or key in _HELPER_NAMES:
+            continue
+        keys.append(key)
+    return sorted(keys)
 
 def _safe_repr(value, limit=1000):
     try:
@@ -253,98 +171,76 @@ def _safe_repr(value, limit=1000):
         text = "<repr failed: " + str(exc) + ">"
     return text if len(text) <= limit else text[:limit] + "..."
 
-def SHOW_VARS():
-    keys = _user_var_keys()
-    values = {key: _safe_repr(globals()[key]) for key in keys}
-    values["state"] = {str(k): _safe_repr(v) for k, v in state.items()}
-    print(json.dumps(values, indent=2, ensure_ascii=False, default=str))
-    return values
-
-class _FinalSignal(Exception):
-    pass
-
-def _is_reserved_name(name):
-    return name in _RESERVED or name.startswith("context_") or name.startswith("history_")
-
-def _user_var_keys():
-    return sorted(k for k in globals().keys() if not _is_reserved_name(k) and not k.startswith("_"))
-
 def _compile_user(code):
-    tree = ast.parse(code, filename="<pi-rlm-repl>", mode="exec")
-    captures_expr = bool(tree.body and isinstance(tree.body[-1], ast.Expr))
+    tree = _ast.parse(code, filename="<pi-rlm-repl>", mode="exec")
+    captures_expr = bool(tree.body and isinstance(tree.body[-1], _ast.Expr))
     if captures_expr:
         expr = tree.body[-1]
-        tree.body[-1] = ast.Assign(targets=[ast.Name(id="_last", ctx=ast.Store())], value=expr.value)
-        ast.fix_missing_locations(tree)
+        tree.body[-1] = _ast.Assign(targets=[_ast.Name(id="_last", ctx=_ast.Store())], value=expr.value)
+        _ast.fix_missing_locations(tree)
     return compile(tree, "<pi-rlm-repl>", "exec"), captures_expr
 
 def _refresh_reserved_values():
     global _RESERVED_VALUES
-    _RESERVED_VALUES = {k: globals().get(k) for k in _RESERVED if k in globals()}
+    names = set(_HELPER_NAMES) | _PROTECTED_DATA_NAMES | {k for k in globals().keys() if _is_context_name(k)}
+    _RESERVED_VALUES = {k: globals().get(k) for k in names if k in globals()}
 
 def _restore_reserved_values():
     for k, v in _RESERVED_VALUES.items():
         globals()[k] = v
 
-def _update_context_vars(info):
-    global context, context_0, latest_input, latest_input_text, inline_inputs, _context_count, _context_key
-    if info is None:
-        return
-    latest_input = info.get("latestInput") if isinstance(info, dict) else None
-    latest_input_text = latest_input.get("text") if isinstance(latest_input, dict) else None
-    inline_inputs = info.get("inlineInputs") if isinstance(info, dict) and isinstance(info.get("inlineInputs"), list) else []
-    globals()["latest_input"] = latest_input
-    globals()["latest_input_text"] = latest_input_text
-    globals()["inline_inputs"] = inline_inputs
-    key = json.dumps(info, sort_keys=True, default=str)
-    if key == _context_key:
-        context = info
-        globals()["context"] = info
-        return
-    name = "context_" + str(_context_count)
-    globals()[name] = info
-    context = info
-    globals()["context"] = info
-    if _context_count == 0:
-        context_0 = info
-        globals()["context_0"] = info
-    _context_count += 1
-    _context_key = key
+def _context_key(entry, index):
+    if isinstance(entry, dict):
+        key = entry.get("key")
+        if isinstance(key, str) and key:
+            return key
+    return "context:" + str(index) + ":" + _safe_repr(entry, 200)
 
+def _context_value(entry):
+    if isinstance(entry, dict) and "value" in entry:
+        return entry.get("value")
+    return entry
 
-def _update_policy(info):
-    global _repl_role, _allow_direct_llm
-    if not isinstance(info, dict):
+def _load_contexts(entries):
+    global context, context_0, _context_count
+    if entries is None:
         return
-    role = info.get("replRole")
-    if isinstance(role, str) and role:
-        _repl_role = role
-    if "allowDirectLlm" in info:
-        _allow_direct_llm = bool(info.get("allowDirectLlm"))
-
+    if not isinstance(entries, list):
+        entries = [{"key": "context", "value": entries}]
+    for index, entry in enumerate(entries):
+        key = _context_key(entry, index)
+        if key in _context_keys:
+            continue
+        value = _context_value(entry)
+        name = "context_" + str(_context_count)
+        globals()[name] = value
+        if _context_count == 0:
+            context_0 = value
+            context = value
+            globals()["context_0"] = value
+            globals()["context"] = value
+        _context_count += 1
+        _context_keys.add(key)
+    _refresh_reserved_values()
 
 def _inject_data(data):
     if not isinstance(data, dict):
         return
     for key, value in data.items():
-        if not isinstance(key, str) or not key.isidentifier() or _is_reserved_name(key) or key.startswith("_"):
+        if not isinstance(key, str) or not key.isidentifier() or key.startswith("_") or _is_protected_name(key):
             raise ValueError("Invalid or reserved injected variable name: " + repr(key))
         globals()[key] = value
 
-_RESERVED = set(globals().keys()) | {"_RESERVED", "line", "msg"}
 _refresh_reserved_values()
 
 def _run_eval(msg):
-    global _final_called, _final_value, _last, last, cwd, history
+    global _final_called, _final_value, _last, history
     eval_id = msg.get("id")
     code = msg.get("code") or ""
     setup = msg.get("setup") or ""
-    cwd = msg.get("cwd") or cwd
-    _update_policy(msg.get("policy"))
     if msg.get("resetHistory"):
         history.clear()
-    ctx._update(msg.get("context"))
-    _update_context_vars(msg.get("context"))
+    _load_contexts(msg.get("contexts"))
     _inject_data(msg.get("data"))
     _refresh_reserved_values()
     _logs.clear()
@@ -355,13 +251,8 @@ def _run_eval(msg):
             exec(compile(setup, "<pi-rlm-repl-setup>", "exec"), globals(), globals())
             _restore_reserved_values()
         compiled, captures_expr = _compile_user(code)
-        try:
-            exec(compiled, globals(), globals())
-        except _FinalSignal:
-            pass
+        exec(compiled, globals(), globals())
         value = _final_value if _final_called else (_last if captures_expr else None)
-        last = value
-        history.append({"code": code, "final": _final_called, "value": value, "logs": "".join(_logs)})
         _send({
             "type": "result",
             "id": eval_id,
@@ -370,7 +261,7 @@ def _run_eval(msg):
             "value": value,
             "logs": "".join(_logs),
             "stateKeys": sorted(str(k) for k in state.keys()),
-            "varKeys": _user_var_keys(),
+            "varKeys": _visible_var_keys(),
             "historyLength": len(history),
             "contextKeys": sorted(k for k in globals().keys() if k == "context" or k.startswith("context_")),
         })
@@ -382,10 +273,10 @@ def _run_eval(msg):
             "id": eval_id,
             "ok": False,
             "error": str(exc),
-            "traceback": traceback.format_exc(),
+            "traceback": _traceback.format_exc(),
             "logs": "".join(_logs),
             "stateKeys": sorted(str(k) for k in state.keys()),
-            "varKeys": _user_var_keys(),
+            "varKeys": _visible_var_keys(),
             "historyLength": len(history),
             "contextKeys": sorted(k for k in globals().keys() if k == "context" or k.startswith("context_")),
         })
@@ -395,17 +286,17 @@ def _run_eval(msg):
 _send({"type": "ready"})
 
 while True:
-    line = _ORIG_STDIN.readline()
-    if not line:
+    _line = _ORIG_STDIN.readline()
+    if not _line:
         break
     try:
-        msg = json.loads(line)
-        if msg.get("type") == "eval":
-            _run_eval(msg)
-        elif msg.get("type") == "shutdown":
+        _msg = _json.loads(_line)
+        if _msg.get("type") == "eval":
+            _run_eval(_msg)
+        elif _msg.get("type") == "shutdown":
             break
     except Exception:
-        _send({"type": "worker_error", "error": traceback.format_exc()})
+        _send({"type": "worker_error", "error": _traceback.format_exc()})
 `;
 
 interface PythonEvalResult {
@@ -428,7 +319,6 @@ interface BridgeContext {
   inherited?: RunState;
   parentDepth?: number;
   store?: ContextStore;
-  policy?: { replRole: "root" | "child"; allowDirectLlm: boolean };
 }
 
 type ReplStoreProvider = ContextStore | ((ctx: any) => ContextStore | undefined | Promise<ContextStore | undefined>);
@@ -437,6 +327,34 @@ async function resolveReplStore(provider: ReplStoreProvider | undefined, ctx: an
   if (!provider) return undefined;
   if (typeof provider === "function") return await provider(ctx);
   return provider;
+}
+
+async function contextEntriesFromStore(store?: ContextStore): Promise<Array<{ key: string; value: unknown }> | undefined> {
+  if (!store?.sources.length) return undefined;
+  const entries: Array<{ key: string; value: unknown }> = [];
+  for (const source of store.sources) {
+    const key = `${source.id}:${source.path}:${source.sizeBytes ?? ""}:${source.entries ?? ""}`;
+    if (source.kind === "inline" || source.kind === "file") {
+      try {
+        entries.push({ key, value: await readFile(source.path, "utf8") });
+      } catch (e) {
+        entries.push({ key, value: { path: source.path, relPath: source.relPath, kind: source.kind, error: errorText(e) } });
+      }
+      continue;
+    }
+    entries.push({
+      key,
+      value: {
+        path: source.path,
+        relPath: source.relPath,
+        kind: source.kind,
+        label: source.label,
+        name: source.name,
+        error: source.error,
+      },
+    });
+  }
+  return entries;
 }
 
 interface PendingEval {
@@ -479,9 +397,6 @@ function pythonCommand(): string {
   return process.env.PI_RLM_PYTHON?.trim() || "python3";
 }
 
-function absPath(cwd: string, input: string): string {
-  return path.isAbsolute(input) ? input : path.join(cwd, input);
-}
 
 function objectExtra(extra: unknown): Record<string, unknown> {
   return isRecord(extra) ? extra : {};
@@ -554,20 +469,7 @@ class PythonReplWorker {
     this.current = evalBridge;
     this.currentEvalId = id;
 
-    const context = bridge.store
-      ? {
-          scratchDir: bridge.store.scratchDir,
-          manifest: bridge.store.manifestText,
-          manifestPath: bridge.store.manifestPath,
-          manifestJsonPath: bridge.store.manifestJsonPath,
-          notesDir: bridge.store.notesDir,
-          artifactsDir: bridge.store.artifactsDir,
-          sources: bridge.store.sources.map(contextSourceSummary),
-          sourceObjects: bridge.store.sources,
-          inlineInputs: bridge.store.inlineInputs ?? [],
-          latestInput: bridge.store.latestInput,
-        }
-      : undefined;
+    const contexts = await contextEntriesFromStore(bridge.store);
 
     let pendingForCleanup: PendingEval | undefined;
     return await new Promise<PythonEvalResult>((resolve, reject) => {
@@ -589,7 +491,7 @@ class PythonReplWorker {
       bridge.signal?.addEventListener("abort", onAbort, { once: true });
       this.pending.set(id, pending);
       this.armEvalTimeout(id, pending);
-      if (!this.write({ type: "eval", id, code, cwd: bridge.ctx.cwd, context, policy: bridge.policy, data: options.data, setup: options.setup, resetHistory: options.resetHistory })) {
+      if (!this.write({ type: "eval", id, code, contexts, data: options.data, setup: options.setup, resetHistory: options.resetHistory })) {
         this.failAll(new Error("Python REPL stdin is closed."));
       }
     }).finally(() => {
@@ -726,72 +628,17 @@ class PythonReplWorker {
 
 async function handleBridgeCall(method: unknown, params: unknown, bridge: BridgeContext): Promise<unknown> {
   const p = objectExtra(params);
-  if (method === "rlm") {
-    const paramsForDispatch = inheritSessionContextParams(p, bridge.store);
+  const call = typeof method === "string" && RLM_CALLS.includes(method as any) ? method : undefined;
+  if (call) {
+    const paramsForDispatch = inheritSessionContextParams({ ...p, call }, bridge.store);
     const result = await dispatchRlmCall(bridge.ctx, paramsForDispatch, bridge.inherited, bridge.parentDepth, bridge.signal, bridge.onUpdate);
     return { text: textOf(result.content).trim(), content: result.content, details: result.details };
   }
-
-  if (method === "bash") {
-    const command = typeof p.command === "string" ? p.command : "";
-    if (!command.trim()) throw new Error("bash(command) requires a non-empty string.");
-    const timeout = clamp(p.timeoutMs, DEFAULT_BASH_TIMEOUT_MS, 100, HARD_BASH_TIMEOUT_MS);
-    const maxBuffer = clamp(p.maxBuffer, DEFAULT_BASH_MAX_BUFFER, 10_000, HARD_BASH_MAX_BUFFER);
-    return await new Promise((resolve) => {
-      execFile("bash", ["-lc", command], { cwd: bridge.ctx.cwd, timeout, maxBuffer, signal: bridge.signal }, (error: any, stdout: string, stderr: string) => {
-        resolve({
-          ok: !error,
-          code: typeof error?.code === "number" ? error.code : error ? 1 : 0,
-          signal: typeof error?.signal === "string" ? error.signal : null,
-          stdout: clip(stdout || "", MAX_RESULT_CHARS),
-          stderr: clip(stderr || error?.message || "", MAX_RESULT_CHARS),
-        });
-      });
-    });
-  }
-
-  if (method === "read_file") {
-    const file = typeof p.path === "string" ? p.path : "";
-    if (!file.trim()) throw new Error("read_file(path) requires a non-empty path string.");
-    const target = absPath(bridge.ctx.cwd, file);
-    const s = await stat(target);
-    if (!s.isFile()) throw new Error("read_file(path) only supports regular files.");
-    const offset = clamp(p.offset, 0, 0, s.size);
-    const chars = clamp(p.chars, Math.min(s.size - offset, MAX_RESULT_CHARS), 1, MAX_RESULT_CHARS);
-    return await readFileSlice(target, chars, offset);
-  }
-
-  if (method === "list_dir") {
-    const dir = typeof p.path === "string" && p.path.trim() ? p.path : ".";
-    const entries = await readdir(absPath(bridge.ctx.cwd, dir), { withFileTypes: true });
-    return entries.map((entry) => ({
-      name: entry.name,
-      type: entry.isDirectory() ? "dir" : entry.isFile() ? "file" : entry.isSymbolicLink() ? "symlink" : "other",
-    }));
-  }
-
-  if (method === "stat_file") {
-    const file = typeof p.path === "string" ? p.path : "";
-    if (!file.trim()) throw new Error("stat_file(path) requires a non-empty path string.");
-    const s = await stat(absPath(bridge.ctx.cwd, file));
-    return { isFile: s.isFile(), isDirectory: s.isDirectory(), size: s.size, mtimeMs: s.mtimeMs, mode: s.mode };
-  }
-
-  if (!bridge.store && String(method).startsWith("ctx_")) {
-    throw new Error("No file-backed RLM context store is attached to this Python REPL.");
-  }
-  if (method === "ctx_manifest") return await ctxManifest(bridge.store!, p);
-  if (method === "ctx_grep") return await ctxGrep(bridge.ctx.cwd, bridge.store!, p);
-  if (method === "ctx_peek") return await ctxPeek(bridge.ctx.cwd, bridge.store!, p);
-  if (method === "ctx_extract") return await ctxExtract(bridge.ctx.cwd, bridge.store!, p);
-  if (method === "ctx_note") return await ctxWriteText(bridge.store!, "note", p);
-  if (method === "ctx_artifact") return await ctxWriteText(bridge.store!, "artifact", p);
 
   throw new Error(`Unknown Python REPL bridge method: ${String(method)}.`);
 }
 
 export function createRlmReplTool(inherited?: RunState, parentDepth?: number, store?: ReplStoreProvider) {
-  const rootLike = inherited === undefined && parentDepth === undefined;
   let worker: PythonReplWorker | undefined;
   let workerCwd: string | undefined;
   let evals = 0;
@@ -799,30 +646,15 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
   return defineTool({
     name: REPL_TOOL_NAME,
     label: "REPL",
-    description: rootLike
-      ? "Python REPL control plane with persistent state, bash/read helpers, ctx helpers when present, and explicit RLM dispatch. Direct llm_query helpers are child-only."
-      : "Python REPL. Use it as a programmable control plane with persistent state, bash/read helpers, ctx helpers when present, and llm_query/llm_query_batched/rlm_query/rlm_query_batched functions.",
-    promptSnippet: rootLike
-      ? "Python REPL control plane with explicit rlm(...) dispatch, state, bash/read helpers, FINAL/FINAL_VAR"
-      : "Python REPL with llm_query/rlm_query/batching, state, bash/read helpers, FINAL/FINAL_VAR",
-    promptGuidelines: rootLike
-      ? [
-          `Use ${REPL_TOOL_NAME} as the orchestration layer: inspect, chunk, batch, and synthesize state; do not do broad reasoning locally.`,
-          `Use rlm_query(...) / rlm_query_batched(...) as the primary model-call helpers in the root REPL. Use rlm(...) only when you need an explicit leaf llm_query dispatch or the details-rich form. Direct llm_query* helpers are disabled here.`,
-          `Prefer rlm_query(...) / rlm_query_batched(...) whenever the work can be partitioned into independent subproblems.`,
-          `Persist cross-call variables in Python globals or in state. The REPL also exposes history/context/context_N variables when available; SHOW_VARS() summarizes variables/state.`,
-          `Use bash(command), read_file(path), list_dir(path) for focused local inspection. Prefer recursive ${RLM_TOOL_NAME} calls for broad exploration.`,
-          store ? `Use ctx.manifest(), ctx.grep(...), ctx.peek(...), ctx.extract(...), ctx.note(...), ctx.artifact(...) for file-backed RLM context.` : `No file-backed ${CTX_TOOL_NAME} context is attached to this REPL call unless a recursive RLM child supplied one.`,
-          `Call FINAL(value) or FINAL_VAR("name") when the recursive plan is complete.`,
-        ]
-      : [
-          `Use ${REPL_TOOL_NAME} for non-trivial orchestration: loops, batching, state, synthesis, and finalization.`,
-          `Write Python code. Helpers are synchronous: llm_query(...), llm_query_batched(...), rlm_query(...), rlm_query_batched(...), or rlm({...}). Batched helpers return list[str]; rlm({...}) and *_details helpers return { text, content, details }.`,
-          `Persist cross-call variables in Python globals or in state. The REPL also exposes history/context/context_N variables when available; SHOW_VARS() summarizes variables/state.`,
-          `Call FINAL(value) or FINAL_VAR("name") when the REPL result is the final answer.`,
-          `Use bash(command), read_file(path), list_dir(path) for focused local inspection. Prefer recursive ${RLM_TOOL_NAME} calls for broad exploration.`,
-          store ? `Use ctx.manifest(), ctx.grep(...), ctx.peek(...), ctx.extract(...), ctx.note(...), ctx.artifact(...) for file-backed RLM context.` : `No file-backed ${CTX_TOOL_NAME} context is attached to this REPL call unless a recursive RLM child supplied one.`,
-        ],
+    description: "Python REPL using the upstream RLM helper contract: llm_query, llm_query_batched, rlm_query, rlm_query_batched, FINAL_VAR, SHOW_VARS, state/history/context variables, and injected custom data.",
+    promptSnippet: "Python REPL with upstream RLM helpers and context/history/state",
+    promptGuidelines: [
+      `Use ${REPL_TOOL_NAME} as the only control plane: write Python code, inspect context variables, chunk work, batch calls, synthesize, and finalize.`,
+      `Available model-call helpers are llm_query(prompt), llm_query_batched(prompts), rlm_query(prompt), and rlm_query_batched(prompts). Helpers are synchronous and return str/list[str].`,
+      `The REPL exposes state, history, context/context_0/context_N, and any injected variables. Use SHOW_VARS() to inspect visible variables.`,
+      `Use normal Python capabilities such as imports, open(), os, pathlib, subprocess, json, and standard libraries for local computation or file/process access.`,
+      `To finish, assign the answer to a variable or state key, then call FINAL_VAR("name").`,
+    ],
     parameters: ReplParams,
     async execute(_id, params, signal, onUpdate, ctx) {
       rejectUnknownReplParams(params);
@@ -841,11 +673,10 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
       }
       evals++;
 
-      onUpdate?.({ content: [{ type: "text", text: `${REPL_TOOL_NAME}: evaluating Python via ${pythonCommand()} (${timeoutMs}ms local timeout; bridge calls excluded)...` }] });
+      onUpdate?.({ content: [{ type: "text", text: `${REPL_TOOL_NAME}: evaluating Python via ${pythonCommand()} (${timeoutMs}ms local timeout; bridge calls excluded)...` }], details: { kind: "repl", language: "python", evals, final: false, timeoutMs, cwd: ctx.cwd } });
 
       const effectiveStore = await resolveReplStore(store, ctx);
-      const policy: { replRole: "root" | "child"; allowDirectLlm: boolean } = { replRole: rootLike ? "root" : "child", allowDirectLlm: !rootLike };
-      const result = await worker.eval(params.code, timeoutMs, { ctx, signal, onUpdate, inherited, parentDepth, store: effectiveStore, policy }, { data: params.data, setup: params.setup, resetHistory: params.resetHistory === true });
+      const result = await worker.eval(params.code, timeoutMs, { ctx, signal, onUpdate, inherited, parentDepth, store: effectiveStore }, { data: params.data, setup: params.setup, resetHistory: params.resetHistory === true });
       if (!result.ok) {
         const text = clip([result.logs?.trim(), result.traceback || result.error].filter(Boolean).join("\n\n"), MAX_RESULT_CHARS);
         return {
@@ -903,14 +734,15 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
     },
     renderResult(result, { isPartial }: any, theme) {
       const text = textOf(result.content).trim();
+      const details: any = result.details ?? {};
       if (isPartial) return new Text(theme.fg("warning", text || "running..."), 0, 0);
-      const final = result.details?.final ? theme.fg("success", " FINAL") : "";
-      const vars = Array.isArray(result.details?.varKeys) && result.details.varKeys.length
-        ? ` vars=${result.details.varKeys.join(",")}`
-        : Array.isArray(result.details?.stateKeys) && result.details.stateKeys.length
-          ? ` state=${result.details.stateKeys.join(",")}`
+      const final = details.final ? theme.fg("success", " FINAL") : "";
+      const vars = Array.isArray(details.varKeys) && details.varKeys.length
+        ? ` vars=${details.varKeys.join(",")}`
+        : Array.isArray(details.stateKeys) && details.stateKeys.length
+          ? ` state=${details.stateKeys.join(",")}`
           : "";
-      const err = result.details?.error ? theme.fg("error", " error") : "";
+      const err = details.error ? theme.fg("error", " error") : "";
       return new Text(
         `${theme.fg("success", "✓")} ${theme.fg("toolTitle", theme.bold(REPL_TOOL_NAME))}${final}${err}${theme.fg("muted", vars)}\n${theme.fg("toolOutput", clip(text.replace(/\s+/g, " "), 800))}`,
         0,

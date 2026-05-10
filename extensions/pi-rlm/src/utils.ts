@@ -25,7 +25,6 @@ import {
   MAX_RESULT_CHARS,
   MAX_TRACE_TEXT_CHARS,
   REPL_TOOL_NAME,
-  RETURN_TOOL_NAME,
   RLM_CALLS,
 } from "./constants.js";
 import type { BatchItem, ChildMode, ContextMode, Details, RlmCall, RunState } from "./constants.js";
@@ -117,20 +116,12 @@ function replFinalText(m: any): string {
 }
 
 export function hasReturn(messages: any[]): boolean {
-  return messages.some(
-    (m) => (
-      m?.role === "toolResult" && m.toolName === RETURN_TOOL_NAME && textOf(m.content).trim().length > 0
-    ) || (isReplFinalResult(m) && replFinalText(m).length > 0),
-  );
+  return messages.some((m) => isReplFinalResult(m) && replFinalText(m).length > 0);
 }
 
 export function extractAnswer(messages: any[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m?.role === "toolResult" && m.toolName === RETURN_TOOL_NAME) {
-      const t = textOf(m.content).trim();
-      if (t) return t;
-    }
     if (isReplFinalResult(m)) {
       const t = replFinalText(m);
       if (t) return t;
@@ -178,13 +169,13 @@ function findConfiguredModel(ctx: ExtensionContext, selector: string) {
   return all.find((m: any) => m.id === selector || m.name === selector || `${m.provider}/${m.id}` === selector || `${m.provider}/${m.name}` === selector);
 }
 
-export function resolveModel(ctx: ExtensionContext, state: RunState, role: RlmModelRole = "default") {
+export function resolveModel(ctx: ExtensionContext, state: RunState, role: RlmModelRole = "default", override?: string) {
   if (!state.model) state.model = ctx.model;
-  const selector = modelSelectorForRole(loadRlmSettings(ctx.cwd), role);
+  const selector = override?.trim() || modelSelectorForRole(loadRlmSettings(ctx.cwd), role);
   if (!selector) return state.model;
   const found = findConfiguredModel(ctx, selector);
   if (found) return found;
-  throw new Error(`Unknown pi-rlm extensionSettings model selector ${JSON.stringify(selector)}. Use provider/model-id or a model id/name known to Pi.`);
+  throw new Error(`Unknown pi-rlm model selector ${JSON.stringify(selector)}. Use provider/model-id or a model id/name known to Pi.`);
 }
 
 function optionalCap(raw: unknown, fallback: number, hard: number): number {
@@ -407,7 +398,7 @@ export function normalizeChildMode(raw: unknown): ChildMode {
 export function rejectPathsForLlm(call: RlmCall, paths: unknown, contextMode?: unknown, sources?: unknown): void {
   if (call !== "llm_query" && call !== "llm_query_batched") return;
   if (normPaths(paths).length > 0 || normSources(sources).length > 0) {
-    throw new Error(`${call} has no bash/read/ctx access and cannot consume paths/sources. Extract text first, pass it as context/prompt, or use rlm_query.`);
+    throw new Error(`${call} has no REPL environment and cannot consume paths/sources. Extract text first, pass it as context/prompt, or use rlm_query.`);
   }
   if (normalizeContextMode(contextMode) === "file_backed") {
     throw new Error(`${call} has no environment and cannot use contextMode:"file_backed". Use inline context or rlm_query.`);
@@ -421,6 +412,7 @@ export function singleItemFromParams(params: any): BatchItem {
   return {
     prompt: requiredPrompt(params),
     rootPrompt: typeof params?.rootPrompt === "string" ? params.rootPrompt : undefined,
+    model: typeof params?.model === "string" ? params.model : undefined,
 
     context: typeof params?.context === "string" ? params.context : undefined,
     contextMode,
@@ -437,6 +429,7 @@ export function batchItemsFromParams(params: any, call: RlmCall): BatchItem[] {
   rejectPathsForLlm(call, params?.paths, sharedContextMode, params?.sources);
   const shared = {
     rootPrompt: typeof params?.rootPrompt === "string" ? params.rootPrompt : undefined,
+    model: typeof params?.model === "string" ? params.model : undefined,
 
     context: typeof params?.context === "string" ? params.context : undefined,
     contextMode: sharedContextMode,
@@ -460,6 +453,7 @@ export function batchItemsFromParams(params: any, call: RlmCall): BatchItem[] {
       return {
         prompt: item.prompt,
         rootPrompt: typeof item?.rootPrompt === "string" ? item.rootPrompt : shared.rootPrompt,
+        model: typeof item?.model === "string" ? item.model : shared.model,
 
         context: typeof item?.context === "string" ? item.context : shared.context,
         contextMode,

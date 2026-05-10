@@ -34,10 +34,7 @@ export const DEFAULT_CTX_GREP_MATCHES = 50;
 export const HARD_CTX_GREP_MATCHES = 200;
 export const MAX_CTX_GREP_FILES = 5_000;
 
-export const RLM_TOOL_NAME = "rlm";
 export const REPL_TOOL_NAME = "REPL";
-export const RETURN_TOOL_NAME = "pi_return";
-export const CTX_TOOL_NAME = "ctx";
 
 export const RLM_CALLS = ["llm_query", "llm_query_batched", "rlm_query", "rlm_query_batched"] as const;
 export type RlmCall = typeof RLM_CALLS[number];
@@ -49,9 +46,6 @@ export type ContextMode = typeof CONTEXT_MODES[number];
 export const CHILD_MODES = ["pure-rlm", "pi-agent"] as const;
 export type ChildMode = typeof CHILD_MODES[number];
 export const DEFAULT_CHILD_MODE: ChildMode = "pure-rlm";
-
-export const CTX_ACTIONS = ["manifest", "peek", "grep", "extract", "note", "artifact"] as const;
-export type CtxAction = typeof CTX_ACTIONS[number];
 
 export type ContextSourceKind = "inline" | "file" | "dir" | "missing" | "other";
 
@@ -121,6 +115,7 @@ export interface RunState {
 export interface BatchItem {
   prompt: string;
   rootPrompt?: string;
+  model?: string;
 
   context?: string;
   contextMode?: ContextMode;
