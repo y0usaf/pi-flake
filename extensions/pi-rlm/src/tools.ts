@@ -1,7 +1,7 @@
 import { defineTool } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 
-import { CTX_ACTIONS, CTX_TOOL_NAME, MAX_CTX_OUTPUT_CHARS, RETURN_TOOL_NAME, RLM_TOOL_NAME } from "./constants.js";
+import { CTX_ACTIONS, CTX_TOOL_NAME, MAX_CTX_OUTPUT_CHARS, REPL_TOOL_NAME, RETURN_TOOL_NAME, RLM_TOOL_NAME } from "./constants.js";
 import type { ContextStore, CtxAction, Details, RunState } from "./constants.js";
 import { CtxParams, ReturnParams, RlmParams } from "./params.js";
 import { ctxExtract, ctxGrep, ctxManifest, ctxPeek, ctxWriteText, contextSourceSummary } from "./context-store.js";
@@ -132,8 +132,9 @@ export function renderRlmResult(result: any, { expanded, isPartial }: any, theme
   const budget = d.kind === "llm"
     ? `q${d.queriesUsed}/${d.maxQueries}`
     : `calls ${d.callsUsed}/${d.maxCalls} q${d.queriesUsed}/${d.maxQueries}`;
+  const usage = `${d.maxTokens ? ` tok ${d.tokensUsed ?? 0}/${d.maxTokens}` : d.tokensUsed ? ` tok ${d.tokensUsed}` : ""}${d.maxBudget ? ` $${(d.costUsed ?? 0).toFixed(4)}/$${d.maxBudget}` : d.costUsed ? ` $${d.costUsed.toFixed(4)}` : ""}`;
   const incomplete = d.incomplete ? theme.fg("warning", " partial") : "";
-  const header = `${theme.fg("success", "✓")} ${theme.fg("toolTitle", theme.bold(tag))}${incomplete} ${theme.fg("muted", budget + " " + d.model)}`;
+  const header = `${theme.fg("success", "✓")} ${theme.fg("toolTitle", theme.bold(tag))}${incomplete} ${theme.fg("muted", budget + usage + " " + d.model)}`;
 
   if (!expanded) return new Text(`${header}\n${theme.fg("toolOutput", clip(text.replace(/\s+/g, " "), 500))}`, 0, 0);
 
@@ -164,11 +165,12 @@ export function createRlmTool(inherited?: RunState, parentDepth?: number) {
       'One Pi-native RLM primitive. call:"llm_query" = one-shot LM, call:"llm_query_batched" = batched one-shot LMs, call:"rlm_query" = recursive child RLM with file-backed context, call:"rlm_query_batched" = batched recursive child RLMs.',
     promptSnippet: 'RLM call dispatcher: llm_query / llm_query_batched / rlm_query / rlm_query_batched',
     promptGuidelines: [
-      `${RLM_TOOL_NAME}({ call:"llm_query", prompt }): one-shot completion. No tools. Include ALL context inline.`,
+      `${RLM_TOOL_NAME}({ call:"llm_query", prompt, rootPrompt? }): one-shot completion. No tools. Include ALL context inline.`,
       `${RLM_TOOL_NAME}({ call:"llm_query_batched", prompts/items }): batched one-shot completions for independent chunks.`,
-      `${RLM_TOOL_NAME}({ call:"rlm_query", prompt, paths?, context?, contextMode? }): child RLM with bash/read plus a ${CTX_TOOL_NAME} context tool when paths or large/file_backed context are supplied.`,
-      `${RLM_TOOL_NAME}({ call:"rlm_query_batched", prompts/items, paths?, contextMode? }): batched child RLMs for independent sub-calls.`,
-      `For large context, prefer paths or contextMode:"file_backed" so the child sees a manifest + ${CTX_TOOL_NAME}, not the whole text in chat.`,
+      `${RLM_TOOL_NAME}({ call:"rlm_query", prompt, rootPrompt?, paths?, context?, contextMode?, childMode? }): child RLM. Default childMode:"pure-rlm" exposes only ${REPL_TOOL_NAME} + ${RETURN_TOOL_NAME}; use childMode:"pi-agent" for direct bash/read/${CTX_TOOL_NAME}/${RLM_TOOL_NAME}.`,
+      `${RLM_TOOL_NAME}({ call:"rlm_query_batched", prompts/items, paths?, contextMode?, childMode? }): batched child RLMs for independent sub-calls.`,
+      `Runtime controls include maxTimeoutMs/maxTokens/maxBudget/maxErrors and JSONL logs via logPath/logDir. Configure RLM models in extensionSettings.pi-rlm, not per call.`,
+      `For large context, prefer paths or contextMode:"file_backed" so the child sees a manifest; in pure-RLM access it through ${REPL_TOOL_NAME} ctx helpers.`,
       `Prefer llm_query over rlm_query when you already have small relevant text. Prefer batched calls for independent chunks/sub-calls.`,
     ],
     parameters: RlmParams,

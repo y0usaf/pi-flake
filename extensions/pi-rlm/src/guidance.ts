@@ -26,20 +26,20 @@ Active root tools: ${activeTools.join(", ")}
 RLM-aware REPL (${REPL_TOOL_NAME}, when active):
 - Runs Python. Helpers are synchronous; do not use await.
 - Persistent cross-call state lives in Python globals or the state dict, e.g. state["results"] = rlm_query_batched([...]).
-- Helpers: llm_query(prompt_or_params), rlm_query(prompt_or_params) return strings; llm_query_batched(...), rlm_query_batched(...) return list[str]; rlm(params) returns a dict with text/content/details.
-- Local helpers: bash(command), read_file(path, offset=?, chars=?), list_dir(path), stat_file(path), SHOW_VARS().
+- Helpers: llm_query(prompt_or_params), rlm_query(prompt_or_params) return strings; llm_query_batched(...), rlm_query_batched(...) return list[str]; rlm(params) and *_details helpers return rich dicts with text/content/details.
+- Local helpers: bash(command), read_file(path, offset=?, chars=?), list_dir(path), stat_file(path), SHOW_VARS(). REPL variables include state, history, context/context_N when attached.
 - Finalization: FINAL(value) or FINAL_VAR("name").
 - Prefer ${REPL_TOOL_NAME} when you need to generate many prompts, loop over files/chunks, aggregate results, compare contradictions, or maintain intermediate state.
 
 Direct RLM tool (${RLM_TOOL_NAME}, when active):
-- ${RLM_TOOL_NAME}({ call:"llm_query", prompt, context? }) — one-shot LM completion. NO tools. Use for reasoning over already-extracted small text.
+- ${RLM_TOOL_NAME}({ call:"llm_query", prompt, rootPrompt?, context? }) — one-shot LM completion. NO tools. Use for reasoning over already-extracted small text.
 - ${RLM_TOOL_NAME}({ call:"llm_query_batched", prompts/items }) — batched one-shot completions. Results preserve order.
-- ${RLM_TOOL_NAME}({ call:"rlm_query", prompt, paths?, sources?, context?, contextName?, contextMode? }) — recursive child RLM. Child gets bash/read, ${REPL_TOOL_NAME}, ${RLM_TOOL_NAME}, ${RETURN_TOOL_NAME}, and ${CTX_TOOL_NAME} for file-backed context.
-- ${RLM_TOOL_NAME}({ call:"rlm_query_batched", prompts/items }) — batched recursive child RLMs.
+- ${RLM_TOOL_NAME}({ call:"rlm_query", prompt, rootPrompt?, paths?, sources?, context?, contextName?, contextMode?, childMode? }) — recursive child RLM. Default childMode:"pure-rlm" exposes only ${REPL_TOOL_NAME} + ${RETURN_TOOL_NAME}; use childMode:"pi-agent" for direct bash/read/${CTX_TOOL_NAME}/${RLM_TOOL_NAME} child tools.
+- ${RLM_TOOL_NAME}({ call:"rlm_query_batched", prompts/items }) — batched recursive child RLMs. Runtime controls include maxDepth/maxTurns/maxCalls/maxQueries/maxConcurrent plus maxTimeoutMs/maxTokens/maxBudget/maxErrors and logPath/logDir.
 
 Context management:
 - Keep large context outside chat. Pass paths/sources or contextMode:"file_backed" to recursive RLM calls.
-- Path/named sources are file-backed and listed in a manifest; children inspect them with ${CTX_TOOL_NAME} manifest/grep/peek/extract/note/artifact or ${REPL_TOOL_NAME}'s ctx helper. Use sources:[{name,path}] for stable selectors; ctx.manifest(format="json") returns JSON.
+- Path/named sources are file-backed and listed in a manifest; default pure-RLM children inspect them with ${REPL_TOOL_NAME}'s ctx helper (pi-agent children may use direct ${CTX_TOOL_NAME}). Use sources:[{name,path}] for stable selectors; ctx.manifest(format="json") returns JSON.
 - Never paste huge files or command output into the root chat. Extract compact observations.
 
 RLM workflow:
