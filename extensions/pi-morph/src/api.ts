@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_API_KEY_PROVIDER, REQUEST_TIMEOUT_MS } from "./constants.js";
 import type { MorphSettings } from "./types.js";
 import { stripOuterCodeFence } from "./text.js";

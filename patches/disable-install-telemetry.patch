@@ -1,18 +1,44 @@
+diff --git a/packages/coding-agent/src/modes/interactive/interactive-mode.ts b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+index 006ee7c5..2eada39a 100644
 --- a/packages/coding-agent/src/modes/interactive/interactive-mode.ts
 +++ b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
-@@ -904,15 +904,7 @@
- 			return;
- 		}
+@@ -81,14 +81,12 @@ import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../cor
+ import { type SessionContext, SessionManager } from "../../core/session-manager.js";
+ import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
+ import type { SourceInfo } from "../../core/source-info.js";
+-import { isInstallTelemetryEnabled } from "../../core/telemetry.js";
+ import type { TruncationResult } from "../../core/tools/truncate.js";
+ import { getChangelogPath, getNewEntries, parseChangelog } from "../../utils/changelog.js";
+ import { copyToClipboard } from "../../utils/clipboard.js";
+ import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.js";
+ import { parseGitUrl } from "../../utils/git.js";
+ import { getCwdRelativePath } from "../../utils/paths.js";
+-import { getPiUserAgent } from "../../utils/pi-user-agent.js";
+ import { killTrackedDetachedChildren } from "../../utils/shell.js";
+ import { ensureTool } from "../../utils/tools-manager.js";
+ import { checkForNewPiVersion } from "../../utils/version-check.js";
+@@ -863,23 +861,8 @@ export class InteractiveMode {
+ 		return undefined;
+ 	}
  
+-	private reportInstallTelemetry(version: string): void {
+-		if (process.env.PI_OFFLINE) {
+-			return;
+-		}
+-
 -		if (!isInstallTelemetryEnabled(this.settingsManager)) {
 -			return;
 -		}
 -
--		void fetch(`https://pi.dev/install?version=${encodeURIComponent(version)}`, {
+-		void fetch(`https://pi.dev/api/report-install?version=${encodeURIComponent(version)}`, {
+-			headers: {
+-				"User-Agent": getPiUserAgent(version),
+-			},
 -			signal: AbortSignal.timeout(5000),
 -		})
 -			.then(() => undefined)
 -			.catch(() => undefined);
++	private reportInstallTelemetry(_version: string): void {
 +		return;
  	}
  

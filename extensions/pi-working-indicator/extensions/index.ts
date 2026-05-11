@@ -1,4 +1,4 @@
-import { type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const ANSI_FG_RESET = "\x1b[39m";
 const ANSI_BASE_RGB = [

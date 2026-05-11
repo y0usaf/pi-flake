@@ -14,8 +14,8 @@ Pi extension that lets you manage this extension's global disabled-tools list fr
 
 ## Requirements
 
-- Pi / `@mariozechner/pi-coding-agent` `^0.67.0`
-- `@mariozechner/pi-tui` `^0.67.0` (provided by compatible Pi extension environments)
+- Pi / `@earendil-works/pi-coding-agent` `^0.74.0`
+- `@earendil-works/pi-tui` `^0.74.0` (provided by compatible Pi extension environments)
 
 ## Usage
 

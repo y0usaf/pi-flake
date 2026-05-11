@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { formatSize, withFileMutationQueue, type ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { formatSize, withFileMutationQueue, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { callAiGateway, buildPrompt, resolveApiKey } from "./api.js";
 import { EXISTING_CODE_MARKER, FULL_REPLACEMENT_LINE_LIMIT } from "./constants.js";
 import { resolveToCwd } from "./paths.js";

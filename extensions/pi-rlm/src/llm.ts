@@ -1,5 +1,5 @@
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { completeSimple } from "@mariozechner/pi-ai";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { completeSimple } from "@earendil-works/pi-ai";
 
 import { MAX_QUERY_CONTEXT_CHARS } from "./constants.js";
 import type { Budget, ContextMode, Details, RlmCall, RunState } from "./constants.js";

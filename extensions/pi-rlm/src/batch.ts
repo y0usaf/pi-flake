@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { DEFAULT_MAX_CONCURRENT, HARD_MAX_CONCURRENT } from "./constants.js";
 import type { Details, ExecutionKind } from "./constants.js";

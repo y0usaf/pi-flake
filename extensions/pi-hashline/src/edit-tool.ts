@@ -1,8 +1,8 @@
 import { constants } from "node:fs";
 import { access as fsAccess } from "node:fs/promises";
-import { StringEnum } from "@mariozechner/pi-ai";
-import { DEFAULT_MAX_BYTES, withFileMutationQueue, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+import { StringEnum } from "@earendil-works/pi-ai";
+import { DEFAULT_MAX_BYTES, withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { resolveMutationTargetPath, writeTextFileAtomically } from "./fs-write";
 import {

@@ -75,6 +75,7 @@
     piPatches = [
       ./patches/disable-install-telemetry.patch
       ./patches/avoid-network-model-regeneration.patch
+      ./patches/add-package-lock-registry-metadata.patch
       ./patches/remove-tree-filter-backcycle.patch
       ./patches/default-package-sources-env.patch
     ];
@@ -103,7 +104,7 @@
 
         # Regenerate after dependency changes:
         #   nix build .#pi 2>&1 | grep 'got:' | awk '{print $2}'
-        npmDepsHash = "sha256-fE/kaSnvXPQczWoqPBZghb6SUQ+6fq65qhmblm1O6Y8=";
+        npmDepsHash = "sha256-U+R8ekslHAcPmychptczVNp8p/w95au//DJ8S8M/ahA=";
 
         nodejs = pkgs.nodejs_22;
 

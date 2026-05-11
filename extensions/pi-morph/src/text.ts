@@ -1,4 +1,4 @@
-import { formatSize } from "@mariozechner/pi-coding-agent";
+import { formatSize } from "@earendil-works/pi-coding-agent";
 import { EXISTING_CODE_MARKER } from "./constants.js";
 import type { MorphSettings } from "./types.js";
 

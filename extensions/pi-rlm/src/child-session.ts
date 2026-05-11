@@ -5,7 +5,7 @@ import {
   createAgentSession,
   getAgentDir,
   type ExtensionContext,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 import { MAX_INLINE_CHILD_CONTEXT_CHARS, REPL_TOOL_NAME } from "./constants.js";
 import type { ContextMode, ContextStore, Details, RunState } from "./constants.js";
@@ -297,6 +297,7 @@ export async function runRlmQuery(
   const effectiveSignal = timed.signal;
   const hasContextStore = Boolean(contextStore);
   const tools = childToolList();
+  const systemPrompt = childSystemPrompt(depth, state, hasContextStore);
 
   let session: any | undefined;
   let unsub: (() => void) | undefined;
@@ -347,7 +348,14 @@ export async function runRlmQuery(
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: true,
-      systemPrompt: childSystemPrompt(depth, state, hasContextStore),
+      // A recursive child must be a true RLM child, not a normal Pi agent with
+      // the default Pi prompt plus an appended note. Pass the child prompt as
+      // the actual system prompt/instructions payload and suppress appends so
+      // providers such as OpenAI Codex Responses receive `instructions`.
+      systemPrompt,
+      appendSystemPrompt: [],
+      systemPromptOverride: () => systemPrompt,
+      appendSystemPromptOverride: () => [],
     });
     await loader.reload();
 
@@ -363,10 +371,16 @@ export async function runRlmQuery(
       resourceLoader: loader,
       sessionManager: SessionManager.inMemory(),
       settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }),
+      noTools: "all",
       tools,
       customTools,
     });
     session = created.session;
+
+    const activeTools = typeof session.getActiveToolNames === "function" ? session.getActiveToolNames() : tools;
+    if (activeTools.length !== 1 || activeTools[0] !== REPL_TOOL_NAME) {
+      throw new Error(`Child RLM session must be REPL-only; active tools were: ${activeTools.join(", ") || "(none)"}`);
+    }
 
     unsub = session.subscribe((ev: any) => {
       if (ev.type === "tool_execution_start") {
@@ -388,7 +402,7 @@ export async function runRlmQuery(
     else effectiveSignal?.addEventListener("abort", kill, { once: true });
 
     emit(`depth ${depth}: starting${contextStore ? ` with context (${contextStore.sources.length} source${contextStore.sources.length === 1 ? "" : "s"})` : ""}`);
-    await session.prompt(childPrompt(params.prompt, params.context, params.paths, contextStore, params.rootPrompt));
+    await session.prompt(childPrompt(params.prompt, params.context, params.paths, contextStore, params.rootPrompt), { expandPromptTemplates: false, source: "extension" });
 
     let msgs = [...(session.messages as any[])];
     let completed = hasReturn(msgs);

@@ -1,5 +1,5 @@
-import type { Component } from "@mariozechner/pi-tui";
-import { truncateToWidth } from "@mariozechner/pi-tui";
+import type { Component } from "@earendil-works/pi-tui";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { KeybindingsLike, SummaryIndexEntry, ThemeLike, UndoRunItem } from "./types.js";
 import { formatChars, isPiCompactEnabled, isRecord, replaceTabs, shortTimestamp, themeBold, themeFg, truncateMiddle } from "./utils.js";
 

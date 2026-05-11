@@ -1,4 +1,4 @@
-import { AssistantMessageComponent } from "@mariozechner/pi-coding-agent";
+import { AssistantMessageComponent } from "@earendil-works/pi-coding-agent";
 import { state, thinkingTimings } from "./state.js";
 import { ASSISTANT_ORIGINAL_RENDER_KEY, ASSISTANT_ORIGINAL_UPDATE_CONTENT_KEY, ASSISTANT_THINKING_APPLIED_MODE_KEY, ASSISTANT_THINKING_STATE_KEY, ASSISTANT_THINKING_TIMING_KEY, THINKING_MARKER, type CompactThinkingState, type CompactThinkingTiming, type ThinkingMode } from "./types.js";
 import { clip, getThemeToolBgFn, isCompactThinkingTiming, isRecord, renderOneLine, stripAnsi } from "./shared.js";

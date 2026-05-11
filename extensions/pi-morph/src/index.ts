@@ -1,5 +1,5 @@
-import { Text } from "@mariozechner/pi-tui";
-import { formatSize, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
+import { formatSize, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { resolveApiKey } from "./api.js";
 import { applyMorphEdit } from "./apply.js";

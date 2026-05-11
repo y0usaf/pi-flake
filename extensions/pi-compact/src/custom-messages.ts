@@ -1,5 +1,5 @@
-import { CustomMessageComponent, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { truncateToWidth, type Component } from "@mariozechner/pi-tui";
+import { CustomMessageComponent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import { state } from "./state.js";
 import { CUSTOM_ORIGINAL_RENDER_KEY, JANITOR_CUSTOM_TYPES, JANITOR_INDEX_CUSTOM_TYPE, JANITOR_MARKER, JANITOR_NOTICE_CUSTOM_TYPE, JANITOR_RESTORE_CUSTOM_TYPE, JANITOR_SUMMARY_CUSTOM_TYPE, MAX_SUMMARY_LENGTH } from "./types.js";
 import { clip, getThemeToolBgFn, isBlankRenderedLine, isRecord, renderOneLine, replaceTabs, squash } from "./shared.js";

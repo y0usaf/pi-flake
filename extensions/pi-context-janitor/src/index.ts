@@ -1,5 +1,5 @@
-import type { ToolResultMessage } from "@mariozechner/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ToolResultMessage } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { batchFromRecords, captureBatch, pendingHysteresis } from "./capture.js";
 import {
 	DEFAULT_SETTINGS,

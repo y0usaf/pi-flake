@@ -1,4 +1,4 @@
-import { UserMessageComponent } from "@mariozechner/pi-coding-agent";
+import { UserMessageComponent } from "@earendil-works/pi-coding-agent";
 import { state } from "./state.js";
 import { MAX_USER_MESSAGE_LENGTH, OSC133_ZONE_END, OSC133_ZONE_FINAL, OSC133_ZONE_START, USER_ORIGINAL_RENDER_KEY, USER_PROMPT_MARKER } from "./types.js";
 import { clip, renderOneLine, replaceTabs, squash, stripAnsi } from "./shared.js";

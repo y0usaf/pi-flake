@@ -1,4 +1,4 @@
-import type { ToolResultMessage } from "@mariozechner/pi-ai";
+import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import { DEBOUNCE_MS, HYSTERESIS_MAX_AGE_MS, HYSTERESIS_MIN_RAW_CHARS, HYSTERESIS_MIN_TOOL_CALLS, HYSTERESIS_RECHECK_MS } from "./constants.js";
 import type { CapturedBatch, PendingToolCallRecord, ToolCallRecord } from "./types.js";
 import { isRecord, textFromContent } from "./utils.js";
