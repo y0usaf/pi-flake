@@ -4,9 +4,10 @@
  * Public extension entry point. Implementation lives in cohesive modules under src/.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { Box, Spacer, Text } from "@mariozechner/pi-tui";
 
-import { REPL_TOOL_NAME } from "./constants.js";
+import { REPL_TOOL_NAME, RLM_FINAL_OUTPUT_CUSTOM_TYPE } from "./constants.js";
 import { rootSystemPrompt } from "./guidance.js";
 import { createRlmReplTool } from "./repl.js";
 import {
@@ -17,6 +18,7 @@ import {
   sessionContextPromptBlock,
   shouldExternalizeInput,
 } from "./session-context.js";
+import { textOf } from "./utils.js";
 
 const ROOT_MODE = "repl";
 
@@ -29,7 +31,111 @@ function enforceRootTools(pi: ExtensionAPI): string {
   return ROOT_MODE;
 }
 
+type PendingFinalOutput = {
+  text: string;
+  toolCallId?: string;
+  timestamp: number;
+};
+
+const pendingFinalOutputs: PendingFinalOutput[] = [];
+let finalOutputFlushScheduled = false;
+
+function textFromCustomContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part: any) => {
+      if (part?.type === "text" && typeof part.text === "string") return part.text;
+      if (part?.type === "image") return "[image]";
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function rlmFinalText(message: any): string {
+  const text = textOf(message?.content).trim();
+  const match = text.match(/(?:^|\n)FINAL:\s*\n?([\s\S]*)$/);
+  return (match?.[1] ?? text).trim();
+}
+
+function collectRlmFinalOutputs(messages: any[]): PendingFinalOutput[] {
+  const outputs: PendingFinalOutput[] = [];
+  for (const message of messages) {
+    if (message?.role !== "toolResult") continue;
+    if (message.toolName !== REPL_TOOL_NAME) continue;
+    if (message.details?.final !== true) continue;
+    const text = rlmFinalText(message);
+    if (!text) continue;
+    outputs.push({
+      text,
+      toolCallId: typeof message.toolCallId === "string" ? message.toolCallId : undefined,
+      timestamp: Date.now(),
+    });
+  }
+  return outputs;
+}
+
+function registerRlmFinalOutputRenderer(pi: ExtensionAPI): void {
+  pi.registerMessageRenderer(RLM_FINAL_OUTPUT_CUSTOM_TYPE, (message, _options, theme) => {
+    const text = textFromCustomContent(message.content).trim();
+    if (!text) return undefined;
+
+    const box = new Box(1, 1, (value) => theme.bg("toolSuccessBg", value));
+    box.addChild(new Text(
+      `${theme.fg("success", "✓")} ${theme.fg("toolTitle", theme.bold("RLM final output"))}`,
+      0,
+      0,
+    ));
+    box.addChild(new Spacer(1));
+    box.addChild(new Text(theme.fg("toolOutput", text), 0, 0));
+    return box;
+  });
+}
+
+function scheduleFinalOutputFlush(pi: ExtensionAPI, ctx: ExtensionContext): void {
+  if (finalOutputFlushScheduled) return;
+  finalOutputFlushScheduled = true;
+
+  setTimeout(() => {
+    finalOutputFlushScheduled = false;
+    if (pendingFinalOutputs.length === 0) return;
+
+    let idle = false;
+    try {
+      idle = ctx.isIdle();
+    } catch {
+      pendingFinalOutputs.length = 0;
+      return;
+    }
+
+    if (!idle) {
+      scheduleFinalOutputFlush(pi, ctx);
+      return;
+    }
+
+    const outputs = pendingFinalOutputs.splice(0);
+    for (const output of outputs) {
+      try {
+        pi.sendMessage({
+          customType: RLM_FINAL_OUTPUT_CUSTOM_TYPE,
+          content: output.text,
+          display: true,
+          details: {
+            toolName: REPL_TOOL_NAME,
+            toolCallId: output.toolCallId,
+            emittedAt: output.timestamp,
+          },
+        }, { triggerTurn: false });
+      } catch {
+        // Session may have been replaced or shut down before the deferred UI mirror ran.
+      }
+    }
+  }, 0);
+}
+
 export default function piRlmExtension(pi: ExtensionAPI) {
+  registerRlmFinalOutputRenderer(pi);
   pi.registerTool(createRlmReplTool(undefined, undefined, ensureSessionContextStore));
 
   pi.on("session_start", async (_event, ctx) => {
@@ -44,6 +150,22 @@ export default function piRlmExtension(pi: ExtensionAPI) {
 
   pi.on("session_shutdown", (_event, ctx) => {
     releaseSessionContextStore(ctx);
+  });
+
+  pi.on("context", (event) => {
+    return {
+      messages: event.messages.filter((message: any) => {
+        return !(message?.role === "custom" && message.customType === RLM_FINAL_OUTPUT_CUSTOM_TYPE);
+      }),
+    };
+  });
+
+  pi.on("agent_end", (event, ctx) => {
+    if (!ctx.hasUI) return;
+    const outputs = collectRlmFinalOutputs(event.messages as any[]);
+    if (outputs.length === 0) return;
+    pendingFinalOutputs.push(...outputs);
+    scheduleFinalOutputFlush(pi, ctx);
   });
 
   pi.on("before_provider_request", () => {
