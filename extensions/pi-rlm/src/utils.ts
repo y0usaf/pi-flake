@@ -196,10 +196,12 @@ function runId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export function createRunState(params: any, model?: any): RunState {
+export function createRunState(params: any, model?: any, cwd?: string): RunState {
+  const settings = cwd ? loadRlmSettings(cwd) : {};
   return {
     runId: runId(),
-    maxDepth: clamp(params?.maxDepth ?? params?.max_depth, DEFAULT_MAX_DEPTH, 1, HARD_MAX_DEPTH),
+    maxDepth: clamp(params?.maxDepth ?? params?.max_depth ?? settings.maxDepth, DEFAULT_MAX_DEPTH, 1, HARD_MAX_DEPTH),
+    maxConcurrent: clamp(params?.maxConcurrent ?? params?.max_concurrent_subcalls ?? settings.maxConcurrent, DEFAULT_MAX_CONCURRENT, 1, HARD_MAX_CONCURRENT),
     maxTurns: clamp(params?.maxTurns ?? params?.maxIterations ?? params?.max_iterations, DEFAULT_MAX_TURNS, 1, HARD_MAX_TURNS),
     budget: {
       calls: 0,
@@ -220,8 +222,8 @@ export function createRunState(params: any, model?: any): RunState {
   };
 }
 
-export function stateFor(params: any, inherited?: RunState, model?: any): RunState {
-  return inherited ?? createRunState(params, model);
+export function stateFor(params: any, inherited?: RunState, model?: any, cwd?: string): RunState {
+  return inherited ?? createRunState(params, model, cwd);
 }
 export function elapsedMs(state: RunState): number {
   return Math.max(0, Date.now() - state.budget.startTimeMs);

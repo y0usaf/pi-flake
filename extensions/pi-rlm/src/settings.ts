@@ -10,6 +10,8 @@ export interface RlmSettings {
   provider?: string;
   modelId?: string;
   models?: string[];
+  maxConcurrent?: number;
+  maxDepth?: number;
   roleModels?: Partial<Record<RlmModelRole, string>>;
 }
 
@@ -19,6 +21,12 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 function nonEmptyString(v: unknown): string | undefined {
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
+}
+
+function positiveInteger(v: unknown): number | undefined {
+  if (typeof v !== "number" || !Number.isFinite(v)) return undefined;
+  const n = Math.trunc(v);
+  return n > 0 ? n : undefined;
 }
 
 function providerModel(provider: unknown, model: unknown): string | undefined {
@@ -56,6 +64,8 @@ export function parseRlmSettings(raw: unknown): RlmSettings {
 
   const llm = nonEmptyString(raw.llmModel) ?? nonEmptyString(raw.leafModel);
   const rlm = nonEmptyString(raw.rlmModel) ?? nonEmptyString(raw.childModel);
+  const maxConcurrent = positiveInteger(raw.maxConcurrent ?? raw.max_concurrent ?? raw.max_concurrent_subcalls);
+  const maxDepth = positiveInteger(raw.maxDepth ?? raw.max_depth);
   if (llm) roleModels.llm = llm;
   if (rlm) roleModels.rlm = rlm;
 
@@ -64,6 +74,8 @@ export function parseRlmSettings(raw: unknown): RlmSettings {
     provider: nonEmptyString(raw.provider),
     modelId: nonEmptyString(raw.modelId),
     models: parsedModels.models,
+    maxConcurrent,
+    maxDepth,
     roleModels: Object.keys(roleModels).length ? roleModels : undefined,
   };
 }
@@ -111,6 +123,8 @@ function mergeRlmSettings(base: RlmSettings, override: RlmSettings): RlmSettings
     provider: override.provider ?? base.provider,
     modelId: override.modelId ?? base.modelId,
     models: override.models?.length ? override.models : base.models,
+    maxConcurrent: override.maxConcurrent ?? base.maxConcurrent,
+    maxDepth: override.maxDepth ?? base.maxDepth,
     roleModels: roleModels && Object.keys(roleModels).length ? roleModels : undefined,
   };
 }

@@ -25,7 +25,7 @@ export async function dispatchRlmCall(
   onUpdate?: any,
 ) {
   rejectUnknownParams(params);
-  const state = stateFor(params, inherited, ctx.model);
+  const state = stateFor(params, inherited, ctx.model, ctx.cwd);
   configureRunLogging(ctx.cwd, params, state);
   await logEvent(state, "dispatch_start", { call: params.call, depth: parentDepth ?? 0, prompt: typeof params.prompt === "string" ? params.prompt : undefined });
   const call = normalizeCall(params.call);

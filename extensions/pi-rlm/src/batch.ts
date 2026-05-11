@@ -38,7 +38,7 @@ export async function runBatch(
   const primitiveCall = call === "llm_query_batched" ? "llm_query" : "rlm_query";
   const kind: ExecutionKind = call === "llm_query_batched" ? "llm" : "rlm";
   const items = batchItemsFromParams(params, call);
-  const maxConcurrent = clamp(params?.maxConcurrent ?? params?.max_concurrent_subcalls, DEFAULT_MAX_CONCURRENT, 1, HARD_MAX_CONCURRENT);
+  const maxConcurrent = clamp(params?.maxConcurrent ?? params?.max_concurrent_subcalls, state.maxConcurrent ?? DEFAULT_MAX_CONCURRENT, 1, HARD_MAX_CONCURRENT);
   checkRunLimits(state);
 
   onUpdate?.({ content: [{ type: "text", text: `${call}: ${items.length} item(s), concurrency=${maxConcurrent}` }] });

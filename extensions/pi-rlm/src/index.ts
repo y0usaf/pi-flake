@@ -81,14 +81,16 @@ function registerRlmFinalOutputRenderer(pi: ExtensionAPI): void {
     const text = textFromCustomContent(message.content).trim();
     if (!text) return undefined;
 
-    const box = new Box(1, 1, (value) => theme.bg("toolSuccessBg", value));
+    // Use the custom-message palette so the mirrored final output stands apart
+    // from tool-success styling and matches VCC-style custom messages.
+    const box = new Box(1, 1, (value) => theme.bg("customMessageBg", value));
     box.addChild(new Text(
-      `${theme.fg("success", "✓")} ${theme.fg("toolTitle", theme.bold("RLM final output"))}`,
+      `${theme.fg("customMessageLabel", "✓")} ${theme.fg("customMessageLabel", theme.bold("RLM final output"))}`,
       0,
       0,
     ));
     box.addChild(new Spacer(1));
-    box.addChild(new Text(theme.fg("toolOutput", text), 0, 0));
+    box.addChild(new Text(theme.fg("customMessageText", text), 0, 0));
     return box;
   });
 }
