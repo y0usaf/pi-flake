@@ -52,7 +52,7 @@ Use normal Python capabilities instead: `import os`, `pathlib`, `json`, `subproc
 - At max depth, `rlm_query` falls back to a plain LM leaf call.
 - Leaf calls are sent with an explicit system prompt/instructions payload so providers that require an `instructions` field (for example Codex Responses) work correctly.
 - Finalization is done by assigning the answer to a variable or `state` key and calling `FINAL_VAR("name")`.
-- In interactive/RPC UI contexts, a finalized root REPL answer is also mirrored as a visible custom message with `customType: "rlm-final-output"`. This keeps the final answer visible even when tool rows are compacted by UI extensions such as `pi-compact`; the custom message is filtered out of future LLM context to avoid duplicating the tool result.
+- In interactive/RPC UI contexts, a finalized root REPL answer is also mirrored as a visible custom message with `customType: "rlm-final-output"`. This keeps the final answer visible even when tool rows are compacted by UI extensions such as `pi-compact`; the custom message is filtered out of future LLM context to avoid duplicating the tool result. The live renderer uses the custom-message color family, so it matches the VCC-style palette instead of looking like a generic tool-success row.
 
 ## Recursive-default policy
 
@@ -123,13 +123,15 @@ Model selection defaults to the parent Pi session model. Optional role-specific 
       "models": {
         "llm": "openai/gpt-5.4-mini",
         "rlm": "openai/gpt-5.4-mini"
-      }
+      },
+      "maxConcurrent": 3,
+      "maxDepth": 3
     }
   }
 }
 ```
 
-The optional `model` argument to `llm_query(..., model=...)` / `rlm_query(..., model=...)` can select a Pi-known model by id/name or `provider/model-id`.
+The optional `model` argument to `llm_query(..., model=...)` / `rlm_query(..., model=...)` can select a Pi-known model by id/name or `provider/model-id`. The extension also accepts `maxConcurrent` and `maxDepth` in `extensionSettings.pi-rlm` as local defaults for this install, overridden by per-call params.
 
 ## Limits
 

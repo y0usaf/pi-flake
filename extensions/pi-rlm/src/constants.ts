@@ -105,6 +105,7 @@ export interface Budget {
 export interface RunState {
   runId: string;
   maxDepth: number;
+  maxConcurrent?: number;
   maxTurns: number;
   budget: Budget;
   /** The model of the parent Pi session that started this RLM run. */
