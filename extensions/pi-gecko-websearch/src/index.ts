@@ -3,10 +3,10 @@
  * Uses the Marionette protocol to control a real browser with your fingerprint and cookies.
  */
 
-import { StringEnum } from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+import { StringEnum } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { BrowserManager } from "./browser.js";
 import { parseSearchResults, type SearchResult } from "./parsers.js";

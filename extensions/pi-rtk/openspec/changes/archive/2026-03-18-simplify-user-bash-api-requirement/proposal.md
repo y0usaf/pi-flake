@@ -25,4 +25,4 @@ Pi now exposes a documented `createLocalBashOperations()` helper for `user_bash`
 - Affected code: `index.ts`, `README.md`, `CHANGELOG.md`
 - Affected behavior: user `!<cmd>` optimization continues to work, but the extension now depends on Pi's exported `createLocalBashOperations()` instead of bundled compatibility code
 - Compatibility: this release becomes incompatible with Pi versions earlier than v0.60.0
-- Dependencies / systems: relies on the `@mariozechner/pi-coding-agent` API surface provided by Pi v0.60.0+
+- Dependencies / systems: relies on the `@earendil-works/pi-coding-agent` API surface provided by Pi v0.60.0+

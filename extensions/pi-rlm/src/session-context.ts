@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { MAX_INLINE_CHILD_CONTEXT_CHARS } from "./constants.js";
 import type { ContextInlineInput, ContextSource, ContextStore } from "./constants.js";

@@ -47,7 +47,8 @@ Use normal Python capabilities instead: `import os`, `pathlib`, `json`, `subproc
 
 - Root and child RLM sessions use the same REPL contract.
 - `llm_query` / `llm_query_batched` are one-shot leaf LM calls.
-- `rlm_query` / `rlm_query_batched` spawn recursive child RLM sessions.
+- `rlm_query` / `rlm_query_batched` spawn hidden in-memory child Pi sessions constrained to the same REPL-only RLM contract.
+- Child sessions receive the child RLM prompt as the actual provider system prompt/instructions payload, disable default Pi tools/extensions/skills/context-file discovery, and assert that `REPL` is the only active tool.
 - At max depth, `rlm_query` falls back to a plain LM leaf call.
 - Leaf calls are sent with an explicit system prompt/instructions payload so providers that require an `instructions` field (for example Codex Responses) work correctly.
 - Finalization is done by assigning the answer to a variable or `state` key and calling `FINAL_VAR("name")`.

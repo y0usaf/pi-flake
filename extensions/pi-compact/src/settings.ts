@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { getAgentDir } from "@mariozechner/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { state } from "./state.js";
 import { DEFAULT_PI_COMPACT_SETTINGS, type GapRenderingMode, type PiCompactSettings, type ResolvedPiCompactSettings, type ThinkingMode, type ThinkingSettings, type ToolsSettings, type UserSettings } from "./types.js";
 import { isRecord } from "./shared.js";

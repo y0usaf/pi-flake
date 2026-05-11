@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { PI_COMPACT_GLOBAL_KEY, DEFAULT_PI_COMPACT_SETTINGS } from "./types.js";
 import { state } from "./state.js";
 import { cloneGapRendering } from "./shared.js";

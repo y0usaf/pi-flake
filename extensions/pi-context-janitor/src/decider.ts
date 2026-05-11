@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { completeSimple as complete, type Model, type Usage } from "@mariozechner/pi-ai";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { completeSimple as complete, type Model, type Usage } from "@earendil-works/pi-ai";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { AUTO_MODEL_CANDIDATES, DECIDER_SYSTEM_PROMPT, MAX_DECIDER_INPUT_CHARS, MAX_DECIDER_TOKENS } from "./constants.js";
 import type { DeciderAction, DeciderObject, PendingToolCallRecord } from "./types.js";
 import { formatChars, isRecord, safeJson, stableJson, truncateMiddle } from "./utils.js";

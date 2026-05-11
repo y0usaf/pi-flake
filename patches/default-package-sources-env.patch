@@ -1,8 +1,19 @@
+diff --git a/packages/coding-agent/src/core/package-manager.ts b/packages/coding-agent/src/core/package-manager.ts
+index 8cd1baa9..996e83d2 100644
 --- a/packages/coding-agent/src/core/package-manager.ts
 +++ b/packages/coding-agent/src/core/package-manager.ts
-@@ -176,0 +177,1 @@
+@@ -195,6 +195,7 @@ const FILE_PATTERNS: Record<ResourceType, RegExp> = {
+ };
+ 
+ const IGNORE_FILE_NAMES = [".gitignore", ".ignore", ".fdignore"];
 +const DEFAULT_PACKAGE_SOURCES_ENV = "PI_DEFAULT_PACKAGES";
-@@ -196,0 +198,10 @@
+ 
+ type IgnoreMatcher = ReturnType<typeof ignore>;
+ 
+@@ -206,6 +207,16 @@ function getHomeDir(): string {
+ 	return process.env.HOME || homedir();
+ }
+ 
 +function getDefaultPackageSourcesFromEnv(): PackageSource[] {
 +	const raw = process.env[DEFAULT_PACKAGE_SOURCES_ENV];
 +	if (!raw?.trim()) return [];
@@ -10,10 +21,19 @@
 +	return raw
 +		.split(process.platform === "win32" ? ";" : ":")
 +		.map((source) => source.trim())
-+		.filter(Boolean);
++		.filter(Boolean) as PackageSource[];
 +}
 +
-@@ -851,0 +863,3 @@
+ function prefixIgnorePattern(line: string, prefix: string): string | null {
+ 	const trimmed = line.trim();
+ 	if (!trimmed) return null;
+@@ -855,6 +866,9 @@ export class DefaultPackageManager implements PackageManager {
+ 
+ 		// Collect all packages with scope (project first so cwd resources win collisions)
+ 		const allPackages: Array<{ pkg: PackageSource; scope: SourceScope }> = [];
 +		for (const pkg of getDefaultPackageSourcesFromEnv()) {
 +			allPackages.push({ pkg, scope: "temporary" });
 +		}
+ 		for (const pkg of projectSettings.packages ?? []) {
+ 			allPackages.push({ pkg, scope: "project" });
+ 		}

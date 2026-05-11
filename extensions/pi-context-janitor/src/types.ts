@@ -1,5 +1,5 @@
-import type { Usage } from "@mariozechner/pi-ai";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { Usage } from "@earendil-works/pi-ai";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export interface JanitorSettings {
 	enabled: boolean;

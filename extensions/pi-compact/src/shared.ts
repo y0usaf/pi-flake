@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { state } from "./state.js";
 import { ANSI_PATTERN, BG_MARKER, FULL_SGR_RESET_PATTERN, type GapRendering, type ToolBgToken, type CompactThinkingTiming } from "./types.js";
 

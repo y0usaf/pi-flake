@@ -1,4 +1,4 @@
-import { getAgentDir } from "@mariozechner/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { type ChildProcess, spawn, spawnSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";

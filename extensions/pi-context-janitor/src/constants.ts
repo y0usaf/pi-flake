@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { getAgentDir } from "@mariozechner/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { JanitorSettings } from "./types.js";
 
 export const SETTINGS_DIR = join(getAgentDir(), "context-janitor");

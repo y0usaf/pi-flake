@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, watchFi
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const KEY = "pi-pomodoro";
 const VERSION = 1;

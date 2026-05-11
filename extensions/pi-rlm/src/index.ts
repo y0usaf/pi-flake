@@ -4,8 +4,8 @@
  * Public extension entry point. Implementation lives in cohesive modules under src/.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { Box, Spacer, Text } from "@mariozechner/pi-tui";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Box, Spacer, Text } from "@earendil-works/pi-tui";
 
 import { REPL_TOOL_NAME, RLM_FINAL_OUTPUT_CUSTOM_TYPE } from "./constants.js";
 import { rootSystemPrompt } from "./guidance.js";
