@@ -339,11 +339,31 @@ interface BridgeContext {
   inherited?: RunState;
   parentDepth?: number;
   store?: ContextStore;
+  rlmTrace?: RlmTraceNode[];
 }
 
 type ReplStoreProvider = ContextStore | ((ctx: any) => ContextStore | undefined | Promise<ContextStore | undefined>);
 
 type FinalOutputEmitter = (output: { text: string; variableName?: string; toolCallId?: string; timestamp: number }) => void | Promise<void>;
+
+type RlmTraceStatus = "running" | "completed" | "partial" | "error" | "aborted" | "budget_exhausted" | string;
+
+interface RlmTraceNode {
+  call: string;
+  kind?: string;
+  depth?: number;
+  status?: RlmTraceStatus;
+  batch?: boolean;
+  batchSize?: number;
+  maxConcurrent?: number;
+  turns?: number;
+  model?: string;
+  prompt?: string;
+  answer?: string;
+  error?: string;
+  elapsedMs?: number;
+  children?: RlmTraceNode[];
+}
 
 async function resolveReplStore(provider: ReplStoreProvider | undefined, ctx: any): Promise<ContextStore | undefined> {
   if (!provider) return undefined;
@@ -453,6 +473,235 @@ function splitFinalOutput(text: string): { preFinal: string; final?: string } {
     preFinal: text.slice(0, match.index).trim(),
     final: (match[1] ?? "").trim(),
   };
+}
+
+
+function oneLine(value: unknown, max = 160): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.replace(/\s+/g, " ").trim();
+  return text ? clip(text, max) : undefined;
+}
+
+function traceKind(call: string): string {
+  return call.startsWith("llm_") ? "llm" : "rlm";
+}
+
+function traceStatus(details: Record<string, unknown>): RlmTraceStatus {
+  return typeof details.status === "string"
+    ? details.status
+    : details.incomplete === true
+      ? "partial"
+      : "completed";
+}
+
+function traceBatchSize(call: string, params: Record<string, unknown>): number | undefined {
+  if (!call.endsWith("_batched")) return undefined;
+  if (Array.isArray(params.items)) return params.items.length;
+  if (Array.isArray(params.prompts)) return params.prompts.length;
+  return undefined;
+}
+
+function tracePromptFromParams(call: string, params: Record<string, unknown>): string | undefined {
+  if (typeof params.prompt === "string") return oneLine(params.prompt, 240);
+  const size = traceBatchSize(call, params);
+  if (size !== undefined) return `${size} item${size === 1 ? "" : "s"}`;
+  return undefined;
+}
+
+function normalizeTraceNode(value: unknown): RlmTraceNode | undefined {
+  if (!isRecord(value)) return undefined;
+  const call = typeof value.call === "string" ? value.call : undefined;
+  if (!call) return undefined;
+  const children = Array.isArray(value.children)
+    ? value.children.map(normalizeTraceNode).filter((node): node is RlmTraceNode => Boolean(node))
+    : [];
+  const node: RlmTraceNode = {
+    call,
+    kind: typeof value.kind === "string" ? value.kind : traceKind(call),
+    depth: typeof value.depth === "number" ? value.depth : undefined,
+    status: typeof value.status === "string" ? value.status : undefined,
+    batch: value.batch === true,
+    batchSize: typeof value.batchSize === "number" ? value.batchSize : undefined,
+    maxConcurrent: typeof value.maxConcurrent === "number" ? value.maxConcurrent : undefined,
+    turns: typeof value.turns === "number" ? value.turns : undefined,
+    model: typeof value.model === "string" ? value.model : undefined,
+    prompt: oneLine(value.prompt, 240),
+    answer: oneLine(value.answer, 320),
+    error: oneLine(value.error, 320),
+    elapsedMs: typeof value.elapsedMs === "number" ? value.elapsedMs : undefined,
+  };
+  if (children.length) node.children = children;
+  return node;
+}
+
+function traceChildrenFromDetails(details: Record<string, unknown>): RlmTraceNode[] {
+  const children: RlmTraceNode[] = [];
+
+  if (Array.isArray(details.results)) {
+    for (const result of details.results) {
+      const node = traceNodeFromDetails(result);
+      if (node) children.push(node);
+    }
+  }
+
+  if (Array.isArray(details.trace)) {
+    for (const entry of details.trace) {
+      if (!isRecord(entry) || !Array.isArray(entry.rlmTrace)) continue;
+      for (const rawNode of entry.rlmTrace) {
+        const node = normalizeTraceNode(rawNode);
+        if (node) children.push(node);
+      }
+    }
+  }
+
+  return children;
+}
+
+function traceNodeFromDetails(details: unknown, fallbackCall?: string): RlmTraceNode | undefined {
+  if (!isRecord(details)) return fallbackCall ? { call: fallbackCall, kind: traceKind(fallbackCall), status: "completed" } : undefined;
+  const call = typeof details.call === "string" ? details.call : fallbackCall;
+  if (!call) return undefined;
+  const children = traceChildrenFromDetails(details);
+  const node: RlmTraceNode = {
+    call,
+    kind: typeof details.kind === "string" ? details.kind : traceKind(call),
+    depth: typeof details.depth === "number" ? details.depth : undefined,
+    status: traceStatus(details),
+    batch: details.batch === true || call.endsWith("_batched"),
+    batchSize: typeof details.batchSize === "number" ? details.batchSize : undefined,
+    maxConcurrent: typeof details.maxConcurrent === "number" ? details.maxConcurrent : undefined,
+    turns: typeof details.turns === "number" ? details.turns : undefined,
+    model: typeof details.model === "string" ? details.model : undefined,
+    prompt: oneLine(details.prompt, 240),
+    answer: oneLine(details.answer, 320),
+    error: oneLine(details.error, 320),
+  };
+  if (children.length) node.children = children;
+  return node;
+}
+
+function traceNodeFromParams(call: string, params: Record<string, unknown>): RlmTraceNode {
+  return {
+    call,
+    kind: traceKind(call),
+    status: "running",
+    batch: call.endsWith("_batched"),
+    batchSize: traceBatchSize(call, params),
+    prompt: tracePromptFromParams(call, params),
+  };
+}
+
+function updateTraceNodeFromDetails(node: RlmTraceNode, details: unknown, fallbackCall: string, elapsedMs: number): void {
+  const next = traceNodeFromDetails(details, fallbackCall);
+  if (next) Object.assign(node, next);
+  node.elapsedMs = elapsedMs;
+}
+
+function traceNodesFromUnknown(value: unknown): RlmTraceNode[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(normalizeTraceNode).filter((node): node is RlmTraceNode => Boolean(node));
+}
+
+function formatTraceDuration(ms: unknown): string | undefined {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return undefined;
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
+  return `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`;
+}
+
+function shortModel(model: string | undefined): string | undefined {
+  if (!model) return undefined;
+  const parts = model.split("/");
+  return parts.length > 1 ? parts[parts.length - 1] : model;
+}
+
+function traceStatusGlyph(status: string | undefined): string {
+  if (status === "running") return "⠋";
+  if (status === "error" || status === "aborted" || status === "budget_exhausted") return "✗";
+  if (status === "partial") return "◒";
+  return "✓";
+}
+
+function colourTraceStatus(status: string | undefined, text: string, theme: any): string {
+  if (status === "running") return theme.fg("warning", text);
+  if (status === "error" || status === "aborted" || status === "budget_exhausted") return theme.fg("error", text);
+  if (status === "partial") return theme.fg("warning", text);
+  return theme.fg("success", text);
+}
+
+function traceLabel(node: RlmTraceNode): string {
+  const size = node.batchSize !== undefined ? ` ×${node.batchSize}` : "";
+  return `${node.call}${size}`;
+}
+
+function traceMeta(node: RlmTraceNode): string {
+  const parts: string[] = [];
+  if (node.depth !== undefined) parts.push(`d=${node.depth}`);
+  if (node.turns !== undefined && node.turns > 0) parts.push(`turns=${node.turns}`);
+  const model = shortModel(node.model);
+  if (model) parts.push(model);
+  if (node.maxConcurrent !== undefined && node.batch) parts.push(`c=${node.maxConcurrent}`);
+  const duration = formatTraceDuration(node.elapsedMs);
+  if (duration) parts.push(duration);
+  if (node.status && node.status !== "completed") parts.push(node.status);
+  return parts.join(" ");
+}
+
+function renderTraceNodes(nodes: RlmTraceNode[], theme: any, lines: string[], prefix = "", expanded = false, maxLines = 120): void {
+  for (let index = 0; index < nodes.length; index++) {
+    if (lines.length >= maxLines) return;
+    const node = nodes[index];
+    const children = node.children ?? [];
+    const isLast = index === nodes.length - 1;
+    const connector = isLast ? "└─" : "├─";
+    const childPrefix = `${prefix}${isLast ? "   " : "│  "}`;
+    const treeGlyph = children.length ? "▾" : "•";
+    const statusGlyph = traceStatusGlyph(node.status);
+    const meta = traceMeta(node);
+    const prompt = node.prompt ? ` — ${clip(node.prompt, expanded ? 140 : 80)}` : "";
+    const error = node.error ? ` — ${clip(node.error, expanded ? 140 : 80)}` : "";
+    lines.push([
+      theme.fg("muted", `${prefix}${connector}`),
+      theme.fg("muted", treeGlyph),
+      colourTraceStatus(node.status, statusGlyph, theme),
+      theme.fg("toolTitle", traceLabel(node)),
+      meta ? theme.fg("muted", meta) : "",
+      error ? theme.fg("error", error) : theme.fg("muted", prompt),
+    ].filter(Boolean).join(" "));
+
+    if (expanded && node.answer && !children.length && node.status !== "running" && lines.length < maxLines) {
+      lines.push(`${theme.fg("muted", `${childPrefix}└·`)} ${theme.fg("toolOutput", clip(node.answer, 160))}`);
+    }
+
+    if (children.length) renderTraceNodes(children, theme, lines, childPrefix, expanded, maxLines);
+  }
+}
+
+function renderRlmTrace(trace: RlmTraceNode[], theme: any, expanded = false): string {
+  if (!trace.length) return "";
+  const lines = [theme.fg("muted", `recursion tree (${trace.length} root${trace.length === 1 ? "" : "s"})`)];
+  renderTraceNodes(trace, theme, lines, "", expanded);
+  if (lines.length >= 120) lines.push(theme.fg("muted", "…"));
+  return lines.join("\n");
+}
+
+function stripFinalStoredLines(text: string): string {
+  return text
+    .split("\n")
+    .filter((line) => !/^\[final stored in REPL variable/.test(line.trim()))
+    .join("\n")
+    .trim();
+}
+
+function renderReplSupplement(text: string, details: any, expanded: boolean, theme: any): string {
+  const { preFinal } = splitFinalOutput(text);
+  const raw = stripFinalStoredLines(details?.finalMirrored ? preFinal : text);
+  const mirrored = details?.finalMirrored ? theme.fg("muted", "mirrored as rlm_final") : "";
+  if (!raw || raw === "(no output)") return mirrored;
+  const output = expanded
+    ? `${theme.fg("muted", "output")}\n${theme.fg("toolOutput", clip(raw, 3000))}`
+    : theme.fg("toolOutput", clip(raw.replace(/\s+/g, " "), 240));
+  return [output, mirrored].filter(Boolean).join("\n");
 }
 
 class PythonReplWorker {
@@ -668,9 +917,32 @@ async function handleBridgeCall(method: unknown, params: unknown, bridge: Bridge
   const p = objectExtra(params);
   const call = typeof method === "string" && RLM_CALLS.includes(method as any) ? method : undefined;
   if (call) {
+    const traceNode = traceNodeFromParams(call, p);
+    bridge.rlmTrace?.push(traceNode);
+    const startedAt = Date.now();
     const paramsForDispatch = inheritSessionContextParams({ ...p, call }, bridge.store);
-    const result = await dispatchRlmCall(bridge.ctx, paramsForDispatch, bridge.inherited, bridge.parentDepth, bridge.signal, bridge.onUpdate);
-    return { text: textOf(result.content).trim(), content: result.content, details: result.details };
+    const onUpdate = bridge.onUpdate
+      ? (partial: any) => bridge.onUpdate?.({
+          ...partial,
+          details: {
+            ...(isRecord(partial?.details) ? partial.details : {}),
+            kind: "repl",
+            language: "python",
+            final: false,
+            rlmTrace: bridge.rlmTrace ?? [],
+          },
+        })
+      : undefined;
+    try {
+      const result = await dispatchRlmCall(bridge.ctx, paramsForDispatch, bridge.inherited, bridge.parentDepth, bridge.signal, onUpdate);
+      updateTraceNodeFromDetails(traceNode, result.details, call, Date.now() - startedAt);
+      return { text: textOf(result.content).trim(), content: result.content, details: result.details };
+    } catch (e) {
+      traceNode.status = "error";
+      traceNode.error = oneLine(errorText(e), 320);
+      traceNode.elapsedMs = Date.now() - startedAt;
+      throw e;
+    }
   }
 
   throw new Error(`Unknown Python REPL bridge method: ${String(method)}.`);
@@ -716,7 +988,8 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
       onUpdate?.({ content: [{ type: "text", text: `${REPL_TOOL_NAME}: evaluating Python via ${pythonCommand()} (${timeoutMs}ms local timeout; bridge calls excluded)...` }], details: { kind: "repl", language: "python", evals, final: false, timeoutMs, cwd: ctx.cwd } });
 
       const effectiveStore = await resolveReplStore(store, ctx);
-      const result = await worker.eval(params.code, timeoutMs, { ctx, signal, onUpdate, inherited, parentDepth, store: effectiveStore }, { data: params.data, setup: params.setup, resetHistory: params.resetHistory === true });
+      const rlmTrace: RlmTraceNode[] = [];
+      const result = await worker.eval(params.code, timeoutMs, { ctx, signal, onUpdate, inherited, parentDepth, store: effectiveStore, rlmTrace }, { data: params.data, setup: params.setup, resetHistory: params.resetHistory === true });
       if (!result.ok) {
         const text = clip([result.logs?.trim(), result.traceback || result.error].filter(Boolean).join("\n\n"), MAX_RESULT_CHARS);
         return {
@@ -732,6 +1005,7 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
             varKeys: result.varKeys ?? [],
             historyLength: result.historyLength ?? 0,
             contextKeys: result.contextKeys ?? [],
+            rlmTrace,
             error: result.error,
             scratchDir: effectiveStore?.scratchDir,
             contextSources: effectiveStore?.sources.map(contextSourceSummary),
@@ -780,6 +1054,7 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
           varKeys: result.varKeys ?? [],
           historyLength: result.historyLength ?? 0,
           contextKeys: result.contextKeys ?? [],
+          rlmTrace,
           scratchDir: effectiveStore?.scratchDir,
           contextSources: effectiveStore?.sources.map(contextSourceSummary),
         },
@@ -793,10 +1068,24 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
         0,
       );
     },
-    renderResult(result, { isPartial }: any, theme) {
+    renderResult(result, options: any, theme) {
       const text = textOf(result.content).trim();
       const details: any = result.details ?? {};
-      if (isPartial) return new Text(theme.fg("warning", text || "running..."), 0, 0);
+      const isPartial = Boolean(options?.isPartial);
+      const expanded = Boolean(options?.expanded);
+      const trace = traceNodesFromUnknown(details.rlmTrace);
+      const newline = String.fromCharCode(10);
+
+      if (isPartial) {
+        const partialTree = trace.length ? renderRlmTrace(trace, theme, expanded) : "";
+        const partialBody = partialTree || theme.fg("warning", text || "running...");
+        return new Text(
+          `${theme.fg("warning", "⠋")} ${theme.fg("toolTitle", theme.bold(REPL_TOOL_NAME))}${newline}${partialBody}`,
+          0,
+          0,
+        );
+      }
+
       const final = details.final ? theme.fg("success", " FINAL") : "";
       const mirrored = details.finalMirrored ? theme.fg("muted", " → rlm_final") : "";
       const vars = Array.isArray(details.varKeys) && details.varKeys.length
@@ -805,16 +1094,16 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
           ? ` state=${details.stateKeys.join(",")}`
           : "";
       const err = details.error ? theme.fg("error", " error") : "";
-      const { preFinal } = splitFinalOutput(text);
-      const body = details.finalMirrored
-        ? [
-            preFinal ? theme.fg("toolOutput", clip(preFinal.replace(/\s+/g, " "), 800)) : "",
-            theme.fg("muted", "mirrored as rlm_final"),
-          ].filter(Boolean).join(" ")
-        : theme.fg("toolOutput", clip(text.replace(/\s+/g, " "), 800));
-      const newline = String.fromCharCode(10);
+      const icon = details.error ? theme.fg("error", "✗") : theme.fg("success", "✓");
+      const tree = trace.length ? renderRlmTrace(trace, theme, expanded) : "";
+      const body = tree
+        ? [tree, renderReplSupplement(text, details, expanded, theme)].filter(Boolean).join(newline)
+        : details.finalMirrored
+          ? renderReplSupplement(text, details, expanded, theme)
+          : theme.fg("toolOutput", clip(text.replace(/\s+/g, " "), 800));
+
       return new Text(
-        `${theme.fg("success", "✓")} ${theme.fg("toolTitle", theme.bold(REPL_TOOL_NAME))}${final}${mirrored}${err}${theme.fg("muted", vars)}${newline}${body}`,
+        `${icon} ${theme.fg("toolTitle", theme.bold(REPL_TOOL_NAME))}${final}${mirrored}${err}${theme.fg("muted", vars)}${newline}${body}`,
         0,
         0,
       );
