@@ -27,6 +27,7 @@ _logs = []
 _call_seq = 0
 _final_called = False
 _final_value = None
+_final_name = None
 _last = None
 state = {}
 history = []
@@ -115,10 +116,11 @@ def rlm_query(prompt, model=None):
 def rlm_query_batched(prompts, model=None):
     return _batch_answers(_call("rlm_query_batched", _batch_params(_require_prompts(prompts, "rlm_query_batched"), model)))
 
-def _set_final(value):
-    global _final_called, _final_value, _last
+def _set_final(value, name=None):
+    global _final_called, _final_value, _final_name, _last
     _final_called = True
     _final_value = value
+    _final_name = name
     _last = value
     return value
 
@@ -128,16 +130,16 @@ def FINAL_VAR(variable_name):
     name = variable_name.strip().strip("\"'")
     g = globals()
     if name in g and not _is_protected_name(name):
-        return _set_final(g[name])
+        return _set_final(g[name], name)
     if name in state:
-        return _set_final(state[name])
+        return _set_final(state[name], name)
     available = _visible_var_keys()
     raise KeyError(name + " is not defined. Available variables: " + repr(available))
 
 def SHOW_VARS():
     available = {k: type(globals()[k]).__name__ for k in _visible_var_keys()}
     if not available:
-        return "No variables created yet. Use REPL code to create variables."
+        return "No variables created yet. Use Python code to create variables."
     return "Available variables: " + repr(available)
 
 _HELPER_NAMES = {
@@ -249,7 +251,7 @@ def _inject_data(data):
 _refresh_reserved_values()
 
 def _run_eval(msg):
-    global _final_called, _final_value, _last, history
+    global _final_called, _final_value, _final_name, _last, history
     eval_id = msg.get("id")
     code = msg.get("code") or ""
     setup = msg.get("setup") or ""
@@ -261,6 +263,7 @@ def _run_eval(msg):
     _logs.clear()
     _final_called = False
     _final_value = None
+    _final_name = None
     try:
         if setup:
             exec(compile(setup, "<pi-rlm-repl-setup>", "exec"), globals(), globals())
@@ -273,6 +276,7 @@ def _run_eval(msg):
             "id": eval_id,
             "ok": True,
             "final": _final_called,
+            "finalName": _final_name,
             "value": value,
             "logs": "".join(_logs),
             "stateKeys": sorted(str(k) for k in state.keys()),
@@ -317,6 +321,7 @@ while True:
 interface PythonEvalResult {
   ok: boolean;
   final?: boolean;
+  finalName?: string;
   value?: unknown;
   logs?: string;
   error?: string;
@@ -338,7 +343,7 @@ interface BridgeContext {
 
 type ReplStoreProvider = ContextStore | ((ctx: any) => ContextStore | undefined | Promise<ContextStore | undefined>);
 
-type FinalOutputEmitter = (output: { text: string; toolCallId?: string; timestamp: number }) => void | Promise<void>;
+type FinalOutputEmitter = (output: { text: string; variableName?: string; toolCallId?: string; timestamp: number }) => void | Promise<void>;
 
 async function resolveReplStore(provider: ReplStoreProvider | undefined, ctx: any): Promise<ContextStore | undefined> {
   if (!provider) return undefined;
@@ -422,7 +427,7 @@ function objectExtra(extra: unknown): Record<string, unknown> {
 }
 
 function rejectUnknownReplParams(params: unknown): void {
-  rejectUnknownKeys("REPL params", params, REPL_PARAM_KEYS);
+  rejectUnknownKeys("repl params", params, REPL_PARAM_KEYS);
 }
 
 function renderCodePreview(code: unknown): string {
@@ -434,6 +439,11 @@ function renderCodePreview(code: unknown): string {
 function formatPythonValue(value: unknown): string {
   if (typeof value === "string") return value;
   return JSON.stringify(value, null, 2) ?? String(value);
+}
+
+function finalStoredMessage(variableName: unknown): string {
+  const name = typeof variableName === "string" && variableName.trim() ? variableName.trim() : undefined;
+  return name ? `[final stored in REPL variable: ${name}]` : "[final stored in REPL variable]";
 }
 
 function splitFinalOutput(text: string): { preFinal: string; final?: string } {
@@ -673,7 +683,7 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
 
   return defineTool({
     name: REPL_TOOL_NAME,
-    label: "REPL",
+    label: REPL_TOOL_NAME,
     description: "Python REPL using the upstream RLM helper contract: llm_query, llm_query_batched, rlm_query, rlm_query_batched, FINAL_VAR, SHOW_VARS, state/history/context variables, and injected custom data.",
     promptSnippet: "Python REPL with upstream RLM helpers and context/history/state",
     promptGuidelines: [
@@ -730,8 +740,9 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
       }
 
       const sections: string[] = [];
+      const finalText = result.final === true ? formatPythonValue(result.value).trim() : undefined;
       if (result.logs?.trim()) sections.push(`Console:\n${result.logs.trim()}`);
-      if (result.final) sections.push(`FINAL:\n${formatPythonValue(result.value)}`);
+      if (result.final) sections.push(finalStoredMessage(result.finalName));
       else if (result.value !== undefined && result.value !== null) sections.push(`Result:\n${formatPythonValue(result.value)}`);
       if (sections.length === 0) sections.push("(no output)");
 
@@ -739,7 +750,8 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
       if (result.final === true && ctx.hasUI && emitFinalOutput) {
         try {
           await emitFinalOutput({
-            text: formatPythonValue(result.value).trim(),
+            text: finalText ?? "",
+            variableName: result.finalName,
             toolCallId,
             timestamp: Date.now(),
           });
@@ -757,6 +769,10 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
           language: "python",
           evals,
           final: result.final === true,
+          finalName: result.finalName,
+          finalVar: result.finalName,
+          finalText,
+          finalValue: result.final === true ? result.value : undefined,
           finalMirrored,
           timeoutMs,
           cwd: ctx.cwd,

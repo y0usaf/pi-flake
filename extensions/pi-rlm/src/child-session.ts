@@ -24,6 +24,7 @@ import {
   extractAnswer,
   hasReturn,
   leafPrompt,
+  isRlmReplToolName,
   normalizeContextMode,
   normPaths,
   normSources,
@@ -385,7 +386,7 @@ export async function runRlmQuery(
     session = created.session;
 
     const activeTools = typeof session.getActiveToolNames === "function" ? session.getActiveToolNames() : tools;
-    if (activeTools.length !== 1 || activeTools[0] !== REPL_TOOL_NAME) {
+    if (activeTools.length !== 1 || !isRlmReplToolName(activeTools[0])) {
       throw new Error(`Child RLM session must be REPL-only; active tools were: ${activeTools.join(", ") || "(none)"}`);
     }
 
@@ -395,7 +396,7 @@ export async function runRlmQuery(
       } else if (ev.type === "turn_end") {
         turns++;
         emit(`depth ${depth}: turn ${turns}${state.maxTurns === undefined ? "" : `/${state.maxTurns}`}`);
-        const ret = Array.isArray(ev.toolResults) && ev.toolResults.some((r: any) => r?.toolName === REPL_TOOL_NAME && r?.details?.final === true);
+        const ret = Array.isArray(ev.toolResults) && ev.toolResults.some((r: any) => isRlmReplToolName(r?.toolName) && r?.details?.final === true);
         const more = ev.message?.stopReason === "toolUse" && !ret;
         if (state.maxTurns !== undefined && turns >= state.maxTurns && more) {
           abortedByTurnLimit = true;

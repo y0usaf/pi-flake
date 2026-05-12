@@ -3,7 +3,7 @@ import * as path from "node:path";
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import { MAX_INLINE_CHILD_CONTEXT_CHARS } from "./constants.js";
+import { MAX_INLINE_CHILD_CONTEXT_CHARS, REPL_TOOL_NAME } from "./constants.js";
 import type { ContextInlineInput, ContextSource, ContextStore } from "./constants.js";
 import { buildContextManifest, contextSourceSummary, formatBytes, relPathFor } from "./context-store.js";
 import { clip, isRecord } from "./utils.js";
@@ -49,7 +49,7 @@ This directory is managed by pi-rlm and persists with the Pi session.
 - artifacts/: artifact outputs
 
 Use compact observations only. Do not dump whole context files into chat.
-REPL calls receive saved sources as context/context_N payloads. Use SHOW_VARS() and normal Python inspection. Recursive rlm_query calls made without explicit context inherit these sources.
+${REPL_TOOL_NAME} calls receive saved sources as context/context_N payloads. Use SHOW_VARS() and normal Python inspection. Recursive rlm_query calls made without explicit context inherit these sources.
 
 Sources:
 ${store.sources.length ? store.sources.map((s) => `- ${contextSourceSummary(s)}`).join("\n") : "(none yet)"}
@@ -275,7 +275,7 @@ Source:
 - path: ${source.path}
 - REPL variable: ${contextVar} once REPL loads session context
 
-Use ${"`"}REPL${"`"} to inspect it with the upstream-style REPL contract:
+Use ${"`"}${REPL_TOOL_NAME}${"`"} to inspect it with the upstream-style REPL contract:
 
 ${"```python"}
 print(SHOW_VARS())
@@ -336,14 +336,14 @@ export function sessionContextPromptBlock(store?: ContextStore): string {
   const sourceLines = store.sources.length
     ? store.sources.map((s, i) => `- context_${i}: ${contextSourceSummary(s)}`).join("\n")
     : "(no sources yet)";
-  return clip(`Root/session RLM context store is attached to ${"`"}REPL${"`"} as actual context variables.
+  return clip(`Root/session RLM context store is attached to ${"`"}${REPL_TOOL_NAME}${"`"} as actual context variables.
 - Store dir: ${store.dir}
 - Scratch dir: ${store.scratchDir}
 - Manifest: ${store.manifestPath}
 - Public REPL context is context/context_0/context_N, not ctx.*.
 - Use SHOW_VARS(), Python slicing/searching, and normal modules such as os/pathlib/json/open/subprocess to inspect context. Do not dump whole sources into chat.
 - If a user prompt was externalized, the transformed user message names the source id and corresponding context_N variable; inspect that variable before answering.
-- Recursive rlm_query / rlm_query_batched calls made from REPL inherit these sources when no explicit context/paths/sources are provided.
+- Recursive rlm_query / rlm_query_batched calls made from ${REPL_TOOL_NAME} inherit these sources when no explicit context/paths/sources are provided.
 
 Session context sources:
 ${sourceLines}`, MAX_SESSION_CONTEXT_PROMPT_CHARS);
