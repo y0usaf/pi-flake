@@ -23,10 +23,9 @@ function nonEmptyString(v: unknown): string | undefined {
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
 }
 
-function positiveInteger(v: unknown): number | undefined {
+function integerLimit(v: unknown): number | undefined {
   if (typeof v !== "number" || !Number.isFinite(v)) return undefined;
-  const n = Math.trunc(v);
-  return n > 0 ? n : undefined;
+  return Math.trunc(v);
 }
 
 function providerModel(provider: unknown, model: unknown): string | undefined {
@@ -64,8 +63,8 @@ export function parseRlmSettings(raw: unknown): RlmSettings {
 
   const llm = nonEmptyString(raw.llmModel) ?? nonEmptyString(raw.leafModel);
   const rlm = nonEmptyString(raw.rlmModel) ?? nonEmptyString(raw.childModel);
-  const maxConcurrent = positiveInteger(raw.maxConcurrent ?? raw.max_concurrent ?? raw.max_concurrent_subcalls);
-  const maxDepth = positiveInteger(raw.maxDepth ?? raw.max_depth);
+  const maxConcurrent = integerLimit(raw.maxConcurrent ?? raw.max_concurrent ?? raw.max_concurrent_subcalls);
+  const maxDepth = integerLimit(raw.maxDepth ?? raw.max_depth);
   if (llm) roleModels.llm = llm;
   if (rlm) roleModels.rlm = rlm;
 

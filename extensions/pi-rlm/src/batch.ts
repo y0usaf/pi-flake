@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import { DEFAULT_MAX_CONCURRENT, HARD_MAX_CONCURRENT } from "./constants.js";
+import { HARD_MAX_CONCURRENT } from "./constants.js";
 import type { Details, ExecutionKind } from "./constants.js";
 import { runRlmQuery } from "./child-session.js";
 import { runLlmQuery } from "./llm.js";
@@ -8,13 +8,13 @@ import {
   batchItemsFromParams,
   budgetDetails,
   checkRunLimits,
-  clamp,
   clip,
   errorText,
   modelLabel,
   modelNameFromDetails,
   normPaths,
   normSources,
+  optionalClampedLimit,
   recordError,
   resolveModel,
   runLimited,
@@ -38,7 +38,12 @@ export async function runBatch(
   const primitiveCall = call === "llm_query_batched" ? "llm_query" : "rlm_query";
   const kind: ExecutionKind = call === "llm_query_batched" ? "llm" : "rlm";
   const items = batchItemsFromParams(params, call);
-  const maxConcurrent = clamp(params?.maxConcurrent ?? params?.max_concurrent_subcalls, state.maxConcurrent ?? DEFAULT_MAX_CONCURRENT, 1, HARD_MAX_CONCURRENT);
+  const rawMaxConcurrent = params?.maxConcurrent ?? params?.max_concurrent_subcalls;
+  const requestedMaxConcurrent = optionalClampedLimit(rawMaxConcurrent, HARD_MAX_CONCURRENT);
+  const hasMaxConcurrentOverride = typeof rawMaxConcurrent === "number" && Number.isFinite(rawMaxConcurrent);
+  const maxConcurrent = hasMaxConcurrentOverride
+    ? (requestedMaxConcurrent ?? items.length)
+    : (state.maxConcurrent ?? items.length);
   checkRunLimits(state);
 
   onUpdate?.({ content: [{ type: "text", text: `${call}: ${items.length} item(s), concurrency=${maxConcurrent}` }] });

@@ -35,7 +35,7 @@ export async function runLlmQuery(
   if (call === "llm_query" || call === "llm_query_batched") rejectPathsForLlm(call, params.paths, params.contextMode, params.sources);
 
   budget.queries++;
-  if (budget.queries > budget.maxQueries) throw new Error(`llm_query budget exhausted (${budget.maxQueries}).`);
+  if (budget.maxQueries !== undefined && budget.queries > budget.maxQueries) throw new Error(`llm_query budget exhausted (${budget.maxQueries}).`);
 
   checkRunLimits(state);
   const model = resolveModel(ctx, state, "llm", params.model);

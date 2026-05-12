@@ -1,10 +1,10 @@
 // ── Defaults ────────────────────────────────────────────────────────
 
-export const DEFAULT_MAX_DEPTH = 4;
-export const DEFAULT_MAX_TURNS = 20;
-export const DEFAULT_MAX_CALLS = 32;
-export const DEFAULT_MAX_QUERIES = 64;
-export const DEFAULT_MAX_CONCURRENT = 4;
+export const DEFAULT_MAX_DEPTH = 5; // Per-call/config <=0 = unlimited
+export const DEFAULT_MAX_TURNS = 30; // Per-call/config <=0 = unlimited
+export const DEFAULT_MAX_CALLS = 128; // Per-call/config <=0 = unlimited
+export const DEFAULT_MAX_QUERIES = 256; // Per-call/config <=0 = unlimited
+export const DEFAULT_MAX_CONCURRENT = 5; // Per-call/config <=0 = no explicit cap
 export const DEFAULT_MAX_TIMEOUT_MS = 0; // 0 = unlimited
 export const DEFAULT_MAX_TOKENS = 0; // 0 = unlimited
 export const DEFAULT_MAX_BUDGET = 0; // USD, 0 = unlimited
@@ -35,7 +35,7 @@ export const HARD_CTX_GREP_MATCHES = 200;
 export const MAX_CTX_GREP_FILES = 5_000;
 
 export const REPL_TOOL_NAME = "REPL";
-export const RLM_FINAL_OUTPUT_CUSTOM_TYPE = "rlm-final-output";
+export const RLM_FINAL_OUTPUT_CUSTOM_TYPE = "rlm_final";
 
 export const RLM_CALLS = ["llm_query", "llm_query_batched", "rlm_query", "rlm_query_batched"] as const;
 export type RlmCall = typeof RLM_CALLS[number];
@@ -89,9 +89,9 @@ export interface ContextStore {
 
 export interface Budget {
   calls: number;
-  maxCalls: number;
+  maxCalls: number | undefined;
   queries: number;
-  maxQueries: number;
+  maxQueries: number | undefined;
   tokens: number;
   maxTokens: number; // 0 = unlimited
   cost: number;
@@ -104,9 +104,9 @@ export interface Budget {
 
 export interface RunState {
   runId: string;
-  maxDepth: number;
-  maxConcurrent?: number;
-  maxTurns: number;
+  maxDepth: number | undefined;
+  maxConcurrent: number | undefined;
+  maxTurns: number | undefined;
   budget: Budget;
   /** The model of the parent Pi session that started this RLM run. */
   model?: any;
@@ -132,13 +132,13 @@ export interface Details {
   call: RlmCall;
   kind: ExecutionKind;
   depth: number;
-  maxDepth: number;
+  maxDepth: number | undefined;
   callsUsed: number;
-  maxCalls: number;
+  maxCalls: number | undefined;
   queriesUsed: number;
-  maxQueries: number;
+  maxQueries: number | undefined;
   turns: number;
-  maxTurns: number;
+  maxTurns: number | undefined;
   model: string;
   status?: "completed" | "partial" | "error" | "aborted" | "budget_exhausted";
   tokensUsed?: number;
@@ -162,6 +162,7 @@ export interface Details {
   answer?: string;
   trace?: Array<{ role: string; toolName?: string; text: string }>;
   completedWithReturn?: boolean;
+  finalMirrored?: boolean;
   finalizationRequested?: boolean;
   deterministicFinalized?: boolean;
   deterministicFinalizationReason?: string;
