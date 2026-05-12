@@ -253,6 +253,12 @@ nix build .#pi-full
 # Enter dev shell
 nix develop
 
+# Run Biome linting
+nix develop -c biome lint .
+
+# Run the Biome flake check only (replace the system if needed)
+nix build .#checks.x86_64-linux.biome-lint
+
 ```
 
 ---

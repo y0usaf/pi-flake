@@ -219,8 +219,34 @@
 
     checks = forAllSystems (system: let
       pkgs = pkgsFor.${system};
+      lib = pkgs.lib;
     in {
       pi-build = self.packages.${system}.pi;
+
+      biome-lint = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-flake-biome-lint";
+        version = "1";
+        src = lib.cleanSourceWith {
+          src = ./.;
+          filter = path: type: let
+            name = baseNameOf path;
+          in
+            !(name == ".git"
+              || name == "node_modules"
+              || name == "ref"
+              || name == "result"
+              || lib.hasPrefix "result-" name);
+        };
+        nativeBuildInputs = [pkgs.biome];
+        dontConfigure = true;
+        dontBuild = true;
+        installPhase = ''
+          runHook preInstall
+          biome lint .
+          touch $out
+          runHook postInstall
+        '';
+      };
 
       patch-disable-install-telemetry = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-patch-disable-install-telemetry";
@@ -315,6 +341,7 @@
           [
             nodejs_22
             bun
+            biome
             python3
             pkg-config
           ]
