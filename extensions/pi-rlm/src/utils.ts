@@ -196,7 +196,7 @@ export function modelLabel(model: any): string {
   return model ? `${model.provider}/${model.id}` : "unknown";
 }
 
-function findConfiguredModel(ctx: ExtensionContext, selector: string) {
+export function findConfiguredModel(ctx: ExtensionContext, selector: string) {
   const slash = selector.indexOf("/");
   if (slash > 0) {
     const provider = selector.slice(0, slash);
@@ -209,13 +209,17 @@ function findConfiguredModel(ctx: ExtensionContext, selector: string) {
   return all.find((m: any) => m.id === selector || m.name === selector || `${m.provider}/${m.id}` === selector || `${m.provider}/${m.name}` === selector);
 }
 
+export function resolveModelSelector(ctx: ExtensionContext, selector: string) {
+  const found = findConfiguredModel(ctx, selector.trim());
+  if (found) return found;
+  throw new Error(`Unknown pi-rlm model selector ${JSON.stringify(selector)}. Use provider/model-id or a model id/name known to Pi.`);
+}
+
 export function resolveModel(ctx: ExtensionContext, state: RunState, role: RlmModelRole = "default", override?: string) {
   if (!state.model) state.model = ctx.model;
   const selector = override?.trim() || modelSelectorForRole(loadRlmSettings(ctx.cwd), role);
   if (!selector) return state.model;
-  const found = findConfiguredModel(ctx, selector);
-  if (found) return found;
-  throw new Error(`Unknown pi-rlm model selector ${JSON.stringify(selector)}. Use provider/model-id or a model id/name known to Pi.`);
+  return resolveModelSelector(ctx, selector);
 }
 
 function optionalCap(raw: unknown, fallback: number, hard: number): number {

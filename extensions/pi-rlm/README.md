@@ -115,13 +115,14 @@ Child RLM sessions also expose only `repl`. There is no separate public `rlm` to
 
 ## Configuration
 
-Model selection defaults to the parent Pi session model. Optional role-specific model selectors can be configured in Pi settings:
+Model selection defaults to the parent Pi session model unless `extensionSettings.pi-rlm` selects a model. When a selector is configured, pi-rlm enforces it for both the root coordinator session and recursive child calls so an expensive normal Pi default does not leak into RLM runs.
 
 ```json
 {
   "extensionSettings": {
     "pi-rlm": {
       "models": {
+        "root": "openai/gpt-5.4-mini",
         "llm": "openai/gpt-5.4-mini",
         "rlm": "openai/gpt-5.4-mini"
       },
@@ -131,6 +132,20 @@ Model selection defaults to the parent Pi session model. Optional role-specific 
   }
 }
 ```
+
+For simple installs, this is equivalent and applies to `root`, `llm`, and `rlm` unless a role-specific selector overrides it:
+
+```json
+{
+  "extensionSettings": {
+    "pi-rlm": {
+      "models": ["openai/gpt-5.4-mini"]
+    }
+  }
+}
+```
+
+If you use a role-object config and omit `root`, the root coordinator falls back to the `rlm` selector, then `llm`, so existing `llm`/`rlm` submodel configs also protect the root coordinator. Set `"enforceRootModel": false` only if you intentionally want the root RLM coordinator to keep the current Pi session model while child calls use the configured submodel.
 
 The optional `model` argument to `llm_query(..., model=...)` / `rlm_query(..., model=...)` can select a Pi-known model by id/name or `provider/model-id`. The extension also accepts `maxConcurrent` and `maxDepth` in `extensionSettings.pi-rlm` as local defaults for this install, overridden by per-call params. Omitted limits use pi-rlm's guardrail defaults; set a limit to `0` or a negative number to disable that cap.
 
