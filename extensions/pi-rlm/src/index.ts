@@ -4,8 +4,8 @@
  * Public extension entry point. Implementation lives in cohesive modules under src/.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Box, Spacer, Text } from "@earendil-works/pi-tui";
+import { getMarkdownTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Box, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 
 import { REPL_TOOL_NAME, RLM_FINAL_OUTPUT_CUSTOM_TYPE } from "./constants.js";
 import { rootSystemPrompt } from "./guidance.js";
@@ -139,7 +139,9 @@ function registerRlmFinalOutputRenderer(pi: ExtensionAPI): void {
       0,
     ));
     box.addChild(new Spacer(1));
-    box.addChild(new Text(theme.fg("customMessageText", text), 0, 0));
+    box.addChild(new Markdown(text, 0, 0, getMarkdownTheme(), {
+      color: (value) => theme.fg("customMessageText", value),
+    }));
     return box;
   });
 }

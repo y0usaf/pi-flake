@@ -1,0 +1,64 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.4.11/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "ignoreUnknown": true,
+    "includes": [
+      "*.json",
+      "*.jsonc",
+      "extensions/**/*.ts",
+      "extensions/**/*.tsx",
+      "extensions/**/*.js",
+      "extensions/**/*.mjs",
+      "extensions/**/*.cjs",
+      "extensions/**/*.json",
+      "extensions/**/*.jsonc",
+      "!extensions/**/node_modules"
+    ]
+  },
+  // Formatting is intentionally left to existing tooling; this setup only enables linting.
+  "formatter": {
+    "enabled": false
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      // Baseline-friendly opt-outs for existing extension code patterns.
+      "complexity": {
+        "noCommaOperator": "off",
+        "noUselessEscapeInRegex": "off",
+        "noUselessUndefinedInitialization": "off",
+        "useOptionalChain": "off"
+      },
+      "correctness": {
+        "noUnusedImports": "off",
+        "noUnusedPrivateClassMembers": "off",
+        "noUnusedVariables": "off",
+        "useParseIntRadix": "off"
+      },
+      "style": {
+        "noNonNullAssertion": "off",
+        "useConst": "off",
+        "useImportType": "off",
+        "useNodejsImportProtocol": "off",
+        "useTemplate": "off"
+      },
+      "suspicious": {
+        "noAssignInExpressions": "off",
+        "noControlCharactersInRegex": "off",
+        "noExplicitAny": "off",
+        "noGlobalIsNan": "off",
+        "noImplicitAnyLet": "off",
+        "noPrototypeBuiltins": "off"
+      }
+    }
+  },
+  "assist": {
+    "enabled": false
+  }
+}
