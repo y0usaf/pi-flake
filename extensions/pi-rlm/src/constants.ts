@@ -160,7 +160,7 @@ export interface Details {
   scratchDir?: string;
   contextSources?: string[];
   answer?: string;
-  trace?: Array<{ role: string; toolName?: string; text: string }>;
+  trace?: Array<{ role: string; toolName?: string; text: string; rlmTrace?: unknown[] }>;
   completedWithReturn?: boolean;
   finalMirrored?: boolean;
   finalizationRequested?: boolean;
