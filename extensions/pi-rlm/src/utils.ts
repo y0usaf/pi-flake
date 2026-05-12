@@ -185,15 +185,11 @@ export function extractAnswer(messages: any[]): string {
 }
 
 export function traceOf(messages: any[]) {
-  return messages.map((m) => {
-    const entry: { role: string; toolName?: string; text: string; rlmTrace?: unknown[] } = {
-      role: typeof m?.role === "string" ? m.role : "?",
-      toolName: typeof m?.toolName === "string" ? m.toolName : undefined,
-      text: clip(textOf(m?.content).replace(/\s+/g, " ").trim(), MAX_TRACE_TEXT_CHARS),
-    };
-    if (Array.isArray(m?.details?.rlmTrace)) entry.rlmTrace = m.details.rlmTrace;
-    return entry;
-  });
+  return messages.map((m) => ({
+    role: typeof m?.role === "string" ? m.role : "?",
+    toolName: typeof m?.toolName === "string" ? m.toolName : undefined,
+    text: clip(textOf(m?.content).replace(/\s+/g, " ").trim(), MAX_TRACE_TEXT_CHARS),
+  }));
 }
 
 export function modelLabel(model: any): string {
