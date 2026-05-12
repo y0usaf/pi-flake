@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
-export type RlmModelRole = "default" | "root" | "llm" | "rlm";
+export type RlmModelRole = "default" | "llm" | "rlm";
 
 export interface RlmSettings {
   model?: string;
@@ -12,8 +12,6 @@ export interface RlmSettings {
   models?: string[];
   maxConcurrent?: number;
   maxDepth?: number;
-  /** When true/default, root pi-rlm sessions are switched to the configured root/default model before each agent turn. */
-  enforceRootModel?: boolean;
   roleModels?: Partial<Record<RlmModelRole, string>>;
 }
 
@@ -47,11 +45,9 @@ function parseModels(raw: unknown): { models?: string[]; roleModels?: Partial<Re
 
   const roleModels: Partial<Record<RlmModelRole, string>> = {};
   const def = nonEmptyString(raw.default) ?? providerModel(raw.provider, raw.modelId ?? raw.model) ?? nonEmptyString(raw.model) ?? nonEmptyString(raw.modelId);
-  const root = nonEmptyString(raw.root) ?? nonEmptyString(raw.coordinator) ?? nonEmptyString(raw.orchestrator) ?? nonEmptyString(raw.rootModel) ?? nonEmptyString(raw.coordinatorModel) ?? nonEmptyString(raw.orchestratorModel);
   const llm = nonEmptyString(raw.llm) ?? nonEmptyString(raw.leaf) ?? nonEmptyString(raw.llmModel);
   const rlm = nonEmptyString(raw.rlm) ?? nonEmptyString(raw.child) ?? nonEmptyString(raw.rlmModel) ?? nonEmptyString(raw.childModel);
   if (def) roleModels.default = def;
-  if (root) roleModels.root = root;
   if (llm) roleModels.llm = llm;
   if (rlm) roleModels.rlm = rlm;
   return Object.keys(roleModels).length ? { roleModels } : {};
@@ -65,19 +61,10 @@ export function parseRlmSettings(raw: unknown): RlmSettings {
   const parsedModels = parseModels(raw.models);
   const roleModels: Partial<Record<RlmModelRole, string>> = { ...parsedModels.roleModels };
 
-  const root = nonEmptyString(raw.root) ?? nonEmptyString(raw.coordinator) ?? nonEmptyString(raw.orchestrator) ?? nonEmptyString(raw.rootModel) ?? nonEmptyString(raw.coordinatorModel) ?? nonEmptyString(raw.orchestratorModel);
   const llm = nonEmptyString(raw.llmModel) ?? nonEmptyString(raw.leafModel);
   const rlm = nonEmptyString(raw.rlmModel) ?? nonEmptyString(raw.childModel);
   const maxConcurrent = integerLimit(raw.maxConcurrent ?? raw.max_concurrent ?? raw.max_concurrent_subcalls);
   const maxDepth = integerLimit(raw.maxDepth ?? raw.max_depth);
-  const enforceRootModel = typeof raw.enforceRootModel === "boolean"
-    ? raw.enforceRootModel
-    : typeof raw.forceRootModel === "boolean"
-      ? raw.forceRootModel
-      : typeof raw.rootModelEnforced === "boolean"
-        ? raw.rootModelEnforced
-        : undefined;
-  if (root) roleModels.root = root;
   if (llm) roleModels.llm = llm;
   if (rlm) roleModels.rlm = rlm;
 
@@ -88,7 +75,6 @@ export function parseRlmSettings(raw: unknown): RlmSettings {
     models: parsedModels.models,
     maxConcurrent,
     maxDepth,
-    enforceRootModel,
     roleModels: Object.keys(roleModels).length ? roleModels : undefined,
   };
 }
@@ -127,11 +113,8 @@ function mergeRoleModels(
 
 function mergeRlmSettings(base: RlmSettings, override: RlmSettings): RlmSettings {
   const roleModels = mergeRoleModels(base.roleModels, override.roleModels);
-  const overrideHasGeneralModel = override.model !== undefined || (override.models?.length ?? 0) > 0;
-  if (roleModels && overrideHasGeneralModel) {
-    for (const role of ["default", "root", "llm", "rlm"] as RlmModelRole[]) {
-      if (override.roleModels?.[role] === undefined) delete roleModels[role];
-    }
+  if (roleModels && override.roleModels?.default === undefined && (override.model !== undefined || (override.models?.length ?? 0) > 0)) {
+    delete roleModels.default;
   }
 
   return {
@@ -141,7 +124,6 @@ function mergeRlmSettings(base: RlmSettings, override: RlmSettings): RlmSettings
     models: override.models?.length ? override.models : base.models,
     maxConcurrent: override.maxConcurrent ?? base.maxConcurrent,
     maxDepth: override.maxDepth ?? base.maxDepth,
-    enforceRootModel: override.enforceRootModel ?? base.enforceRootModel,
     roleModels: roleModels && Object.keys(roleModels).length ? roleModels : undefined,
   };
 }
@@ -154,16 +136,6 @@ export function loadRlmSettings(cwd: string): RlmSettings {
 }
 
 export function modelSelectorForRole(settings: RlmSettings, role: RlmModelRole = "default"): string | undefined {
-  if (role === "root") {
-    return settings.roleModels?.root
-      ?? settings.roleModels?.default
-      ?? settings.model
-      ?? settings.models?.[0]
-      ?? settings.roleModels?.rlm
-      ?? settings.roleModels?.llm
-      ?? providerModel(settings.provider, settings.modelId);
-  }
-
   return settings.roleModels?.[role]
     ?? settings.roleModels?.default
     ?? settings.model
