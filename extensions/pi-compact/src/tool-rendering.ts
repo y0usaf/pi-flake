@@ -3,7 +3,7 @@ import { state } from "./state.js";
 import { MAX_RESULT_LENGTH, MAX_SUMMARY_LENGTH, TOOL_ORIGINAL_RENDER_KEY, TOOL_ORIGINAL_SET_EXPANDED_KEY, TOOL_RULE, TOOL_SPINNER_FRAME_KEY, TOOL_SPINNER_INTERVAL_KEY, type ToolBgToken } from "./types.js";
 import { clip, colourDiffAdded, colourDiffRemoved, countDetailsLineDiff, firstTextLine, formatScalar, getThemeToolBgFn, isBlankRenderedLine, isRecord, lineCount, normalizePath, renderOneLine, replaceTabs, squash, textLineCount } from "./shared.js";
 
-const REPL_TOOL_NAME = "REPL";
+const REPL_TOOL_NAME = "repl";
 const REPL_BOOTSTRAP_MODULES = new Set([
   "collections",
   "datetime",
@@ -107,13 +107,13 @@ export function summarizeReplCode(code: unknown, setup: unknown): string {
 
 function isReplBootstrapRenderedLine(line: string): boolean {
   const plain = squash(line);
-  const match = plain.match(/^REPL\s+(.+)$/i);
+  const match = plain.match(/^repl\s+(.+)$/i);
   return Boolean(match && isReplBootstrapImportLine(match[1]));
 }
 
 function cleanReplStatusLine(line: string): string {
   const plain = squash(line);
-  if (!/^[✓✗⠋]\s+REPL\b/.test(plain)) return line;
+  if (!/^[✓✗⠋]\s+repl\b/i.test(plain)) return line;
   return line.replace(/\s+vars=[^\x1b\n]*/g, "");
 }
 
@@ -348,12 +348,16 @@ export type ToolExecutionWithShells = {
   toolName?: string;
   args?: any;
   result?: { isError?: boolean };
-  ui?: { requestRender?: () => void };
+  ui?: { requestRender?: (force?: boolean) => void };
   [TOOL_SPINNER_INTERVAL_KEY]?: ReturnType<typeof setInterval>;
   [TOOL_SPINNER_FRAME_KEY]?: number;
 };
 
 const toolExpandedState = new WeakMap<object, boolean>();
+
+export function hasToolExpandedState(component: ToolExecutionWithShells): boolean {
+  return toolExpandedState.has(component);
+}
 
 export function getToolExpanded(component: ToolExecutionWithShells): boolean {
   const tracked = toolExpandedState.get(component);
@@ -365,7 +369,7 @@ export function setToolExpandedState(component: ToolExecutionWithShells, expande
   toolExpandedState.set(component, expanded);
 }
 
-export function requestToolRender(component: ToolExecutionWithShells): void {
+export function requestToolRender(component: ToolExecutionWithShells, force = false): void {
   const requestRender = component.ui?.requestRender;
   if (typeof requestRender !== "function") {
     stopToolSpinner(component);
@@ -373,7 +377,7 @@ export function requestToolRender(component: ToolExecutionWithShells): void {
   }
 
   try {
-    requestRender.call(component.ui);
+    requestRender.call(component.ui, force);
   } catch {
     stopToolSpinner(component);
   }
@@ -434,6 +438,14 @@ export function withPaddingY<T>(shells: BoxWithVerticalPadding[], paddingY: numb
     });
   }
 }
+
+export function clearToolShellCaches(component: ToolExecutionWithShells): void {
+  const shells = [getVerticalPaddingShell(component.contentBox), getVerticalPaddingShell(component.contentText)].filter(
+    (shell): shell is BoxWithVerticalPadding => shell !== undefined,
+  );
+  for (const shell of shells) clearShellCache(shell);
+}
+
 export function withoutLeadingBlankLine(lines: string[]): string[] {
   return lines.length > 0 && isBlankRenderedLine(lines[0]) ? lines.slice(1) : lines;
 }
@@ -492,9 +504,23 @@ export function patchToolExecutionComponent(): boolean {
       // its actual expansion flag in a private #expanded field that patches
       // cannot read. Without this mirror, compact rendering always thinks the
       // tool is collapsed and fights the native expanded display.
-      setToolExpandedState(this, expanded);
+      const hadTrackedExpansion = hasToolExpandedState(this);
+      const wasExpanded = getToolExpanded(this);
       const result = originalSetExpanded.call(this, expanded);
+      setToolExpandedState(this, expanded);
       syncToolSpinnerForCurrentExpansion(this);
+
+      // Collapsing expanded tool output back to one compact row can shrink the
+      // rendered chat by many off-screen rows. Pi's differential renderer usually
+      // clears visible rows, but terminal scrollback can retain old expanded
+      // output and make the session look duplicated until it is reopened. Force a
+      // single full redraw on real compact-mode collapses, matching the clean
+      // state users get after reopening without making every render expensive.
+      if (state.toolRendering.mode === "compact" && hadTrackedExpansion && wasExpanded !== expanded && !expanded) {
+        clearToolShellCaches(this);
+        requestToolRender(this, true);
+      }
+
       return result;
     };
 

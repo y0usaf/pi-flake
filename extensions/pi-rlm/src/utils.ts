@@ -121,25 +121,50 @@ export function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-function isReplFinalResult(m: any): boolean {
-  return m?.role === "toolResult" && m.toolName === REPL_TOOL_NAME && m.details?.final === true;
+export function isRlmReplToolName(toolName: unknown): boolean {
+  return typeof toolName === "string" && toolName.trim().toLowerCase() === REPL_TOOL_NAME.toLowerCase();
 }
-function replFinalText(m: any): string {
+
+function isReplFinalResult(m: any): boolean {
+  return m?.role === "toolResult" && isRlmReplToolName(m.toolName) && m.details?.final === true;
+}
+
+function hasOwn(obj: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function formatStructuredFinalValue(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  try {
+    return (JSON.stringify(value, null, 2) ?? String(value)).trim();
+  } catch {
+    return String(value).trim();
+  }
+}
+
+function replFinalText(m: any): string | undefined {
+  const details = m?.details;
+  if (details && typeof details === "object") {
+    if (typeof details.finalText === "string") return details.finalText.trim();
+    if (hasOwn(details, "finalValue")) return formatStructuredFinalValue(details.finalValue);
+  }
+
+  // Legacy fallback for pre-variable-only pi-rlm results.
   const t = textOf(m?.content).trim();
   const match = t.match(/(?:^|\n)FINAL:\s*\n?([\s\S]*)$/);
-  return (match?.[1] ?? t).trim();
+  const legacy = (match?.[1] ?? t).trim();
+  return legacy || undefined;
 }
 
 export function hasReturn(messages: any[]): boolean {
-  return messages.some((m) => isReplFinalResult(m) && replFinalText(m).length > 0);
+  return messages.some((m) => isReplFinalResult(m));
 }
 
 export function extractAnswer(messages: any[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (isReplFinalResult(m)) {
-      const t = replFinalText(m);
-      if (t) return t;
+      return replFinalText(m) ?? "";
     }
   }
   for (let i = messages.length - 1; i >= 0; i--) {

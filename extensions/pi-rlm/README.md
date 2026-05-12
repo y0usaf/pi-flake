@@ -5,10 +5,10 @@ Pi-hosted Recursive Language Model (RLM) extension using the upstream-style REPL
 The model-visible surface is intentionally small:
 
 ```text
-REPL
+repl
 ```
 
-Inside `REPL`, the public Python namespace exposes only the RLM primitives and REPL state/context variables:
+Inside `repl`, the public Python namespace exposes only the RLM primitives and REPL state/context variables:
 
 ```python
 llm_query(prompt, model=None)          # -> str
@@ -48,11 +48,12 @@ Use normal Python capabilities instead: `import os`, `pathlib`, `json`, `subproc
 - Root and child RLM sessions use the same REPL contract.
 - `llm_query` / `llm_query_batched` are one-shot leaf LM calls.
 - `rlm_query` / `rlm_query_batched` spawn hidden in-memory child Pi sessions constrained to the same REPL-only RLM contract.
-- Child sessions receive the child RLM prompt as the actual provider system prompt/instructions payload, disable default Pi tools/extensions/skills/context-file discovery, and assert that `REPL` is the only active tool.
+- Child sessions receive the child RLM prompt as the actual provider system prompt/instructions payload, disable default Pi tools/extensions/skills/context-file discovery, and assert that `repl` is the only active tool.
 - At the configured/default max depth, `rlm_query` falls back to a plain LM leaf call; setting `maxDepth` to `0` or a negative number disables that depth cap.
 - Leaf calls are sent with an explicit system prompt/instructions payload so providers that require an `instructions` field (for example Codex Responses) work correctly.
-- Finalization is done by assigning the answer to a variable or `state` key and calling `FINAL_VAR("name")`.
-- In interactive/RPC UI contexts, a finalized root REPL answer is also mirrored as a visible custom message with `customType: "rlm_final"`. This keeps the final answer visible even when tool rows are compacted by UI extensions such as `pi-compact`; the custom message is filtered out of future LLM context to avoid duplicating the tool result. The live renderer uses the custom-message color family, so it matches the VCC-style palette instead of looking like a generic tool-success row.
+- Finalization is done by assigning the answer to a variable or `state` key and calling `FINAL_VAR("name")`. The REPL tool result records the final variable name/value in structured `details` and only returns a small placeholder in visible tool content; it does not duplicate the answer as `FINAL:` text.
+- In interactive/RPC UI contexts, a finalized root REPL answer is displayed as a visible custom message with `customType: "rlm_final"`. This keeps the final answer visible even when tool rows are compacted by UI extensions such as `pi-compact`; the custom message is filtered out of future LLM context, so the final answer lives in the REPL variable channel rather than normal chat history. The live renderer uses the custom-message color family, so it matches the VCC-style palette instead of looking like a generic tool-success row.
+- Direct assistant prose is not a valid answer channel in root pi-rlm sessions. If a model emits text outside a REPL tool call, pi-rlm strips that text from the persisted/context message and only `repl`/`FINAL_VAR` output is accepted.
 
 ## Recursive-default policy
 
@@ -61,7 +62,7 @@ Use normal Python capabilities instead: `import os`, `pathlib`, `json`, `subproc
 - Use `rlm_query` / `rlm_query_batched` for multi-file, multi-source, audit/review, uncertain, long-context, or naturally parallel subtasks.
 - Use `llm_query` / `llm_query_batched` only for narrow one-shot leaf extraction/classification/summarization over already extracted text.
 - Prefer batched recursive child calls for independent chunks/subtasks.
-- Final answers should come through `FINAL_VAR`, not a direct chat answer.
+- Final answers must come through `FINAL_VAR`, not a direct chat answer. Direct assistant prose is suppressed from future context.
 
 Example:
 
@@ -100,17 +101,17 @@ context_2
 
 Use `SHOW_VARS()` to see what is loaded. For large strings, search/slice in Python and print compact observations only.
 
-Externalized user input messages name the source id and corresponding `context_N` variable. Inspect that variable in `REPL`; do not answer from the preview alone unless the preview fully contains the task.
+Externalized user input messages name the source id and corresponding `context_N` variable. Inspect that variable in `repl`; do not answer from the preview alone unless the preview fully contains the task.
 
 ## Tool policy
 
 The active root Pi tool set is exactly:
 
 ```text
-REPL
+repl
 ```
 
-Child RLM sessions also expose only `REPL`. There is no separate public `rlm` tool, `ctx` tool, or `pi_return` tool.
+Child RLM sessions also expose only `repl`. There is no separate public `rlm` tool, `ctx` tool, or `pi_return` tool.
 
 ## Configuration
 

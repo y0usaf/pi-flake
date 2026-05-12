@@ -18,7 +18,7 @@ import {
   sessionContextPromptBlock,
   shouldExternalizeInput,
 } from "./session-context.js";
-import { textOf } from "./utils.js";
+import { isRlmReplToolName, textOf } from "./utils.js";
 
 const ROOT_MODE = "repl";
 
@@ -33,6 +33,7 @@ function enforceRootTools(pi: ExtensionAPI): string {
 
 type PendingFinalOutput = {
   text: string;
+  variableName?: string;
   toolCallId?: string;
   timestamp: number;
 };
@@ -53,23 +54,51 @@ function textFromCustomContent(content: unknown): string {
     .join("\n");
 }
 
+function hasOwn(obj: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function formatStructuredFinalValue(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  try {
+    return (JSON.stringify(value, null, 2) ?? String(value)).trim();
+  } catch {
+    return String(value).trim();
+  }
+}
+
 function rlmFinalText(message: any): string {
+  const details = message?.details;
+  if (details && typeof details === "object") {
+    if (typeof details.finalText === "string") return details.finalText.trim();
+    if (hasOwn(details, "finalValue")) return formatStructuredFinalValue(details.finalValue);
+  }
+
+  // Legacy fallback for pre-variable-only pi-rlm tool results.
   const text = textOf(message?.content).trim();
   const match = text.match(/(?:^|\n)FINAL:\s*\n?([\s\S]*)$/);
   return (match?.[1] ?? text).trim();
+}
+
+function rlmFinalVariableName(message: any): string | undefined {
+  const details = message?.details;
+  if (!details || typeof details !== "object") return undefined;
+  const name = typeof details.finalVar === "string" ? details.finalVar : typeof details.finalName === "string" ? details.finalName : undefined;
+  return name?.trim() || undefined;
 }
 
 function collectRlmFinalOutputs(messages: any[]): PendingFinalOutput[] {
   const outputs: PendingFinalOutput[] = [];
   for (const message of messages) {
     if (message?.role !== "toolResult") continue;
-    if (message.toolName !== REPL_TOOL_NAME) continue;
+    if (!isRlmReplToolName(message.toolName)) continue;
     if (message.details?.final !== true) continue;
     if (message.details?.finalMirrored === true) continue;
     const text = rlmFinalText(message);
     if (!text) continue;
     outputs.push({
       text,
+      variableName: rlmFinalVariableName(message),
       toolCallId: typeof message.toolCallId === "string" ? message.toolCallId : undefined,
       timestamp: Date.now(),
     });
@@ -84,6 +113,7 @@ function emitRlmFinalOutput(pi: ExtensionAPI, output: PendingFinalOutput): void 
     display: true,
     details: {
       toolName: "rlm_final",
+      variableName: output.variableName,
       toolCallId: output.toolCallId,
       emittedAt: output.timestamp,
     },
@@ -95,11 +125,16 @@ function registerRlmFinalOutputRenderer(pi: ExtensionAPI): void {
     const text = textFromCustomContent(message.content).trim();
     if (!text) return undefined;
 
-    // Use the custom-message palette so the mirrored final output stands apart
+    const variableName = typeof (message.details as any)?.variableName === "string" && (message.details as any).variableName.trim()
+      ? (message.details as any).variableName.trim()
+      : undefined;
+    const label = variableName ? `rlm_final:${variableName}` : "rlm_final";
+
+    // Use the custom-message palette so the variable final output stands apart
     // from tool-success styling and matches VCC-style custom messages.
     const box = new Box(1, 1, (value) => theme.bg("customMessageBg", value));
     box.addChild(new Text(
-      `${theme.fg("customMessageLabel", "✓")} ${theme.fg("customMessageLabel", theme.bold("rlm_final"))}`,
+      `${theme.fg("customMessageLabel", "✓")} ${theme.fg("customMessageLabel", theme.bold(label))}`,
       0,
       0,
     ));
@@ -139,6 +174,7 @@ function scheduleFinalOutputFlush(pi: ExtensionAPI, ctx: ExtensionContext): void
           display: true,
           details: {
             toolName: REPL_TOOL_NAME,
+            variableName: output.variableName,
             toolCallId: output.toolCallId,
             emittedAt: output.timestamp,
           },
@@ -148,6 +184,29 @@ function scheduleFinalOutputFlush(pi: ExtensionAPI, ctx: ExtensionContext): void
       }
     }
   }, 0);
+}
+
+function stripAssistantOutputText(message: any): any | undefined {
+  if (message?.role !== "assistant" || !Array.isArray(message.content)) return undefined;
+  let changed = false;
+  const content = message.content.filter((part: any) => {
+    if (part?.type === "text" && typeof part.text === "string" && part.text.trim()) {
+      changed = true;
+      return false;
+    }
+    return true;
+  });
+  if (!changed) return undefined;
+
+  // A direct assistant answer with no tool call is not a valid pi-rlm output.
+  // Drop all remaining non-tool content so the message becomes empty and can be
+  // filtered from future model context.
+  const hasToolCall = content.some((part: any) => part?.type === "toolCall");
+  return { ...message, content: hasToolCall ? content : [] };
+}
+
+function isEmptyAssistantMessage(message: any): boolean {
+  return message?.role === "assistant" && Array.isArray(message.content) && message.content.length === 0;
 }
 
 export default function piRlmExtension(pi: ExtensionAPI) {
@@ -169,11 +228,17 @@ export default function piRlmExtension(pi: ExtensionAPI) {
   });
 
   pi.on("context", (event) => {
-    return {
-      messages: event.messages.filter((message: any) => {
-        return !(message?.role === "custom" && message.customType === RLM_FINAL_OUTPUT_CUSTOM_TYPE);
-      }),
-    };
+    const messages = event.messages
+      .filter((message: any) => !(message?.role === "custom" && message.customType === RLM_FINAL_OUTPUT_CUSTOM_TYPE))
+      .map((message: any) => stripAssistantOutputText(message) ?? message)
+      .filter((message: any) => !isEmptyAssistantMessage(message));
+    return { messages };
+  });
+
+  pi.on("message_end", (event) => {
+    const message = stripAssistantOutputText((event as any).message);
+    if (!message) return;
+    return { message };
   });
 
   pi.on("agent_end", (event, ctx) => {

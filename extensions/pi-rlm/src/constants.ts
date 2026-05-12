@@ -34,7 +34,7 @@ export const DEFAULT_CTX_GREP_MATCHES = 50;
 export const HARD_CTX_GREP_MATCHES = 200;
 export const MAX_CTX_GREP_FILES = 5_000;
 
-export const REPL_TOOL_NAME = "REPL";
+export const REPL_TOOL_NAME = "repl";
 export const RLM_FINAL_OUTPUT_CUSTOM_TYPE = "rlm_final";
 
 export const RLM_CALLS = ["llm_query", "llm_query_batched", "rlm_query", "rlm_query_batched"] as const;
