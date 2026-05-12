@@ -253,7 +253,6 @@ Produce a coherent, complete final answer that integrates all subtask findings. 
     paths: normPaths(params.paths),
     sources: normSources(params.sources),
     answer,
-    results: batchResult.details.results,
     incomplete: batchResult.details.incomplete,
   };
 
