@@ -10,6 +10,7 @@ import { Box, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { REPL_TOOL_NAME, RLM_FINAL_OUTPUT_CUSTOM_TYPE } from "./constants.js";
 import { rootSystemPrompt } from "./guidance.js";
 import { createRlmReplTool } from "./repl.js";
+import { loadRlmSettings, modelSelectorForRole } from "./settings.js";
 import {
   ensureSessionContextStore,
   externalizeLargeInput,
@@ -18,7 +19,7 @@ import {
   sessionContextPromptBlock,
   shouldExternalizeInput,
 } from "./session-context.js";
-import { isRlmReplToolName, textOf } from "./utils.js";
+import { isRlmReplToolName, resolveModelSelector, textOf } from "./utils.js";
 
 const ROOT_MODE = "repl";
 
@@ -29,6 +30,44 @@ function rootTools(): string[] {
 function enforceRootTools(pi: ExtensionAPI): string {
   pi.setActiveTools(rootTools());
   return ROOT_MODE;
+}
+
+function sameModel(a: any, b: any): boolean {
+  return Boolean(a && b && a.provider === b.provider && a.id === b.id);
+}
+
+function modelName(model: any): string {
+  return model ? `${model.provider}/${model.id}` : "unknown";
+}
+
+async function enforceConfiguredRootModel(pi: ExtensionAPI, ctx: ExtensionContext, failClosed: boolean): Promise<void> {
+  const settings = loadRlmSettings(ctx.cwd);
+  if (settings.enforceRootModel === false) return;
+
+  const selector = modelSelectorForRole(settings, "root");
+  if (!selector) return;
+
+  let model: any;
+  try {
+    model = resolveModelSelector(ctx, selector);
+  } catch (error) {
+    if (failClosed) {
+      ctx.abort();
+      throw error;
+    }
+    return;
+  }
+
+  if (sameModel(ctx.model, model)) return;
+
+  const ok = await pi.setModel(model);
+  if (!ok) {
+    const message = `pi-rlm root model enforcement failed: no API key for ${modelName(model)} selected by ${JSON.stringify(selector)}.`;
+    if (failClosed) {
+      ctx.abort();
+      throw new Error(message);
+    }
+  }
 }
 
 type PendingFinalOutput = {
@@ -216,11 +255,19 @@ export default function piRlmExtension(pi: ExtensionAPI) {
   pi.registerTool(createRlmReplTool(undefined, undefined, ensureSessionContextStore, (output) => emitRlmFinalOutput(pi, output)));
 
   pi.on("session_start", async (_event, ctx) => {
+    await enforceConfiguredRootModel(pi, ctx, false);
+    enforceRootTools(pi);
+    await ensureSessionContextStore(ctx);
+  });
+
+  pi.on("session_switch", async (_event, ctx) => {
+    await enforceConfiguredRootModel(pi, ctx, false);
     enforceRootTools(pi);
     await ensureSessionContextStore(ctx);
   });
 
   pi.on("session_tree", async (_event, ctx) => {
+    await enforceConfiguredRootModel(pi, ctx, false);
     enforceRootTools(pi);
     await ensureSessionContextStore(ctx);
   });
@@ -251,7 +298,8 @@ export default function piRlmExtension(pi: ExtensionAPI) {
     scheduleFinalOutputFlush(pi, ctx);
   });
 
-  pi.on("before_provider_request", () => {
+  pi.on("before_provider_request", async (_event, ctx) => {
+    await enforceConfiguredRootModel(pi, ctx, true);
     enforceRootTools(pi);
   });
 
@@ -266,6 +314,7 @@ export default function piRlmExtension(pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (_event, ctx) => {
+    await enforceConfiguredRootModel(pi, ctx, true);
     const mode = enforceRootTools(pi);
     const store = await ensureSessionContextStore(ctx);
     const systemPrompt = [
