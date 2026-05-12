@@ -65,6 +65,7 @@ function collectRlmFinalOutputs(messages: any[]): PendingFinalOutput[] {
     if (message?.role !== "toolResult") continue;
     if (message.toolName !== REPL_TOOL_NAME) continue;
     if (message.details?.final !== true) continue;
+    if (message.details?.finalMirrored === true) continue;
     const text = rlmFinalText(message);
     if (!text) continue;
     outputs.push({
@@ -76,6 +77,19 @@ function collectRlmFinalOutputs(messages: any[]): PendingFinalOutput[] {
   return outputs;
 }
 
+function emitRlmFinalOutput(pi: ExtensionAPI, output: PendingFinalOutput): void {
+  pi.sendMessage({
+    customType: RLM_FINAL_OUTPUT_CUSTOM_TYPE,
+    content: output.text,
+    display: true,
+    details: {
+      toolName: "rlm_final",
+      toolCallId: output.toolCallId,
+      emittedAt: output.timestamp,
+    },
+  }, { triggerTurn: false });
+}
+
 function registerRlmFinalOutputRenderer(pi: ExtensionAPI): void {
   pi.registerMessageRenderer(RLM_FINAL_OUTPUT_CUSTOM_TYPE, (message, _options, theme) => {
     const text = textFromCustomContent(message.content).trim();
@@ -85,7 +99,7 @@ function registerRlmFinalOutputRenderer(pi: ExtensionAPI): void {
     // from tool-success styling and matches VCC-style custom messages.
     const box = new Box(1, 1, (value) => theme.bg("customMessageBg", value));
     box.addChild(new Text(
-      `${theme.fg("customMessageLabel", "✓")} ${theme.fg("customMessageLabel", theme.bold("RLM final output"))}`,
+      `${theme.fg("customMessageLabel", "✓")} ${theme.fg("customMessageLabel", theme.bold("rlm_final"))}`,
       0,
       0,
     ));
@@ -138,7 +152,7 @@ function scheduleFinalOutputFlush(pi: ExtensionAPI, ctx: ExtensionContext): void
 
 export default function piRlmExtension(pi: ExtensionAPI) {
   registerRlmFinalOutputRenderer(pi);
-  pi.registerTool(createRlmReplTool(undefined, undefined, ensureSessionContextStore));
+  pi.registerTool(createRlmReplTool(undefined, undefined, ensureSessionContextStore, (output) => emitRlmFinalOutput(pi, output)));
 
   pi.on("session_start", async (_event, ctx) => {
     enforceRootTools(pi);

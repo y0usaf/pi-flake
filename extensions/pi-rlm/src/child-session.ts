@@ -39,12 +39,19 @@ import {
 
 // ── Recursive child RLM: rlm_query ──────────────────────────────────
 
+function limitLabel(value: number | undefined): string {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? String(value) : "∞";
+}
+
 export function childSystemPrompt(depth: number, state: RunState, hasContextStore: boolean): string {
   const contextLine = hasContextStore
     ? "A file-backed context source set has been loaded into the REPL as context/context_0/context_N values. Use SHOW_VARS() and normal Python inspection; do not print huge values back into chat."
     : "Use the REPL context/history/state variables when present.";
+  const turnRule = state.maxTurns === undefined
+    ? "- There is no pi-rlm turn cap for this run; still finalize promptly once the answer is ready."
+    : "- If turn budget runs low, call FINAL_VAR with a partial answer and remaining work.";
 
-  return `Recursive Pi child RLM. Depth ${depth}/${state.maxDepth}. Calls ${state.budget.calls}/${state.budget.maxCalls}. Queries ${state.budget.queries}/${state.budget.maxQueries}.
+  return `Recursive Pi child RLM. Depth ${depth}/${limitLabel(state.maxDepth)}. Calls ${state.budget.calls}/${limitLabel(state.budget.maxCalls)}. Queries ${state.budget.queries}/${limitLabel(state.budget.maxQueries)}.
 
 You are an upstream-style recursive RLM worker, not a normal chat assistant. Your only tool is ${REPL_TOOL_NAME}, a Python REPL exposing exactly: llm_query, llm_query_batched, rlm_query, rlm_query_batched, FINAL_VAR, SHOW_VARS, state, history, context/context_N, and injected values.
 
@@ -66,7 +73,7 @@ Recursive default policy:
 Rules:
 - Do not dump large context values into chat; print compact observations only.
 - Do not modify project files unless explicitly asked.
-- If turn budget runs low, call FINAL_VAR with a partial answer and remaining work.`;
+${turnRule}`;
 }
 
 export function childPrompt(prompt: string, context?: string, paths?: string[], store?: ContextStore, rootPrompt?: string): string {
@@ -166,9 +173,9 @@ async function tryStructuralDecompose(
   onUpdate: any,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: Details } | undefined> {
   // Don't decompose if we're already near limits
-  if (depth + 1 >= state.maxDepth) return undefined;
-  if (state.budget.calls + 2 >= state.budget.maxCalls) return undefined;
-  if (state.budget.queries + 2 >= state.budget.maxQueries) return undefined;
+  if (state.maxDepth !== undefined && depth + 1 >= state.maxDepth) return undefined;
+  if (state.budget.maxCalls !== undefined && state.budget.calls + 2 >= state.budget.maxCalls) return undefined;
+  if (state.budget.maxQueries !== undefined && state.budget.queries + 2 >= state.budget.maxQueries) return undefined;
 
   onUpdate?.({ content: [{ type: "text", text: `depth ${depth}: checking structural decomposition...` }] });
 
@@ -265,7 +272,7 @@ export async function runRlmQuery(
   checkRunLimits(state);
 
   // RLM semantics: at max depth, rlm_query falls back to a plain LM leaf call.
-  if (depth >= state.maxDepth) {
+  if (state.maxDepth !== undefined && depth >= state.maxDepth) {
     return runLlmQuery(ctx, {
       prompt: leafPrompt(params.prompt, params.paths, params.sources),
       rootPrompt: params.rootPrompt,
@@ -286,7 +293,7 @@ export async function runRlmQuery(
   // ── Interactive child session (single-unit tasks) ──
 
   state.budget.calls++;
-  if (state.budget.calls > state.budget.maxCalls) throw new Error(`Max recursive child RLM calls (${state.budget.maxCalls}).`);
+  if (state.budget.maxCalls !== undefined && state.budget.calls > state.budget.maxCalls) throw new Error(`Max recursive child RLM calls (${state.budget.maxCalls}).`);
 
   const model = resolveModel(ctx, state, "rlm", params.model);
   if (!model) throw new Error("Cannot resolve current session model for RLM call.");
@@ -387,10 +394,10 @@ export async function runRlmQuery(
         emit(`depth ${depth}: ${ev.toolName}...`);
       } else if (ev.type === "turn_end") {
         turns++;
-        emit(`depth ${depth}: turn ${turns}/${state.maxTurns}`);
+        emit(`depth ${depth}: turn ${turns}${state.maxTurns === undefined ? "" : `/${state.maxTurns}`}`);
         const ret = Array.isArray(ev.toolResults) && ev.toolResults.some((r: any) => r?.toolName === REPL_TOOL_NAME && r?.details?.final === true);
         const more = ev.message?.stopReason === "toolUse" && !ret;
-        if (turns >= state.maxTurns && more) {
+        if (state.maxTurns !== undefined && turns >= state.maxTurns && more) {
           abortedByTurnLimit = true;
           emit(`depth ${depth}: turn budget reached; aborting child for deterministic parent-side finalization`);
           void session.abort();

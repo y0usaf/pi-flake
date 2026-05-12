@@ -7,14 +7,16 @@ import {
   CONTEXT_MODES,
   DEFAULT_CHILD_MODE,
   DEFAULT_MAX_CALLS,
+  DEFAULT_MAX_CONCURRENT,
   DEFAULT_MAX_DEPTH,
   DEFAULT_MAX_QUERIES,
-  DEFAULT_MAX_TURNS,
   DEFAULT_MAX_TIMEOUT_MS,
   DEFAULT_MAX_TOKENS,
   DEFAULT_MAX_BUDGET,
   DEFAULT_MAX_ERRORS,
+  DEFAULT_MAX_TURNS,
   HARD_MAX_CALLS,
+  HARD_MAX_CONCURRENT,
   HARD_MAX_DEPTH,
   HARD_MAX_QUERIES,
   HARD_MAX_TURNS,
@@ -58,6 +60,19 @@ export function rejectUnknownItem(item: unknown, index: number): void {
 export function clamp(v: unknown, fallback: number, lo: number, hi: number): number {
   if (typeof v !== "number" || !Number.isFinite(v)) return fallback;
   return Math.max(lo, Math.min(hi, Math.trunc(v)));
+}
+
+export function optionalClampedLimit(v: unknown, hard: number): number | undefined {
+  if (v === undefined || v === null || v === "") return undefined;
+  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return undefined;
+  return Math.max(1, Math.min(hard, Math.trunc(v)));
+}
+
+export function configuredLimit(v: unknown, fallback: number, hard: number): number | undefined {
+  if (v === undefined || v === null || v === "") return fallback;
+  if (typeof v !== "number" || !Number.isFinite(v)) return fallback;
+  if (v <= 0) return undefined;
+  return Math.max(1, Math.min(hard, Math.trunc(v)));
 }
 
 export function clip(text: string, max = MAX_RESULT_CHARS): string {
@@ -200,14 +215,14 @@ export function createRunState(params: any, model?: any, cwd?: string): RunState
   const settings = cwd ? loadRlmSettings(cwd) : {};
   return {
     runId: runId(),
-    maxDepth: clamp(params?.maxDepth ?? params?.max_depth ?? settings.maxDepth, DEFAULT_MAX_DEPTH, 1, HARD_MAX_DEPTH),
-    maxConcurrent: clamp(params?.maxConcurrent ?? params?.max_concurrent_subcalls ?? settings.maxConcurrent, DEFAULT_MAX_CONCURRENT, 1, HARD_MAX_CONCURRENT),
-    maxTurns: clamp(params?.maxTurns ?? params?.maxIterations ?? params?.max_iterations, DEFAULT_MAX_TURNS, 1, HARD_MAX_TURNS),
+    maxDepth: configuredLimit(params?.maxDepth ?? params?.max_depth ?? settings.maxDepth, DEFAULT_MAX_DEPTH, HARD_MAX_DEPTH),
+    maxConcurrent: configuredLimit(params?.maxConcurrent ?? params?.max_concurrent_subcalls ?? settings.maxConcurrent, DEFAULT_MAX_CONCURRENT, HARD_MAX_CONCURRENT),
+    maxTurns: configuredLimit(params?.maxTurns ?? params?.maxIterations ?? params?.max_iterations, DEFAULT_MAX_TURNS, HARD_MAX_TURNS),
     budget: {
       calls: 0,
-      maxCalls: clamp(params?.maxCalls, DEFAULT_MAX_CALLS, 1, HARD_MAX_CALLS),
+      maxCalls: configuredLimit(params?.maxCalls, DEFAULT_MAX_CALLS, HARD_MAX_CALLS),
       queries: 0,
-      maxQueries: clamp(params?.maxQueries, DEFAULT_MAX_QUERIES, 1, HARD_MAX_QUERIES),
+      maxQueries: configuredLimit(params?.maxQueries, DEFAULT_MAX_QUERIES, HARD_MAX_QUERIES),
       tokens: 0,
       maxTokens: optionalCap(params?.maxTokens ?? params?.max_tokens, DEFAULT_MAX_TOKENS, HARD_MAX_TOKENS),
       cost: 0,

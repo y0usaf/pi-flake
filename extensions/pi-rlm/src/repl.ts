@@ -338,6 +338,8 @@ interface BridgeContext {
 
 type ReplStoreProvider = ContextStore | ((ctx: any) => ContextStore | undefined | Promise<ContextStore | undefined>);
 
+type FinalOutputEmitter = (output: { text: string; toolCallId?: string; timestamp: number }) => void | Promise<void>;
+
 async function resolveReplStore(provider: ReplStoreProvider | undefined, ctx: any): Promise<ContextStore | undefined> {
   if (!provider) return undefined;
   if (typeof provider === "function") return await provider(ctx);
@@ -432,6 +434,15 @@ function renderCodePreview(code: unknown): string {
 function formatPythonValue(value: unknown): string {
   if (typeof value === "string") return value;
   return JSON.stringify(value, null, 2) ?? String(value);
+}
+
+function splitFinalOutput(text: string): { preFinal: string; final?: string } {
+  const match = text.match(/(?:^|\n)FINAL:\s*\n?([\s\S]*)$/);
+  if (!match || match.index === undefined) return { preFinal: text.trim() };
+  return {
+    preFinal: text.slice(0, match.index).trim(),
+    final: (match[1] ?? "").trim(),
+  };
 }
 
 class PythonReplWorker {
@@ -655,7 +666,7 @@ async function handleBridgeCall(method: unknown, params: unknown, bridge: Bridge
   throw new Error(`Unknown Python REPL bridge method: ${String(method)}.`);
 }
 
-export function createRlmReplTool(inherited?: RunState, parentDepth?: number, store?: ReplStoreProvider) {
+export function createRlmReplTool(inherited?: RunState, parentDepth?: number, store?: ReplStoreProvider, emitFinalOutput?: FinalOutputEmitter) {
   let worker: PythonReplWorker | undefined;
   let workerCwd: string | undefined;
   let evals = 0;
@@ -675,7 +686,7 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
       `To finish, assign the answer to a variable or state key, then call FINAL_VAR("name").`,
     ],
     parameters: ReplParams,
-    async execute(_id, params, signal, onUpdate, ctx) {
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
       rejectUnknownReplParams(params);
       if (params.reset === true) {
         worker?.shutdown();
@@ -724,6 +735,20 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
       else if (result.value !== undefined && result.value !== null) sections.push(`Result:\n${formatPythonValue(result.value)}`);
       if (sections.length === 0) sections.push("(no output)");
 
+      let finalMirrored = false;
+      if (result.final === true && ctx.hasUI && emitFinalOutput) {
+        try {
+          await emitFinalOutput({
+            text: formatPythonValue(result.value).trim(),
+            toolCallId,
+            timestamp: Date.now(),
+          });
+          finalMirrored = true;
+        } catch {
+          finalMirrored = false;
+        }
+      }
+
       const text = clip(sections.join("\n\n"), MAX_RESULT_CHARS);
       return {
         content: [{ type: "text", text }],
@@ -732,6 +757,7 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
           language: "python",
           evals,
           final: result.final === true,
+          finalMirrored,
           timeoutMs,
           cwd: ctx.cwd,
           stateKeys: result.stateKeys ?? [],
@@ -756,14 +782,23 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
       const details: any = result.details ?? {};
       if (isPartial) return new Text(theme.fg("warning", text || "running..."), 0, 0);
       const final = details.final ? theme.fg("success", " FINAL") : "";
+      const mirrored = details.finalMirrored ? theme.fg("muted", " → rlm_final") : "";
       const vars = Array.isArray(details.varKeys) && details.varKeys.length
         ? ` vars=${details.varKeys.join(",")}`
         : Array.isArray(details.stateKeys) && details.stateKeys.length
           ? ` state=${details.stateKeys.join(",")}`
           : "";
       const err = details.error ? theme.fg("error", " error") : "";
+      const { preFinal } = splitFinalOutput(text);
+      const body = details.finalMirrored
+        ? [
+            preFinal ? theme.fg("toolOutput", clip(preFinal.replace(/\s+/g, " "), 800)) : "",
+            theme.fg("muted", "mirrored as rlm_final"),
+          ].filter(Boolean).join(" ")
+        : theme.fg("toolOutput", clip(text.replace(/\s+/g, " "), 800));
+      const newline = String.fromCharCode(10);
       return new Text(
-        `${theme.fg("success", "✓")} ${theme.fg("toolTitle", theme.bold(REPL_TOOL_NAME))}${final}${err}${theme.fg("muted", vars)}\n${theme.fg("toolOutput", clip(text.replace(/\s+/g, " "), 800))}`,
+        `${theme.fg("success", "✓")} ${theme.fg("toolTitle", theme.bold(REPL_TOOL_NAME))}${final}${mirrored}${err}${theme.fg("muted", vars)}${newline}${body}`,
         0,
         0,
       );

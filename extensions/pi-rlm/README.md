@@ -49,10 +49,10 @@ Use normal Python capabilities instead: `import os`, `pathlib`, `json`, `subproc
 - `llm_query` / `llm_query_batched` are one-shot leaf LM calls.
 - `rlm_query` / `rlm_query_batched` spawn hidden in-memory child Pi sessions constrained to the same REPL-only RLM contract.
 - Child sessions receive the child RLM prompt as the actual provider system prompt/instructions payload, disable default Pi tools/extensions/skills/context-file discovery, and assert that `REPL` is the only active tool.
-- At max depth, `rlm_query` falls back to a plain LM leaf call.
+- At the configured/default max depth, `rlm_query` falls back to a plain LM leaf call; setting `maxDepth` to `0` or a negative number disables that depth cap.
 - Leaf calls are sent with an explicit system prompt/instructions payload so providers that require an `instructions` field (for example Codex Responses) work correctly.
 - Finalization is done by assigning the answer to a variable or `state` key and calling `FINAL_VAR("name")`.
-- In interactive/RPC UI contexts, a finalized root REPL answer is also mirrored as a visible custom message with `customType: "rlm-final-output"`. This keeps the final answer visible even when tool rows are compacted by UI extensions such as `pi-compact`; the custom message is filtered out of future LLM context to avoid duplicating the tool result. The live renderer uses the custom-message color family, so it matches the VCC-style palette instead of looking like a generic tool-success row.
+- In interactive/RPC UI contexts, a finalized root REPL answer is also mirrored as a visible custom message with `customType: "rlm_final"`. This keeps the final answer visible even when tool rows are compacted by UI extensions such as `pi-compact`; the custom message is filtered out of future LLM context to avoid duplicating the tool result. The live renderer uses the custom-message color family, so it matches the VCC-style palette instead of looking like a generic tool-success row.
 
 ## Recursive-default policy
 
@@ -131,17 +131,20 @@ Model selection defaults to the parent Pi session model. Optional role-specific 
 }
 ```
 
-The optional `model` argument to `llm_query(..., model=...)` / `rlm_query(..., model=...)` can select a Pi-known model by id/name or `provider/model-id`. The extension also accepts `maxConcurrent` and `maxDepth` in `extensionSettings.pi-rlm` as local defaults for this install, overridden by per-call params.
+The optional `model` argument to `llm_query(..., model=...)` / `rlm_query(..., model=...)` can select a Pi-known model by id/name or `provider/model-id`. The extension also accepts `maxConcurrent` and `maxDepth` in `extensionSettings.pi-rlm` as local defaults for this install, overridden by per-call params. Omitted limits use pi-rlm's guardrail defaults; set a limit to `0` or a negative number to disable that cap.
 
 ## Limits
 
-Runtime controls remain enforced internally:
+Runtime controls are enforced internally. For recursion controls, omitted values use guardrail defaults and `0` or negative values disable the cap:
 
-- `maxDepth`
-- `maxTurns` / `maxIterations`
-- `maxCalls`
-- `maxQueries`
-- `maxConcurrent`
+- `maxDepth` default `5`
+- `maxTurns` / `maxIterations` default `30`
+- `maxCalls` default `128`
+- `maxQueries` default `256`
+- `maxConcurrent` default `5`
+
+Other budget controls default to unlimited/no explicit cap when omitted or `<=0`:
+
 - `maxTimeoutMs` / `maxTimeout`
 - `maxTokens`
 - `maxBudget`
