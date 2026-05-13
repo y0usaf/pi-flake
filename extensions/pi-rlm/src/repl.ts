@@ -741,7 +741,11 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
 
       const sections: string[] = [];
       const finalText = result.final === true ? formatPythonValue(result.value).trim() : undefined;
-      if (result.logs?.trim()) sections.push(`Console:\n${result.logs.trim()}`);
+      const logsText = result.logs?.trim();
+      const missingFinalWithConsole = result.final !== true && !!logsText;
+      const missingFinalWithResult = result.final !== true && result.value !== undefined && result.value !== null;
+      const missingFinalWithOutput = missingFinalWithConsole || missingFinalWithResult;
+      if (logsText) sections.push(`Console:\n${logsText}`);
       if (result.final) sections.push(finalStoredMessage(result.finalName));
       else if (result.value !== undefined && result.value !== null) sections.push(`Result:\n${formatPythonValue(result.value)}`);
       if (sections.length === 0) sections.push("(no output)");
@@ -774,6 +778,9 @@ export function createRlmReplTool(inherited?: RunState, parentDepth?: number, st
           finalText,
           finalValue: result.final === true ? result.value : undefined,
           finalMirrored,
+          missingFinalWithConsole,
+          missingFinalWithResult,
+          missingFinalWithOutput,
           timeoutMs,
           cwd: ctx.cwd,
           stateKeys: result.stateKeys ?? [],
