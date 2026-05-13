@@ -7,7 +7,7 @@
 import { getMarkdownTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 
-import { REPL_TOOL_NAME, RLM_FINAL_OUTPUT_CUSTOM_TYPE } from "./constants.js";
+import { REPL_TOOL_NAME, RLM_FINAL_OUTPUT_CUSTOM_TYPE, RLM_WARNING_CUSTOM_TYPE } from "./constants.js";
 import { rootSystemPrompt } from "./guidance.js";
 import { createRlmReplTool } from "./repl.js";
 import {
@@ -38,7 +38,16 @@ type PendingFinalOutput = {
   timestamp: number;
 };
 
+type PendingWarningOutput = {
+  text: string;
+  toolCallId?: string;
+  timestamp: number;
+};
+
+const MISSING_FINAL_OUTPUT_WARNING = `REPL produced console/result output, but the turn ended without FINAL_VAR(...). Console and Result output are diagnostic only; to answer the user, assign the response to a variable and call FINAL_VAR("name").`;
+
 const pendingFinalOutputs: PendingFinalOutput[] = [];
+const pendingWarningOutputs: PendingWarningOutput[] = [];
 let finalOutputFlushScheduled = false;
 
 function textFromCustomContent(content: unknown): string {
@@ -106,6 +115,21 @@ function collectRlmFinalOutputs(messages: any[]): PendingFinalOutput[] {
   return outputs;
 }
 
+function collectMissingFinalOutputWarning(messages: any[]): PendingWarningOutput | undefined {
+  for (const message of [...messages].reverse()) {
+    if (message?.role !== "toolResult") continue;
+    if (!isRlmReplToolName(message.toolName)) continue;
+    if (message.details?.final === true) return undefined;
+    if (message.details?.missingFinalWithOutput !== true) continue;
+    return {
+      text: MISSING_FINAL_OUTPUT_WARNING,
+      toolCallId: typeof message.toolCallId === "string" ? message.toolCallId : undefined,
+      timestamp: Date.now(),
+    };
+  }
+  return undefined;
+}
+
 function emitRlmFinalOutput(pi: ExtensionAPI, output: PendingFinalOutput): void {
   pi.sendMessage({
     customType: RLM_FINAL_OUTPUT_CUSTOM_TYPE,
@@ -114,6 +138,19 @@ function emitRlmFinalOutput(pi: ExtensionAPI, output: PendingFinalOutput): void 
     details: {
       toolName: "rlm_final",
       variableName: output.variableName,
+      toolCallId: output.toolCallId,
+      emittedAt: output.timestamp,
+    },
+  }, { triggerTurn: false });
+}
+
+function emitRlmWarningOutput(pi: ExtensionAPI, output: PendingWarningOutput): void {
+  pi.sendMessage({
+    customType: RLM_WARNING_CUSTOM_TYPE,
+    content: output.text,
+    display: true,
+    details: {
+      toolName: "rlm_warning",
       toolCallId: output.toolCallId,
       emittedAt: output.timestamp,
     },
@@ -146,19 +183,39 @@ function registerRlmFinalOutputRenderer(pi: ExtensionAPI): void {
   });
 }
 
+function registerRlmWarningOutputRenderer(pi: ExtensionAPI): void {
+  pi.registerMessageRenderer(RLM_WARNING_CUSTOM_TYPE, (message, _options, theme) => {
+    const text = textFromCustomContent(message.content).trim();
+    if (!text) return undefined;
+
+    const box = new Box(1, 1, (value) => theme.bg("customMessageBg", value));
+    box.addChild(new Text(
+      `${theme.fg("warning", "⚠")} ${theme.fg("warning", theme.bold("rlm_warning"))}`,
+      0,
+      0,
+    ));
+    box.addChild(new Spacer(1));
+    box.addChild(new Markdown(text, 0, 0, getMarkdownTheme(), {
+      color: (value) => theme.fg("customMessageText", value),
+    }));
+    return box;
+  });
+}
+
 function scheduleFinalOutputFlush(pi: ExtensionAPI, ctx: ExtensionContext): void {
   if (finalOutputFlushScheduled) return;
   finalOutputFlushScheduled = true;
 
   setTimeout(() => {
     finalOutputFlushScheduled = false;
-    if (pendingFinalOutputs.length === 0) return;
+    if (pendingFinalOutputs.length === 0 && pendingWarningOutputs.length === 0) return;
 
     let idle = false;
     try {
       idle = ctx.isIdle();
     } catch {
       pendingFinalOutputs.length = 0;
+      pendingWarningOutputs.length = 0;
       return;
     }
 
@@ -181,6 +238,15 @@ function scheduleFinalOutputFlush(pi: ExtensionAPI, ctx: ExtensionContext): void
             emittedAt: output.timestamp,
           },
         }, { triggerTurn: false });
+      } catch {
+        // Session may have been replaced or shut down before the deferred UI mirror ran.
+      }
+    }
+
+    const warnings = pendingWarningOutputs.splice(0);
+    for (const warning of warnings) {
+      try {
+        emitRlmWarningOutput(pi, warning);
       } catch {
         // Session may have been replaced or shut down before the deferred UI mirror ran.
       }
@@ -213,6 +279,7 @@ function isEmptyAssistantMessage(message: any): boolean {
 
 export default function piRlmExtension(pi: ExtensionAPI) {
   registerRlmFinalOutputRenderer(pi);
+  registerRlmWarningOutputRenderer(pi);
   pi.registerTool(createRlmReplTool(undefined, undefined, ensureSessionContextStore, (output) => emitRlmFinalOutput(pi, output)));
 
   pi.on("session_start", async (_event, ctx) => {
@@ -231,7 +298,7 @@ export default function piRlmExtension(pi: ExtensionAPI) {
 
   pi.on("context", (event) => {
     const messages = event.messages
-      .filter((message: any) => !(message?.role === "custom" && message.customType === RLM_FINAL_OUTPUT_CUSTOM_TYPE))
+      .filter((message: any) => !(message?.role === "custom" && (message.customType === RLM_FINAL_OUTPUT_CUSTOM_TYPE || message.customType === RLM_WARNING_CUSTOM_TYPE)))
       .map((message: any) => stripAssistantOutputText(message) ?? message)
       .filter((message: any) => !isEmptyAssistantMessage(message));
     return { messages };
@@ -245,9 +312,17 @@ export default function piRlmExtension(pi: ExtensionAPI) {
 
   pi.on("agent_end", (event, ctx) => {
     if (!ctx.hasUI) return;
-    const outputs = collectRlmFinalOutputs(event.messages as any[]);
-    if (outputs.length === 0) return;
-    pendingFinalOutputs.push(...outputs);
+    const messages = event.messages as any[];
+    const outputs = collectRlmFinalOutputs(messages);
+    if (outputs.length > 0) {
+      pendingFinalOutputs.push(...outputs);
+      scheduleFinalOutputFlush(pi, ctx);
+      return;
+    }
+
+    const warning = collectMissingFinalOutputWarning(messages);
+    if (!warning) return;
+    pendingWarningOutputs.push(warning);
     scheduleFinalOutputFlush(pi, ctx);
   });
 
