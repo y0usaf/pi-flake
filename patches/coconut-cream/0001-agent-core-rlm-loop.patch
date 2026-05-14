@@ -1,0 +1,243 @@
+diff --git a/packages/agent/src/agent-loop.ts b/packages/agent/src/agent-loop.ts
+index 2a471088c69c..1e090ed82af7 100644
+--- a/packages/agent/src/agent-loop.ts
++++ b/packages/agent/src/agent-loop.ts
+@@ -199,13 +199,14 @@
+ 				return;
+ 			}
+ 
+-			// Check for tool calls
+-			const toolCalls = message.content.filter((c) => c.type === "toolCall");
++			// Check for tool calls (including synthetic repl fences)
++			const executionMessage = attachReplFenceToolCalls(message);
++			const toolCalls = executionMessage.content.filter((c) => c.type === "toolCall");
+ 
+ 			const toolResults: ToolResultMessage[] = [];
+ 			hasMoreToolCalls = false;
+ 			if (toolCalls.length > 0) {
+-				const executedToolBatch = await executeToolCalls(currentContext, message, config, signal, emit);
++				const executedToolBatch = await executeToolCalls(currentContext, executionMessage, config, signal, emit);
+ 				toolResults.push(...executedToolBatch.messages);
+ 				hasMoreToolCalls = !executedToolBatch.terminate;
+ 
+@@ -289,10 +290,11 @@
+ 	const llmMessages = await config.convertToLlm(messages);
+ 
+ 	// Build LLM context
++	const llmTools = context.tools?.filter((tool) => tool.name !== "repl");
+ 	const llmContext: Context = {
+ 		systemPrompt: context.systemPrompt,
+ 		messages: llmMessages,
+-		tools: context.tools,
++		tools: llmTools && llmTools.length > 0 ? llmTools : undefined,
+ 	};
+ 
+ 	const streamFunction = streamFn || streamSimple;
+@@ -367,6 +369,81 @@
+ 	return finalMessage;
+ }
+ 
++function parseReplFenceArguments(code: string): Record<string, unknown> {
++	const trimmed = code.trim();
++	if (!trimmed) return { code: "" };
++	if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
++		try {
++			const parsed = JSON.parse(trimmed);
++			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
++				if (typeof (parsed as Record<string, unknown>).code === "string") {
++					return parsed as Record<string, unknown>;
++				}
++			}
++		} catch {
++			// Fall through to raw code.
++		}
++	}
++	return { code };
++}
++
++function extractReplFenceArgumentsFromText(text: string): Record<string, unknown>[] {
++	const args: Record<string, unknown>[] = [];
++	const lines = text.split(/\r?\n/);
++	let inFence = false;
++	let fenceLines: string[] = [];
++	let hasVisibleText = false;
++
++	for (const line of lines) {
++		const trimmed = line.trimStart();
++		if (!inFence) {
++			if (trimmed.startsWith("```repl")) {
++				inFence = true;
++				fenceLines = [];
++				continue;
++			}
++			if (line.trim().length > 0) {
++				hasVisibleText = true;
++			}
++			continue;
++		}
++
++		if (trimmed.startsWith("```")) {
++			args.push(parseReplFenceArguments(fenceLines.join("\n")));
++			inFence = false;
++			continue;
++		}
++
++		fenceLines.push(line);
++	}
++
++	if (hasVisibleText) return [];
++	if (inFence) {
++		args.push(parseReplFenceArguments(fenceLines.join("\n")));
++	}
++
++	return args;
++}
++
++function attachReplFenceToolCalls(message: AssistantMessage): AssistantMessage {
++	if (message.role !== "assistant") return message;
++
++	const text = message.content
++		.filter((block) => block.type === "text")
++		.map((block: any) => block.text)
++		.join("\n");
++	const fenceArgs = extractReplFenceArgumentsFromText(text);
++	if (fenceArgs.length === 0) return message;
++
++	const syntheticBlocks = fenceArgs.map((args, index) => ({
++		type: "toolCall",
++		id: `repl:${message.timestamp}:${index}`,
++		name: "repl",
++		arguments: args,
++	} as any));
++
++	return { ...message, content: [...message.content, ...syntheticBlocks] };
++}
+ /**
+  * Execute tool calls from an assistant message.
+  */
+diff --git a/packages/ai/src/providers/openai-codex-responses.ts b/packages/ai/src/providers/openai-codex-responses.ts
+index da7ee9c8a19c..2469ca9477ee 100644
+--- a/packages/ai/src/providers/openai-codex-responses.ts
++++ b/packages/ai/src/providers/openai-codex-responses.ts
+@@ -721,8 +721,7 @@
+ 		process?.versions?.bun &&
+ 		(process.env.HTTP_PROXY || process.env.HTTPS_PROXY || process.env.http_proxy || process.env.https_proxy)
+ 	) {
+-		const m = await dynamicImport("proxy-from-env");
+-		const getProxyForUrl = (m as { getProxyForUrl: (url: string | object | URL) => string }).getProxyForUrl;
++		const { getProxyForUrl } = await import("../utils/node-http-proxy.js");
+ 
+ 		_cachedWebsocket = class extends WebSocket {
+ 			constructor(url: string | URL, options?: string | string[] | Record<string, unknown>) {
+diff --git a/packages/ai/src/utils/node-http-proxy.ts b/packages/ai/src/utils/node-http-proxy.ts
+new file mode 100644
+index 000000000000..2e5ce2554ffd
+--- /dev/null
++++ b/packages/ai/src/utils/node-http-proxy.ts
+@@ -0,0 +1,106 @@
++import type { Agent as HttpAgent } from "node:http";
++import type { Agent as HttpsAgent } from "node:https";
++import { HttpProxyAgent } from "http-proxy-agent";
++import { HttpsProxyAgent } from "https-proxy-agent";
++
++export interface NodeHttpProxyAgents {
++	httpAgent: HttpAgent;
++	httpsAgent: HttpsAgent;
++}
++
++export const UNSUPPORTED_PROXY_PROTOCOL_MESSAGE =
++	"Unsupported proxy protocol. SOCKS and PAC proxy URLs are not supported; use an HTTP or HTTPS proxy URL.";
++
++function envValue(name: string): string | undefined {
++	const value = process.env[name];
++	return typeof value === "string" && value.trim() ? value.trim() : undefined;
++}
++
++function defaultPort(protocol: string): string {
++	switch (protocol) {
++		case "http:":
++		case "ws:":
++			return "80";
++		case "https:":
++		case "wss:":
++			return "443";
++		default:
++			return "";
++	}
++}
++
++function hostMatchesNoProxy(hostname: string, noProxyHost: string): boolean {
++	if (!noProxyHost) return false;
++	if (noProxyHost === "*") return true;
++	const normalized = noProxyHost.replace(/^\*+/, "").toLowerCase();
++	const host = hostname.toLowerCase();
++	if (!normalized) return false;
++	if (normalized.startsWith(".")) {
++		const suffix = normalized.slice(1);
++		return host === suffix || host.endsWith(`.${suffix}`);
++	}
++	return host === normalized || host.endsWith(`.${normalized}`);
++}
++
++function isNoProxy(target: URL): boolean {
++	const raw = envValue("NO_PROXY") ?? envValue("no_proxy");
++	if (!raw) return false;
++	const host = target.hostname;
++	const port = target.port || defaultPort(target.protocol);
++	for (const token of raw.split(/[\s,]+/)) {
++		const entry = token.trim();
++		if (!entry) continue;
++		if (entry === "*") return true;
++		const idx = entry.lastIndexOf(":");
++		const hasPort = idx > 0 && entry.indexOf("]") === -1;
++		const entryHost = hasPort ? entry.slice(0, idx) : entry;
++		const entryPort = hasPort ? entry.slice(idx + 1) : "";
++		if (!hostMatchesNoProxy(host, entryHost)) continue;
++		if (!entryPort || entryPort === port) return true;
++	}
++	return false;
++}
++
++export function getProxyForUrl(targetUrl: string | URL): string {
++	const target = targetUrl instanceof URL ? targetUrl : new URL(targetUrl);
++	if (isNoProxy(target)) return "";
++	const protocol = target.protocol;
++	const proxy = protocol === "https:" || protocol === "wss:"
++		? envValue("HTTPS_PROXY") ?? envValue("https_proxy") ?? envValue("HTTP_PROXY") ?? envValue("http_proxy")
++		: envValue("HTTP_PROXY") ?? envValue("http_proxy") ?? envValue("ALL_PROXY") ?? envValue("all_proxy");
++	return proxy ?? "";
++}
++
++export function resolveHttpProxyUrlForTarget(targetUrl: string | URL): URL | undefined {
++	const proxy = getProxyForUrl(targetUrl);
++	if (!proxy) {
++		return undefined;
++	}
++
++	let proxyUrl: URL;
++	try {
++		proxyUrl = new URL(proxy);
++	} catch (error) {
++		throw new Error(
++			`Invalid proxy URL ${JSON.stringify(proxy)}: ${error instanceof Error ? error.message : String(error)}`,
++		);
++	}
++
++	if (proxyUrl.protocol !== "http:" && proxyUrl.protocol !== "https:") {
++		throw new Error(`${UNSUPPORTED_PROXY_PROTOCOL_MESSAGE} Got ${proxyUrl.protocol}`);
++	}
++
++	return proxyUrl;
++}
++
++export function createHttpProxyAgentsForTarget(targetUrl: string | URL): NodeHttpProxyAgents | undefined {
++	const proxyUrl = resolveHttpProxyUrlForTarget(targetUrl);
++	if (!proxyUrl) {
++		return undefined;
++	}
++
++	return {
++		httpAgent: new HttpProxyAgent(proxyUrl),
++		httpsAgent: new HttpsProxyAgent(proxyUrl) as unknown as HttpsAgent,
++	};
++}
