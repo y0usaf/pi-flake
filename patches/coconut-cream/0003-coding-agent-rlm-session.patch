@@ -1,0 +1,73 @@
+diff --git a/packages/coding-agent/src/core/agent-session-services.ts b/packages/coding-agent/src/core/agent-session-services.ts
+index 061399edb333b47435c3fd98230f9ea9fa8ecdd9..12cdb2c1d73f126876e6797578be5aaccc6f5211 100644
+--- a/packages/coding-agent/src/core/agent-session-services.ts
++++ b/packages/coding-agent/src/core/agent-session-services.ts
+@@ -6,6 +6,7 @@ import { AuthStorage } from "./auth-storage.js";
+ import type { SessionStartEvent, ToolDefinition } from "./extensions/index.js";
+ import { ModelRegistry } from "./model-registry.js";
+ import { DefaultResourceLoader, type DefaultResourceLoaderOptions, type ResourceLoader } from "./resource-loader.js";
++import { builtinRlmExtension } from "./rlm/builtin-extension.js";
+ import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "./sdk.js";
+ import type { SessionManager } from "./session-manager.js";
+ import { SettingsManager } from "./settings-manager.js";
+@@ -134,11 +135,14 @@ export async function createAgentSessionServices(
+ 	const authStorage = options.authStorage ?? AuthStorage.create(join(agentDir, "auth.json"));
+ 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
+ 	const modelRegistry = options.modelRegistry ?? ModelRegistry.create(authStorage, join(agentDir, "models.json"));
++	const resourceLoaderOptions = options.resourceLoaderOptions ?? {};
+ 	const resourceLoader = new DefaultResourceLoader({
+-		...(options.resourceLoaderOptions ?? {}),
++		...resourceLoaderOptions,
+ 		cwd,
+ 		agentDir,
+ 		settingsManager,
++		noExtensions: resourceLoaderOptions.noExtensions ?? true,
++		extensionFactories: [builtinRlmExtension, ...(resourceLoaderOptions.extensionFactories ?? [])],
+ 	});
+ 	await resourceLoader.reload();
+ 
+diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
+index 9868e8a675dc3cd78ed04bdf961fea4e5ace143c..8e02a77ab4aa7ace3b28974f03f120c38cf73c42 100644
+--- a/packages/coding-agent/src/core/agent-session.ts
++++ b/packages/coding-agent/src/core/agent-session.ts
+@@ -2372,7 +2372,7 @@ export class AgentSession {
+ 
+ 		const defaultActiveToolNames = this._baseToolsOverride
+ 			? Object.keys(this._baseToolsOverride)
+-			: ["read", "bash", "edit", "write"];
++			: ["repl"];
+ 		const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
+ 		this._refreshToolRegistry({
+ 			activeToolNames: baseActiveToolNames,
+diff --git a/packages/coding-agent/src/core/sdk.ts b/packages/coding-agent/src/core/sdk.ts
+index 3e0533d0de6334fdadc53ec110555765d30b283e..1f36c6454e25167d9a3c7a0160d125f98f896e87 100644
+--- a/packages/coding-agent/src/core/sdk.ts
++++ b/packages/coding-agent/src/core/sdk.ts
+@@ -8,6 +8,7 @@ import { AuthStorage } from "./auth-storage.js";
+ import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
+ import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.js";
+ import { convertToLlm } from "./messages.js";
++import { builtinRlmExtension } from "./rlm/builtin-extension.js";
+ import { ModelRegistry } from "./model-registry.js";
+ import { findInitialModel } from "./model-resolver.js";
+ import type { ResourceLoader } from "./resource-loader.js";
+@@ -205,7 +206,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
+ 	const sessionManager = options.sessionManager ?? SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));
+ 
+ 	if (!resourceLoader) {
+-		resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
++		resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, extensionFactories: [builtinRlmExtension] });
+ 		await resourceLoader.reload();
+ 		time("resourceLoader.reload");
+ 	}
+@@ -268,8 +269,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
+ 		thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
+ 	}
+ 
+-	const defaultActiveToolNames: ToolName[] = ["read", "bash", "edit", "write"];
+-	const allowedToolNames = options.tools ?? (options.noTools === "all" ? [] : undefined);
++	const defaultActiveToolNames = ["repl"];
++	const allowedToolNames = options.tools ?? (options.noTools === "all" ? [] : defaultActiveToolNames);
+ 	const initialActiveToolNames: string[] = options.tools
+ 		? [...options.tools]
+ 		: options.noTools

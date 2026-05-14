@@ -81,8 +81,10 @@
       ./patches/default-package-sources-env.patch
     ];
     coconutCreamPiPatches = [
-      ./patches/coconut-cream-pi.patch
-    ];
+  ./patches/coconut-cream/0001-agent-core-rlm-loop.patch
+  ./patches/coconut-cream/0002-coding-agent-rlm-runtime.patch
+  ./patches/coconut-cream/0003-coding-agent-rlm-session.patch
+];
   in {
     packages = forAllSystems (system: let
       pkgs = pkgsFor.${system};

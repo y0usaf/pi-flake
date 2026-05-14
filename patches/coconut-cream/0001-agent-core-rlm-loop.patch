@@ -1,8 +1,8 @@
 diff --git a/packages/agent/src/agent-loop.ts b/packages/agent/src/agent-loop.ts
-index 2a471088c69c..1e090ed82af7 100644
+index 7226082aa65a054633260e2066122b09f897e675..fdf990891d3ec662846b67d516c2f0aaf1156881 100644
 --- a/packages/agent/src/agent-loop.ts
 +++ b/packages/agent/src/agent-loop.ts
-@@ -199,13 +199,14 @@
+@@ -199,13 +199,14 @@ async function runLoop(
  				return;
  			}
  
@@ -20,7 +20,7 @@ index 2a471088c69c..1e090ed82af7 100644
  				toolResults.push(...executedToolBatch.messages);
  				hasMoreToolCalls = !executedToolBatch.terminate;
  
-@@ -289,10 +290,11 @@
+@@ -289,10 +290,11 @@ async function streamAssistantResponse(
  	const llmMessages = await config.convertToLlm(messages);
  
  	// Build LLM context
@@ -33,7 +33,7 @@ index 2a471088c69c..1e090ed82af7 100644
  	};
  
  	const streamFunction = streamFn || streamSimple;
-@@ -367,6 +369,81 @@
+@@ -367,6 +369,81 @@ async function streamAssistantResponse(
  	return finalMessage;
  }
  
@@ -116,10 +116,10 @@ index 2a471088c69c..1e090ed82af7 100644
   * Execute tool calls from an assistant message.
   */
 diff --git a/packages/ai/src/providers/openai-codex-responses.ts b/packages/ai/src/providers/openai-codex-responses.ts
-index da7ee9c8a19c..2469ca9477ee 100644
+index 64542b2c74364d88ae37f64b6a58b0eea0b0280c..96a66a4eca4d37e722fb694dfce755222f0ff99f 100644
 --- a/packages/ai/src/providers/openai-codex-responses.ts
 +++ b/packages/ai/src/providers/openai-codex-responses.ts
-@@ -721,8 +721,7 @@
+@@ -721,8 +721,7 @@ async function getWebSocketConstructor(): Promise<WebSocketConstructor | null> {
  		process?.versions?.bun &&
  		(process.env.HTTP_PROXY || process.env.HTTPS_PROXY || process.env.http_proxy || process.env.https_proxy)
  	) {
@@ -131,7 +131,6 @@ index da7ee9c8a19c..2469ca9477ee 100644
  			constructor(url: string | URL, options?: string | string[] | Record<string, unknown>) {
 diff --git a/packages/ai/src/utils/node-http-proxy.ts b/packages/ai/src/utils/node-http-proxy.ts
 new file mode 100644
-index 000000000000..2e5ce2554ffd
 --- /dev/null
 +++ b/packages/ai/src/utils/node-http-proxy.ts
 @@ -0,0 +1,106 @@
