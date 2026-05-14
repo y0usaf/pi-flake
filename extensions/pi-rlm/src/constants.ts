@@ -36,7 +36,6 @@ export const MAX_CTX_GREP_FILES = 5_000;
 
 export const REPL_TOOL_NAME = "repl";
 export const RLM_FINAL_OUTPUT_CUSTOM_TYPE = "rlm_final";
-export const RLM_WARNING_CUSTOM_TYPE = "rlm_warning";
 
 export const RLM_CALLS = ["llm_query", "llm_query_batched", "rlm_query", "rlm_query_batched"] as const;
 export type RlmCall = typeof RLM_CALLS[number];
@@ -44,10 +43,6 @@ export type ExecutionKind = "llm" | "rlm";
 
 export const CONTEXT_MODES = ["auto", "inline", "file_backed"] as const;
 export type ContextMode = typeof CONTEXT_MODES[number];
-
-export const CHILD_MODES = ["pure-rlm", "pi-agent"] as const;
-export type ChildMode = typeof CHILD_MODES[number];
-export const DEFAULT_CHILD_MODE: ChildMode = "pure-rlm";
 
 export type ContextSourceKind = "inline" | "file" | "dir" | "missing" | "other";
 
@@ -64,15 +59,6 @@ export interface ContextSource {
   error?: string;
 }
 
-export interface ContextInlineInput {
-  id: string;
-  name?: string;
-  label: string;
-  path: string;
-  chars: number;
-  text: string;
-}
-
 export interface ContextStore {
   dir: string;
   scratchDir: string;
@@ -83,9 +69,6 @@ export interface ContextStore {
   readmePath: string;
   manifestText: string;
   sources: ContextSource[];
-  /** Small session inputs mirrored into the local Python REPL context only, never into model messages unless printed. */
-  inlineInputs?: ContextInlineInput[];
-  latestInput?: ContextInlineInput;
 }
 
 export interface Budget {
@@ -122,11 +105,9 @@ export interface BatchItem {
 
   context?: string;
   contextMode?: ContextMode;
-  childMode?: ChildMode;
   paths?: string[];
   sources?: Array<{ name?: string; path: string }>;
   contextName?: string;
-  allowWrites?: boolean;
 }
 
 export interface Details {
@@ -157,7 +138,6 @@ export interface Details {
   paths: string[];
   sources?: Array<{ name?: string; path: string }>;
   contextMode?: ContextMode;
-  childMode?: ChildMode;
   scratchDir?: string;
   contextSources?: string[];
   answer?: string;
@@ -175,4 +155,3 @@ export interface Details {
   maxConcurrent?: number;
   results?: Details[];
 }
-

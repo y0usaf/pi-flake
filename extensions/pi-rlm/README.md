@@ -51,9 +51,9 @@ Use normal Python capabilities instead: `import os`, `pathlib`, `json`, `subproc
 - Child sessions receive the child RLM prompt as the actual provider system prompt/instructions payload, disable default Pi tools/extensions/skills/context-file discovery, and assert that `repl` is the only active tool.
 - At the configured/default max depth, `rlm_query` falls back to a plain LM leaf call; setting `maxDepth` to `0` or a negative number disables that depth cap.
 - Leaf calls are sent with an explicit system prompt/instructions payload so providers that require an `instructions` field (for example Codex Responses) work correctly.
-- Finalization is done by assigning the answer to a variable or `state` key and calling `FINAL_VAR("name")`. The REPL tool result records the final variable name/value in structured `details` and only returns a small placeholder in visible tool content; it does not duplicate the answer as `FINAL:` text.
-- In interactive/RPC UI contexts, a finalized root REPL answer is displayed as a visible custom message with `customType: "rlm_final"`. This keeps the final answer visible even when tool rows are compacted by UI extensions such as `pi-compact`; the custom message is filtered out of future LLM context, so the final answer lives in the REPL variable channel rather than normal chat history. The live renderer uses Pi's native Markdown component with the custom-message color family, so headings/lists/code blocks render normally while matching the VCC-style palette instead of looking like a generic tool-success row.
-- Direct assistant prose is not a valid answer channel in root pi-rlm sessions. If a model emits text outside a REPL tool call, pi-rlm strips that text from the persisted/context message and only `repl`/`FINAL_VAR` output is accepted.
+- Finalization is usually done by assigning the answer to a variable or `state` key and calling `FINAL_VAR("name")`. The REPL tool result records the final variable name/value in structured `details` and only returns a small placeholder in visible tool content; it does not duplicate the answer as `FINAL:` text.
+- In interactive/RPC UI contexts, a finalized root REPL answer is displayed as a visible custom message with `customType: "rlm_final"`. This keeps the final answer visible even when tool rows are compacted by UI extensions such as `pi-compact`; the custom message is filtered out of future LLM context, so `FINAL_VAR` answers stay in the REPL variable channel instead of being re-fed as normal chat history. The live renderer uses Pi's native Markdown component with the custom-message color family, so headings/lists/code blocks render normally while matching the VCC-style palette instead of looking like a generic tool-success row.
+- Direct assistant prose is allowed in root pi-rlm sessions. pi-rlm preserves normal assistant text; only `FINAL_VAR` answers are mirrored into the `rlm_final` custom message channel.
 
 ## Recursive-default policy
 
@@ -62,7 +62,7 @@ Use normal Python capabilities instead: `import os`, `pathlib`, `json`, `subproc
 - Use `rlm_query` / `rlm_query_batched` for multi-file, multi-source, audit/review, uncertain, long-context, or naturally parallel subtasks.
 - Use `llm_query` / `llm_query_batched` only for narrow one-shot leaf extraction/classification/summarization over already extracted text.
 - Prefer batched recursive child calls for independent chunks/subtasks.
-- Final answers must come through `FINAL_VAR`, not a direct chat answer. Direct assistant prose is suppressed from future context.
+- Prefer `FINAL_VAR` for final answers so pi-rlm can mirror them as structured output. Direct assistant prose is preserved.
 
 Example:
 

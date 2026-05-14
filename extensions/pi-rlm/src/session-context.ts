@@ -4,8 +4,10 @@ import * as path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { MAX_INLINE_CHILD_CONTEXT_CHARS, REPL_TOOL_NAME } from "./constants.js";
-import type { ContextInlineInput, ContextSource, ContextStore } from "./constants.js";
+import type { ContextSource, ContextStore } from "./constants.js";
 import { buildContextManifest, contextSourceSummary, formatBytes, relPathFor } from "./context-store.js";
+import { renderTemplate, xmlEscape } from "./prompt-render.js";
+import { EXTERNALIZED_INPUT_PROMPT, SESSION_CONTEXT_PROMPT } from "./prompts.js";
 import { clip, isRecord } from "./utils.js";
 
 const SESSION_CONTEXT_DIR = "rlm-context";
@@ -13,8 +15,6 @@ const SESSION_SOURCES_DIR = "sources";
 const DEFAULT_EXTERNALIZE_CHARS = MAX_INLINE_CHILD_CONTEXT_CHARS;
 const PREVIEW_CHARS = 2_000;
 const MAX_SESSION_CONTEXT_PROMPT_CHARS = 8_000;
-const DEFAULT_INLINE_REPL_INPUT_CHARS = MAX_INLINE_CHILD_CONTEXT_CHARS;
-const MAX_INLINE_REPL_INPUTS = 5;
 
 const stores = new Map<string, ContextStore>();
 
@@ -93,33 +93,6 @@ async function loadStoredSources(manifestJsonPath: string): Promise<ContextSourc
   }
 }
 
-async function hydrateInlineInputs(store: ContextStore): Promise<void> {
-  const threshold = inlineReplInputThreshold();
-  if (threshold <= 0) return;
-  const candidates = store.sources
-    .filter((source) => (source.kind === "inline" || source.kind === "file") && (source.sizeBytes ?? Number.MAX_SAFE_INTEGER) <= threshold)
-    .slice(-MAX_INLINE_REPL_INPUTS);
-  const inputs: ContextInlineInput[] = [];
-  for (const source of candidates) {
-    try {
-      const text = await fs.readFile(source.path, "utf8");
-      if (text.length > threshold) continue;
-      inputs.push({
-        id: source.id,
-        name: source.name,
-        label: source.label,
-        path: source.path,
-        chars: text.length,
-        text,
-      });
-    } catch {
-      // Ignore missing/old session files; manifest still reports the source status.
-    }
-  }
-  store.inlineInputs = inputs;
-  store.latestInput = inputs.at(-1);
-}
-
 export async function refreshSessionContextStore(cwd: string, store: ContextStore): Promise<ContextStore> {
   store.manifestText = await buildContextManifest(cwd, store);
   await fs.writeFile(store.manifestPath, store.manifestText, "utf8");
@@ -167,7 +140,6 @@ export async function ensureSessionContextStore(ctx: ExtensionContext): Promise<
     manifestText: "",
     sources,
   };
-  await hydrateInlineInputs(store);
   await refreshSessionContextStore(ctx.cwd, store);
   stores.set(key, store);
   return store;
@@ -205,33 +177,8 @@ export async function addTextToSessionContext(ctx: ExtensionContext, text: strin
     sizeBytes: Buffer.byteLength(text, "utf8"),
   };
   store.sources.push(source);
-  rememberInlineInput(store, source, text);
   await refreshSessionContextStore(ctx.cwd, store);
   return source;
-}
-
-export function inlineReplInputThreshold(): number {
-  const raw = process.env.PI_RLM_ROOT_INLINE_REPL_CHARS;
-  if (raw === undefined || raw === "") return DEFAULT_INLINE_REPL_INPUT_CHARS;
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return DEFAULT_INLINE_REPL_INPUT_CHARS;
-  return Math.max(0, Math.trunc(n));
-}
-
-function rememberInlineInput(store: ContextStore, source: ContextSource, text: string): void {
-  const threshold = inlineReplInputThreshold();
-  if (threshold <= 0 || text.length > threshold) return;
-  const entry: ContextInlineInput = {
-    id: source.id,
-    name: source.name,
-    label: source.label,
-    path: source.path,
-    chars: text.length,
-    text,
-  };
-  const existing = (store.inlineInputs ?? []).filter((input) => input.id !== source.id);
-  store.inlineInputs = [...existing, entry].slice(-MAX_INLINE_REPL_INPUTS);
-  store.latestInput = entry;
 }
 
 export function rootExternalizeThreshold(): number {
@@ -263,35 +210,18 @@ export async function externalizeLargeInput(ctx: ExtensionContext, text: string)
   const source = await addTextToSessionContext(ctx, text, {
     label: `externalized user input (${new Date().toISOString()})`,
   });
-  const preview = headTailPreview(text);
+  const preview = clip(headTailPreview(text), PREVIEW_CHARS * 2 + 500);
   const contextVar = /^s\d+$/.test(source.id) ? `context_${source.id.slice(1)}` : "context";
-  const replacement = `[pi-rlm externalized large user input]
-
-The user's full input was ${text.length.toLocaleString()} characters (${formatBytes(Buffer.byteLength(text, "utf8"))}) and has been stored outside the model context in the session RLM context store.
-
-Source:
-- id: ${source.id}
-- name: ${source.name ?? "(none)"}
-- path: ${source.path}
-- REPL variable: ${contextVar} once REPL loads session context
-
-Use ${"`"}${REPL_TOOL_NAME}${"`"} to inspect it with the upstream-style REPL contract:
-
-${"```python"}
-print(SHOW_VARS())
-# The externalized source is loaded as ${contextVar}; print compact slices only.
-print(${contextVar}[:4000] if isinstance(${contextVar}, str) else ${contextVar})
-# Search example:
-# import re
-# print([m.start() for m in re.finditer("needle", ${contextVar})][:20])
-${"```"}
-
-Do not answer from this preview alone unless the task is fully captured by it. Treat ${contextVar} as the authoritative user input; it may contain both instructions and data.
-
-Preview only:
-${"```text"}
-${clip(preview, PREVIEW_CHARS * 2 + 500)}
-${"```"}`;
+  const replacement = renderTemplate(EXTERNALIZED_INPUT_PROMPT, {
+    charCount: text.length.toLocaleString(),
+    byteCount: formatBytes(Buffer.byteLength(text, "utf8")),
+    sourceId: source.id,
+    sourceName: source.name ?? "(none)",
+    sourcePath: source.path,
+    contextVar,
+    toolName: REPL_TOOL_NAME,
+    preview,
+  });
   return { source, replacement };
 }
 
@@ -334,24 +264,13 @@ export function inheritSessionContextParams(params: unknown, store?: ContextStor
 export function sessionContextPromptBlock(store?: ContextStore): string {
   if (!store) return "";
   const sourceLines = store.sources.length
-    ? store.sources.map((s, i) => `- context_${i}: ${contextSourceSummary(s)}`).join("\n")
-    : "(no sources yet)";
-  return clip(`Root/session RLM context store is attached to ${"`"}${REPL_TOOL_NAME}${"`"} as actual context variables.
-- Store dir: ${store.dir}
-- Scratch dir: ${store.scratchDir}
-- Manifest: ${store.manifestPath}
-- Public REPL context is context/context_0/context_N, not ctx.*.
-- Use SHOW_VARS(), Python slicing/searching, and normal modules such as os/pathlib/json/open/subprocess to inspect context. Do not dump whole sources into chat.
-- If a user prompt was externalized, the transformed user message names the source id and corresponding context_N variable; inspect that variable before answering.
-- Recursive rlm_query / rlm_query_batched calls made from ${REPL_TOOL_NAME} inherit these sources when no explicit context/paths/sources are provided.
-
-Session context sources:
-${sourceLines}`, MAX_SESSION_CONTEXT_PROMPT_CHARS);
-}
-
-export function sessionContextDetails(store?: ContextStore): { scratchDir?: string; contextSources?: string[] } {
-  return {
-    scratchDir: store?.scratchDir,
-    contextSources: store?.sources.map(contextSourceSummary),
-  };
+    ? store.sources.map((s, i) => `    <source slot="context_${i}">${xmlEscape(contextSourceSummary(s))}</source>`).join("\n")
+    : '    <source slot="none">(no sources yet)</source>';
+  return clip(renderTemplate(SESSION_CONTEXT_PROMPT, {
+    storeDir: store.dir,
+    scratchDir: store.scratchDir,
+    manifestPath: store.manifestPath,
+    toolName: REPL_TOOL_NAME,
+    sourceLines,
+  }), MAX_SESSION_CONTEXT_PROMPT_CHARS);
 }

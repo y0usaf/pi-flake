@@ -2,22 +2,16 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { completeSimple } from "@earendil-works/pi-ai";
 
 import { MAX_QUERY_CONTEXT_CHARS } from "./constants.js";
+import { renderTemplate, xmlEscape } from "./prompt-render.js";
+import { LEAF_SYSTEM_PROMPT, LEAF_USER_PROMPT } from "./prompts.js";
 import type { Budget, ContextMode, Details, RlmCall, RunState } from "./constants.js";
 import { budgetDetails, checkRunLimits, clip, modelLabel, normalizeContextMode, normPaths, normSources, recordError, recordUsage, rejectPathsForLlm, resolveModel, withTimeoutSignal } from "./utils.js";
 
-const LEAF_SYSTEM_PROMPT = `You are a precise one-shot leaf LLM call inside a Recursive Language Model (RLM) run.
-You do not have a REPL, filesystem, tools, or iteration in this call.
-Answer only the requested subproblem using the supplied prompt/context.
-If the evidence is insufficient, say so compactly instead of inventing details.`;
-
 function leafSystemPrompt(rootPrompt?: string): string {
-  const root = rootPrompt?.trim();
-  return root
-    ? `${LEAF_SYSTEM_PROMPT}
-
-Root instruction / question from the parent RLM:
-${root}`
-    : LEAF_SYSTEM_PROMPT;
+  const rootPromptBlock = rootPrompt?.trim()
+    ? `  <rootQuestion>${xmlEscape(rootPrompt)}</rootQuestion>`
+    : "";
+  return renderTemplate(LEAF_SYSTEM_PROMPT, { rootPromptBlock });
 }
 
 // ── Plain LM call: llm_query ────────────────────────────────────────
@@ -44,19 +38,17 @@ export async function runLlmQuery(
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok) throw new Error(`Auth failed: ${auth.error}`);
 
-  let prompt = params.prompt;
-  if (params.rootPrompt?.trim()) {
-    prompt += `
-
-Root prompt / question:
-${params.rootPrompt}`;
-  }
-  if (params.context?.trim()) {
-    prompt += `
-
-Context:
-${params.context}`;
-  }
+  const rootPromptBlock = params.rootPrompt?.trim()
+    ? `  <rootQuestion>${xmlEscape(params.rootPrompt)}</rootQuestion>`
+    : "";
+  const contextBlock = params.context?.trim()
+    ? `  <context>${xmlEscape(params.context)}</context>`
+    : "";
+  let prompt = renderTemplate(LEAF_USER_PROMPT, {
+    prompt: params.prompt,
+    rootPromptBlock,
+    contextBlock,
+  });
   if (prompt.length > MAX_QUERY_CONTEXT_CHARS) {
     prompt = prompt.slice(0, MAX_QUERY_CONTEXT_CHARS) + `\n\n[truncated: ${prompt.length - MAX_QUERY_CONTEXT_CHARS} chars omitted]`;
   }
