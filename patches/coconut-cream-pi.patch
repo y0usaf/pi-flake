@@ -1,0 +1,4019 @@
+diff --git a/packages/agent/src/agent-loop.ts b/packages/agent/src/agent-loop.ts
+index 7226082aa65a054633260e2066122b09f897e675..fdf990891d3ec662846b67d516c2f0aaf1156881 100644
+--- a/packages/agent/src/agent-loop.ts
++++ b/packages/agent/src/agent-loop.ts
+@@ -199,13 +199,14 @@ async function runLoop(
+ 				return;
+ 			}
+ 
+-			// Check for tool calls
+-			const toolCalls = message.content.filter((c) => c.type === "toolCall");
++			// Check for tool calls (including synthetic repl fences)
++			const executionMessage = attachReplFenceToolCalls(message);
++			const toolCalls = executionMessage.content.filter((c) => c.type === "toolCall");
+ 
+ 			const toolResults: ToolResultMessage[] = [];
+ 			hasMoreToolCalls = false;
+ 			if (toolCalls.length > 0) {
+-				const executedToolBatch = await executeToolCalls(currentContext, message, config, signal, emit);
++				const executedToolBatch = await executeToolCalls(currentContext, executionMessage, config, signal, emit);
+ 				toolResults.push(...executedToolBatch.messages);
+ 				hasMoreToolCalls = !executedToolBatch.terminate;
+ 
+@@ -289,10 +290,11 @@ async function streamAssistantResponse(
+ 	const llmMessages = await config.convertToLlm(messages);
+ 
+ 	// Build LLM context
++	const llmTools = context.tools?.filter((tool) => tool.name !== "repl");
+ 	const llmContext: Context = {
+ 		systemPrompt: context.systemPrompt,
+ 		messages: llmMessages,
+-		tools: context.tools,
++		tools: llmTools && llmTools.length > 0 ? llmTools : undefined,
+ 	};
+ 
+ 	const streamFunction = streamFn || streamSimple;
+@@ -367,6 +369,81 @@ async function streamAssistantResponse(
+ 	return finalMessage;
+ }
+ 
++function parseReplFenceArguments(code: string): Record<string, unknown> {
++	const trimmed = code.trim();
++	if (!trimmed) return { code: "" };
++	if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
++		try {
++			const parsed = JSON.parse(trimmed);
++			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
++				if (typeof (parsed as Record<string, unknown>).code === "string") {
++					return parsed as Record<string, unknown>;
++				}
++			}
++		} catch {
++			// Fall through to raw code.
++		}
++	}
++	return { code };
++}
++
++function extractReplFenceArgumentsFromText(text: string): Record<string, unknown>[] {
++	const args: Record<string, unknown>[] = [];
++	const lines = text.split(/\r?\n/);
++	let inFence = false;
++	let fenceLines: string[] = [];
++	let hasVisibleText = false;
++
++	for (const line of lines) {
++		const trimmed = line.trimStart();
++		if (!inFence) {
++			if (trimmed.startsWith("```repl")) {
++				inFence = true;
++				fenceLines = [];
++				continue;
++			}
++			if (line.trim().length > 0) {
++				hasVisibleText = true;
++			}
++			continue;
++		}
++
++		if (trimmed.startsWith("```")) {
++			args.push(parseReplFenceArguments(fenceLines.join("\n")));
++			inFence = false;
++			continue;
++		}
++
++		fenceLines.push(line);
++	}
++
++	if (hasVisibleText) return [];
++	if (inFence) {
++		args.push(parseReplFenceArguments(fenceLines.join("\n")));
++	}
++
++	return args;
++}
++
++function attachReplFenceToolCalls(message: AssistantMessage): AssistantMessage {
++	if (message.role !== "assistant") return message;
++
++	const text = message.content
++		.filter((block) => block.type === "text")
++		.map((block: any) => block.text)
++		.join("\n");
++	const fenceArgs = extractReplFenceArgumentsFromText(text);
++	if (fenceArgs.length === 0) return message;
++
++	const syntheticBlocks = fenceArgs.map((args, index) => ({
++		type: "toolCall",
++		id: `repl:${message.timestamp}:${index}`,
++		name: "repl",
++		arguments: args,
++	} as any));
++
++	return { ...message, content: [...message.content, ...syntheticBlocks] };
++}
+ /**
+  * Execute tool calls from an assistant message.
+  */
+diff --git a/packages/ai/src/providers/openai-codex-responses.ts b/packages/ai/src/providers/openai-codex-responses.ts
+index 64542b2c74364d88ae37f64b6a58b0eea0b0280c..96a66a4eca4d37e722fb694dfce755222f0ff99f 100644
+--- a/packages/ai/src/providers/openai-codex-responses.ts
++++ b/packages/ai/src/providers/openai-codex-responses.ts
+@@ -721,8 +721,7 @@ async function getWebSocketConstructor(): Promise<WebSocketConstructor | null> {
+ 		process?.versions?.bun &&
+ 		(process.env.HTTP_PROXY || process.env.HTTPS_PROXY || process.env.http_proxy || process.env.https_proxy)
+ 	) {
+-		const m = await dynamicImport("proxy-from-env");
+-		const getProxyForUrl = (m as { getProxyForUrl: (url: string | object | URL) => string }).getProxyForUrl;
++		const { getProxyForUrl } = await import("../utils/node-http-proxy.js");
+ 
+ 		_cachedWebsocket = class extends WebSocket {
+ 			constructor(url: string | URL, options?: string | string[] | Record<string, unknown>) {
+diff --git a/packages/ai/src/utils/node-http-proxy.ts b/packages/ai/src/utils/node-http-proxy.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/ai/src/utils/node-http-proxy.ts
+@@ -0,0 +1,106 @@
++import type { Agent as HttpAgent } from "node:http";
++import type { Agent as HttpsAgent } from "node:https";
++import { HttpProxyAgent } from "http-proxy-agent";
++import { HttpsProxyAgent } from "https-proxy-agent";
++
++export interface NodeHttpProxyAgents {
++	httpAgent: HttpAgent;
++	httpsAgent: HttpsAgent;
++}
++
++export const UNSUPPORTED_PROXY_PROTOCOL_MESSAGE =
++	"Unsupported proxy protocol. SOCKS and PAC proxy URLs are not supported; use an HTTP or HTTPS proxy URL.";
++
++function envValue(name: string): string | undefined {
++	const value = process.env[name];
++	return typeof value === "string" && value.trim() ? value.trim() : undefined;
++}
++
++function defaultPort(protocol: string): string {
++	switch (protocol) {
++		case "http:":
++		case "ws:":
++			return "80";
++		case "https:":
++		case "wss:":
++			return "443";
++		default:
++			return "";
++	}
++}
++
++function hostMatchesNoProxy(hostname: string, noProxyHost: string): boolean {
++	if (!noProxyHost) return false;
++	if (noProxyHost === "*") return true;
++	const normalized = noProxyHost.replace(/^\*+/, "").toLowerCase();
++	const host = hostname.toLowerCase();
++	if (!normalized) return false;
++	if (normalized.startsWith(".")) {
++		const suffix = normalized.slice(1);
++		return host === suffix || host.endsWith(`.${suffix}`);
++	}
++	return host === normalized || host.endsWith(`.${normalized}`);
++}
++
++function isNoProxy(target: URL): boolean {
++	const raw = envValue("NO_PROXY") ?? envValue("no_proxy");
++	if (!raw) return false;
++	const host = target.hostname;
++	const port = target.port || defaultPort(target.protocol);
++	for (const token of raw.split(/[\s,]+/)) {
++		const entry = token.trim();
++		if (!entry) continue;
++		if (entry === "*") return true;
++		const idx = entry.lastIndexOf(":");
++		const hasPort = idx > 0 && entry.indexOf("]") === -1;
++		const entryHost = hasPort ? entry.slice(0, idx) : entry;
++		const entryPort = hasPort ? entry.slice(idx + 1) : "";
++		if (!hostMatchesNoProxy(host, entryHost)) continue;
++		if (!entryPort || entryPort === port) return true;
++	}
++	return false;
++}
++
++export function getProxyForUrl(targetUrl: string | URL): string {
++	const target = targetUrl instanceof URL ? targetUrl : new URL(targetUrl);
++	if (isNoProxy(target)) return "";
++	const protocol = target.protocol;
++	const proxy = protocol === "https:" || protocol === "wss:"
++		? envValue("HTTPS_PROXY") ?? envValue("https_proxy") ?? envValue("HTTP_PROXY") ?? envValue("http_proxy")
++		: envValue("HTTP_PROXY") ?? envValue("http_proxy") ?? envValue("ALL_PROXY") ?? envValue("all_proxy");
++	return proxy ?? "";
++}
++
++export function resolveHttpProxyUrlForTarget(targetUrl: string | URL): URL | undefined {
++	const proxy = getProxyForUrl(targetUrl);
++	if (!proxy) {
++		return undefined;
++	}
++
++	let proxyUrl: URL;
++	try {
++		proxyUrl = new URL(proxy);
++	} catch (error) {
++		throw new Error(
++			`Invalid proxy URL ${JSON.stringify(proxy)}: ${error instanceof Error ? error.message : String(error)}`,
++		);
++	}
++
++	if (proxyUrl.protocol !== "http:" && proxyUrl.protocol !== "https:") {
++		throw new Error(`${UNSUPPORTED_PROXY_PROTOCOL_MESSAGE} Got ${proxyUrl.protocol}`);
++	}
++
++	return proxyUrl;
++}
++
++export function createHttpProxyAgentsForTarget(targetUrl: string | URL): NodeHttpProxyAgents | undefined {
++	const proxyUrl = resolveHttpProxyUrlForTarget(targetUrl);
++	if (!proxyUrl) {
++		return undefined;
++	}
++
++	return {
++		httpAgent: new HttpProxyAgent(proxyUrl),
++		httpsAgent: new HttpsProxyAgent(proxyUrl) as unknown as HttpsAgent,
++	};
++}
+diff --git a/packages/coding-agent/src/core/agent-session-services.ts b/packages/coding-agent/src/core/agent-session-services.ts
+index 061399edb333b47435c3fd98230f9ea9fa8ecdd9..12cdb2c1d73f126876e6797578be5aaccc6f5211 100644
+--- a/packages/coding-agent/src/core/agent-session-services.ts
++++ b/packages/coding-agent/src/core/agent-session-services.ts
+@@ -6,6 +6,7 @@ import { AuthStorage } from "./auth-storage.js";
+ import type { SessionStartEvent, ToolDefinition } from "./extensions/index.js";
+ import { ModelRegistry } from "./model-registry.js";
+ import { DefaultResourceLoader, type DefaultResourceLoaderOptions, type ResourceLoader } from "./resource-loader.js";
++import { builtinRlmExtension } from "./rlm/builtin-extension.js";
+ import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "./sdk.js";
+ import type { SessionManager } from "./session-manager.js";
+ import { SettingsManager } from "./settings-manager.js";
+@@ -134,11 +135,14 @@ export async function createAgentSessionServices(
+ 	const authStorage = options.authStorage ?? AuthStorage.create(join(agentDir, "auth.json"));
+ 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
+ 	const modelRegistry = options.modelRegistry ?? ModelRegistry.create(authStorage, join(agentDir, "models.json"));
++	const resourceLoaderOptions = options.resourceLoaderOptions ?? {};
+ 	const resourceLoader = new DefaultResourceLoader({
+-		...(options.resourceLoaderOptions ?? {}),
++		...resourceLoaderOptions,
+ 		cwd,
+ 		agentDir,
+ 		settingsManager,
++		noExtensions: resourceLoaderOptions.noExtensions ?? true,
++		extensionFactories: [builtinRlmExtension, ...(resourceLoaderOptions.extensionFactories ?? [])],
+ 	});
+ 	await resourceLoader.reload();
+ 
+diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
+index 9868e8a675dc3cd78ed04bdf961fea4e5ace143c..8e02a77ab4aa7ace3b28974f03f120c38cf73c42 100644
+--- a/packages/coding-agent/src/core/agent-session.ts
++++ b/packages/coding-agent/src/core/agent-session.ts
+@@ -2372,7 +2372,7 @@ export class AgentSession {
+ 
+ 		const defaultActiveToolNames = this._baseToolsOverride
+ 			? Object.keys(this._baseToolsOverride)
+-			: ["read", "bash", "edit", "write"];
++			: ["repl"];
+ 		const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
+ 		this._refreshToolRegistry({
+ 			activeToolNames: baseActiveToolNames,
+diff --git a/packages/coding-agent/src/core/messages.ts b/packages/coding-agent/src/core/messages.ts
+index 81ffabb583d085c7b220cf3de608508d3d904b9f..a24d69c89de3d33cef80aaa807ba68deff6cac14 100644
+--- a/packages/coding-agent/src/core/messages.ts
++++ b/packages/coding-agent/src/core/messages.ts
+@@ -6,7 +6,7 @@
+  */
+ 
+ import type { AgentMessage } from "@earendil-works/pi-agent-core";
+-import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
++import type { AssistantMessage, ImageContent, Message, TextContent, ToolCall } from "@earendil-works/pi-ai";
+ 
+ export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
+ 
+@@ -137,6 +137,81 @@ export function createCustomMessage(
+ 	};
+ }
+ 
++function parseReplFenceArguments(code: string): Record<string, unknown> {
++	const trimmed = code.trim();
++	if (!trimmed) return { code: "" };
++	if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
++		try {
++			const parsed = JSON.parse(trimmed);
++			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
++				if (typeof (parsed as Record<string, unknown>).code === "string") {
++					return parsed as Record<string, unknown>;
++				}
++			}
++		} catch {
++			// Fall through to raw code.
++		}
++	}
++	return { code };
++}
++
++function extractReplFenceArgumentsFromText(text: string): Record<string, unknown>[] {
++	const args: Record<string, unknown>[] = [];
++	const lines = text.split(/\r?\n/);
++	let inFence = false;
++	let fenceLines: string[] = [];
++	let hasVisibleText = false;
++
++	for (const line of lines) {
++		const trimmed = line.trimStart();
++		if (!inFence) {
++			if (trimmed.startsWith("```repl")) {
++				inFence = true;
++				fenceLines = [];
++				continue;
++			}
++			if (line.trim().length > 0) {
++				hasVisibleText = true;
++			}
++			continue;
++		}
++
++		if (trimmed.startsWith("```")) {
++			args.push(parseReplFenceArguments(fenceLines.join("\n")));
++			inFence = false;
++			continue;
++		}
++
++		fenceLines.push(line);
++	}
++
++	if (hasVisibleText) return [];
++	if (inFence) {
++		args.push(parseReplFenceArguments(fenceLines.join("\n")));
++	}
++
++	return args;
++}
++
++function attachReplFenceToolCalls(message: AssistantMessage): AssistantMessage {
++	if (message.role !== "assistant") return message;
++
++	const text = message.content
++		.filter((block) => block.type === "text")
++		.map((block: any) => block.text)
++		.join("\n");
++	const fenceArgs = extractReplFenceArgumentsFromText(text);
++	if (fenceArgs.length === 0) return message;
++
++	const syntheticBlocks = fenceArgs.map((args, index) => ({
++		type: "toolCall",
++		id: `repl:${message.timestamp}:${index}`,
++		name: "repl",
++		arguments: args,
++	} as any));
++
++	return { ...message, content: [...message.content, ...syntheticBlocks] };
++}
+ /**
+  * Transform AgentMessages (including custom types) to LLM-compatible Messages.
+  *
+@@ -183,6 +258,7 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
+ 					};
+ 				case "user":
+ 				case "assistant":
++					return attachReplFenceToolCalls(m as AssistantMessage);
+ 				case "toolResult":
+ 					return m;
+ 				default:
+diff --git a/packages/coding-agent/src/core/rlm/batch.ts b/packages/coding-agent/src/core/rlm/batch.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..25baf08956daf0b31d758f9782eb263a30562a79
+--- /dev/null
++++ b/packages/coding-agent/src/core/rlm/batch.ts
+@@ -0,0 +1,127 @@
++import type { ExtensionContext } from "../extensions/types.js";
++
++import { HARD_MAX_CONCURRENT } from "./constants.js";
++import type { Details, ExecutionKind } from "./constants.js";
++import { runRlmQuery } from "./child-session.js";
++import { runLlmQuery } from "./llm.js";
++import {
++  batchItemsFromParams,
++  budgetDetails,
++  checkRunLimits,
++  clip,
++  errorText,
++  modelLabel,
++  modelNameFromDetails,
++  normPaths,
++  normSources,
++  optionalClampedLimit,
++  recordError,
++  resolveModel,
++  runLimited,
++  textOf,
++  uniquePathsFromDetails,
++  uniqueSourcesFromDetails,
++} from "./utils.js";
++import type { RunState } from "./constants.js";
++
++// ── Batched calls ───────────────────────────────────────────────────
++
++export async function runBatch(
++  ctx: ExtensionContext,
++  params: any,
++  call: "llm_query_batched" | "rlm_query_batched",
++  depth: number,
++  state: RunState,
++  signal: AbortSignal | undefined,
++  onUpdate: any,
++): Promise<{ content: Array<{ type: "text"; text: string }>; details: Details }> {
++  const primitiveCall = call === "llm_query_batched" ? "llm_query" : "rlm_query";
++  const kind: ExecutionKind = call === "llm_query_batched" ? "llm" : "rlm";
++  const items = batchItemsFromParams(params, call);
++  const rawMaxConcurrent = params?.maxConcurrent ?? params?.max_concurrent_subcalls;
++  const requestedMaxConcurrent = optionalClampedLimit(rawMaxConcurrent, HARD_MAX_CONCURRENT);
++  const hasMaxConcurrentOverride = typeof rawMaxConcurrent === "number" && Number.isFinite(rawMaxConcurrent);
++  const maxConcurrent = hasMaxConcurrentOverride
++    ? (requestedMaxConcurrent ?? items.length)
++    : (state.maxConcurrent ?? items.length);
++  checkRunLimits(state);
++
++  onUpdate?.({ content: [{ type: "text", text: `${call}: ${items.length} item(s), concurrency=${maxConcurrent}` }] });
++
++  const results = await runLimited(items, maxConcurrent, async (item, index) => {
++    try {
++      if (signal?.aborted) throw new Error("Aborted.");
++      onUpdate?.({ content: [{ type: "text", text: `${call}: item ${index + 1}/${items.length}` }] });
++      if (call === "llm_query_batched") {
++        return await runLlmQuery(ctx, item, state.budget, depth, state, signal, onUpdate, "llm_query");
++      }
++      return await runRlmQuery(ctx, item, depth, state, signal, onUpdate);
++    } catch (e) {
++      try { recordError(state); } catch { /* keep original error details */ }
++      const model = resolveModel(ctx, state);
++      const msg = `Error: ${errorText(e)}`;
++      const details: Details = {
++        call: primitiveCall,
++        kind,
++        depth,
++        maxDepth: state.maxDepth,
++        callsUsed: state.budget.calls,
++        maxCalls: state.budget.maxCalls,
++        queriesUsed: state.budget.queries,
++        maxQueries: state.budget.maxQueries,
++        turns: 0,
++        maxTurns: kind === "rlm" ? state.maxTurns : 0,
++        model: modelLabel(model),
++        status: "error",
++        ...budgetDetails(state),
++        prompt: item.prompt,
++        rootPrompt: item.rootPrompt,
++
++        paths: normPaths(item.paths),
++        sources: normSources(item.sources),
++        answer: msg,
++        error: errorText(e),
++        incomplete: true,
++      };
++      return { content: [{ type: "text" as const, text: msg }], details };
++    }
++  });
++
++  const childDetails = results.map((r) => r.details);
++  const body = results
++    .map((r, i) => {
++      const text = textOf(r.content).trim();
++      const prompt = clip(items[i].prompt.replace(/\s+/g, " ").trim(), 160);
++      return `## ${i + 1}. ${prompt}\n\n${text}`;
++    })
++    .join("\n\n---\n\n");
++
++  const answer = clip(body);
++  const details: Details = {
++    call,
++    kind,
++    depth,
++    maxDepth: state.maxDepth,
++    callsUsed: state.budget.calls,
++    maxCalls: state.budget.maxCalls,
++    queriesUsed: state.budget.queries,
++    maxQueries: state.budget.maxQueries,
++    turns: childDetails.reduce((sum, d) => sum + (d.turns || 0), 0),
++    maxTurns: kind === "rlm" ? state.maxTurns : 0,
++    model: modelNameFromDetails(childDetails),
++    prompt: `${call} (${items.length} item${items.length === 1 ? "" : "s"})`,
++    paths: uniquePathsFromDetails(childDetails),
++    sources: uniqueSourcesFromDetails(childDetails),
++    status: childDetails.some((d) => d.incomplete || d.status === "partial" || d.status === "error" || d.status === "aborted" || d.status === "budget_exhausted") ? "partial" : "completed",
++    ...budgetDetails(state),
++    answer,
++    batch: true,
++    batchSize: items.length,
++    maxConcurrent,
++    results: childDetails,
++    incomplete: childDetails.some((d) => d.incomplete || d.status === "partial"),
++  };
++
++  return { content: [{ type: "text", text: answer }], details };
++}
++
+diff --git a/packages/coding-agent/src/core/rlm/builtin-extension.ts b/packages/coding-agent/src/core/rlm/builtin-extension.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..3c7d8e18a94faf68e239bafb49517f3f826c57ed
+--- /dev/null
++++ b/packages/coding-agent/src/core/rlm/builtin-extension.ts
+@@ -0,0 +1,71 @@
++import type { ExtensionAPI } from "../extensions/types.js";
++
++import { REPL_TOOL_NAME } from "./constants.js";
++import { rootSystemPrompt } from "./guidance.js";
++import { createRlmReplTool } from "./repl.js";
++import {
++	ensureSessionContextStore,
++	externalizeLargeInput,
++	recordUserInput,
++	releaseSessionContextStore,
++	sessionContextPromptBlock,
++	shouldExternalizeInput,
++} from "./session-context.js";
++
++const ROOT_MODE = "repl";
++
++async function enforceRootTools(pi: ExtensionAPI): Promise<string> {
++	await pi.setActiveTools([REPL_TOOL_NAME]);
++	return ROOT_MODE;
++}
++
++export function builtinRlmExtension(pi: ExtensionAPI): void {
++	pi.registerTool(createRlmReplTool(undefined, undefined, ensureSessionContextStore));
++
++	pi.on("session_start", async (_event, ctx) => {
++		await enforceRootTools(pi);
++		await ensureSessionContextStore(ctx);
++	});
++
++	pi.on("session_tree", async (_event, ctx) => {
++		await enforceRootTools(pi);
++		await ensureSessionContextStore(ctx);
++	});
++
++	pi.on("session_shutdown", (_event, ctx) => {
++		releaseSessionContextStore(ctx);
++	});
++
++	pi.on("context", event => {
++		const messages = event.messages.filter(
++			(message: any) => !(message?.role === "custom" && message.customType === "rlm_final"),
++		);
++		return { messages };
++	});
++
++	pi.on("before_provider_request", async () => {
++		await enforceRootTools(pi);
++	});
++
++	pi.on("input", async (event, ctx) => {
++		if (event.source === "extension") return { action: "continue" as const };
++		if (shouldExternalizeInput(event.text, event.source)) {
++			const { replacement } = await externalizeLargeInput(ctx, event.text);
++			return { action: "transform" as const, text: replacement, images: event.images };
++		}
++		await recordUserInput(ctx, event.text);
++		return { action: "continue" as const };
++	});
++
++	pi.on("before_agent_start", async (_event, ctx) => {
++		const mode = await enforceRootTools(pi);
++		const store = await ensureSessionContextStore(ctx);
++		const systemPrompt = [
++			rootSystemPrompt(ctx.cwd, undefined, mode, [REPL_TOOL_NAME]),
++			sessionContextPromptBlock(store),
++		]
++			.filter(Boolean)
++			.join("\n\n");
++		return { systemPrompt };
++	});
++}
+diff --git a/packages/coding-agent/src/core/rlm/child-decompose.ts b/packages/coding-agent/src/core/rlm/child-decompose.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e658c9be1c073aaff7b45b2c87f2989175c1f2d0
+--- /dev/null
++++ b/packages/coding-agent/src/core/rlm/child-decompose.ts
+@@ -0,0 +1,144 @@
++import type { ExtensionContext } from "../extensions/types.js";
++
++import type { ContextMode, Details, RunState } from "./constants.js";
++import { budgetDetails, checkRunLimits, clip, normPaths, normSources, textOf } from "./utils.js";
++import { runLlmQuery } from "./llm.js";
++import { renderTemplate, xmlEscape } from "./prompt-render.js";
++import { DECOMPOSE_SYSTEM_PROMPT, DECOMPOSE_USER_PROMPT, SYNTHESIZE_PROMPT } from "./prompts.js";
++
++// ── Structural decomposition ─────────────────────────────────────────
++
++const DECOMPOSE_SYSTEM = DECOMPOSE_SYSTEM_PROMPT;
++
++export function decomposeUserPrompt(prompt: string, context?: string, paths?: string[]): string {
++  const pathsBlock = paths?.length
++    ? `  <paths>
++${paths.map((p) => `    <path>${xmlEscape(p)}</path>`).join("\n")}
++  </paths>`
++    : "";
++  const contextBlock = context?.trim()
++    ? `  <contextExcerpt>${xmlEscape(context.slice(0, 2000))}</contextExcerpt>`
++    : "";
++  return renderTemplate(DECOMPOSE_USER_PROMPT, {
++    prompt,
++    pathsBlock,
++    contextBlock,
++  });
++}
++
++interface DecomposeResult {
++  decompose: boolean;
++  subtasks?: string[];
++  reason?: string;
++}
++
++export function parseDecomposeResponse(text: string): DecomposeResult | undefined {
++  try {
++    // Strip markdown fences if present
++    const cleaned = text.replace(/^```(?:json)?\s*/m, "").replace(/```\s*$/m, "").trim();
++    const parsed = JSON.parse(cleaned);
++    if (typeof parsed?.decompose !== "boolean") return undefined;
++    if (parsed.decompose && (!Array.isArray(parsed.subtasks) || parsed.subtasks.length < 2)) return undefined;
++    if (parsed.decompose && parsed.subtasks.some((s: unknown) => typeof s !== "string" || !s)) return undefined;
++    return parsed as DecomposeResult;
++  } catch {
++    return undefined;
++  }
++}
++
++/**
++ * Attempt structural decomposition: ask a leaf LLM whether this task should
++ * be split, and if so, automatically fan out child rlm_query calls.
++ *
++ * Returns the synthesized result if decomposition was performed, or undefined
++ * if the task should be handled as a single interactive session.
++ */
++export async function tryStructuralDecompose(
++  ctx: ExtensionContext,
++  params: { prompt: string; rootPrompt?: string; model?: string; context?: string; contextMode?: ContextMode; paths?: string[]; sources?: Array<{ name?: string; path: string }>; contextName?: string },
++  depth: number,
++  state: RunState,
++  signal: AbortSignal | undefined,
++  onUpdate: any,
++): Promise<{ content: Array<{ type: "text"; text: string }>; details: Details } | undefined> {
++  // Don't decompose if we're already near limits
++  if (state.maxDepth !== undefined && depth + 1 >= state.maxDepth) return undefined;
++  if (state.budget.maxCalls !== undefined && state.budget.calls + 2 >= state.budget.maxCalls) return undefined;
++  if (state.budget.maxQueries !== undefined && state.budget.queries + 2 >= state.budget.maxQueries) return undefined;
++
++  onUpdate?.({ content: [{ type: "text", text: `depth ${depth}: checking structural decomposition...` }] });
++
++  // Ask leaf LLM to decompose
++  const decomposeResult = await runLlmQuery(ctx, {
++    prompt: DECOMPOSE_SYSTEM + "\n\n" + decomposeUserPrompt(params.prompt, params.context, params.paths),
++  }, state.budget, depth, state, signal, onUpdate, "llm_query");
++
++  const decomposeText = textOf(decomposeResult.content).trim();
++  const decision = parseDecomposeResponse(decomposeText);
++
++  if (!decision?.decompose || !decision.subtasks?.length) {
++    onUpdate?.({ content: [{ type: "text", text: `depth ${depth}: no decomposition needed${decision?.reason ? ` (${decision.reason})` : ""}` }] });
++    return undefined;
++  }
++
++  // ── Fan out: spawn parallel child rlm_query calls ──
++  const subtasks = decision.subtasks;
++  onUpdate?.({ content: [{ type: "text", text: `depth ${depth}: structural decomposition into ${subtasks.length} subtasks` }] });
++
++  const { runBatch } = await import("./batch.js");
++  const batchParams = {
++    call: "rlm_query_batched" as const,
++    items: subtasks.map((subtask) => ({
++      prompt: subtask,
++      rootPrompt: params.rootPrompt ?? params.prompt,
++      model: params.model,
++      context: params.context,
++      contextMode: params.contextMode,
++      paths: params.paths,
++      sources: params.sources,
++      contextName: params.contextName,
++    })),
++  };
++
++  const batchResult = await runBatch(ctx, batchParams, "rlm_query_batched", depth + 1, state, signal, onUpdate);
++
++  // ── Synthesize: combine child results ──
++  const childAnswers = textOf(batchResult.content).trim();
++  onUpdate?.({ content: [{ type: "text", text: `depth ${depth}: synthesizing ${subtasks.length} child results...` }] });
++
++  const synthesizePrompt = renderTemplate(SYNTHESIZE_PROMPT, {
++    subtaskCount: subtasks.length,
++    prompt: params.prompt,
++    childAnswers,
++  });
++
++  const synthesized = await runLlmQuery(ctx, {
++    prompt: synthesizePrompt,
++    rootPrompt: params.rootPrompt,
++  }, state.budget, depth, state, signal, onUpdate, "llm_query");
++
++  const answer = clip(textOf(synthesized.content).trim());
++  const details: Details = {
++    call: "rlm_query",
++    kind: "rlm",
++    depth,
++    maxDepth: state.maxDepth,
++    callsUsed: state.budget.calls,
++    maxCalls: state.budget.maxCalls,
++    queriesUsed: state.budget.queries,
++    maxQueries: state.budget.maxQueries,
++    turns: (batchResult.details.turns || 0) + 2, // decompose + synthesize
++    maxTurns: state.maxTurns,
++    model: batchResult.details.model,
++    status: batchResult.details.incomplete ? "partial" : "completed",
++    ...budgetDetails(state),
++    prompt: params.prompt,
++    rootPrompt: params.rootPrompt,
++    paths: normPaths(params.paths),
++    sources: normSources(params.sources),
++    answer,
++    incomplete: batchResult.details.incomplete,
++  };
++
++  return { content: [{ type: "text", text: answer }], details };
++}
+diff --git a/packages/coding-agent/src/core/rlm/child-prompts.ts b/packages/coding-agent/src/core/rlm/child-prompts.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..c72fdb5ec6ab5059770a99116638d10546a1eb69
+--- /dev/null
++++ b/packages/coding-agent/src/core/rlm/child-prompts.ts
+@@ -0,0 +1,77 @@
++import { MAX_INLINE_CHILD_CONTEXT_CHARS, REPL_TOOL_NAME } from "./constants.js";
++import type { ContextStore, RunState } from "./constants.js";
++import { contextMaterialized, contextStorePromptBlock } from "./context-store.js";
++import { renderTemplate, xmlEscape } from "./prompt-render.js";
++import { CHILD_SYSTEM_PROMPT, CHILD_TASK_PROMPT, DETERMINISTIC_FINAL_PROMPT } from "./prompts.js";
++import { clip, textOf } from "./utils.js";
++
++function limitLabel(value: number | undefined): string {
++  return typeof value === "number" && Number.isFinite(value) && value > 0 ? String(value) : "∞";
++}
++
++export function childSystemPrompt(depth: number, state: RunState, hasContextStore: boolean): string {
++  const contextLine = hasContextStore
++    ? "A file-backed context source set has been loaded into the REPL as context/context_0/context_N values. Use SHOW_VARS() and normal Python inspection; do not print huge values back into chat."
++    : "Use the REPL context/history/state variables when present.";
++  const turnRule = state.maxTurns === undefined
++    ? "There is no pi-rlm turn cap for this run; still finalize promptly once the answer is ready."
++    : "If turn budget runs low, call FINAL_VAR with a partial answer and remaining work.";
++
++  return renderTemplate(CHILD_SYSTEM_PROMPT, {
++    depth,
++    maxDepth: limitLabel(state.maxDepth),
++    callsUsed: state.budget.calls,
++    maxCalls: limitLabel(state.budget.maxCalls),
++    queriesUsed: state.budget.queries,
++    maxQueries: limitLabel(state.budget.maxQueries),
++    toolName: REPL_TOOL_NAME,
++    contextLine,
++    turnRule,
++  });
++}
++
++export function childPrompt(prompt: string, context?: string, paths?: string[], store?: ContextStore, rootPrompt?: string): string {
++  const pathLines = paths?.length
++    ? paths.map((p) => `    <path>${xmlEscape(p)}</path>`).join("\n")
++    : "    <path>(none)</path>";
++  const inlineContextBlock = context?.trim() && !contextMaterialized(store)
++    ? `  <inlineContext>${xmlEscape(clip(context, MAX_INLINE_CHILD_CONTEXT_CHARS))}</inlineContext>`
++    : "";
++  const rootPromptBlock = rootPrompt?.trim()
++    ? `  <rootPrompt>${xmlEscape(rootPrompt)}</rootPrompt>`
++    : "";
++  const contextStoreBlock = store ? contextStorePromptBlock(store) : "";
++
++  return renderTemplate(CHILD_TASK_PROMPT, {
++    prompt,
++    rootPromptBlock,
++    inlineContextBlock,
++    contextStoreBlock,
++    pathLines,
++    toolName: REPL_TOOL_NAME,
++  });
++}
++
++export function childToolList(): string[] {
++  return [REPL_TOOL_NAME];
++}
++
++function childTranscript(messages: any[], maxChars = 120_000): string {
++  const lines: string[] = [];
++  for (const m of messages) {
++    const role = typeof m?.role === "string" ? m.role : "?";
++    const tool = typeof m?.toolName === "string" ? `:${m.toolName}` : "";
++    const body = textOf(m?.content).trim();
++    if (!body) continue;
++    lines.push(`## ${role}${tool}\n${body}`);
++  }
++  return clip(lines.join("\n\n"), maxChars);
++}
++
++export function deterministicFinalPrompt(originalPrompt: string, messages: any[], reason: string): string {
++  return renderTemplate(DETERMINISTIC_FINAL_PROMPT, {
++    reason,
++    originalPrompt,
++    transcript: childTranscript(messages),
++  });
++}
+diff --git a/packages/coding-agent/src/core/rlm/child-session.ts b/packages/coding-agent/src/core/rlm/child-session.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..9c7a71212275f7756ec4ef363538c476b372555a
+--- /dev/null
++++ b/packages/coding-agent/src/core/rlm/child-session.ts
+@@ -0,0 +1,246 @@
++import type { ExtensionContext } from "../extensions/types.js";
++import { getAgentDir } from "../../config.js";
++import { createAgentSession } from "../sdk.js";
++import { DefaultResourceLoader } from "../resource-loader.js";
++import { SessionManager } from "../session-manager.js";
++import { SettingsManager } from "../settings-manager.js";
++
++import type { ContextMode, Details, RunState } from "./constants.js";
++import { cleanupContextStore, contextSourceSummary, prepareContextStore } from "./context-store.js";
++import { childPrompt, childSystemPrompt, childToolList, deterministicFinalPrompt } from "./child-prompts.js";
++import { tryStructuralDecompose } from "./child-decompose.js";
++import { runLlmQuery } from "./llm.js";
++import { budgetDetails, checkRunLimits, clip, extractAnswer, hasReturn, isRlmReplToolName, normalizeContextMode, normPaths, normSources, resolveModel, modelLabel, recordError, recordUsage, textOf, traceOf, usageFromMessages, withTimeoutSignal, leafPrompt } from "./utils.js";
++
++    // ── Main entry point ─────────────────────────────────────────────────
++
++    export async function runRlmQuery(
++      ctx: ExtensionContext,
++      params: { prompt: string; rootPrompt?: string; model?: string; context?: string; contextMode?: ContextMode; paths?: string[]; sources?: Array<{ name?: string; path: string }>; contextName?: string },
++      depth: number,
++      state: RunState,
++      signal: AbortSignal | undefined,
++      onUpdate: any,
++    ): Promise<{ content: Array<{ type: "text"; text: string }>; details: Details }> {
++      const contextMode = normalizeContextMode(params.contextMode);
++      checkRunLimits(state);
++
++      // RLM semantics: at max depth, rlm_query falls back to a plain LM leaf call.
++      if (state.maxDepth !== undefined && depth >= state.maxDepth) {
++        return runLlmQuery(ctx, {
++          prompt: leafPrompt(params.prompt, params.paths, params.sources),
++          rootPrompt: params.rootPrompt,
++
++          model: params.model,
++          context: params.context,
++          contextMode,
++          paths: params.paths,
++          sources: params.sources,
++          contextName: params.contextName,
++        }, state.budget, depth, state, signal, onUpdate, "rlm_query");
++      }
++
++      // ── Structural decomposition: try auto-decompose before interactive session ──
++      const structuralResult = await tryStructuralDecompose(ctx, { ...params, contextMode }, depth, state, signal, onUpdate);
++      if (structuralResult) return structuralResult;
++
++      // ── Interactive child session (single-unit tasks) ──
++
++      state.budget.calls++;
++      if (state.budget.maxCalls !== undefined && state.budget.calls > state.budget.maxCalls) throw new Error(`Max recursive child RLM calls (${state.budget.maxCalls}).`);
++
++      const model = resolveModel(ctx, state, "rlm", params.model);
++      if (!model) throw new Error("Cannot resolve current session model for RLM call.");
++
++
++      const contextStore = await prepareContextStore(ctx.cwd, { ...params, contextMode });
++      const timed = withTimeoutSignal(signal, state);
++      const effectiveSignal = timed.signal;
++      const hasContextStore = Boolean(contextStore);
++      const tools = childToolList();
++      const systemPrompt = childSystemPrompt(depth, state, hasContextStore);
++
++      let session: any | undefined;
++      let unsub: (() => void) | undefined;
++      let turns = 0;
++      let abortedByTurnLimit = false;
++      let finalizationRequested = false;
++
++      const sourceSummaries = contextStore?.sources.map(contextSourceSummary) ?? [];
++      const emit = (text: string) =>
++        onUpdate?.({
++          content: [{ type: "text", text }],
++          details: {
++            call: "rlm_query" as const,
++            kind: "rlm" as const,
++            depth,
++            maxDepth: state.maxDepth,
++            callsUsed: state.budget.calls,
++            maxCalls: state.budget.maxCalls,
++            queriesUsed: state.budget.queries,
++            maxQueries: state.budget.maxQueries,
++            turns,
++            maxTurns: state.maxTurns,
++            model: modelLabel(model),
++            status: "partial" as const,
++            ...budgetDetails(state),
++            prompt: params.prompt,
++            rootPrompt: params.rootPrompt,
++
++            paths: normPaths(params.paths),
++            sources: normSources(params.sources),
++            contextMode,
++            scratchDir: contextStore?.scratchDir,
++            contextSources: sourceSummaries,
++            finalizationRequested,
++          },
++        });
++
++      const kill = () => {
++        if (session) void session.abort();
++      };
++
++      try {
++        const loader = new DefaultResourceLoader({
++          cwd: ctx.cwd,
++          agentDir: getAgentDir(),
++          noExtensions: true,
++          noSkills: true,
++          noPromptTemplates: true,
++          noThemes: true,
++          noContextFiles: true,
++          // A recursive child must be a true RLM child, not a normal Pi agent with
++          // the default Pi prompt plus an appended note. Pass the child prompt as
++          // the actual system prompt/instructions payload and suppress appends so
++          // providers such as OpenAI Codex Responses receive `instructions`.
++          systemPrompt,
++          appendSystemPrompt: [],
++          systemPromptOverride: () => systemPrompt,
++          appendSystemPromptOverride: () => [],
++        });
++        await loader.reload();
++
++        const { createRlmReplTool } = await import("./repl.js");
++        const customTools: any[] = [createRlmReplTool(state, depth, contextStore)];
++
++        const created = await createAgentSession({
++          cwd: ctx.cwd,
++          agentDir: getAgentDir(),
++          authStorage: ctx.modelRegistry.authStorage,
++          modelRegistry: ctx.modelRegistry,
++          model,
++          resourceLoader: loader,
++          sessionManager: SessionManager.inMemory(),
++          settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }),
++          noTools: "all",
++          tools,
++          customTools,
++        });
++        session = created.session;
++
++        const activeTools = typeof session.getActiveToolNames === "function" ? session.getActiveToolNames() : tools;
++        if (activeTools.length !== 1 || !isRlmReplToolName(activeTools[0])) {
++          throw new Error(`Child RLM session must be REPL-only; active tools were: ${activeTools.join(", ") || "(none)"}`);
++        }
++
++        unsub = session.subscribe((ev: any) => {
++          if (ev.type === "tool_execution_start") {
++            emit(`depth ${depth}: ${ev.toolName}...`);
++          } else if (ev.type === "turn_end") {
++            turns++;
++            emit(`depth ${depth}: turn ${turns}${state.maxTurns === undefined ? "" : `/${state.maxTurns}`}`);
++            const ret = Array.isArray(ev.toolResults) && ev.toolResults.some((r: any) => isRlmReplToolName(r?.toolName) && r?.details?.final === true);
++            const more = ev.message?.stopReason === "toolUse" && !ret;
++            if (state.maxTurns !== undefined && turns >= state.maxTurns && more) {
++              abortedByTurnLimit = true;
++              emit(`depth ${depth}: turn budget reached; aborting child for deterministic parent-side finalization`);
++              void session.abort();
++            }
++          }
++        });
++
++        if (effectiveSignal?.aborted) kill();
++        else effectiveSignal?.addEventListener("abort", kill, { once: true });
++
++        emit(`depth ${depth}: starting${contextStore ? ` with context (${contextStore.sources.length} source${contextStore.sources.length === 1 ? "" : "s"})` : ""}`);
++        await session.prompt(childPrompt(params.prompt, params.context, params.paths, contextStore, params.rootPrompt), { expandPromptTemplates: false, source: "extension" });
++
++        let msgs = [...(session.messages as any[])];
++        let completed = hasReturn(msgs);
++        let deterministicFinalized = false;
++        let deterministicFinalizationReason: string | undefined;
++        let answer = "";
++
++        if (completed) {
++          answer = clip(extractAnswer(msgs));
++        } else if (!effectiveSignal?.aborted) {
++          finalizationRequested = true;
++          deterministicFinalized = true;
++          deterministicFinalizationReason = abortedByTurnLimit ? `maxTurns=${state.maxTurns}` : `missing FINAL_VAR`;
++          emit(`depth ${depth}: synthesizing deterministic final answer (${deterministicFinalizationReason})`);
++          const synthesized = await runLlmQuery(ctx, {
++            prompt: deterministicFinalPrompt(params.prompt, msgs, deterministicFinalizationReason),
++            rootPrompt: params.rootPrompt,
++            model: params.model,
++
++            contextMode: "inline",
++          }, state.budget, depth, state, effectiveSignal, onUpdate, "rlm_query");
++          answer = clip(textOf(synthesized.content).trim() || extractAnswer(msgs));
++        } else {
++          answer = clip(extractAnswer(msgs));
++        }
++
++        const usage = recordUsage(state, usageFromMessages(msgs));
++        if (!completed) {
++          try { recordError(state); } catch { /* keep synthesized partial details */ }
++        }
++        const incomplete = !completed;
++        const details: Details = {
++          call: "rlm_query",
++          kind: "rlm",
++          depth,
++          maxDepth: state.maxDepth,
++          callsUsed: state.budget.calls,
++          maxCalls: state.budget.maxCalls,
++          queriesUsed: state.budget.queries,
++          maxQueries: state.budget.maxQueries,
++          turns,
++          maxTurns: state.maxTurns,
++          model: modelLabel(model),
++          status: effectiveSignal?.aborted ? "aborted" : incomplete ? "partial" : "completed",
++          ...budgetDetails(state),
++          prompt: params.prompt,
++          rootPrompt: params.rootPrompt,
++
++          usage,
++          paths: normPaths(params.paths),
++          sources: normSources(params.sources),
++          contextMode,
++          scratchDir: contextStore?.scratchDir,
++          contextSources: sourceSummaries,
++          answer,
++          trace: traceOf(msgs),
++          completedWithReturn: completed,
++          finalizationRequested,
++          deterministicFinalized,
++          deterministicFinalizationReason,
++          abortedByTurnLimit,
++          incomplete,
++        };
++
++        const note = abortedByTurnLimit
++          ? `\n\n[stopped after maxTurns=${state.maxTurns}; synthesized checkpoint may be partial]`
++          : !completed
++            ? deterministicFinalized
++              ? `\n\n[child ended without FINAL_VAR; synthesized checkpoint from transcript]`
++              : `\n\n[child ended without FINAL_VAR; using last available text]`
++            : "";
++        return { content: [{ type: "text", text: `${answer}${note}` }], details };
++      } finally {
++        effectiveSignal?.removeEventListener("abort", kill);
++        timed.dispose();
++        unsub?.();
++        session?.dispose();
++        await cleanupContextStore(contextStore);
++      }
++    }
+diff --git a/packages/coding-agent/src/core/rlm/constants.ts b/packages/coding-agent/src/core/rlm/constants.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..70e624bc3bef855543ead535e3b79d9c01287553
+--- /dev/null
++++ b/packages/coding-agent/src/core/rlm/constants.ts
+@@ -0,0 +1,157 @@
++// ── Defaults ────────────────────────────────────────────────────────
++
++export const DEFAULT_MAX_DEPTH = 5; // Per-call/config <=0 = unlimited
++export const DEFAULT_MAX_TURNS = 30; // Per-call/config <=0 = unlimited
++export const DEFAULT_MAX_CALLS = 128; // Per-call/config <=0 = unlimited
++export const DEFAULT_MAX_QUERIES = 256; // Per-call/config <=0 = unlimited
++export const DEFAULT_MAX_CONCURRENT = 5; // Per-call/config <=0 = no explicit cap
++export const DEFAULT_MAX_TIMEOUT_MS = 0; // 0 = unlimited
++export const DEFAULT_MAX_TOKENS = 0; // 0 = unlimited
++export const DEFAULT_MAX_BUDGET = 0; // USD, 0 = unlimited
++export const DEFAULT_MAX_ERRORS = 0; // 0 = unlimited
++
++export const HARD_MAX_DEPTH = 8;
++export const HARD_MAX_TURNS = 80;
++export const HARD_MAX_CALLS = 128;
++export const HARD_MAX_QUERIES = 256;
++export const HARD_MAX_CONCURRENT = 32;
++export const HARD_MAX_TIMEOUT_MS = 24 * 60 * 60 * 1000;
++export const HARD_MAX_TOKENS = 20_000_000;
++export const HARD_MAX_BUDGET = 10_000;
++export const HARD_MAX_ERRORS = 1_000;
++
++export const MAX_RESULT_CHARS = 50_000;
++export const MAX_QUERY_CONTEXT_CHARS = 500_000;
++export const MAX_TRACE_TEXT_CHARS = 800;
++export const MAX_INLINE_CHILD_CONTEXT_CHARS = 20_000;
++export const MAX_CONTEXT_MANIFEST_CHARS = 30_000;
++export const MAX_CONTEXT_TREE_ENTRIES = 500;
++export const MAX_CONTEXT_TREE_DEPTH = 4;
++export const MAX_CTX_OUTPUT_CHARS = 20_000;
++export const DEFAULT_CTX_PEEK_CHARS = 4_000;
++export const HARD_CTX_PEEK_CHARS = 20_000;
++export const DEFAULT_CTX_GREP_MATCHES = 50;
++export const HARD_CTX_GREP_MATCHES = 200;
++export const MAX_CTX_GREP_FILES = 5_000;
++
++export const REPL_TOOL_NAME = "repl";
++export const RLM_FINAL_OUTPUT_CUSTOM_TYPE = "rlm_final";
++
++export const RLM_CALLS = ["llm_query", "llm_query_batched", "rlm_query", "rlm_query_batched"] as const;
++export type RlmCall = typeof RLM_CALLS[number];
++export type ExecutionKind = "llm" | "rlm";
++
++export const CONTEXT_MODES = ["auto", "inline", "file_backed"] as const;
++export type ContextMode = typeof CONTEXT_MODES[number];
++
++export type ContextSourceKind = "inline" | "file" | "dir" | "missing" | "other";
++
++export interface ContextSource {
++  id: string;
++  name?: string;
++  label: string;
++  input?: string;
++  path: string;
++  relPath: string;
++  kind: ContextSourceKind;
++  sizeBytes?: number;
++  entries?: number;
++  error?: string;
++}
++
++export interface ContextStore {
++  dir: string;
++  scratchDir: string;
++  notesDir: string;
++  artifactsDir: string;
++  manifestPath: string;
++  manifestJsonPath: string;
++  readmePath: string;
++  manifestText: string;
++  sources: ContextSource[];
++}
++
++export interface Budget {
++  calls: number;
++  maxCalls: number | undefined;
++  queries: number;
++  maxQueries: number | undefined;
++  tokens: number;
++  maxTokens: number; // 0 = unlimited
++  cost: number;
++  maxBudget: number; // USD, 0 = unlimited
++  errors: number;
++  maxErrors: number; // 0 = unlimited
++  startTimeMs: number;
++  maxTimeoutMs: number; // 0 = unlimited
++}
++
++export interface RunState {
++  runId: string;
++  maxDepth: number | undefined;
++  maxConcurrent: number | undefined;
++  maxTurns: number | undefined;
++  budget: Budget;
++  /** The model of the parent Pi session that started this RLM run. */
++  model?: any;
++
++  logPath?: string;
++}
++
++export interface BatchItem {
++  prompt: string;
++  rootPrompt?: string;
++  model?: string;
++
++  context?: string;
++  contextMode?: ContextMode;
++  paths?: string[];
++  sources?: Array<{ name?: string; path: string }>;
++  contextName?: string;
++}
++
++export interface Details {
++  call: RlmCall;
++  kind: ExecutionKind;
++  depth: number;
++  maxDepth: number | undefined;
++  callsUsed: number;
++  maxCalls: number | undefined;
++  queriesUsed: number;
++  maxQueries: number | undefined;
++  turns: number;
++  maxTurns: number | undefined;
++  model: string;
++  status?: "completed" | "partial" | "error" | "aborted" | "budget_exhausted";
++  tokensUsed?: number;
++  maxTokens?: number;
++  costUsed?: number;
++  maxBudget?: number;
++  errorsUsed?: number;
++  maxErrors?: number;
++  elapsedMs?: number;
++  maxTimeoutMs?: number;
++  prompt: string;
++  rootPrompt?: string;
++
++  usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number; cost: number };
++  paths: string[];
++  sources?: Array<{ name?: string; path: string }>;
++  contextMode?: ContextMode;
++  scratchDir?: string;
++  contextSources?: string[];
++  answer?: string;
++  trace?: Array<{ role: string; toolName?: string; text: string }>;
++  completedWithReturn?: boolean;
++  finalMirrored?: boolean;
++  finalizationRequested?: boolean;
++  deterministicFinalized?: boolean;
++  deterministicFinalizationReason?: string;
++  abortedByTurnLimit?: boolean;
++  incomplete?: boolean;
++  error?: string;
++  batch?: boolean;
++  batchSize?: number;
++  maxConcurrent?: number;
++  results?: Details[];
++}
+\ No newline at end of file
+diff --git a/packages/coding-agent/src/core/rlm/context-store.ts b/packages/coding-agent/src/core/rlm/context-store.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..25fea4239e7649f9d262b73b05a9b8b22dfb773a
+--- /dev/null
++++ b/packages/coding-agent/src/core/rlm/context-store.ts
+@@ -0,0 +1,268 @@
++import { promises as fs } from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import {
++  MAX_CONTEXT_MANIFEST_CHARS,
++  MAX_CONTEXT_TREE_DEPTH,
++  MAX_CONTEXT_TREE_ENTRIES,
++} from "./constants.js";
++import type { ContextMode, ContextSource, ContextSourceKind, ContextStore } from "./constants.js";
++import { renderTemplate, xmlEscape } from "./prompt-render.js";
++import { CONTEXT_STORE_PROMPT } from "./prompts.js";
++import { clip, errorText, normalizeContextMode, normPaths, normSources } from "./utils.js";
++
++// ── File-backed context store ───────────────────────────────────────
++
++export function formatBytes(bytes?: number): string {
++  if (typeof bytes !== "number" || !Number.isFinite(bytes)) return "? bytes";
++  if (bytes < 1024) return `${bytes} B`;
++  const units = ["KB", "MB", "GB", "TB"];
++  let value = bytes / 1024;
++  let unit = units[0];
++  for (let i = 1; i < units.length && value >= 1024; i++) {
++    value /= 1024;
++    unit = units[i];
++  }
++  return `${value.toFixed(value >= 10 ? 1 : 2)} ${unit}`;
++}
++
++export function absPathFor(cwd: string, input: string): string {
++  return path.isAbsolute(input) ? path.normalize(input) : path.resolve(cwd, input);
++}
++
++export function relPathFor(cwd: string, abs: string): string {
++  const rel = path.relative(cwd, abs);
++  return rel && !rel.startsWith("..") && !path.isAbsolute(rel) ? rel : abs;
++}
++
++export function skipDirName(name: string): boolean {
++  return new Set([".git", "node_modules", ".direnv", ".next", "dist", "build", "target", ".venv", "venv", "__pycache__"]).has(name);
++}
++
++export async function statContextSource(cwd: string, input: string, id: string, name?: string): Promise<ContextSource> {
++  const abs = absPathFor(cwd, input);
++  const relPath = relPathFor(cwd, abs);
++  try {
++    const st = await fs.lstat(abs);
++    const kind: ContextSourceKind = st.isFile() ? "file" : st.isDirectory() ? "dir" : "other";
++    return {
++      id,
++      name,
++      label: name || input,
++      input,
++      path: abs,
++      relPath,
++      kind,
++      sizeBytes: st.isFile() ? st.size : undefined,
++    };
++  } catch (e) {
++    return {
++      id,
++      name,
++      label: name || input,
++      input,
++      path: abs,
++      relPath,
++      kind: "missing",
++      error: errorText(e),
++    };
++  }
++}
++
++export async function collectTreeLines(cwd: string, abs: string, depth: number, state: { count: number; truncated: boolean }): Promise<string[]> {
++  if (depth > MAX_CONTEXT_TREE_DEPTH || state.count >= MAX_CONTEXT_TREE_ENTRIES) {
++    state.truncated = true;
++    return [];
++  }
++
++  let entries;
++  try {
++    entries = await fs.readdir(abs, { withFileTypes: true });
++  } catch (e) {
++    return [`${"  ".repeat(depth)}[cannot read ${relPathFor(cwd, abs)}: ${errorText(e)}]`];
++  }
++
++  entries.sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name));
++  const lines: string[] = [];
++  for (const entry of entries) {
++    if (entry.isDirectory() && skipDirName(entry.name)) continue;
++    if (state.count >= MAX_CONTEXT_TREE_ENTRIES) {
++      state.truncated = true;
++      break;
++    }
++    state.count++;
++    const child = path.join(abs, entry.name);
++    const childRel = relPathFor(cwd, child);
++    let size = "";
++    try {
++      const st = await fs.lstat(child);
++      if (st.isFile()) size = ` ${formatBytes(st.size)}`;
++    } catch {
++      // ignore size failures in manifest preview
++    }
++    lines.push(`${"  ".repeat(depth)}- ${childRel}${entry.isDirectory() ? "/" : ""}${size}`);
++    if (entry.isDirectory()) {
++      if (depth + 1 <= MAX_CONTEXT_TREE_DEPTH) {
++        lines.push(...await collectTreeLines(cwd, child, depth + 1, state));
++      } else {
++        state.truncated = true;
++      }
++    }
++  }
++  return lines;
++}
++
++export function contextSourceSummary(source: ContextSource): string {
++  const name = source.name ? ` (${source.name})` : "";
++  const size = source.sizeBytes !== undefined ? `, ${formatBytes(source.sizeBytes)}` : "";
++  const error = source.error ? `, error=${source.error}` : "";
++  return `${source.id}${name}: ${source.kind} ${source.label} -> ${source.relPath}${size}${error}`;
++}
++
++export async function buildContextManifest(cwd: string, store: Omit<ContextStore, "manifestText">): Promise<string> {
++  const lines: string[] = [
++    "# RLM file-backed context manifest",
++    "",
++    `Context store: ${store.dir}`,
++    `Scratch workspace: ${store.scratchDir}`,
++    `Notes dir: ${store.notesDir}`,
++    `Artifacts dir: ${store.artifactsDir}`,
++    "",
++    "Sources:",
++    ...store.sources.map((s) => `- ${contextSourceSummary(s)}`),
++    "",
++    "Tree preview / file inventory (capped):",
++  ];
++
++  for (const source of store.sources) {
++    lines.push("", `## ${source.id}: ${source.label}`);
++    if (source.kind === "dir") {
++      const state = { count: 0, truncated: false };
++      lines.push(...await collectTreeLines(cwd, source.path, 0, state));
++      if (state.truncated) lines.push(`[truncated tree after ${state.count} entries]`);
++      source.entries = state.count;
++    } else {
++      lines.push(contextSourceSummary(source));
++    }
++  }
++
++  return clip(lines.join("\n"), MAX_CONTEXT_MANIFEST_CHARS);
++}
++
++export function contextStoreReadme(store: Omit<ContextStore, "manifestText">): string {
++  return `# Pi RLM temporary context store
++
++This directory is ephemeral and deleted after the child RLM returns.
++
++- manifest.txt: capped source manifest / tree preview
++- manifest.json: machine-readable source metadata
++- scratch/: write intermediate artifacts here
++- notes/: note outputs
++- artifacts/: artifact outputs
++
++Use compact observations only. Do not dump whole context files into chat. In the REPL, sources are loaded as context/context_N payloads; use normal Python slicing/searching/open/os/pathlib to inspect them.
++
++Sources:
++${store.sources.map((s) => `- ${contextSourceSummary(s)}`).join("\n")}
++`;
++}
++
++export async function prepareContextStore(cwd: string, params: { context?: string; contextMode?: ContextMode; paths?: string[]; sources?: Array<{ name?: string; path: string }>; contextName?: string }): Promise<ContextStore | undefined> {
++  normalizeContextMode(params.contextMode);
++  const paths = normPaths(params.paths);
++  const namedSources = normSources(params.sources);
++  const context = typeof params.context === "string" ? params.context : "";
++  // Upstream-style REPL semantics: explicit context is loaded into the child
++  // REPL as context/context_N. The file-backed store is only transport; the
++  // model-visible API remains the REPL variables, not ctx.*.
++  const materializeContext = context.trim().length > 0;
++  const needsStore = paths.length > 0 || namedSources.length > 0 || materializeContext;
++  if (!needsStore) return undefined;
++
++  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-rlm-"));
++  try {
++    const scratchDir = path.join(dir, "scratch");
++    const notesDir = path.join(dir, "notes");
++    const artifactsDir = path.join(dir, "artifacts");
++    await fs.mkdir(scratchDir, { recursive: true });
++    await fs.mkdir(notesDir, { recursive: true });
++    await fs.mkdir(artifactsDir, { recursive: true });
++
++    const sources: ContextSource[] = [];
++    if (materializeContext) {
++      const contextPath = path.join(dir, "inline-context.txt");
++      await fs.writeFile(contextPath, context, "utf8");
++      sources.push({
++        id: `s${sources.length}`,
++        name: typeof params.contextName === "string" && params.contextName.trim() ? params.contextName.trim() : undefined,
++        label: typeof params.contextName === "string" && params.contextName.trim() ? params.contextName.trim() : "inline context",
++        path: contextPath,
++        relPath: contextPath,
++        kind: "inline",
++        sizeBytes: Buffer.byteLength(context, "utf8"),
++      });
++    }
++
++    for (const p of paths) {
++      sources.push(await statContextSource(cwd, p, `s${sources.length}`));
++    }
++    for (const src of namedSources) {
++      sources.push(await statContextSource(cwd, src.path, `s${sources.length}`, src.name));
++    }
++
++    const partial = {
++      dir,
++      scratchDir,
++      notesDir,
++      artifactsDir,
++      manifestPath: path.join(dir, "manifest.txt"),
++      manifestJsonPath: path.join(dir, "manifest.json"),
++      readmePath: path.join(dir, "README.md"),
++      sources,
++    };
++    const manifestText = await buildContextManifest(cwd, partial);
++    const store: ContextStore = { ...partial, manifestText };
++
++    await fs.writeFile(store.manifestPath, manifestText, "utf8");
++    await fs.writeFile(store.manifestJsonPath, JSON.stringify({
++      dir: store.dir,
++      scratchDir: store.scratchDir,
++      notesDir: store.notesDir,
++      artifactsDir: store.artifactsDir,
++      manifestPath: store.manifestPath,
++      manifestJsonPath: store.manifestJsonPath,
++      sources: store.sources,
++    }, null, 2), "utf8");
++    await fs.writeFile(store.readmePath, contextStoreReadme(store), "utf8");
++    return store;
++  } catch (e) {
++    await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
++    throw e;
++  }
++}
++
++export async function cleanupContextStore(store?: ContextStore): Promise<void> {
++  if (!store) return;
++  await fs.rm(store.dir, { recursive: true, force: true }).catch(() => undefined);
++}
++
++export function contextMaterialized(store?: ContextStore): boolean {
++  return Boolean(store?.sources.some((s) => s.kind === "inline"));
++}
++
++export function contextStorePromptBlock(store: ContextStore): string {
++  const sourceLines = store.sources.length
++    ? store.sources.map((s, i) => `    <source slot="context_${i}">${xmlEscape(contextSourceSummary(s))}</source>`).join("\n")
++    : '    <source slot="none">(no sources loaded)</source>';
++  return renderTemplate(CONTEXT_STORE_PROMPT, {
++    tempDir: store.dir,
++    scratchDir: store.scratchDir,
++    notesDir: store.notesDir,
++    artifactsDir: store.artifactsDir,
++    manifestPath: store.manifestPath,
++    manifestJsonPath: store.manifestJsonPath,
++    readmePath: store.readmePath,
++    sourceLines,
++  });
++}
+diff --git a/packages/coding-agent/src/core/rlm/dispatcher.ts b/packages/coding-agent/src/core/rlm/dispatcher.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..8884dc5a80608eb6c31cd7343992e9c11e13f3e4
+--- /dev/null
++++ b/packages/coding-agent/src/core/rlm/dispatcher.ts
+@@ -0,0 +1,56 @@
++import type { ExtensionContext } from "../extensions/types.js";
++
++import { runBatch } from "./batch.js";
++import { runRlmQuery } from "./child-session.js";
++import type { RunState } from "./constants.js";
++import { runLlmQuery } from "./llm.js";
++
++import {
++  configureRunLogging,
++  logEvent,
++  childDepth,
++  currentDepth,
++  normalizeCall,
++  rejectUnknownParams,
++  singleItemFromParams,
++  stateFor,
++} from "./utils.js";
++
++export async function dispatchRlmCall(
++  ctx: ExtensionContext,
++  params: any,
++  inherited?: RunState,
++  parentDepth?: number,
++  signal?: AbortSignal,
++  onUpdate?: any,
++) {
++  rejectUnknownParams(params);
++  const state = stateFor(params, inherited, ctx.model, ctx.cwd);
++  configureRunLogging(ctx.cwd, params, state);
++  await logEvent(state, "dispatch_start", { call: params.call, depth: parentDepth ?? 0, prompt: typeof params.prompt === "string" ? params.prompt : undefined });
++  const call = normalizeCall(params.call);
++
++  try {
++    if (call === "llm_query") {
++      const result = await runLlmQuery(ctx, singleItemFromParams(params), state.budget, currentDepth(parentDepth), state, signal, onUpdate, "llm_query");
++      await logEvent(state, "dispatch_end", { call, depth: currentDepth(parentDepth), details: result.details });
++      return result;
++    }
++    if (call === "llm_query_batched") {
++      const result = await runBatch(ctx, params, "llm_query_batched", currentDepth(parentDepth), state, signal, onUpdate);
++      await logEvent(state, "dispatch_end", { call, depth: currentDepth(parentDepth), details: result.details });
++      return result;
++    }
++    if (call === "rlm_query") {
++      const result = await runRlmQuery(ctx, singleItemFromParams(params), childDepth(parentDepth), state, signal, onUpdate);
++      await logEvent(state, "dispatch_end", { call, depth: childDepth(parentDepth), details: result.details });
++      return result;
++    }
++    const result = await runBatch(ctx, params, "rlm_query_batched", childDepth(parentDepth), state, signal, onUpdate);
++    await logEvent(state, "dispatch_end", { call, depth: childDepth(parentDepth), details: result.details });
++    return result;
++  } catch (e) {
++    await logEvent(state, "dispatch_error", { call, depth: parentDepth ?? 0, error: e instanceof Error ? e.message : String(e) });
++    throw e;
++  }
++}
+diff --git a/packages/coding-agent/src/core/rlm/guidance.ts b/packages/coding-agent/src/core/rlm/guidance.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..c2e5473340ccfde112c5306acd0af3bbcd634805
+--- /dev/null
++++ b/packages/coding-agent/src/core/rlm/guidance.ts
+@@ -0,0 +1,21 @@
++import { REPL_TOOL_NAME } from "./constants.js";
++import { renderTemplate } from "./prompt-render.js";
++import { ROOT_SYSTEM_PROMPT } from "./prompts.js";
++
++// ── Root system prompt ───────────────────────────────────────────────
++
++export function rootSystemPrompt(
++  cwd: string,
++  now = new Date(),
++  mode = "repl",
++  activeTools: string[] = [REPL_TOOL_NAME],
++): string {
++  const date = now.toISOString().slice(0, 10);
++  return renderTemplate(ROOT_SYSTEM_PROMPT, {
++    mode,
++    toolName: REPL_TOOL_NAME,
++    activeTools: activeTools.join(", "),
++    date,
++    cwd,
++  });
++}
+diff --git a/packages/coding-agent/src/core/rlm/llm.ts b/packages/coding-agent/src/core/rlm/llm.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..735d2a33398d3b90da1b1e41e82e87b8cefc25e2
+--- /dev/null
++++ b/packages/coding-agent/src/core/rlm/llm.ts
+@@ -0,0 +1,127 @@
++import type { ExtensionContext } from "../extensions/types.js";
++import { completeSimple } from "@earendil-works/pi-ai";
++
++import { MAX_QUERY_CONTEXT_CHARS } from "./constants.js";
++import { renderTemplate, xmlEscape } from "./prompt-render.js";
++import { LEAF_SYSTEM_PROMPT, LEAF_USER_PROMPT } from "./prompts.js";
++import type { Budget, ContextMode, Details, RlmCall, RunState } from "./constants.js";
++import { budgetDetails, checkRunLimits, clip, modelLabel, normalizeContextMode, normPaths, normSources, recordError, recordUsage, rejectPathsForLlm, resolveModel, withTimeoutSignal } from "./utils.js";
++
++function leafSystemPrompt(rootPrompt?: string): string {
++  const rootPromptBlock = rootPrompt?.trim()
++    ? `  <rootQuestion>${xmlEscape(rootPrompt)}</rootQuestion>`
++    : "";
++  return renderTemplate(LEAF_SYSTEM_PROMPT, { rootPromptBlock });
++}
++
++// ── Plain LM call: llm_query ────────────────────────────────────────
++
++export async function runLlmQuery(
++  ctx: ExtensionContext,
++  params: { prompt: string; rootPrompt?: string; model?: string; context?: string; contextMode?: ContextMode; paths?: string[]; sources?: Array<{ name?: string; path: string }>; contextName?: string },
++  budget: Budget,
++  depth: number,
++  state: RunState,
++  signal: AbortSignal | undefined,
++  onUpdate: any,
++  call: RlmCall = "llm_query",
++): Promise<{ content: Array<{ type: "text"; text: string }>; details: Details }> {
++  if (call === "llm_query" || call === "llm_query_batched") rejectPathsForLlm(call, params.paths, params.contextMode, params.sources);
++
++  budget.queries++;
++  if (budget.maxQueries !== undefined && budget.queries > budget.maxQueries) throw new Error(`llm_query budget exhausted (${budget.maxQueries}).`);
++
++  checkRunLimits(state);
++  const model = resolveModel(ctx, state, "llm", params.model);
++  if (!model) throw new Error("Cannot resolve current session model for RLM call.");
++
++  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
++  if (!auth.ok) throw new Error(`Auth failed: ${auth.error}`);
++
++  const rootPromptBlock = params.rootPrompt?.trim()
++    ? `  <rootQuestion>${xmlEscape(params.rootPrompt)}</rootQuestion>`
++    : "";
++  const contextBlock = params.context?.trim()
++    ? `  <context>${xmlEscape(params.context)}</context>`
++    : "";
++  let prompt = renderTemplate(LEAF_USER_PROMPT, {
++    prompt: params.prompt,
++    rootPromptBlock,
++    contextBlock,
++  });
++  if (prompt.length > MAX_QUERY_CONTEXT_CHARS) {
++    prompt = prompt.slice(0, MAX_QUERY_CONTEXT_CHARS) + `\n\n[truncated: ${prompt.length - MAX_QUERY_CONTEXT_CHARS} chars omitted]`;
++  }
++
++  onUpdate?.({ content: [{ type: "text", text: `${call}: calling ${modelLabel(model)}...` }] });
++
++  const timed = withTimeoutSignal(signal, state);
++  let result;
++  try {
++    result = await completeSimple(
++      model,
++      { systemPrompt: leafSystemPrompt(params.rootPrompt), messages: [{ role: "user", content: prompt, timestamp: Date.now() }] },
++      {
++        apiKey: auth.apiKey,
++        headers: auth.headers,
++        signal: timed.signal,
++        timeoutMs: state.budget.maxTimeoutMs ? Math.max(1, state.budget.maxTimeoutMs - (Date.now() - state.budget.startTimeMs)) : undefined,
++        reasoning: model.reasoning ? "low" : undefined,
++      },
++    );
++  } finally {
++    timed.dispose();
++  }
++
++  const contentText = result.content
++    .filter((b): b is { type: "text"; text: string } => b.type === "text")
++    .map((b) => b.text)
++    .join("\n");
++  const failed = result.stopReason === "error" || result.stopReason === "aborted";
++  const truncated = result.stopReason === "length";
++  const failureText = failed
++    ? `${result.stopReason === "aborted" ? "Aborted" : "Error"}: ${result.errorMessage || `Provider returned ${result.stopReason}.`}`
++    : "";
++  const truncationText = truncated ? "[truncated: provider hit its output limit]" : "";
++  const text = failed
++    ? [contentText.trim(), failureText].filter(Boolean).join("\n")
++    : truncated
++      ? [truncationText, contentText.trim()].filter(Boolean).join("\n\n")
++      : contentText;
++
++  const usage = recordUsage(state, result.usage);
++  if (failed) recordError(state);
++
++  const details: Details = {
++    call,
++    kind: "llm",
++    depth,
++    maxDepth: state.maxDepth,
++    callsUsed: budget.calls,
++    maxCalls: budget.maxCalls,
++    queriesUsed: budget.queries,
++    maxQueries: budget.maxQueries,
++    turns: 0,
++    maxTurns: 0,
++    model: modelLabel(model),
++    status: failed ? (result.stopReason === "aborted" ? "aborted" : "error") : result.stopReason === "length" ? "partial" : "completed",
++    ...budgetDetails(state),
++    prompt: params.prompt,
++    rootPrompt: params.rootPrompt,
++
++    paths: call === "llm_query" || call === "llm_query_batched" ? [] : normPaths(params.paths),
++    sources: call === "llm_query" || call === "llm_query_batched" ? [] : normSources(params.sources),
++    contextMode: normalizeContextMode(params.contextMode),
++    usage,
++    answer: clip(text),
++  };
++  if (failed || truncated) {
++    if (failed) {
++      details.error = result.errorMessage || `Provider returned ${result.stopReason}.`;
++    }
++    details.incomplete = true;
++  }
++
++  return { content: [{ type: "text", text: clip(text) }], details };
++}
++
+diff --git a/packages/coding-agent/src/core/rlm/params.ts b/packages/coding-agent/src/core/rlm/params.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..c7b61902889f4242b4010f3a5887764206a95ec8
+--- /dev/null
++++ b/packages/coding-agent/src/core/rlm/params.ts
+@@ -0,0 +1,146 @@
++import { StringEnum } from "@earendil-works/pi-ai";
++import { Type } from "typebox";
++
++import {
++  CONTEXT_MODES,
++  DEFAULT_MAX_BUDGET,
++  DEFAULT_MAX_CALLS,
++  DEFAULT_MAX_CONCURRENT,
++  DEFAULT_MAX_DEPTH,
++  DEFAULT_MAX_ERRORS,
++  DEFAULT_MAX_QUERIES,
++  DEFAULT_MAX_TIMEOUT_MS,
++  DEFAULT_MAX_TOKENS,
++  DEFAULT_MAX_TURNS,
++  HARD_MAX_BUDGET,
++  HARD_MAX_CALLS,
++  HARD_MAX_CONCURRENT,
++  HARD_MAX_DEPTH,
++  HARD_MAX_ERRORS,
++  HARD_MAX_QUERIES,
++  HARD_MAX_TIMEOUT_MS,
++  HARD_MAX_TOKENS,
++  HARD_MAX_TURNS,
++  RLM_CALLS,
++} from "./constants.js";
++
++// ── Params ──────────────────────────────────────────────────────────
++
++export const LimitParams = {
++  maxDepth: Type.Optional(Type.Number({ description: `Recursive depth cap. Default ${DEFAULT_MAX_DEPTH}; <=0 = unlimited. Positive values are clamped to hard cap ${HARD_MAX_DEPTH}. At the cap, rlm_query falls back to a plain LM call.` })),
++  maxTurns: Type.Optional(Type.Number({ description: `Recursive child turn cap. Default ${DEFAULT_MAX_TURNS}; <=0 = unlimited. Positive values are clamped to hard cap ${HARD_MAX_TURNS}.` })),
++  maxCalls: Type.Optional(Type.Number({ description: `Total recursive child RLM calls across this run. Default ${DEFAULT_MAX_CALLS}; <=0 = unlimited. Positive values are clamped to hard cap ${HARD_MAX_CALLS}.` })),
++  maxQueries: Type.Optional(Type.Number({ description: `Total llm_query leaf calls across this run. Default ${DEFAULT_MAX_QUERIES}; <=0 = unlimited. Positive values are clamped to hard cap ${HARD_MAX_QUERIES}.` })),
++  maxConcurrent: Type.Optional(Type.Number({ description: `Batch concurrency cap. Default ${DEFAULT_MAX_CONCURRENT}; <=0 = no explicit cap (runs up to batch size). Positive values are clamped to hard cap ${HARD_MAX_CONCURRENT}.` })),
++  maxTimeoutMs: Type.Optional(Type.Number({ description: `Wall-clock timeout for the whole recursive RLM tree in milliseconds. Default ${DEFAULT_MAX_TIMEOUT_MS} (unlimited). Hard cap ${HARD_MAX_TIMEOUT_MS}.` })),
++  maxTimeout: Type.Optional(Type.Number({ description: "Upstream-style wall-clock timeout in seconds. Alias for maxTimeoutMs." })),
++  max_timeout: Type.Optional(Type.Number({ description: "Upstream-style wall-clock timeout in seconds. Alias for maxTimeoutMs." })),
++  maxTokens: Type.Optional(Type.Number({ description: `Approximate total input+output token cap across tracked LM calls. Default ${DEFAULT_MAX_TOKENS} (unlimited). Hard cap ${HARD_MAX_TOKENS}.` })),
++  max_tokens: Type.Optional(Type.Number({ description: "Upstream-style alias for maxTokens." })),
++  maxBudget: Type.Optional(Type.Number({ description: `USD cost cap across tracked LM calls when providers report usage. Default ${DEFAULT_MAX_BUDGET} (unlimited). Hard cap ${HARD_MAX_BUDGET}.` })),
++  max_budget: Type.Optional(Type.Number({ description: "Upstream-style alias for maxBudget." })),
++  maxErrors: Type.Optional(Type.Number({ description: `Consecutive/aggregate RLM runtime error cap. Default ${DEFAULT_MAX_ERRORS} (unlimited). Hard cap ${HARD_MAX_ERRORS}.` })),
++  max_errors: Type.Optional(Type.Number({ description: "Upstream-style alias for maxErrors." })),
++  maxIterations: Type.Optional(Type.Number({ description: "Alias for maxTurns." })),
++  max_iterations: Type.Optional(Type.Number({ description: "Upstream-style alias for maxTurns." })),
++  max_depth: Type.Optional(Type.Number({ description: "Upstream-style alias for maxDepth." })),
++  max_concurrent_subcalls: Type.Optional(Type.Number({ description: "Upstream-style alias for maxConcurrent." })),
++};
++
++export const ContextModeParam = Type.Optional(StringEnum(CONTEXT_MODES, {
++  description:
++    'Context handling for recursive RLM calls. "auto" keeps short inline context in chat but materializes large context into a temp file; paths are always file-backed. "inline" preserves old inline behavior for context. "file_backed" materializes context into the temp context store.',
++}));
++
++export const SourceParam = Type.Object({
++  name: Type.Optional(Type.String({ description: "Optional stable source name/alias for context source selection." })),
++  path: Type.String({ description: "File or directory path for this file-backed context source." }),
++});
++
++export const RlmBatchItem = Type.Object({
++  prompt: Type.String({ description: "Prompt for this batch item." }),
++  rootPrompt: Type.Optional(Type.String({ description: "Small visible/root prompt or question for this item; analogous to upstream root_prompt. Appended separately from large context." })),
++  model: Type.Optional(Type.String({ description: "Optional model selector for this call, matching upstream llm_query(..., model=...)." })),
++
++  context: Type.Optional(Type.String({ description: "Optional inline context for this item." })),
++  contextMode: ContextModeParam,
++  paths: Type.Optional(Type.Array(Type.String(), { description: "Paths for this child RLM to inspect. Used by rlm_query_batched only. Paths are file-backed context sources." })),
++  sources: Type.Optional(Type.Array(SourceParam, { description: "Named file-backed sources for this child RLM. Not accepted for llm_query calls." })),
++  contextName: Type.Optional(Type.String({ description: "Optional name/label for materialized inline context." })),
++});
++
++export const RlmParams = Type.Object({
++  call: StringEnum(RLM_CALLS, {
++    description:
++      'RLM call to run: "llm_query", "llm_query_batched", "rlm_query", or "rlm_query_batched".',
++  }),
++  prompt: Type.Optional(Type.String({ description: "Prompt for llm_query or rlm_query." })),
++  rootPrompt: Type.Optional(Type.String({ description: "Small visible/root prompt or question; analogous to upstream root_prompt. Appended separately from large context." })),
++  model: Type.Optional(Type.String({ description: "Optional model selector for this call, matching upstream llm_query(..., model=...)." })),
++
++  context: Type.Optional(
++    Type.String({ description: "Optional context. For llm_query this is inlined. For recursive RLM calls, large context is materialized into the file-backed context store when contextMode='auto' or 'file_backed'." }),
++  ),
++  contextMode: ContextModeParam,
++  paths: Type.Optional(
++    Type.Array(Type.String(), { description: "Paths for rlm_query/rlm_query_batched children. They are kept outside chat and loaded into the child REPL context; not accepted for llm_query calls." }),
++  ),
++  sources: Type.Optional(Type.Array(SourceParam, { description: "Named file-backed sources for rlm_query/rlm_query_batched children. Not accepted for llm_query calls." })),
++  contextName: Type.Optional(Type.String({ description: "Optional source name/label for materialized inline context." })),
++  prompts: Type.Optional(
++    Type.Array(Type.String(), { description: "Prompts for batched calls. Shared context/paths apply to each item." }),
++  ),
++  items: Type.Optional(
++    Type.Array(RlmBatchItem, { description: "Structured batch items with per-item prompt/context/contextMode/paths/sources/contextName." }),
++  ),
++  ...LimitParams,
++  logPath: Type.Optional(Type.String({ description: "Optional JSONL trajectory log path for this RLM run." })),
++  logDir: Type.Optional(Type.String({ description: "Optional directory for JSONL trajectory logs; creates one file per run." })),
++});
++
++export const ReplParams = Type.Object({
++  code: Type.String({ description: "Python code to run inside the upstream-style RLM REPL. Public helpers: llm_query, llm_query_batched, rlm_query, rlm_query_batched, FINAL_VAR, SHOW_VARS; use globals/state/history/context for persistence and context." }),
++  reset: Type.Optional(Type.Boolean({ description: "Clear persistent REPL state before running this code. Default false." })),
++  timeoutMs: Type.Optional(Type.Number({ description: "Local Python execution timeout. Paused while synchronous model-call helpers are running. Default 30000, hard cap 120000." })),
++  data: Type.Optional(Type.Record(Type.String(), Type.Any(), { description: "Optional JSON-serializable variables to inject into the Python REPL globals before running code." })),
++  setup: Type.Optional(Type.String({ description: "Optional Python setup code to execute before the main code in this eval." })),
++  resetHistory: Type.Optional(Type.Boolean({ description: "Clear REPL history variables before running this code. Default false." })),
++});
++
++export const RLM_PARAM_KEYS = new Set([
++  "call",
++  "prompt",
++  "rootPrompt",
++  "model",
++
++  "context",
++  "contextMode",
++  "paths",
++  "sources",
++  "contextName",
++  "prompts",
++  "items",
++  "maxDepth",
++  "maxTurns",
++  "maxCalls",
++  "maxQueries",
++  "maxConcurrent",
++  "maxTimeoutMs",
++  "maxTimeout",
++  "max_timeout",
++  "maxTokens",
++  "max_tokens",
++  "maxBudget",
++  "max_budget",
++  "maxErrors",
++  "max_errors",
++  "maxIterations",
++  "max_iterations",
++  "max_depth",
++  "max_concurrent_subcalls",
++  "logPath",
++  "logDir",
++]);
++
++export const RLM_ITEM_KEYS = new Set(["model", "prompt", "rootPrompt", "context", "contextMode", "paths", "sources", "contextName"]);
++export const REPL_PARAM_KEYS = new Set(["code", "reset", "timeoutMs", "data", "setup", "resetHistory"]);
+\ No newline at end of file
+diff --git a/packages/coding-agent/src/core/rlm/prompt-render.ts b/packages/coding-agent/src/core/rlm/prompt-render.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..9a5d2dc51d68dcb68990f8a28789f0141ff0a3d8
+--- /dev/null
++++ b/packages/coding-agent/src/core/rlm/prompt-render.ts
+@@ -0,0 +1,28 @@
++const RAW_PLACEHOLDER = /\{\{\{\s*([A-Za-z0-9_]+)\s*\}\}\}/g;
++const ESCAPED_PLACEHOLDER = /\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g;
++
++function stringValue(value: unknown): string {
++  if (value === undefined || value === null) return "";
++  return String(value);
++}
++
++export function xmlEscape(value: unknown): string {
++  return stringValue(value)
++    .replace(/&/g, "&amp;")
++    .replace(/</g, "&lt;")
++    .replace(/>/g, "&gt;")
++    .replace(/"/g, "&quot;")
++    .replace(/'/g, "&apos;");
++}
++
++export function renderTemplate(template: string, vars: Record<string, unknown>): string {
++  const withRaw = template.replace(RAW_PLACEHOLDER, (_match, key: string) => stringValue(vars[key]));
++  return withRaw.replace(ESCAPED_PLACEHOLDER, (_match, key: string) => xmlEscape(vars[key]));
++}
++
++export function splitPromptBlock(block: string): string[] {
++  return block
++    .split("\n")
++    .map((line) => line.trim())
++    .filter(Boolean);
++}
+diff --git a/packages/coding-agent/src/core/rlm/prompts.ts b/packages/coding-agent/src/core/rlm/prompts.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e3ede3041a58ee34ae66cb04f65fde18448367b6
+--- /dev/null
++++ b/packages/coding-agent/src/core/rlm/prompts.ts
+@@ -0,0 +1,222 @@
++export const ROOT_SYSTEM_PROMPT = String.raw`
++<piRlmRoot>
++  <role>Pi root Recursive Language Model coordinator working through markdown-fenced Python REPL blocks.</role>
++  <tooling>
++    <mode>{{mode}}</mode>
++    <onlyTool>{{toolName}}</onlyTool>
++    <activeTools>{{activeTools}}</activeTools>
++  </tooling>
++  <execution>
++    <format>markdown fenced blocks tagged repl</format>
++    <rule>When code is needed, emit a single fenced block like \`\`\`repl ... \`\`\`.</rule>
++    <rule>Do not emit JSON tool-call syntax.</rule>
++    <rule>The runtime extracts the fence, executes it, and resumes the conversation.</rule>
++  </execution>
++  <replContract>
++    <helpers>llm_query, llm_query_batched, rlm_query, rlm_query_batched, FINAL_VAR, SHOW_VARS</helpers>
++    <state>state, history, context, context_0..context_N</state>
++    <rule>No ctx.*, rlm(...), FINAL(...), bash, read_file, list_dir, or stat_file helpers.</rule>
++    <rule>Use normal Python modules for local file/process work.</rule>
++  </replContract>
++  <policy>
++    <rule>Recurse first for broad, multi-source, uncertain, long-context, audit, needle-in-haystack, or naturally parallel work.</rule>
++    <rule>Use llm_query only for narrow one-shot reasoning over already extracted self-contained text.</rule>
++    <rule>Inspect context in Python and keep large values out of chat.</rule>
++    <rule>Synthesize child results, verify important claims cheaply, and recurse narrower if gaps remain.</rule>
++    <rule>Do not modify files unless asked.</rule>
++    <rule>Be concise.</rule>
++    <rule>Prefer FINAL_VAR("name") for the structured final channel.</rule>
++  </policy>
++  <runtime>
++    <date>{{date}}</date>
++    <cwd>{{cwd}}</cwd>
++  </runtime>
++</piRlmRoot>`;
++
++export const SESSION_CONTEXT_PROMPT = String.raw`
++<sessionContext>
++  <storeDir>{{storeDir}}</storeDir>
++  <scratchDir>{{scratchDir}}</scratchDir>
++  <manifest>{{manifestPath}}</manifest>
++  <rules>
++    <rule>Public REPL context is context/context_0/context_N, not ctx.*.</rule>
++    <rule>Use SHOW_VARS() and Python inspection; do not dump whole sources into chat.</rule>
++    <rule>If a transformed user message names a context_N variable, inspect it before answering.</rule>
++    <rule>Recursive rlm_query/rlm_query_batched inherit these sources unless explicit context, paths, or sources are passed.</rule>
++  </rules>
++  <sources>
++{{{sourceLines}}}
++  </sources>
++</sessionContext>`;
++
++export const EXTERNALIZED_INPUT_PROMPT = String.raw`
++<externalizedUserInput>
++  <summary>The full user input was stored outside model context in the session RLM context store.</summary>
++  <size>
++    <chars>{{charCount}}</chars>
++    <bytes>{{byteCount}}</bytes>
++  </size>
++  <source>
++    <id>{{sourceId}}</id>
++    <name>{{sourceName}}</name>
++    <path>{{sourcePath}}</path>
++    <replVar>{{contextVar}}</replVar>
++  </source>
++  <instructions>
++    <rule>Use {{toolName}} to inspect {{contextVar}} and treat it as authoritative.</rule>
++    <rule>Do not answer from the preview alone unless it fully captures the task.</rule>
++  </instructions>
++  <example>
++print(SHOW_VARS())
++print({{contextVar}}[:4000] if isinstance({{contextVar}}, str) else {{contextVar}})
++  </example>
++  <preview>{{preview}}</preview>
++</externalizedUserInput>`;
++
++export const CONTEXT_STORE_PROMPT = String.raw`
++<contextStore>
++  <tempDir>{{tempDir}}</tempDir>
++  <scratchDir>{{scratchDir}}</scratchDir>
++  <notesDir>{{notesDir}}</notesDir>
++  <artifactsDir>{{artifactsDir}}</artifactsDir>
++  <manifest>{{manifestPath}}</manifest>
++  <manifestJson>{{manifestJsonPath}}</manifestJson>
++  <readme>{{readmePath}}</readme>
++  <sources>
++{{{sourceLines}}}
++  </sources>
++  <rules>
++    <rule>Treat context/context_N as the large context object; do not copy it into chat.</rule>
++    <rule>Use SHOW_VARS(), Python inspection, and normal modules such as os, pathlib, json, open, or subprocess to narrow.</rule>
++    <rule>Write intermediate artifacts only under scratch, notes, or artifacts if needed.</rule>
++    <rule>The store is deleted after child finalization; include needed findings in the final answer.</rule>
++  </rules>
++</contextStore>`;
++
++export const CHILD_SYSTEM_PROMPT = String.raw`
++<piRlmChild>
++  <budget>
++    <depth>{{depth}}</depth>
++    <maxDepth>{{maxDepth}}</maxDepth>
++    <callsUsed>{{callsUsed}}</callsUsed>
++    <maxCalls>{{maxCalls}}</maxCalls>
++    <queriesUsed>{{queriesUsed}}</queriesUsed>
++    <maxQueries>{{maxQueries}}</maxQueries>
++  </budget>
++  <tool>{{toolName}}</tool>
++  <context>{{contextLine}}</context>
++  <contract>
++    <rule>Act through the REPL when a REPL action is possible.</rule>
++    <rule>Your first substantive action should be a REPL call.</rule>
++    <rule>Prefer FINAL_VAR("name") when the answer is ready.</rule>
++  </contract>
++  <policy>
++    <rule>Decompose when it reduces uncertainty or context load; prefer batched child calls for independent subtasks.</rule>
++    <rule>Use llm_query only for narrow one-shot reasoning over extracted text.</rule>
++    <rule>If child results conflict or feel partial, recurse narrower before finalizing.</rule>
++  </policy>
++  <rules>
++    <rule>Do not dump large context values into chat.</rule>
++    <rule>Do not modify files unless explicitly asked.</rule>
++    <rule>{{turnRule}}</rule>
++  </rules>
++</piRlmChild>`;
++
++export const CHILD_TASK_PROMPT = String.raw`
++<childTask>
++  <task>{{prompt}}</task>
++{{{rootPromptBlock}}}
++{{{inlineContextBlock}}}
++{{{contextStoreBlock}}}
++  <paths>
++{{{pathLines}}}
++  </paths>
++  <instructions>
++    <rule>Use only {{toolName}}.</rule>
++    <rule>Inspect before reasoning.</rule>
++    <rule>Recurse for deeper subtasks when useful.</rule>
++    <rule>Prefer FINAL_VAR("name") for the final answer.</rule>
++  </instructions>
++</childTask>`;
++
++export const DETERMINISTIC_FINAL_PROMPT = String.raw`
++<recovery>
++  <reason>{{reason}}</reason>
++  <task>{{originalPrompt}}</task>
++  <instructions>
++    <rule>Produce the best deterministic checkpoint/final answer from the transcript.</rule>
++    <rule>Do not claim anything not evidenced.</rule>
++    <rule>If incomplete, say what remains unchecked.</rule>
++    <rule>Include changed files or artifacts if the transcript mentions them.</rule>
++  </instructions>
++  <transcript>{{transcript}}</transcript>
++</recovery>`;
++
++export const DECOMPOSE_SYSTEM_PROMPT = String.raw`
++<decomposePolicy>
++  <role>Recursive task decomposition engine inside an RLM.</role>
++  <rules>
++    <rule>Decompose for multiple files, independent questions, audit/review across sources, comparison, or naturally parallel work.</rule>
++    <rule>Do not decompose simple questions, single-file edits, narrow lookups, or tasks already focused enough for one worker.</rule>
++    <rule>Each subtask must be self-contained and independently answerable.</rule>
++    <rule>Keep the subtask count reasonable, usually 2-8.</rule>
++    <rule>Respond with only valid JSON and no markdown fences.</rule>
++  </rules>
++</decomposePolicy>`;
++
++export const DECOMPOSE_USER_PROMPT = String.raw`
++<decomposeRequest>
++  <task>{{prompt}}</task>
++{{{pathsBlock}}}
++{{{contextBlock}}}
++  <outputSchema>{"decompose": true, "subtasks": ["...", "..."]} or {"decompose": false, "reason": "..."}</outputSchema>
++</decomposeRequest>`;
++
++export const SYNTHESIZE_PROMPT = String.raw`
++<synthesize>
++  <subtaskCount>{{subtaskCount}}</subtaskCount>
++  <task>{{prompt}}</task>
++  <subtaskResults>{{childAnswers}}</subtaskResults>
++  <instructions>
++    <rule>Integrate the subtask results into one coherent final answer.</rule>
++    <rule>Note important gaps, contradictions, or incomplete areas.</rule>
++    <rule>Be concise but complete.</rule>
++  </instructions>
++</synthesize>`;
++
++export const LEAF_SYSTEM_PROMPT = String.raw`
++<leafCall>
++  <role>Precise one-shot leaf LLM call inside an RLM run.</role>
++  <constraints>
++    <rule>No REPL, filesystem, tools, or iteration.</rule>
++    <rule>Answer only the requested subproblem from the supplied prompt/context.</rule>
++    <rule>If the evidence is insufficient, say so compactly.</rule>
++  </constraints>
++{{{rootPromptBlock}}}
++</leafCall>`;
++
++export const LEAF_USER_PROMPT = String.raw`
++<leafTask>
++  <task>{{prompt}}</task>
++{{{rootPromptBlock}}}
++{{{contextBlock}}}
++</leafTask>`;
++
++export const MAX_DEPTH_LEAF_PROMPT = String.raw`
++<maxDepthLeaf>
++  <task>{{prompt}}</task>
++  <note>Max RLM depth reached. This is a plain llm_query leaf call with no REPL or direct file access.</note>
++{{{pathsBlock}}}
++{{{sourcesBlock}}}
++</maxDepthLeaf>`;
++
++export const REPL_TOOL_PROMPT_SNIPPET = "Python REPL with RLM helpers, state, history, and context";
++
++export const REPL_TOOL_PROMPT_GUIDELINES = String.raw`
++<rule>The runtime feeds you markdown-fenced repl blocks; use {{toolName}} as the only control plane inside the block: inspect, chunk, recurse, synthesize, and finalize in Python.</rule>
++<rule>Helpers: llm_query, llm_query_batched, rlm_query, rlm_query_batched, FINAL_VAR, SHOW_VARS.</rule>
++<rule>Recurse first for broad, multi-file, uncertain, audit/review, or naturally parallel work.</rule>
++<rule>Use llm_query only for narrow one-shot reasoning over extracted text.</rule>
++<rule>The REPL exposes state, history, context, and context_0..context_N. Use SHOW_VARS().</rule>
++<rule>Use normal Python modules for local file/process work.</rule>
++<rule>Prefer FINAL_VAR("name") for the structured final channel.</rule>`;
+diff --git a/packages/coding-agent/src/core/rlm/repl-runtime.ts b/packages/coding-agent/src/core/rlm/repl-runtime.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..80091f1e732f4f54544ff432f180a782374cad17
+--- /dev/null
++++ b/packages/coding-agent/src/core/rlm/repl-runtime.ts
+@@ -0,0 +1,671 @@
++import { spawn } from "node:child_process";
++import { readFile } from "node:fs/promises";
++import { createInterface } from "node:readline";
++
++import { dispatchRlmCall } from "./dispatcher.js";
++import { inheritSessionContextParams } from "./session-context.js";
++import { MAX_RESULT_CHARS, RLM_CALLS } from "./constants.js";
++import type { ContextStore, RunState } from "./constants.js";
++import { REPL_PARAM_KEYS } from "./params.js";
++import { clip, errorText, isRecord, rejectUnknownKeys, textOf } from "./utils.js";
++
++const PYTHON_WORKER = String.raw`
++import ast as _ast
++import json as _json
++import sys as _sys
++import traceback as _traceback
++
++_ORIG_STDIN = _sys.stdin
++_ORIG_STDOUT = _sys.stdout
++_logs = []
++_call_seq = 0
++_final_called = False
++_final_value = None
++_final_name = None
++_last = None
++state = {}
++history = []
++context = None
++context_0 = None
++_context_count = 0
++_context_keys = set()
++_RESERVED_VALUES = {}
++
++class _Capture:
++    def write(self, text):
++        if text:
++            _logs.append(str(text))
++        return len(text) if text else 0
++    def flush(self):
++        pass
++
++_sys.stdout = _Capture()
++_sys.stderr = _Capture()
++
++def _send(obj):
++    _ORIG_STDOUT.write(_json.dumps(obj, ensure_ascii=False, default=str) + "\n")
++    _ORIG_STDOUT.flush()
++
++def _call(method, params=None):
++    global _call_seq
++    _call_seq += 1
++    call_id = _call_seq
++    _send({"type": "call", "id": call_id, "method": method, "params": params or {}})
++    while True:
++        line = _ORIG_STDIN.readline()
++        if not line:
++            raise RuntimeError("RLM REPL bridge closed")
++        msg = _json.loads(line)
++        if msg.get("type") != "call_result" or msg.get("id") != call_id:
++            raise RuntimeError("Unexpected bridge response: " + repr(msg))
++        if msg.get("ok"):
++            return msg.get("result")
++        raise RuntimeError(msg.get("error") or "RLM REPL bridge call failed")
++
++def _require_prompt(prompt, name):
++    if not isinstance(prompt, str) or not prompt.strip():
++        raise TypeError(name + " expects a non-empty prompt string")
++    return prompt
++
++def _require_prompts(prompts, name):
++    if not isinstance(prompts, list) or not all(isinstance(p, str) and p.strip() for p in prompts):
++        raise TypeError(name + " expects a list of non-empty prompt strings")
++    return prompts
++
++def _single_params(prompt, model=None):
++    params = {"prompt": prompt}
++    if model is not None:
++        params["model"] = model
++    return params
++
++def _batch_params(prompts, model=None):
++    params = {"prompts": prompts}
++    if model is not None:
++        params["model"] = model
++    return params
++
++def _text(result):
++    if isinstance(result, dict):
++        return result.get("text", "")
++    return str(result)
++
++def _batch_answers(result):
++    details = result.get("details") if isinstance(result, dict) else None
++    child_results = details.get("results") if isinstance(details, dict) else None
++    if isinstance(child_results, list):
++        return [d.get("answer", "") if isinstance(d, dict) else "" for d in child_results]
++    if isinstance(result, list):
++        return [str(x) for x in result]
++    return [_text(result)]
++
++def llm_query(prompt, model=None):
++    return _text(_call("llm_query", _single_params(_require_prompt(prompt, "llm_query"), model)))
++
++def llm_query_batched(prompts, model=None):
++    return _batch_answers(_call("llm_query_batched", _batch_params(_require_prompts(prompts, "llm_query_batched"), model)))
++
++def rlm_query(prompt, model=None):
++    return _text(_call("rlm_query", _single_params(_require_prompt(prompt, "rlm_query"), model)))
++
++def rlm_query_batched(prompts, model=None):
++    return _batch_answers(_call("rlm_query_batched", _batch_params(_require_prompts(prompts, "rlm_query_batched"), model)))
++
++def _set_final(value, name=None):
++    global _final_called, _final_value, _final_name, _last
++    _final_called = True
++    _final_value = value
++    _final_name = name
++    _last = value
++    return value
++
++def FINAL_VAR(variable_name):
++    if not isinstance(variable_name, str) or not variable_name.strip():
++        raise TypeError("FINAL_VAR(name) requires a variable/state key string")
++    name = variable_name.strip().strip("\"'")
++    g = globals()
++    if name in g and not _is_protected_name(name):
++        return _set_final(g[name], name)
++    if name in state:
++        return _set_final(state[name], name)
++    available = _visible_var_keys()
++    raise KeyError(name + " is not defined. Available variables: " + repr(available))
++
++def SHOW_VARS():
++    available = {k: type(globals()[k]).__name__ for k in _visible_var_keys()}
++    if not available:
++        return "No variables created yet. Use Python code to create variables."
++    return "Available variables: " + repr(available)
++
++_HELPER_NAMES = {
++    "llm_query",
++    "llm_query_batched",
++    "rlm_query",
++    "rlm_query_batched",
++    "FINAL_VAR",
++    "SHOW_VARS",
++}
++_PROTECTED_DATA_NAMES = {"state", "history", "context"}
++
++def _is_context_name(name):
++    return name.startswith("context_") or name.startswith("history_")
++
++def _is_protected_name(name):
++    return name in _HELPER_NAMES or name in _PROTECTED_DATA_NAMES or _is_context_name(name)
++
++def _visible_var_keys():
++    keys = []
++    for key in globals().keys():
++        if key.startswith("_") or key in _HELPER_NAMES:
++            continue
++        keys.append(key)
++    return sorted(keys)
++
++def _safe_repr(value, limit=1000):
++    try:
++        text = repr(value)
++    except Exception as exc:
++        text = "<repr failed: " + str(exc) + ">"
++    return text if len(text) <= limit else text[:limit] + "..."
++
++def _compile_user(code):
++    tree = _ast.parse(code, filename="<pi-rlm-repl>", mode="exec")
++    captures_expr = bool(tree.body and isinstance(tree.body[-1], _ast.Expr))
++    if captures_expr:
++        expr = tree.body[-1]
++        tree.body[-1] = _ast.Assign(targets=[_ast.Name(id="_last", ctx=_ast.Store())], value=expr.value)
++        _ast.fix_missing_locations(tree)
++    return compile(tree, "<pi-rlm-repl>", "exec"), captures_expr
++
++def _refresh_reserved_values():
++    global _RESERVED_VALUES
++    names = set(_HELPER_NAMES) | _PROTECTED_DATA_NAMES | {k for k in globals().keys() if _is_context_name(k)}
++    _RESERVED_VALUES = {k: globals().get(k) for k in names if k in globals()}
++
++def _restore_reserved_values():
++    for k, v in _RESERVED_VALUES.items():
++        globals()[k] = v
++
++def _context_key(entry, index):
++    if isinstance(entry, dict):
++        key = entry.get("key")
++        if isinstance(key, str) and key:
++            return key
++    return "context:" + str(index) + ":" + _safe_repr(entry, 200)
++
++def _context_value(entry):
++    if isinstance(entry, dict) and "value" in entry:
++        return entry.get("value")
++    return entry
++
++def _clear_contexts():
++    global context, context_0, _context_count
++    for key in list(globals().keys()):
++        if key == "context" or key.startswith("context_"):
++            try:
++                del globals()[key]
++            except Exception:
++                pass
++    context = None
++    context_0 = None
++    _context_count = 0
++    _context_keys.clear()
++
++
++def _load_contexts(entries):
++    global context, context_0, _context_count
++    if entries is None:
++        return
++    _clear_contexts()
++    if not isinstance(entries, list):
++        entries = [{"key": "context", "value": entries}]
++    for index, entry in enumerate(entries):
++        key = _context_key(entry, index)
++        if key in _context_keys:
++            continue
++        value = _context_value(entry)
++        name = "context_" + str(_context_count)
++        globals()[name] = value
++        if _context_count == 0:
++            context_0 = value
++            context = value
++            globals()["context_0"] = value
++            globals()["context"] = value
++        _context_count += 1
++        _context_keys.add(key)
++    _refresh_reserved_values()
++
++def _inject_data(data):
++    if not isinstance(data, dict):
++        return
++    for key, value in data.items():
++        if not isinstance(key, str) or not key.isidentifier() or key.startswith("_") or _is_protected_name(key):
++            raise ValueError("Invalid or reserved injected variable name: " + repr(key))
++        globals()[key] = value
++
++_refresh_reserved_values()
++
++def _run_eval(msg):
++    global _final_called, _final_value, _final_name, _last, history
++    eval_id = msg.get("id")
++    code = msg.get("code") or ""
++    setup = msg.get("setup") or ""
++    if msg.get("resetHistory"):
++        history.clear()
++    _load_contexts(msg.get("contexts"))
++    _inject_data(msg.get("data"))
++    _refresh_reserved_values()
++    _logs.clear()
++    _final_called = False
++    _final_value = None
++    _final_name = None
++    try:
++        if setup:
++            exec(compile(setup, "<pi-rlm-repl-setup>", "exec"), globals(), globals())
++            _restore_reserved_values()
++        compiled, captures_expr = _compile_user(code)
++        exec(compiled, globals(), globals())
++        value = _final_value if _final_called else (_last if captures_expr else None)
++        _send({
++            "type": "result",
++            "id": eval_id,
++            "ok": True,
++            "final": _final_called,
++            "finalName": _final_name,
++            "value": value,
++            "logs": "".join(_logs),
++            "stateKeys": sorted(str(k) for k in state.keys()),
++            "varKeys": _visible_var_keys(),
++            "historyLength": len(history),
++            "contextKeys": sorted(k for k in globals().keys() if k == "context" or k.startswith("context_")),
++        })
++        _restore_reserved_values()
++        _refresh_reserved_values()
++    except Exception as exc:
++        _send({
++            "type": "result",
++            "id": eval_id,
++            "ok": False,
++            "error": str(exc),
++            "traceback": _traceback.format_exc(),
++            "logs": "".join(_logs),
++            "stateKeys": sorted(str(k) for k in state.keys()),
++            "varKeys": _visible_var_keys(),
++            "historyLength": len(history),
++            "contextKeys": sorted(k for k in globals().keys() if k == "context" or k.startswith("context_")),
++        })
++        _restore_reserved_values()
++        _refresh_reserved_values()
++
++_send({"type": "ready"})
++
++while True:
++    _line = _ORIG_STDIN.readline()
++    if not _line:
++        break
++    try:
++        _msg = _json.loads(_line)
++        if _msg.get("type") == "eval":
++            _run_eval(_msg)
++        elif _msg.get("type") == "shutdown":
++            break
++    except Exception:
++        _send({"type": "worker_error", "error": _traceback.format_exc()})
++`;
++
++interface PythonEvalResult {
++  ok: boolean;
++  final?: boolean;
++  finalName?: string;
++  value?: unknown;
++  logs?: string;
++  error?: string;
++  traceback?: string;
++  stateKeys?: string[];
++  varKeys?: string[];
++  historyLength?: number;
++  contextKeys?: string[];
++}
++
++interface BridgeContext {
++  ctx: any;
++  signal?: AbortSignal;
++  onUpdate?: any;
++  inherited?: RunState;
++  parentDepth?: number;
++  store?: ContextStore;
++}
++
++export type ReplStoreProvider = ContextStore | ((ctx: any) => ContextStore | undefined | Promise<ContextStore | undefined>);
++
++type FinalOutputEmitter = (output: { text: string; variableName?: string; toolCallId?: string; timestamp: number }) => void | Promise<void>;
++
++export async function resolveReplStore(provider: ReplStoreProvider | undefined, ctx: any): Promise<ContextStore | undefined> {
++  if (!provider) return undefined;
++  if (typeof provider === "function") return await provider(ctx);
++  return provider;
++}
++
++export async function contextEntriesFromStore(store?: ContextStore): Promise<Array<{ key: string; value: unknown }> | undefined> {
++  if (!store?.sources.length) return undefined;
++  const entries: Array<{ key: string; value: unknown }> = [];
++  for (const source of store.sources) {
++    const key = `${source.id}:${source.path}:${source.sizeBytes ?? ""}:${source.entries ?? ""}`;
++    if (source.kind === "inline" || source.kind === "file") {
++      try {
++        const text = await readFile(source.path, "utf8");
++        source.sizeBytes = Buffer.byteLength(text, "utf8");
++        entries.push({ key, value: text });
++      } catch (e) {
++        entries.push({ key, value: { path: source.path, relPath: source.relPath, kind: source.kind, error: errorText(e) } });
++      }
++      continue;
++    }
++    entries.push({
++      key,
++      value: {
++        path: source.path,
++        relPath: source.relPath,
++        kind: source.kind,
++        label: source.label,
++        name: source.name,
++        error: source.error,
++      },
++    });
++  }
++  return entries;
++}
++
++interface PendingEval {
++  resolve: (value: PythonEvalResult) => void;
++  reject: (err: Error) => void;
++  timeoutMs: number;
++  remainingMs: number;
++  timerStartedAt?: number;
++  timeout?: ReturnType<typeof setTimeout>;
++  onAbort?: () => void;
++  controller?: AbortController;
++}
++
++export function abortErrorText(signal?: AbortSignal): string {
++  const reason = signal?.reason;
++  if (reason instanceof Error) return reason.message;
++  if (typeof reason === "string" && reason.trim()) return reason;
++  return "Aborted.";
++}
++
++export function composeAbortSignal(a?: AbortSignal, b?: AbortSignal): AbortSignal | undefined {
++  const signals = [a, b].filter(Boolean) as AbortSignal[];
++  if (signals.length === 0) return undefined;
++  if (signals.length === 1) return signals[0];
++  const anyFn = (AbortSignal as any).any;
++  if (typeof anyFn === "function") return anyFn(signals);
++
++  const controller = new AbortController();
++  const abort = (signal: AbortSignal) => {
++    if (!controller.signal.aborted) controller.abort(signal.reason);
++  };
++  for (const signal of signals) {
++    if (signal.aborted) abort(signal);
++    else signal.addEventListener("abort", () => abort(signal), { once: true });
++  }
++  return controller.signal;
++}
++
++export function pythonCommand(): string {
++  return process.env.PI_RLM_PYTHON?.trim() || "python3";
++}
++
++
++export function objectExtra(extra: unknown): Record<string, unknown> {
++  return isRecord(extra) ? extra : {};
++}
++
++export function rejectUnknownReplParams(params: unknown): void {
++  rejectUnknownKeys("repl params", params, REPL_PARAM_KEYS);
++}
++
++export function renderCodePreview(code: unknown): string {
++  if (typeof code !== "string" || !code.trim()) return "...";
++  const first = code.trim().split("\n").find((line) => line.trim().length > 0) ?? code.trim();
++  return clip(first.replace(/\s+/g, " "), 100);
++}
++
++export function formatPythonValue(value: unknown): string {
++  if (typeof value === "string") return value;
++  return JSON.stringify(value, null, 2) ?? String(value);
++}
++
++export function finalStoredMessage(variableName: unknown): string {
++  const name = typeof variableName === "string" && variableName.trim() ? variableName.trim() : undefined;
++  return name ? `[final stored in REPL variable: ${name}]` : "[final stored in REPL variable]";
++}
++
++export function splitFinalOutput(text: string): { preFinal: string; final?: string } {
++  const match = text.match(/(?:^|\n)FINAL:\s*\n?([\s\S]*)$/);
++  if (!match || match.index === undefined) return { preFinal: text.trim() };
++  return {
++    preFinal: text.slice(0, match.index).trim(),
++    final: (match[1] ?? "").trim(),
++  };
++}
++
++export class PythonReplWorker {
++  private proc: any;
++  private rl: any;
++  private nextEvalId = 1;
++  private pending = new Map<number, PendingEval>();
++  private current?: BridgeContext;
++  private currentEvalId?: number;
++  private stderr = "";
++  private exited = false;
++
++  constructor(private cwd: string) {
++    const cmd = pythonCommand();
++    this.proc = spawn(cmd, ["-u", "-c", PYTHON_WORKER], { cwd, stdio: ["pipe", "pipe", "pipe"] });
++    this.rl = createInterface({ input: this.proc.stdout });
++    this.rl.on("line", (line: string) => this.handleLine(line));
++    this.proc.stderr.on("data", (chunk: Buffer) => {
++      this.stderr = clip(this.stderr + chunk.toString("utf8"), MAX_RESULT_CHARS);
++    });
++    this.proc.stdin?.on?.("error", (err: any) => {
++      if (err?.code === "EPIPE" || err?.code === "ERR_STREAM_DESTROYED") {
++        this.exited = true;
++        this.failAll(new Error("Python REPL stdin closed."));
++        return;
++      }
++      this.failAll(err instanceof Error ? err : new Error(errorText(err)));
++    });
++    this.proc.on("error", (err: Error) => this.failAll(err));
++    this.proc.on("exit", (code: number | null, signal: string | null) => {
++      this.exited = true;
++      this.failAll(new Error(`Python REPL exited (${signal ?? code ?? "unknown"}).${this.stderr ? ` stderr: ${this.stderr}` : ""}`));
++    });
++  }
++
++  isAlive(): boolean {
++    return !this.exited && !this.proc.killed && !this.proc.stdin?.destroyed;
++  }
++
++  async eval(code: string, timeoutMs: number, bridge: BridgeContext, options: { data?: unknown; setup?: string; resetHistory?: boolean } = {}): Promise<PythonEvalResult> {
++    if (!this.isAlive()) throw new Error("Python REPL is not running.");
++    if (this.current) throw new Error("Python REPL is already evaluating code.");
++    if (bridge.signal?.aborted) {
++      this.kill();
++      throw new Error(abortErrorText(bridge.signal));
++    }
++
++    const id = this.nextEvalId++;
++    const evalController = new AbortController();
++    const evalSignal = composeAbortSignal(bridge.signal, evalController.signal);
++    const evalBridge: BridgeContext = { ...bridge, signal: evalSignal };
++    this.current = evalBridge;
++    this.currentEvalId = id;
++
++    const contexts = await contextEntriesFromStore(bridge.store);
++
++    let pendingForCleanup: PendingEval | undefined;
++    return await new Promise<PythonEvalResult>((resolve, reject) => {
++      const pending: PendingEval = {
++        resolve,
++        reject,
++        timeoutMs,
++        remainingMs: timeoutMs,
++        controller: evalController,
++      };
++      pendingForCleanup = pending;
++      const onAbort = () => {
++        evalController.abort(bridge.signal?.reason ?? new Error("Aborted."));
++        this.kill();
++        reject(new Error(abortErrorText(bridge.signal)));
++      };
++      pending.onAbort = onAbort;
++
++      bridge.signal?.addEventListener("abort", onAbort, { once: true });
++      this.pending.set(id, pending);
++      this.armEvalTimeout(id, pending);
++      if (!this.write({ type: "eval", id, code, contexts, data: options.data, setup: options.setup, resetHistory: options.resetHistory })) {
++        this.failAll(new Error("Python REPL stdin is closed."));
++      }
++    }).finally(() => {
++      const pending = this.pending.get(id) ?? pendingForCleanup;
++      if (pending?.timeout) clearTimeout(pending.timeout);
++      if (pending) pending.timeout = undefined;
++      if (pending?.onAbort) bridge.signal?.removeEventListener("abort", pending.onAbort);
++      this.pending.delete(id);
++      if (this.current === evalBridge) this.current = undefined;
++      if (this.currentEvalId === id) this.currentEvalId = undefined;
++    });
++  }
++
++  kill(): void {
++    if (this.isAlive()) this.proc.kill("SIGKILL");
++    this.exited = true;
++  }
++
++  shutdown(): void {
++    if (!this.isAlive()) return;
++    this.write({ type: "shutdown" });
++    this.proc.kill();
++  }
++
++  private timeoutError(pending: PendingEval): Error {
++    return new Error(
++      `Python REPL local evaluation timed out after ${pending.timeoutMs}ms (time spent inside bridge helper calls is excluded).`,
++    );
++  }
++
++  private armEvalTimeout(id: number, pending?: PendingEval): void {
++    if (!pending || !this.pending.has(id)) return;
++    if (pending.timeout) clearTimeout(pending.timeout);
++    const delay = Math.max(1, pending.remainingMs);
++    pending.timerStartedAt = Date.now();
++    pending.timeout = setTimeout(() => {
++      if (!this.pending.has(id)) return;
++      pending.timeout = undefined;
++      const err = this.timeoutError(pending);
++      pending.controller?.abort(err);
++      this.kill();
++      pending.reject(err);
++    }, delay);
++  }
++
++  private pauseEvalTimeout(pending?: PendingEval): void {
++    if (!pending?.timeout) return;
++    clearTimeout(pending.timeout);
++    pending.timeout = undefined;
++    if (pending.timerStartedAt !== undefined) {
++      pending.remainingMs = Math.max(0, pending.remainingMs - (Date.now() - pending.timerStartedAt));
++      pending.timerStartedAt = undefined;
++    }
++  }
++
++  private write(obj: unknown): boolean {
++    if (!this.isAlive()) return false;
++    const stdin = this.proc.stdin;
++    if (!stdin || stdin.destroyed || !stdin.writable) return false;
++    try {
++      stdin.write(`${JSON.stringify(obj)}\n`);
++      return true;
++    } catch (e: any) {
++      if (e?.code === "EPIPE" || e?.code === "ERR_STREAM_DESTROYED") {
++        this.exited = true;
++        return false;
++      }
++      throw e;
++    }
++  }
++
++  private handleLine(line: string): void {
++    let msg: any;
++    try {
++      msg = JSON.parse(line);
++    } catch {
++      this.stderr = clip(`${this.stderr}\n[non-json stdout] ${line}`, MAX_RESULT_CHARS);
++      return;
++    }
++
++    if (msg?.type === "ready") return;
++    if (msg?.type === "call") {
++      void this.handleBridgeCall(msg);
++      return;
++    }
++    if (msg?.type === "result") {
++      const pending = this.pending.get(Number(msg.id));
++      if (!pending) return;
++      if (pending.timeout) clearTimeout(pending.timeout);
++      pending.timeout = undefined;
++      pending.timerStartedAt = undefined;
++      pending.resolve(msg as PythonEvalResult);
++      return;
++    }
++    if (msg?.type === "worker_error") {
++      this.stderr = clip(`${this.stderr}\n${msg.error ?? "worker_error"}`, MAX_RESULT_CHARS);
++    }
++  }
++
++  private async handleBridgeCall(msg: any): Promise<void> {
++    const bridge = this.current;
++    const evalId = this.currentEvalId;
++    const pending = evalId === undefined ? undefined : this.pending.get(evalId);
++    if (!bridge || !this.isAlive()) return;
++
++    this.pauseEvalTimeout(pending);
++    let response: { ok: true; result: unknown } | { ok: false; error: string };
++    try {
++      response = { ok: true, result: await handleBridgeCall(msg.method, msg.params, bridge) };
++    } catch (e) {
++      response = { ok: false, error: errorText(e) };
++    }
++
++    if (this.current !== bridge || !this.isAlive() || bridge.signal?.aborted) return;
++    if (!this.write({ type: "call_result", id: msg.id, ...response })) {
++      this.failAll(new Error("Python REPL stdin is closed."));
++      return;
++    }
++    if (evalId !== undefined) this.armEvalTimeout(evalId, pending);
++  }
++
++
++  private failAll(err: Error): void {
++    for (const pending of this.pending.values()) {
++      if (pending.timeout) clearTimeout(pending.timeout);
++      pending.controller?.abort(err);
++      pending.reject(err);
++    }
++    this.pending.clear();
++    this.current = undefined;
++    this.currentEvalId = undefined;
++  }
++}
++
++async function handleBridgeCall(method: unknown, params: unknown, bridge: BridgeContext): Promise<unknown> {
++  const p = objectExtra(params);
++  const call = typeof method === "string" && RLM_CALLS.includes(method as any) ? method : undefined;
++  if (call) {
++    const paramsForDispatch = inheritSessionContextParams({ ...p, call }, bridge.store);
++    const result = await dispatchRlmCall(bridge.ctx, paramsForDispatch, bridge.inherited, bridge.parentDepth, bridge.signal, bridge.onUpdate);
++    return { text: textOf(result.content).trim(), content: result.content, details: result.details };
++  }
++
++  throw new Error(`Unknown Python REPL bridge method: ${String(method)}.`);
++}
+diff --git a/packages/coding-agent/src/core/rlm/repl.ts b/packages/coding-agent/src/core/rlm/repl.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..608c6636a7767185f2193e00a4d6eac7f87d7c6d
+--- /dev/null
++++ b/packages/coding-agent/src/core/rlm/repl.ts
+@@ -0,0 +1,151 @@
++import { defineTool } from "../extensions/index.js";
++import { Text } from "@earendil-works/pi-tui";
++
++import { contextSourceSummary } from "./context-store.js";
++import { MAX_RESULT_CHARS, REPL_TOOL_NAME } from "./constants.js";
++import type { RunState } from "./constants.js";
++import { ReplParams, REPL_PARAM_KEYS } from "./params.js";
++import { renderTemplate, splitPromptBlock } from "./prompt-render.js";
++import { REPL_TOOL_PROMPT_GUIDELINES, REPL_TOOL_PROMPT_SNIPPET } from "./prompts.js";
++import { PythonReplWorker, resolveReplStore, type ReplStoreProvider, renderCodePreview, formatPythonValue, finalStoredMessage, splitFinalOutput } from "./repl-runtime.js";
++import { clip, rejectUnknownKeys, textOf } from "./utils.js";
++
++export function createRlmReplTool(inherited?: RunState, parentDepth?: number, store?: ReplStoreProvider, emitFinalOutput?: (output: { text: string; variableName?: string; toolCallId?: string; timestamp: number }) => void | Promise<void>) {
++  let worker: PythonReplWorker | undefined;
++  let workerCwd: string | undefined;
++  let evals = 0;
++
++  return defineTool({
++    name: REPL_TOOL_NAME,
++    label: REPL_TOOL_NAME,
++    description: "Python REPL using the upstream RLM helper contract: llm_query, llm_query_batched, rlm_query, rlm_query_batched, FINAL_VAR, SHOW_VARS, state/history/context variables, and injected custom data.",
++    promptSnippet: renderTemplate(REPL_TOOL_PROMPT_SNIPPET, { toolName: REPL_TOOL_NAME }),
++    promptGuidelines: splitPromptBlock(renderTemplate(REPL_TOOL_PROMPT_GUIDELINES, { toolName: REPL_TOOL_NAME })),
++    executionMode: "sequential",
++    parameters: ReplParams,
++    async execute(toolCallId, params, signal, onUpdate, ctx) {
++      rejectUnknownKeys("repl params", params, REPL_PARAM_KEYS);
++      if (params.reset === true) {
++        worker?.shutdown();
++        worker = undefined;
++        workerCwd = undefined;
++      }
++      if (typeof params.code !== "string" || !params.code.trim()) throw new Error("Missing required code.");
++
++      const timeoutMs = Math.max(100, Math.min(120_000, Math.trunc(typeof params.timeoutMs === "number" && Number.isFinite(params.timeoutMs) ? params.timeoutMs : 30_000)));
++      if (!worker || !worker.isAlive() || workerCwd !== ctx.cwd) {
++        worker?.shutdown();
++        worker = new PythonReplWorker(ctx.cwd);
++        workerCwd = ctx.cwd;
++      }
++      evals++;
++
++      onUpdate?.({ content: [{ type: "text", text: `${REPL_TOOL_NAME}: evaluating Python via ${process.env.PI_RLM_PYTHON?.trim() || "python3"} (${timeoutMs}ms local timeout; bridge calls excluded)...` }], details: { kind: "repl", language: "python", evals, final: false, timeoutMs, cwd: ctx.cwd } });
++
++      const effectiveStore = await resolveReplStore(store, ctx);
++      const result = await worker.eval(params.code, timeoutMs, { ctx, signal, onUpdate, inherited, parentDepth, store: effectiveStore }, { data: params.data, setup: params.setup, resetHistory: params.resetHistory === true });
++      if (!result.ok) {
++        const text = clip([result.logs?.trim(), result.traceback || result.error].filter(Boolean).join("\n\n"), MAX_RESULT_CHARS);
++        return {
++          content: [{ type: "text", text }],
++          details: {
++            kind: "repl",
++            language: "python",
++            evals,
++            final: false,
++            timeoutMs,
++            cwd: ctx.cwd,
++            stateKeys: result.stateKeys ?? [],
++            varKeys: result.varKeys ?? [],
++            historyLength: result.historyLength ?? 0,
++            contextKeys: result.contextKeys ?? [],
++            error: result.error,
++            scratchDir: effectiveStore?.scratchDir,
++            contextSources: effectiveStore?.sources.map(contextSourceSummary),
++          },
++        };
++      }
++
++      const sections: string[] = [];
++      const finalText = result.final === true ? formatPythonValue(result.value).trim() : undefined;
++      const logsText = result.logs?.trim();
++      if (logsText) sections.push(`Console:\n${logsText}`);
++      if (result.final) sections.push(finalStoredMessage(result.finalName));
++      else if (result.value !== undefined && result.value !== null) sections.push(`Result:\n${formatPythonValue(result.value)}`);
++      if (sections.length === 0) sections.push("(no output)");
++
++      let finalMirrored = false;
++      if (result.final === true && ctx.hasUI && emitFinalOutput) {
++        try {
++          await emitFinalOutput({
++            text: finalText ?? "",
++            variableName: result.finalName,
++            toolCallId,
++            timestamp: Date.now(),
++          });
++          finalMirrored = true;
++        } catch {
++          finalMirrored = false;
++        }
++      }
++
++      const text = clip(sections.join("\n\n"), MAX_RESULT_CHARS);
++      return {
++        content: [{ type: "text", text }],
++        details: {
++          kind: "repl",
++          language: "python",
++          evals,
++          final: result.final === true,
++          finalName: result.finalName,
++          finalVar: result.finalName,
++          finalText,
++          finalValue: result.final === true ? result.value : undefined,
++          finalMirrored,
++          timeoutMs,
++          cwd: ctx.cwd,
++          stateKeys: result.stateKeys ?? [],
++          varKeys: result.varKeys ?? [],
++          historyLength: result.historyLength ?? 0,
++          contextKeys: result.contextKeys ?? [],
++          scratchDir: effectiveStore?.scratchDir,
++          contextSources: effectiveStore?.sources.map(contextSourceSummary),
++        },
++        terminate: result.final === true,
++      };
++    },
++    renderCall(args, theme) {
++      return new Text(
++        `${theme.fg("toolTitle", theme.bold(REPL_TOOL_NAME))} ${theme.fg("muted", renderCodePreview(args?.code))}`,
++        0,
++        0,
++      );
++    },
++    renderResult(result, { isPartial }: any, theme) {
++      const text = textOf(result.content).trim();
++      const details: any = result.details ?? {};
++      if (isPartial) return new Text(theme.fg("warning", text || "running..."), 0, 0);
++      const final = details.final ? theme.fg("success", " FINAL") : "";
++      const mirrored = details.finalMirrored ? theme.fg("muted", " → rlm_final") : "";
++      const vars = Array.isArray(details.varKeys) && details.varKeys.length
++        ? ` vars=${details.varKeys.join(",")}`
++        : Array.isArray(details.stateKeys) && details.stateKeys.length
++          ? ` state=${details.stateKeys.join(",")}`
++          : "";
++      const err = details.error ? theme.fg("error", " error") : "";
++      const { preFinal } = splitFinalOutput(text);
++      const body = details.finalMirrored
++        ? [
++            preFinal ? theme.fg("toolOutput", clip(preFinal.replace(/\s+/g, " "), 800)) : "",
++            theme.fg("muted", "mirrored as rlm_final"),
++          ].filter(Boolean).join(" ")
++        : theme.fg("toolOutput", clip(text.replace(/\s+/g, " "), 800));
++      const newline = String.fromCharCode(10);
++      return new Text(
++        `${theme.fg("success", "✓")} ${theme.fg("toolTitle", theme.bold(REPL_TOOL_NAME))}${final}${mirrored}${err}${theme.fg("muted", vars)}${newline}${body}`,
++        0,
++        0,
++      );
++    },
++  });
++}
+diff --git a/packages/coding-agent/src/core/rlm/session-context.ts b/packages/coding-agent/src/core/rlm/session-context.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..17dd809763afe90ffbc065fc4110602795955ae3
+--- /dev/null
++++ b/packages/coding-agent/src/core/rlm/session-context.ts
+@@ -0,0 +1,276 @@
++import { promises as fs } from "node:fs";
++import * as path from "node:path";
++
++import type { ExtensionContext } from "../extensions/types.js";
++
++import { MAX_INLINE_CHILD_CONTEXT_CHARS, REPL_TOOL_NAME } from "./constants.js";
++import type { ContextSource, ContextStore } from "./constants.js";
++import { buildContextManifest, contextSourceSummary, formatBytes, relPathFor } from "./context-store.js";
++import { renderTemplate, xmlEscape } from "./prompt-render.js";
++import { EXTERNALIZED_INPUT_PROMPT, SESSION_CONTEXT_PROMPT } from "./prompts.js";
++import { clip, isRecord } from "./utils.js";
++
++const SESSION_CONTEXT_DIR = "rlm-context";
++const SESSION_SOURCES_DIR = "sources";
++const DEFAULT_EXTERNALIZE_CHARS = MAX_INLINE_CHILD_CONTEXT_CHARS;
++const PREVIEW_CHARS = 2_000;
++const MAX_SESSION_CONTEXT_PROMPT_CHARS = 8_000;
++
++const stores = new Map<string, ContextStore>();
++
++function safeName(raw: unknown, fallback: string): string {
++  const s = typeof raw === "string" && raw.trim() ? raw.trim() : fallback;
++  const clean = s.replace(/[\\/]+/g, "-").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
++  return clean || fallback;
++}
++
++function sessionKey(ctx: ExtensionContext): string {
++  const sessionFile = ctx.sessionManager.getSessionFile();
++  if (sessionFile) return path.resolve(sessionFile);
++  return `${ctx.cwd}\0${ctx.sessionManager.getSessionId()}`;
++}
++
++function sessionStoreDir(ctx: ExtensionContext): string {
++  const sessionDir = ctx.sessionManager.getSessionDir();
++  const id = safeName(ctx.sessionManager.getSessionId(), "session");
++  return path.join(sessionDir, SESSION_CONTEXT_DIR, id);
++}
++
++function sessionReadme(store: ContextStore): string {
++  return `# Pi RLM session context store
++
++This directory is managed by pi-rlm and persists with the Pi session.
++
++- manifest.txt: capped source manifest / tree preview
++- manifest.json: machine-readable source metadata
++- ${SESSION_SOURCES_DIR}/: externalized user prompts or other session-local sources
++- scratch/: temporary workspace for RLM exploration
++- notes/: note outputs
++- artifacts/: artifact outputs
++
++Use compact observations only. Do not dump whole context files into chat.
++${REPL_TOOL_NAME} calls receive saved sources as context/context_N payloads. Use SHOW_VARS() and normal Python inspection. Recursive rlm_query calls made without explicit context inherit these sources.
++
++Sources:
++${store.sources.length ? store.sources.map((s) => `- ${contextSourceSummary(s)}`).join("\n") : "(none yet)"}
++`;
++}
++
++function parseStoredSources(raw: unknown): ContextSource[] {
++  if (!isRecord(raw) || !Array.isArray(raw.sources)) return [];
++  const out: ContextSource[] = [];
++  const seen = new Set<string>();
++  for (const item of raw.sources) {
++    if (!isRecord(item)) continue;
++    if (typeof item.id !== "string" || typeof item.label !== "string" || typeof item.path !== "string" || typeof item.relPath !== "string") continue;
++    const kind = typeof item.kind === "string" ? item.kind : "file";
++    if (!["inline", "file", "dir", "missing", "other"].includes(kind)) continue;
++    const key = `${item.id}\0${item.path}`;
++    if (seen.has(key)) continue;
++    seen.add(key);
++    out.push({
++      id: item.id,
++      name: typeof item.name === "string" ? item.name : undefined,
++      label: item.label,
++      input: typeof item.input === "string" ? item.input : undefined,
++      path: item.path,
++      relPath: item.relPath,
++      kind: kind as ContextSource["kind"],
++      sizeBytes: typeof item.sizeBytes === "number" ? item.sizeBytes : undefined,
++      entries: typeof item.entries === "number" ? item.entries : undefined,
++      error: typeof item.error === "string" ? item.error : undefined,
++    });
++  }
++  return out;
++}
++
++async function loadStoredSources(manifestJsonPath: string): Promise<ContextSource[]> {
++  try {
++    const raw = JSON.parse(await fs.readFile(manifestJsonPath, "utf8"));
++    return parseStoredSources(raw);
++  } catch {
++    return [];
++  }
++}
++
++export async function refreshSessionContextStore(cwd: string, store: ContextStore): Promise<ContextStore> {
++  store.manifestText = await buildContextManifest(cwd, store);
++  await fs.writeFile(store.manifestPath, store.manifestText, "utf8");
++  await fs.writeFile(store.manifestJsonPath, JSON.stringify({
++    persistent: true,
++    dir: store.dir,
++    scratchDir: store.scratchDir,
++    notesDir: store.notesDir,
++    artifactsDir: store.artifactsDir,
++    manifestPath: store.manifestPath,
++    manifestJsonPath: store.manifestJsonPath,
++    sources: store.sources,
++  }, null, 2), "utf8");
++  await fs.writeFile(store.readmePath, sessionReadme(store), "utf8");
++  return store;
++}
++
++export async function ensureSessionContextStore(ctx: ExtensionContext): Promise<ContextStore> {
++  const key = sessionKey(ctx);
++  const cached = stores.get(key);
++  if (cached) return cached;
++
++  const dir = sessionStoreDir(ctx);
++  const scratchDir = path.join(dir, "scratch");
++  const notesDir = path.join(dir, "notes");
++  const artifactsDir = path.join(dir, "artifacts");
++  const sourcesDir = path.join(dir, SESSION_SOURCES_DIR);
++  await fs.mkdir(scratchDir, { recursive: true });
++  await fs.mkdir(notesDir, { recursive: true });
++  await fs.mkdir(artifactsDir, { recursive: true });
++  await fs.mkdir(sourcesDir, { recursive: true });
++
++  const manifestPath = path.join(dir, "manifest.txt");
++  const manifestJsonPath = path.join(dir, "manifest.json");
++  const readmePath = path.join(dir, "README.md");
++  const sources = await loadStoredSources(manifestJsonPath);
++  const store: ContextStore = {
++    dir,
++    scratchDir,
++    notesDir,
++    artifactsDir,
++    manifestPath,
++    manifestJsonPath,
++    readmePath,
++    manifestText: "",
++    sources,
++  };
++  await refreshSessionContextStore(ctx.cwd, store);
++  stores.set(key, store);
++  return store;
++}
++
++export function releaseSessionContextStore(ctx: ExtensionContext): void {
++  stores.delete(sessionKey(ctx));
++}
++
++function nextSourceId(store: ContextStore): string {
++  const used = new Set(store.sources.map((s) => s.id));
++  for (let i = store.sources.length; i < store.sources.length + 10_000; i++) {
++    const id = `s${i}`;
++    if (!used.has(id)) return id;
++  }
++  return `s${Date.now().toString(36)}`;
++}
++
++export async function addTextToSessionContext(ctx: ExtensionContext, text: string, options: { name?: string; label?: string } = {}): Promise<ContextSource> {
++  const store = await ensureSessionContextStore(ctx);
++  const id = nextSourceId(store);
++  const ordinal = store.sources.length + 1;
++  const name = safeName(options.name, `user-input-${String(ordinal).padStart(3, "0")}`);
++  const target = path.join(store.dir, SESSION_SOURCES_DIR, `${name}.txt`);
++  await fs.writeFile(target, text, "utf8");
++
++  const source: ContextSource = {
++    id,
++    name,
++    label: options.label || `externalized user input ${ordinal}`,
++    input: name,
++    path: target,
++    relPath: relPathFor(ctx.cwd, target),
++    kind: "inline",
++    sizeBytes: Buffer.byteLength(text, "utf8"),
++  };
++  store.sources.push(source);
++  await refreshSessionContextStore(ctx.cwd, store);
++  return source;
++}
++
++export function rootExternalizeThreshold(): number {
++  const raw = process.env.PI_RLM_ROOT_EXTERNALIZE_CHARS;
++  if (raw === undefined || raw === "") return DEFAULT_EXTERNALIZE_CHARS;
++  const n = Number(raw);
++  if (!Number.isFinite(n)) return DEFAULT_EXTERNALIZE_CHARS;
++  return Math.max(0, Math.trunc(n));
++}
++
++export function shouldExternalizeInput(text: string, source?: string): boolean {
++  if (source === "extension") return false;
++  const threshold = rootExternalizeThreshold();
++  return threshold > 0 && text.length > threshold;
++}
++
++function headTailPreview(text: string): string {
++  if (text.length <= PREVIEW_CHARS * 2 + 200) return text;
++  return `${text.slice(0, PREVIEW_CHARS)}\n\n...[${text.length - PREVIEW_CHARS * 2} chars externalized in the session context store]...\n\n${text.slice(-PREVIEW_CHARS)}`;
++}
++
++export async function recordUserInput(ctx: ExtensionContext, text: string): Promise<ContextSource> {
++  return await addTextToSessionContext(ctx, text, {
++    label: `user input (${new Date().toISOString()})`,
++  });
++}
++
++export async function externalizeLargeInput(ctx: ExtensionContext, text: string): Promise<{ source: ContextSource; replacement: string }> {
++  const source = await addTextToSessionContext(ctx, text, {
++    label: `externalized user input (${new Date().toISOString()})`,
++  });
++  const preview = clip(headTailPreview(text), PREVIEW_CHARS * 2 + 500);
++  const contextVar = /^s\d+$/.test(source.id) ? `context_${source.id.slice(1)}` : "context";
++  const replacement = renderTemplate(EXTERNALIZED_INPUT_PROMPT, {
++    charCount: text.length.toLocaleString(),
++    byteCount: formatBytes(Buffer.byteLength(text, "utf8")),
++    sourceId: source.id,
++    sourceName: source.name ?? "(none)",
++    sourcePath: source.path,
++    contextVar,
++    toolName: REPL_TOOL_NAME,
++    preview,
++  });
++  return { source, replacement };
++}
++
++export function contextStoreAsNamedSources(store?: ContextStore): Array<{ name?: string; path: string }> {
++  if (!store) return [];
++  return store.sources
++    .filter((source) => source.kind === "inline" || source.kind === "file" || source.kind === "dir")
++    .map((source) => ({ name: source.name || source.id, path: source.path }));
++}
++
++function hasExplicitContext(params: Record<string, unknown>): boolean {
++  if (typeof params.context === "string" && params.context.trim()) return true;
++  if (Array.isArray(params.paths) && params.paths.some((p) => typeof p === "string" && p.trim())) return true;
++  if (Array.isArray(params.sources) && params.sources.some((s) => isRecord(s) && typeof s.path === "string" && s.path.trim())) return true;
++  return false;
++}
++
++export function inheritSessionContextParams(params: unknown, store?: ContextStore): unknown {
++  if (!isRecord(params)) return params;
++  const call = params.call;
++  if (call !== "rlm_query" && call !== "rlm_query_batched") return params;
++  const sources = contextStoreAsNamedSources(store);
++  if (!sources.length) return params;
++
++  if (call === "rlm_query_batched" && Array.isArray(params.items) && params.items.length > 0) {
++    if (hasExplicitContext(params)) return params;
++    let changed = false;
++    const items = params.items.map((item) => {
++      if (!isRecord(item) || hasExplicitContext(item)) return item;
++      changed = true;
++      return { ...item, sources };
++    });
++    return changed ? { ...params, items } : params;
++  }
++
++  if (hasExplicitContext(params)) return params;
++  return { ...params, sources };
++}
++
++export function sessionContextPromptBlock(store?: ContextStore): string {
++  if (!store) return "";
++  const sourceLines = store.sources.length
++    ? store.sources.map((s, i) => `    <source slot="context_${i}">${xmlEscape(contextSourceSummary(s))}</source>`).join("\n")
++    : '    <source slot="none">(no sources yet)</source>';
++  return clip(renderTemplate(SESSION_CONTEXT_PROMPT, {
++    storeDir: store.dir,
++    scratchDir: store.scratchDir,
++    manifestPath: store.manifestPath,
++    toolName: REPL_TOOL_NAME,
++    sourceLines,
++  }), MAX_SESSION_CONTEXT_PROMPT_CHARS);
++}
+diff --git a/packages/coding-agent/src/core/rlm/settings.ts b/packages/coding-agent/src/core/rlm/settings.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..a7366410092258af9757e80a9db1f9bf23c8a101
+--- /dev/null
++++ b/packages/coding-agent/src/core/rlm/settings.ts
+@@ -0,0 +1,144 @@
++import { existsSync, readFileSync } from "node:fs";
++import { join } from "node:path";
++
++import { getAgentDir } from "../../config.js";
++
++export type RlmModelRole = "default" | "llm" | "rlm";
++
++export interface RlmSettings {
++  model?: string;
++  provider?: string;
++  modelId?: string;
++  models?: string[];
++  maxConcurrent?: number;
++  maxDepth?: number;
++  roleModels?: Partial<Record<RlmModelRole, string>>;
++}
++
++function isRecord(v: unknown): v is Record<string, unknown> {
++  return typeof v === "object" && v !== null && !Array.isArray(v);
++}
++
++function nonEmptyString(v: unknown): string | undefined {
++  return typeof v === "string" && v.trim() ? v.trim() : undefined;
++}
++
++function integerLimit(v: unknown): number | undefined {
++  if (typeof v !== "number" || !Number.isFinite(v)) return undefined;
++  return Math.trunc(v);
++}
++
++function providerModel(provider: unknown, model: unknown): string | undefined {
++  const p = nonEmptyString(provider);
++  const m = nonEmptyString(model);
++  if (!m) return undefined;
++  if (!p || m.includes("/")) return m;
++  return `${p}/${m}`;
++}
++
++function parseModels(raw: unknown): { models?: string[]; roleModels?: Partial<Record<RlmModelRole, string>> } {
++  if (Array.isArray(raw)) {
++    const models = raw.map(nonEmptyString).filter((v): v is string => Boolean(v));
++    return models.length ? { models } : {};
++  }
++  if (!isRecord(raw)) return {};
++
++  const roleModels: Partial<Record<RlmModelRole, string>> = {};
++  const def = nonEmptyString(raw.default) ?? providerModel(raw.provider, raw.modelId ?? raw.model) ?? nonEmptyString(raw.model) ?? nonEmptyString(raw.modelId);
++  const llm = nonEmptyString(raw.llm) ?? nonEmptyString(raw.leaf) ?? nonEmptyString(raw.llmModel);
++  const rlm = nonEmptyString(raw.rlm) ?? nonEmptyString(raw.child) ?? nonEmptyString(raw.rlmModel) ?? nonEmptyString(raw.childModel);
++  if (def) roleModels.default = def;
++  if (llm) roleModels.llm = llm;
++  if (rlm) roleModels.rlm = rlm;
++  return Object.keys(roleModels).length ? { roleModels } : {};
++}
++
++export function parseRlmSettings(raw: unknown): RlmSettings {
++  if (typeof raw === "string" && raw.trim()) return { models: [raw.trim()] };
++  if (!isRecord(raw)) return {};
++
++  const model = providerModel(raw.provider, raw.modelId ?? raw.model) ?? nonEmptyString(raw.model) ?? nonEmptyString(raw.modelId);
++  const parsedModels = parseModels(raw.models);
++  const roleModels: Partial<Record<RlmModelRole, string>> = { ...parsedModels.roleModels };
++
++  const llm = nonEmptyString(raw.llmModel) ?? nonEmptyString(raw.leafModel);
++  const rlm = nonEmptyString(raw.rlmModel) ?? nonEmptyString(raw.childModel);
++  const maxConcurrent = integerLimit(raw.maxConcurrent ?? raw.max_concurrent ?? raw.max_concurrent_subcalls);
++  const maxDepth = integerLimit(raw.maxDepth ?? raw.max_depth);
++  if (llm) roleModels.llm = llm;
++  if (rlm) roleModels.rlm = rlm;
++
++  return {
++    model,
++    provider: nonEmptyString(raw.provider),
++    modelId: nonEmptyString(raw.modelId),
++    models: parsedModels.models,
++    maxConcurrent,
++    maxDepth,
++    roleModels: Object.keys(roleModels).length ? roleModels : undefined,
++  };
++}
++
++function pickSettings(parsed: Record<string, unknown>): unknown {
++  const extensionSettings = parsed.extensionSettings;
++  if (!isRecord(extensionSettings)) return undefined;
++  return extensionSettings["pi-rlm"] ?? extensionSettings.rlm;
++}
++
++function readSettingsFile(path: string): RlmSettings {
++  if (!existsSync(path)) return {};
++  try {
++    const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown;
++    if (!isRecord(parsed)) return {};
++    return parseRlmSettings(pickSettings(parsed));
++  } catch {
++    return {};
++  }
++}
++
++function mergeRoleModels(
++  base?: Partial<Record<RlmModelRole, string>>,
++  override?: Partial<Record<RlmModelRole, string>>,
++): Partial<Record<RlmModelRole, string>> | undefined {
++  const merged: Partial<Record<RlmModelRole, string>> = { ...(base ?? {}) };
++  if (override) {
++    for (const [role, model] of Object.entries(override) as Array<[RlmModelRole, string | undefined]>) {
++      if (typeof model === "string" && model.trim()) {
++        merged[role] = model.trim();
++      }
++    }
++  }
++  return Object.keys(merged).length ? merged : undefined;
++}
++
++function mergeRlmSettings(base: RlmSettings, override: RlmSettings): RlmSettings {
++  const roleModels = mergeRoleModels(base.roleModels, override.roleModels);
++  if (roleModels && override.roleModels?.default === undefined && (override.model !== undefined || (override.models?.length ?? 0) > 0)) {
++    delete roleModels.default;
++  }
++
++  return {
++    model: override.model !== undefined ? override.model : (override.models?.length ? undefined : base.model),
++    provider: override.provider ?? base.provider,
++    modelId: override.modelId ?? base.modelId,
++    models: override.models?.length ? override.models : base.models,
++    maxConcurrent: override.maxConcurrent ?? base.maxConcurrent,
++    maxDepth: override.maxDepth ?? base.maxDepth,
++    roleModels: roleModels && Object.keys(roleModels).length ? roleModels : undefined,
++  };
++}
++
++export function loadRlmSettings(cwd: string): RlmSettings {
++  return mergeRlmSettings(
++    readSettingsFile(join(getAgentDir(), "settings.json")),
++    readSettingsFile(join(cwd, ".pi", "settings.json")),
++  );
++}
++
++export function modelSelectorForRole(settings: RlmSettings, role: RlmModelRole = "default"): string | undefined {
++  return settings.roleModels?.[role]
++    ?? settings.roleModels?.default
++    ?? settings.model
++    ?? settings.models?.[0]
++    ?? providerModel(settings.provider, settings.modelId);
++}
+diff --git a/packages/coding-agent/src/core/rlm/utils.ts b/packages/coding-agent/src/core/rlm/utils.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..91bdb9caebd7c9dc2a05bceebb45e46f229ee11e
+--- /dev/null
++++ b/packages/coding-agent/src/core/rlm/utils.ts
+@@ -0,0 +1,559 @@
++import { promises as fs } from "node:fs";
++import * as path from "node:path";
++import type { ExtensionContext } from "../extensions/types.js";
++
++import {
++  DEFAULT_MAX_CALLS,
++  DEFAULT_MAX_CONCURRENT,
++  DEFAULT_MAX_DEPTH,
++  DEFAULT_MAX_QUERIES,
++  DEFAULT_MAX_TIMEOUT_MS,
++  DEFAULT_MAX_TOKENS,
++  DEFAULT_MAX_BUDGET,
++  DEFAULT_MAX_ERRORS,
++  DEFAULT_MAX_TURNS,
++  HARD_MAX_CALLS,
++  HARD_MAX_CONCURRENT,
++  HARD_MAX_DEPTH,
++  HARD_MAX_QUERIES,
++  HARD_MAX_TURNS,
++  HARD_MAX_TIMEOUT_MS,
++  HARD_MAX_TOKENS,
++  HARD_MAX_BUDGET,
++  HARD_MAX_ERRORS,
++  MAX_RESULT_CHARS,
++  MAX_TRACE_TEXT_CHARS,
++  REPL_TOOL_NAME,
++  RLM_CALLS,
++  CONTEXT_MODES,
++} from "./constants.js";
++import type { BatchItem, ContextMode, Details, RlmCall, RunState } from "./constants.js";
++import { RLM_ITEM_KEYS, RLM_PARAM_KEYS } from "./params.js";
++import { renderTemplate, xmlEscape } from "./prompt-render.js";
++import { MAX_DEPTH_LEAF_PROMPT } from "./prompts.js";
++import { loadRlmSettings, modelSelectorForRole, type RlmModelRole } from "./settings.js";
++
++export interface NamedSourceInput { name?: string; path: string }
++
++// ── Helpers ─────────────────────────────────────────────────────────
++
++export function isRecord(v: unknown): v is Record<string, unknown> {
++  return typeof v === "object" && v !== null;
++}
++
++export function rejectUnknownKeys(label: string, value: unknown, allowed: Set<string>): void {
++  if (!isRecord(value)) return;
++  const unknown = Object.keys(value).filter((key) => !allowed.has(key));
++  if (unknown.length > 0) {
++    throw new Error(`${label} contains unsupported field(s): ${unknown.join(", ")}. This tool uses a strict schema; only documented RLM fields and aliases are accepted.`);
++  }
++}
++
++export function rejectUnknownParams(params: unknown): void {
++  rejectUnknownKeys("rlm params", params, RLM_PARAM_KEYS);
++}
++
++export function rejectUnknownItem(item: unknown, index: number): void {
++  rejectUnknownKeys(`rlm batch item ${index}`, item, RLM_ITEM_KEYS);
++}
++
++export function clamp(v: unknown, fallback: number, lo: number, hi: number): number {
++  if (typeof v !== "number" || !Number.isFinite(v)) return fallback;
++  return Math.max(lo, Math.min(hi, Math.trunc(v)));
++}
++
++export function optionalClampedLimit(v: unknown, hard: number): number | undefined {
++  if (v === undefined || v === null || v === "") return undefined;
++  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return undefined;
++  return Math.max(1, Math.min(hard, Math.trunc(v)));
++}
++
++export function configuredLimit(v: unknown, fallback: number, hard: number): number | undefined {
++  if (v === undefined || v === null || v === "") return fallback;
++  if (typeof v !== "number" || !Number.isFinite(v)) return fallback;
++  if (v <= 0) return undefined;
++  return Math.max(1, Math.min(hard, Math.trunc(v)));
++}
++
++export function clip(text: string, max = MAX_RESULT_CHARS): string {
++  if (text.length <= max) return text;
++  return `${text.slice(0, max)}\n\n[truncated: ${text.length - max} chars omitted]`;
++}
++
++export function normPaths(paths: unknown): string[] {
++  if (!Array.isArray(paths)) return [];
++  return [...new Set(
++    paths.filter((p): p is string => typeof p === "string" && p.trim().length > 0).map((p) => p.trim()),
++  )];
++}
++
++export function normSources(sources: unknown): NamedSourceInput[] {
++  if (!Array.isArray(sources)) return [];
++  const out: NamedSourceInput[] = [];
++  const seen = new Set<string>();
++  for (const src of sources) {
++    if (!isRecord(src) || typeof src.path !== "string" || !src.path.trim()) continue;
++    const path = src.path.trim();
++    const name = typeof src.name === "string" && src.name.trim() ? src.name.trim() : undefined;
++    const key = `${name ?? ""}\0${path}`;
++    if (seen.has(key)) continue;
++    seen.add(key);
++    out.push({ name, path });
++  }
++  return out;
++}
++
++export function textOf(content: unknown): string {
++  if (typeof content === "string") return content;
++  if (!Array.isArray(content)) return "";
++  const parts: string[] = [];
++  for (const c of content) {
++    if (!isRecord(c)) continue;
++    if (c.type === "text" && typeof c.text === "string") parts.push(c.text);
++    else if (c.type === "thinking" && typeof c.thinking === "string") parts.push(c.thinking);
++    else if (c.type === "image") parts.push("[image]");
++    else if (c.type === "toolCall" && typeof c.name === "string") parts.push(`[toolCall:${c.name}]`);
++  }
++  return parts.join("\n");
++}
++
++export function errorText(e: unknown): string {
++  return e instanceof Error ? e.message : String(e);
++}
++
++export function isRlmReplToolName(toolName: unknown): boolean {
++  return typeof toolName === "string" && toolName.trim().toLowerCase() === REPL_TOOL_NAME.toLowerCase();
++}
++
++function isReplFinalResult(m: any): boolean {
++  return m?.role === "toolResult" && isRlmReplToolName(m.toolName) && m.details?.final === true;
++}
++
++function hasOwn(obj: object, key: string): boolean {
++  return Object.prototype.hasOwnProperty.call(obj, key);
++}
++
++function formatStructuredFinalValue(value: unknown): string {
++  if (typeof value === "string") return value.trim();
++  try {
++    return (JSON.stringify(value, null, 2) ?? String(value)).trim();
++  } catch {
++    return String(value).trim();
++  }
++}
++
++function replFinalText(m: any): string | undefined {
++  const details = m?.details;
++  if (details && typeof details === "object") {
++    if (typeof details.finalText === "string") return details.finalText.trim();
++    if (hasOwn(details, "finalValue")) return formatStructuredFinalValue(details.finalValue);
++  }
++
++  // Legacy fallback for pre-variable-only pi-rlm results.
++  const t = textOf(m?.content).trim();
++  const match = t.match(/(?:^|\n)FINAL:\s*\n?([\s\S]*)$/);
++  const legacy = (match?.[1] ?? t).trim();
++  return legacy || undefined;
++}
++
++export function hasReturn(messages: any[]): boolean {
++  return messages.some((m) => isReplFinalResult(m));
++}
++
++export function extractAnswer(messages: any[]): string {
++  for (let i = messages.length - 1; i >= 0; i--) {
++    const m = messages[i];
++    if (isReplFinalResult(m)) {
++      return replFinalText(m) ?? "";
++    }
++  }
++  for (let i = messages.length - 1; i >= 0; i--) {
++    const m = messages[i];
++    if (m?.role === "assistant") {
++      const t = textOf(m.content).trim();
++      if (t) return t;
++    }
++  }
++  for (let i = messages.length - 1; i >= 0; i--) {
++    const m = messages[i];
++    if (m?.role === "toolResult") {
++      const t = textOf(m.content).trim();
++      if (t) return t;
++    }
++  }
++  return "(no output)";
++}
++
++export function traceOf(messages: any[]) {
++  return messages.map((m) => ({
++    role: typeof m?.role === "string" ? m.role : "?",
++    toolName: typeof m?.toolName === "string" ? m.toolName : undefined,
++    text: clip(textOf(m?.content).replace(/\s+/g, " ").trim(), MAX_TRACE_TEXT_CHARS),
++  }));
++}
++
++export function modelLabel(model: any): string {
++  return model ? `${model.provider}/${model.id}` : "unknown";
++}
++
++function findConfiguredModel(ctx: ExtensionContext, selector: string) {
++  const slash = selector.indexOf("/");
++  if (slash > 0) {
++    const provider = selector.slice(0, slash);
++    const id = selector.slice(slash + 1);
++    const found = ctx.modelRegistry.find(provider, id);
++    if (found) return found;
++  }
++
++  const all = ctx.modelRegistry.getAll();
++  return all.find((m: any) => m.id === selector || m.name === selector || `${m.provider}/${m.id}` === selector || `${m.provider}/${m.name}` === selector);
++}
++
++export function resolveModel(ctx: ExtensionContext, state: RunState, role: RlmModelRole = "default", override?: string) {
++  if (!state.model) state.model = ctx.model;
++  const selector = override?.trim() || modelSelectorForRole(loadRlmSettings(ctx.cwd), role);
++  if (!selector) return state.model;
++  const found = findConfiguredModel(ctx, selector);
++  if (found) return found;
++  throw new Error(`Unknown pi-rlm model selector ${JSON.stringify(selector)}. Use provider/model-id or a model id/name known to Pi.`);
++}
++
++function optionalCap(raw: unknown, fallback: number, hard: number): number {
++  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) return fallback;
++  return Math.max(1, Math.min(hard, raw));
++}
++
++function timeoutMsFromParams(params: any): number {
++  if (typeof params?.maxTimeoutMs === "number") return optionalCap(params.maxTimeoutMs, DEFAULT_MAX_TIMEOUT_MS, HARD_MAX_TIMEOUT_MS);
++  const seconds = params?.maxTimeout ?? params?.max_timeout;
++  if (typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0) {
++    return optionalCap(seconds * 1000, DEFAULT_MAX_TIMEOUT_MS, HARD_MAX_TIMEOUT_MS);
++  }
++  return DEFAULT_MAX_TIMEOUT_MS;
++}
++
++function runId(): string {
++  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
++}
++
++export function createRunState(params: any, model?: any, cwd?: string): RunState {
++  const settings = cwd ? loadRlmSettings(cwd) : {};
++  return {
++    runId: runId(),
++    maxDepth: configuredLimit(params?.maxDepth ?? params?.max_depth ?? settings.maxDepth, DEFAULT_MAX_DEPTH, HARD_MAX_DEPTH),
++    maxConcurrent: configuredLimit(params?.maxConcurrent ?? params?.max_concurrent_subcalls ?? settings.maxConcurrent, DEFAULT_MAX_CONCURRENT, HARD_MAX_CONCURRENT),
++    maxTurns: configuredLimit(params?.maxTurns ?? params?.maxIterations ?? params?.max_iterations, DEFAULT_MAX_TURNS, HARD_MAX_TURNS),
++    budget: {
++      calls: 0,
++      maxCalls: configuredLimit(params?.maxCalls, DEFAULT_MAX_CALLS, HARD_MAX_CALLS),
++      queries: 0,
++      maxQueries: configuredLimit(params?.maxQueries, DEFAULT_MAX_QUERIES, HARD_MAX_QUERIES),
++      tokens: 0,
++      maxTokens: optionalCap(params?.maxTokens ?? params?.max_tokens, DEFAULT_MAX_TOKENS, HARD_MAX_TOKENS),
++      cost: 0,
++      maxBudget: optionalCap(params?.maxBudget ?? params?.max_budget, DEFAULT_MAX_BUDGET, HARD_MAX_BUDGET),
++      errors: 0,
++      maxErrors: optionalCap(params?.maxErrors ?? params?.max_errors, DEFAULT_MAX_ERRORS, HARD_MAX_ERRORS),
++      startTimeMs: Date.now(),
++      maxTimeoutMs: timeoutMsFromParams(params),
++    },
++    model,
++
++  };
++}
++
++export function stateFor(params: any, inherited?: RunState, model?: any, cwd?: string): RunState {
++  return inherited ?? createRunState(params, model, cwd);
++}
++export function elapsedMs(state: RunState): number {
++  return Math.max(0, Date.now() - state.budget.startTimeMs);
++}
++
++export function remainingTimeoutMs(state: RunState): number | undefined {
++  if (!state.budget.maxTimeoutMs) return undefined;
++  return Math.max(0, state.budget.maxTimeoutMs - elapsedMs(state));
++}
++
++export function checkRunLimits(state: RunState): void {
++  const b = state.budget;
++  if (b.maxTimeoutMs && elapsedMs(state) > b.maxTimeoutMs) throw new Error(`RLM maxTimeoutMs exhausted (${b.maxTimeoutMs}ms).`);
++  if (b.maxTokens && b.tokens > b.maxTokens) throw new Error(`RLM maxTokens exhausted (${b.tokens}/${b.maxTokens}).`);
++  if (b.maxBudget && b.cost > b.maxBudget) throw new Error(`RLM maxBudget exhausted ($${b.cost.toFixed(6)}/$${b.maxBudget}).`);
++  if (b.maxErrors && b.errors >= b.maxErrors) throw new Error(`RLM maxErrors exhausted (${b.errors}/${b.maxErrors}).`);
++}
++
++export function recordError(state: RunState): void {
++  state.budget.errors++;
++  checkRunLimits(state);
++}
++
++export interface UsageSummary {
++  input: number;
++  output: number;
++  cacheRead: number;
++  cacheWrite: number;
++  totalTokens: number;
++  cost: number;
++}
++
++function n(v: unknown): number {
++  return typeof v === "number" && Number.isFinite(v) ? v : 0;
++}
++
++export function usageSummary(usage: any): UsageSummary {
++  const input = n(usage?.input);
++  const output = n(usage?.output);
++  const cacheRead = n(usage?.cacheRead);
++  const cacheWrite = n(usage?.cacheWrite);
++  const totalTokens = n(usage?.totalTokens) || input + output + cacheRead + cacheWrite;
++  const cost = n(typeof usage?.cost === "number" ? usage.cost : usage?.cost?.total);
++  return { input, output, cacheRead, cacheWrite, totalTokens, cost };
++}
++
++export function addUsage(a: UsageSummary, b: UsageSummary): UsageSummary {
++  return {
++    input: a.input + b.input,
++    output: a.output + b.output,
++    cacheRead: a.cacheRead + b.cacheRead,
++    cacheWrite: a.cacheWrite + b.cacheWrite,
++    totalTokens: a.totalTokens + b.totalTokens,
++    cost: a.cost + b.cost,
++  };
++}
++
++export function recordUsage(state: RunState, usage: any): UsageSummary {
++  const summary = usageSummary(usage);
++  state.budget.tokens += summary.totalTokens;
++  state.budget.cost += summary.cost;
++  checkRunLimits(state);
++  return summary;
++}
++
++export function usageFromMessages(messages: any[]): UsageSummary {
++  return messages.reduce((acc, m) => {
++    if (m?.role !== "assistant" || !m.usage) return acc;
++    return addUsage(acc, usageSummary(m.usage));
++  }, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 });
++}
++
++export function budgetDetails(state: RunState) {
++  return {
++    tokensUsed: state.budget.tokens,
++    maxTokens: state.budget.maxTokens,
++    costUsed: state.budget.cost,
++    maxBudget: state.budget.maxBudget,
++    errorsUsed: state.budget.errors,
++    maxErrors: state.budget.maxErrors,
++    elapsedMs: elapsedMs(state),
++    maxTimeoutMs: state.budget.maxTimeoutMs,
++  };
++}
++
++export function withTimeoutSignal(signal: AbortSignal | undefined, state: RunState): { signal?: AbortSignal; dispose: () => void } {
++  checkRunLimits(state);
++  const remaining = remainingTimeoutMs(state);
++  if (remaining === undefined) return { signal, dispose: () => undefined };
++  const controller = new AbortController();
++  let timer: ReturnType<typeof setTimeout> | undefined;
++  const abortFromParent = () => {
++    if (!controller.signal.aborted) controller.abort(signal?.reason ?? new Error("Aborted."));
++  };
++  if (signal?.aborted) abortFromParent();
++  else signal?.addEventListener("abort", abortFromParent, { once: true });
++  timer = setTimeout(() => {
++    if (!controller.signal.aborted) controller.abort(new Error(`RLM maxTimeoutMs exhausted (${state.budget.maxTimeoutMs}ms).`));
++  }, Math.max(1, remaining));
++  return {
++    signal: controller.signal,
++    dispose: () => {
++      if (timer) clearTimeout(timer);
++      signal?.removeEventListener("abort", abortFromParent);
++    },
++  };
++}
++function safeLogFilePart(value: string): string {
++  return value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "run";
++}
++
++export function configureRunLogging(cwd: string, params: any, state: RunState): void {
++  if (state.logPath) return;
++  const explicitPath = typeof params?.logPath === "string" && params.logPath.trim() ? params.logPath.trim() : process.env.PI_RLM_LOG_PATH?.trim();
++  if (explicitPath) {
++    state.logPath = path.isAbsolute(explicitPath) ? explicitPath : path.resolve(cwd, explicitPath);
++    return;
++  }
++
++  const rawDir = typeof params?.logDir === "string" && params.logDir.trim() ? params.logDir.trim() : process.env.PI_RLM_LOG_DIR?.trim();
++  if (!rawDir) return;
++  const dir = path.isAbsolute(rawDir) ? rawDir : path.resolve(cwd, rawDir);
++  state.logPath = path.join(dir, `${safeLogFilePart(state.runId)}.jsonl`);
++}
++
++export async function logEvent(state: RunState, type: string, payload: Record<string, unknown> = {}): Promise<void> {
++  if (!state.logPath) return;
++  const event = {
++    ts: new Date().toISOString(),
++    runId: state.runId,
++    type,
++    ...payload,
++  };
++  try {
++    await fs.mkdir(path.dirname(state.logPath), { recursive: true });
++    await fs.appendFile(state.logPath, `${JSON.stringify(event, (_key, value) => typeof value === "string" ? clip(value, 20_000) : value)}\n`, "utf8");
++  } catch (e) {
++    process.emitWarning?.(`pi-rlm logEvent failed: ${errorText(e)}`);
++  }
++}
++
++export function currentDepth(parentDepth?: number): number {
++  return parentDepth ?? 0;
++}
++
++export function childDepth(parentDepth?: number): number {
++  return (parentDepth ?? 0) + 1;
++}
++
++export function requiredPrompt(params: any): string {
++  if (typeof params?.prompt !== "string" || !params.prompt.trim()) {
++    throw new Error("Missing required prompt.");
++  }
++  return params.prompt;
++}
++
++export function normalizeCall(raw: unknown): RlmCall {
++  if (RLM_CALLS.includes(raw as RlmCall)) return raw as RlmCall;
++  throw new Error(`Unknown RLM call: ${String(raw)}. Expected one of: ${RLM_CALLS.join(", ")}.`);
++}
++
++export function normalizeContextMode(raw: unknown): ContextMode {
++  if (raw === undefined || raw === null || raw === "") return "auto";
++  if (CONTEXT_MODES.includes(raw as ContextMode)) return raw as ContextMode;
++  throw new Error(`Unknown contextMode: ${String(raw)}. Expected one of: ${CONTEXT_MODES.join(", ")}.`);
++}
++
++export function rejectPathsForLlm(call: RlmCall, paths: unknown, contextMode?: unknown, sources?: unknown): void {
++  if (call !== "llm_query" && call !== "llm_query_batched") return;
++  if (normPaths(paths).length > 0 || normSources(sources).length > 0) {
++    throw new Error(`${call} has no REPL environment and cannot consume paths/sources. Extract text first, pass it as context/prompt, or use rlm_query.`);
++  }
++  if (normalizeContextMode(contextMode) === "file_backed") {
++    throw new Error(`${call} has no environment and cannot use contextMode:"file_backed". Use inline context or rlm_query.`);
++  }
++}
++
++export function singleItemFromParams(params: any): BatchItem {
++  const call = normalizeCall(params?.call);
++  const contextMode = normalizeContextMode(params?.contextMode);
++  rejectPathsForLlm(call, params?.paths, contextMode, params?.sources);
++  return {
++    prompt: requiredPrompt(params),
++    rootPrompt: typeof params?.rootPrompt === "string" ? params.rootPrompt : undefined,
++    model: typeof params?.model === "string" ? params.model : undefined,
++
++    context: typeof params?.context === "string" ? params.context : undefined,
++    contextMode,
++    paths: normPaths(params?.paths),
++    sources: normSources(params?.sources),
++    contextName: typeof params?.contextName === "string" ? params.contextName : undefined,
++  };
++}
++
++export function batchItemsFromParams(params: any, call: RlmCall): BatchItem[] {
++  const sharedContextMode = normalizeContextMode(params?.contextMode);
++  rejectPathsForLlm(call, params?.paths, sharedContextMode, params?.sources);
++  const shared = {
++    rootPrompt: typeof params?.rootPrompt === "string" ? params.rootPrompt : undefined,
++    model: typeof params?.model === "string" ? params.model : undefined,
++
++    context: typeof params?.context === "string" ? params.context : undefined,
++    contextMode: sharedContextMode,
++    paths: normPaths(params?.paths),
++    sources: normSources(params?.sources),
++    contextName: typeof params?.contextName === "string" ? params.contextName : undefined,
++  };
++
++  if (Array.isArray(params?.items) && params.items.length > 0) {
++    return params.items.map((item: any, index: number) => {
++      rejectUnknownItem(item, index);
++      if (typeof item?.prompt !== "string" || !item.prompt.trim()) {
++        throw new Error(`Batch item ${index} missing required prompt.`);
++      }
++      const contextMode = normalizeContextMode(item?.contextMode ?? shared.contextMode);
++      rejectPathsForLlm(call, item?.paths, contextMode, item?.sources);
++      const itemPaths = normPaths(item?.paths);
++      const itemSources = normSources(item?.sources);
++      return {
++        prompt: item.prompt,
++        rootPrompt: typeof item?.rootPrompt === "string" ? item.rootPrompt : shared.rootPrompt,
++        model: typeof item?.model === "string" ? item.model : shared.model,
++
++        context: typeof item?.context === "string" ? item.context : shared.context,
++        contextMode,
++        paths: itemPaths.length ? itemPaths : shared.paths,
++        sources: itemSources.length ? itemSources : shared.sources,
++        contextName: typeof item?.contextName === "string" ? item.contextName : shared.contextName,
++      };
++    });
++  }
++
++  if (Array.isArray(params?.prompts) && params.prompts.length > 0) {
++    return params.prompts.map((prompt: unknown, index: number) => {
++      if (typeof prompt !== "string" || !prompt.trim()) throw new Error(`Prompt ${index} must be a non-empty string.`);
++      return { prompt, ...shared };
++    });
++  }
++
++  throw new Error(`${call} requires prompts or items.`);
++}
++
++
++export async function runLimited<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
++  const results = new Array<R>(items.length);
++  let next = 0;
++  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
++    while (next < items.length) {
++      const index = next++;
++      results[index] = await fn(items[index], index);
++    }
++  });
++  await Promise.all(workers);
++  return results;
++}
++
++export function modelNameFromDetails(details: Details[]): string {
++  const names = [...new Set(details.map((d) => d.model).filter(Boolean))];
++  if (names.length === 0) return "unknown";
++  if (names.length === 1) return names[0];
++  return `mixed(${names.length})`;
++}
++
++export function uniquePathsFromDetails(details: Details[]): string[] {
++  return [...new Set(details.flatMap((d) => d.paths || []))];
++}
++
++export function uniqueSourcesFromDetails(details: Details[]): NamedSourceInput[] {
++  return normSources(details.flatMap((d) => d.sources || []));
++}
++
++export function leafPrompt(prompt: string, paths?: string[], sources?: unknown): string {
++  const ps = normPaths(paths);
++  const ss = normSources(sources);
++  if (!ps.length && !ss.length) return prompt;
++
++  const pathsBlock = ps.length
++    ? `  <paths>
++${ps.map((p) => `    <path>${xmlEscape(p)}</path>`).join("\n")}
++  </paths>`
++    : "";
++  const sourcesBlock = ss.length
++    ? `  <sources>
++${ss.map((s) => `    <source>${xmlEscape(`${s.name ? `${s.name}: ` : ""}${s.path}`)}</source>`).join("\n")}
++  </sources>`
++    : "";
++
++  return renderTemplate(MAX_DEPTH_LEAF_PROMPT, {
++    prompt,
++    pathsBlock,
++    sourcesBlock,
++  });
++}
+diff --git a/packages/coding-agent/src/core/sdk.ts b/packages/coding-agent/src/core/sdk.ts
+index 3e0533d0de6334fdadc53ec110555765d30b283e..1f36c6454e25167d9a3c7a0160d125f98f896e87 100644
+--- a/packages/coding-agent/src/core/sdk.ts
++++ b/packages/coding-agent/src/core/sdk.ts
+@@ -8,6 +8,7 @@ import { AuthStorage } from "./auth-storage.js";
+ import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
+ import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.js";
+ import { convertToLlm } from "./messages.js";
++import { builtinRlmExtension } from "./rlm/builtin-extension.js";
+ import { ModelRegistry } from "./model-registry.js";
+ import { findInitialModel } from "./model-resolver.js";
+ import type { ResourceLoader } from "./resource-loader.js";
+@@ -205,7 +206,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
+ 	const sessionManager = options.sessionManager ?? SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));
+ 
+ 	if (!resourceLoader) {
+-		resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
++		resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, extensionFactories: [builtinRlmExtension] });
+ 		await resourceLoader.reload();
+ 		time("resourceLoader.reload");
+ 	}
+@@ -268,8 +269,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
+ 		thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
+ 	}
+ 
+-	const defaultActiveToolNames: ToolName[] = ["read", "bash", "edit", "write"];
+-	const allowedToolNames = options.tools ?? (options.noTools === "all" ? [] : undefined);
++	const defaultActiveToolNames = ["repl"];
++	const allowedToolNames = options.tools ?? (options.noTools === "all" ? [] : defaultActiveToolNames);
+ 	const initialActiveToolNames: string[] = options.tools
+ 		? [...options.tools]
+ 		: options.noTools

@@ -13,19 +13,24 @@ self: {
     extensionFlags = cfg.extensions;
   };
   selectedExtensions =
-    (
+    if cfg.coconutCreamPi
+    then {}
+    else (
       if cfg.full
       then self.lib.defaultExtensionPackagesFor system
       else enabledFlagExtensions
-    )
-    // cfg.extraExtensions;
+    ) // cfg.extraExtensions;
 
   hasSelectedExtensions = selectedExtensions != {};
   hasExtensionFlags = lib.any (enabled: enabled) (builtins.attrValues cfg.extensions);
   usesGeneratedPackage = cfg.package == null;
 
   generatedPackage =
-    if cfg.full && cfg.extraExtensions == {}
+    if cfg.package != null
+    then cfg.package
+    else if cfg.coconutCreamPi
+    then self.packages.${system}."coconut-cream-pi"
+    else if cfg.full && cfg.extraExtensions == {}
     then self.packages.${system}.pi-full
     else if hasSelectedExtensions
     then
@@ -54,7 +59,7 @@ in {
       type = types.nullOr types.package;
       default = null;
       defaultText = lib.literalExpression ''
-        pi-flake packages.<system>.pi, pi-full, or a generated piWithExtensions package
+        pi-flake packages.<system>.pi, coconut-cream-pi, pi-full, or a generated piWithExtensions package
       '';
       description = ''
         Package to install. Leave null to build/select one from full, extensions,
@@ -64,6 +69,7 @@ in {
     };
 
     full = mkEnableOption "all bundled pi extensions";
+    coconutCreamPi = mkEnableOption "the coconut-cream-pi RLM-first fork";
 
     extensions = {
       "codex-fast" = mkEnableOption "pi-codex-fast extension";
@@ -78,7 +84,6 @@ in {
       "minimal-editor" = mkEnableOption "pi-minimal-editor editor border extension";
       "working-indicator" = mkEnableOption "pi-working-indicator compact working indicator extension";
       pomodoro = mkEnableOption "pi-pomodoro synced non-blocking timer extension";
-      rlm = mkEnableOption "pi-rlm recursive Pi/RLM-style child RLM calls";
       review = mkEnableOption "pi-review /review and /end-review code review workflow extension";
       vcc = mkEnableOption "pi-vcc algorithmic conversation compactor and vcc_recall history search";
     };
@@ -126,9 +131,13 @@ in {
       bundledExtensionPaths = extensionPaths;
     };
 
-    warnings = lib.optional (cfg.package != null && (cfg.full || hasExtensionFlags || cfg.extraExtensions != {})) ''
-      programs.pi.package is set; programs.pi.full/extensions/extraExtensions are ignored.${optionalString cfg.full " Use package = null; full = true; to generate the full bundle from options."}
-    '';
+    warnings =
+      lib.optional (cfg.package != null && (cfg.coconutCreamPi || cfg.full || hasExtensionFlags || cfg.extraExtensions != {})) ''
+        programs.pi.package is set; programs.pi.coconutCreamPi/full/extensions/extraExtensions are ignored.${optionalString cfg.coconutCreamPi " Use package = null; coconutCreamPi = true; to select the fork."}
+      ''
+      ++ lib.optional (cfg.coconutCreamPi && (cfg.full || hasExtensionFlags || cfg.extraExtensions != {})) ''
+        programs.pi.coconutCreamPi ignores programs.pi.full/extensions/extraExtensions because the fork is RLM-only.
+      '';
 
     environment.systemPackages = [package];
     environment.variables.PI_SKIP_VERSION_CHECK = "1";

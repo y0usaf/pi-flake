@@ -1,5 +1,5 @@
 {
-  description = "Nix flake for pi-rlm";
+  description = "Nix flake for pi-absurd-sql";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -24,8 +24,8 @@
       lib = pkgs.lib;
       packageJson = builtins.fromJSON (builtins.readFile ./package.json);
     in {
-      pi-rlm = pkgs.stdenvNoCC.mkDerivation {
-        pname = "pi-rlm";
+      pi-absurd-sql = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-absurd-sql";
         version = packageJson.version;
         src = lib.cleanSource ./.;
 
@@ -33,11 +33,9 @@
 
         installPhase = ''
           runHook preInstall
-
           mkdir -p "$out"
           cp package.json README.md "$out"/
           cp -r src "$out"/
-
           runHook postInstall
         '';
 
@@ -46,28 +44,13 @@
         };
 
         meta = with lib; {
-          description = "Recursive Pi extension: child Pi agents as RLM-style subcalls";
+          description = "Autonomous durable memory for Pi — zero-dep SQLite via bun:sqlite";
           license = licenses.mit;
           platforms = platforms.all;
         };
       };
 
-      default = self.packages.${system}.pi-rlm;
-    });
-
-    devShells = forAllSystems (system: let
-      pkgs = pkgsFor.${system};
-    in {
-      default = pkgs.mkShell {
-        packages = with pkgs; [
-          nodejs_22
-          python3
-        ];
-
-        shellHook = ''
-          echo "pi-rlm dev shell — node $(node --version), python $(python3 --version)"
-        '';
-      };
+      default = self.packages.${system}.pi-absurd-sql;
     });
 
     formatter = forAllSystems (system: pkgsFor.${system}.alejandra);

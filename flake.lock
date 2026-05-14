@@ -16,6 +16,22 @@
         "type": "github"
       }
     },
+    "piAbsurdSql": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-absurd-sql",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-absurd-sql",
+        "type": "path"
+      },
+      "parent": []
+    },
     "piCodexFast": {
       "inputs": {
         "nixpkgs": [
@@ -144,22 +160,6 @@
       },
       "parent": []
     },
-    "piRlm": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-rlm",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-rlm",
-        "type": "path"
-      },
-      "parent": []
-    },
     "piRtk": {
       "inputs": {
         "nixpkgs": [
@@ -244,6 +244,7 @@
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
+        "piAbsurdSql": "piAbsurdSql",
         "piCodexFast": "piCodexFast",
         "piCompact": "piCompact",
         "piContextJanitor": "piContextJanitor",
@@ -252,7 +253,6 @@
         "piMinimalEditor": "piMinimalEditor",
         "piMorph": "piMorph",
         "piPomodoro": "piPomodoro",
-        "piRlm": "piRlm",
         "piRtk": "piRtk",
         "piSrc": "piSrc",
         "piToolManagement": "piToolManagement",

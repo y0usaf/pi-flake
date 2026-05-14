@@ -155,7 +155,6 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-hashline` | Hashline v2 read/edit tool override |
 | `pi-minimal-editor` | Minimal editor borders with footer/status metadata |
 | `pi-working-indicator` | Compact animated working indicator |
-| `pi-rlm` | Recursive Pi/RLM-style child-agent calls via `pi_recurse` |
 | `pi-review` | `/review` and `/end-review` code review workflow |
 | `pi-vcc` | Algorithmic conversation compactor with `/pi-vcc`, `/pi-vcc-recall`, and `vcc_recall` |
 
@@ -215,10 +214,11 @@ inputs.pi-flake.packages.<system>."pi-morph"
 inputs.pi-flake.packages.<system>."pi-tool-management"
 inputs.pi-flake.packages.<system>."pi-webfetch"
 inputs.pi-flake.packages.<system>."pi-hashline"
-inputs.pi-flake.packages.<system>."pi-rlm"
 inputs.pi-flake.packages.<system>."pi-review"
 inputs.pi-flake.packages.<system>."pi-vcc"
 ```
+
+`coconut-cream-pi` - RLM-first fork package (opt in via `packages.<system>."coconut-cream-pi"` or `programs.pi.coconutCreamPi = true`)
 
 `pi-review` PR review mode shells out to `gh`; install and authenticate GitHub CLI separately if you want `/review pr ...`.
 
@@ -229,6 +229,7 @@ inputs.pi-flake.packages.<system>."pi-vcc"
 - `pi` - Base pi, no extensions
 - `pi-full` - pi with default extensions bundled and loaded at runtime; excludes opt-in `pi-morph`
 - `pi-morph` - standalone Morph edit extension package, available for explicit bundling/flags
+- `coconut-cream-pi` - RLM-first fork with built-in fenced REPL recursion
 
 ### Library helpers / modules
 

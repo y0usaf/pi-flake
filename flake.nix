@@ -45,8 +45,9 @@
     piPomodoro.url = "path:./extensions/pi-pomodoro";
     piPomodoro.inputs.nixpkgs.follows = "nixpkgs";
 
-    piRlm.url = "path:./extensions/pi-rlm";
-    piRlm.inputs.nixpkgs.follows = "nixpkgs";
+
+    piAbsurdSql.url = "path:./extensions/pi-absurd-sql";
+    piAbsurdSql.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs = {
@@ -65,7 +66,7 @@
     piMinimalEditor,
     piWorkingIndicator,
     piPomodoro,
-    piRlm,
+    piAbsurdSql,
     ...
   }: let
     systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
@@ -78,6 +79,9 @@
       ./patches/add-package-lock-registry-metadata.patch
       ./patches/remove-tree-filter-backcycle.patch
       ./patches/default-package-sources-env.patch
+    ];
+    coconutCreamPiPatches = [
+      ./patches/coconut-cream-pi.patch
     ];
   in {
     packages = forAllSystems (system: let
@@ -135,6 +139,48 @@
         };
       };
 
+      "coconut-cream-pi" = pkgs.buildNpmPackage {
+        pname = "coconut-cream-pi";
+        version = packageJson.version;
+        src = piSrc;
+        patches = piPatches ++ coconutCreamPiPatches;
+        npmWorkspace = "packages/coding-agent";
+        npmBuildScript = "build:binary";
+        npmDepsFetcherVersion = 2;
+
+        # Regenerate after dependency changes:
+        #   nix build .#coconut-cream-pi 2>&1 | grep 'got:' | awk '{print $2}'
+        npmDepsHash = "sha256-U+R8ekslHAcPmychptczVNp8p/w95au//DJ8S8M/ahA=";
+
+        nodejs = pkgs.nodejs_22;
+
+        nativeBuildInputs = with pkgs; [bun pkg-config makeWrapper];
+        buildInputs = canvasNativeDeps;
+
+        installPhase = ''
+          runHook preInstall
+
+          mkdir -p $out/share/pi $out/bin
+
+          cp -R packages/coding-agent/dist/. $out/share/pi/
+          rm -f $out/share/pi/pi
+
+          install -Dm755 packages/coding-agent/dist/pi $out/bin/pi
+          wrapProgram $out/bin/pi \
+            --set PI_PACKAGE_DIR $out/share/pi \
+            --set PI_SKIP_VERSION_CHECK 1
+
+          runHook postInstall
+        '';
+
+        meta = with lib; {
+          description = "${packageJson.description} (RLM-first fork)";
+          homepage = "https://github.com/earendil-works/pi";
+          license = licenses.mit;
+          mainProgram = "pi";
+        };
+      };
+
       "pi-codex-fast" = piCodexFast.packages.${system}.default;
       "pi-gecko-websearch" = piGeckoWebsearch.packages.${system}.default;
       "pi-rtk" = piRtk.packages.${system}.default;
@@ -148,7 +194,7 @@
       "pi-minimal-editor" = piMinimalEditor.packages.${system}.default;
       "pi-working-indicator" = piWorkingIndicator.packages.${system}.default;
       "pi-pomodoro" = piPomodoro.packages.${system}.default;
-      "pi-rlm" = piRlm.packages.${system}.default;
+      "pi-absurd-sql" = piAbsurdSql.packages.${system}.default;
       "pi-review" = let
         reviewPackageJson = builtins.fromJSON (builtins.readFile ./extensions/earendil_pi-review/package.json);
       in
@@ -222,6 +268,7 @@
       lib = pkgs.lib;
     in {
       pi-build = self.packages.${system}.pi;
+      coconut-cream-pi-build = self.packages.${system}."coconut-cream-pi";
 
       biome-lint = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-flake-biome-lint";
@@ -322,6 +369,10 @@
         type = "app";
         program = "${self.packages.${system}.pi}/bin/pi";
       };
+      "coconut-cream-pi" = {
+        type = "app";
+        program = "${self.packages.${system}."coconut-cream-pi"}/bin/pi";
+      };
     });
 
     devShells = forAllSystems (system: let
@@ -372,7 +423,7 @@
       "minimal-editor" = self.packages.${system}."pi-minimal-editor";
       "working-indicator" = self.packages.${system}."pi-working-indicator";
       pomodoro = self.packages.${system}."pi-pomodoro";
-      rlm = self.packages.${system}."pi-rlm";
+      "absurd-sql" = self.packages.${system}."pi-absurd-sql";
       review = self.packages.${system}."pi-review";
       vcc = self.packages.${system}."pi-vcc";
     };
