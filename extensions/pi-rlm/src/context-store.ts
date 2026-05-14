@@ -8,6 +8,8 @@ import {
   MAX_CONTEXT_TREE_ENTRIES,
 } from "./constants.js";
 import type { ContextMode, ContextSource, ContextSourceKind, ContextStore } from "./constants.js";
+import { renderTemplate, xmlEscape } from "./prompt-render.js";
+import { CONTEXT_STORE_PROMPT } from "./prompts.js";
 import { clip, errorText, normalizeContextMode, normPaths, normSources } from "./utils.js";
 
 // ── File-backed context store ───────────────────────────────────────
@@ -250,23 +252,17 @@ export function contextMaterialized(store?: ContextStore): boolean {
 }
 
 export function contextStorePromptBlock(store: ContextStore): string {
-  return `
-File-backed context store (external to chat, loaded into REPL context variables):
-- Temp dir: ${store.dir}
-- Scratch dir: ${store.scratchDir}
-- Notes dir: ${store.notesDir}
-- Artifacts dir: ${store.artifactsDir}
-- Manifest: ${store.manifestPath}
-- JSON manifest: ${store.manifestJsonPath}
-- README: ${store.readmePath}
-
-Sources loaded for the REPL:
-${store.sources.map((s, i) => `- context_${i}: ${contextSourceSummary(s)}`).join("\n")}
-
-Rules:
-- Treat context/context_N as the large context object; do not copy it into chat.
-- Use SHOW_VARS(), Python string/list/dict inspection, and normal modules such as os/pathlib/json/open/subprocess to narrow.
-- Write intermediate artifacts only under scratch/notes/artifacts if needed.
-- The store is deleted after the child finalizes with FINAL_VAR; include needed findings in the final answer.
-`;
+  const sourceLines = store.sources.length
+    ? store.sources.map((s, i) => `    <source slot="context_${i}">${xmlEscape(contextSourceSummary(s))}</source>`).join("\n")
+    : '    <source slot="none">(no sources loaded)</source>';
+  return renderTemplate(CONTEXT_STORE_PROMPT, {
+    tempDir: store.dir,
+    scratchDir: store.scratchDir,
+    notesDir: store.notesDir,
+    artifactsDir: store.artifactsDir,
+    manifestPath: store.manifestPath,
+    manifestJsonPath: store.manifestJsonPath,
+    readmePath: store.readmePath,
+    sourceLines,
+  });
 }

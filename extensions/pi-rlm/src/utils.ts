@@ -3,9 +3,6 @@ import * as path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import {
-  CHILD_MODES,
-  CONTEXT_MODES,
-  DEFAULT_CHILD_MODE,
   DEFAULT_MAX_CALLS,
   DEFAULT_MAX_CONCURRENT,
   DEFAULT_MAX_DEPTH,
@@ -29,8 +26,10 @@ import {
   REPL_TOOL_NAME,
   RLM_CALLS,
 } from "./constants.js";
-import type { BatchItem, ChildMode, ContextMode, Details, RlmCall, RunState } from "./constants.js";
+import type { BatchItem, ContextMode, Details, RlmCall, RunState } from "./constants.js";
 import { RLM_ITEM_KEYS, RLM_PARAM_KEYS } from "./params.js";
+import { renderTemplate, xmlEscape } from "./prompt-render.js";
+import { MAX_DEPTH_LEAF_PROMPT } from "./prompts.js";
 import { loadRlmSettings, modelSelectorForRole, type RlmModelRole } from "./settings.js";
 
 export interface NamedSourceInput { name?: string; path: string }
@@ -431,12 +430,6 @@ export function normalizeContextMode(raw: unknown): ContextMode {
   throw new Error(`Unknown contextMode: ${String(raw)}. Expected one of: ${CONTEXT_MODES.join(", ")}.`);
 }
 
-export function normalizeChildMode(raw: unknown): ChildMode {
-  if (raw === undefined || raw === null || raw === "") return DEFAULT_CHILD_MODE;
-  if (CHILD_MODES.includes(raw as ChildMode)) return raw as ChildMode;
-  throw new Error(`Unknown childMode: ${String(raw)}. Expected one of: ${CHILD_MODES.join(", ")}.`);
-}
-
 export function rejectPathsForLlm(call: RlmCall, paths: unknown, contextMode?: unknown, sources?: unknown): void {
   if (call !== "llm_query" && call !== "llm_query_batched") return;
   if (normPaths(paths).length > 0 || normSources(sources).length > 0) {
@@ -458,11 +451,9 @@ export function singleItemFromParams(params: any): BatchItem {
 
     context: typeof params?.context === "string" ? params.context : undefined,
     contextMode,
-    childMode: normalizeChildMode(params?.childMode),
     paths: normPaths(params?.paths),
     sources: normSources(params?.sources),
     contextName: typeof params?.contextName === "string" ? params.contextName : undefined,
-    allowWrites: params?.allowWrites === true,
   };
 }
 
@@ -475,11 +466,9 @@ export function batchItemsFromParams(params: any, call: RlmCall): BatchItem[] {
 
     context: typeof params?.context === "string" ? params.context : undefined,
     contextMode: sharedContextMode,
-    childMode: normalizeChildMode(params?.childMode),
     paths: normPaths(params?.paths),
     sources: normSources(params?.sources),
     contextName: typeof params?.contextName === "string" ? params.contextName : undefined,
-    allowWrites: params?.allowWrites === true,
   };
 
   if (Array.isArray(params?.items) && params.items.length > 0) {
@@ -499,11 +488,9 @@ export function batchItemsFromParams(params: any, call: RlmCall): BatchItem[] {
 
         context: typeof item?.context === "string" ? item.context : shared.context,
         contextMode,
-        childMode: normalizeChildMode(item?.childMode ?? shared.childMode),
         paths: itemPaths.length ? itemPaths : shared.paths,
         sources: itemSources.length ? itemSources : shared.sources,
         contextName: typeof item?.contextName === "string" ? item.contextName : shared.contextName,
-        allowWrites: typeof item?.allowWrites === "boolean" ? item.allowWrites : shared.allowWrites,
       };
     });
   }
@@ -551,12 +538,21 @@ export function leafPrompt(prompt: string, paths?: string[], sources?: unknown):
   const ps = normPaths(paths);
   const ss = normSources(sources);
   if (!ps.length && !ss.length) return prompt;
-  const lines = [
-    `${prompt}\n`,
-    "Note: max RLM depth reached; this is a plain llm_query leaf call with no bash/read/ctx access.",
-  ];
-  if (ps.length) lines.push("Paths requested by parent (not directly readable in this call):", ...ps.map((p) => `- ${p}`));
-  if (ss.length) lines.push("Sources requested by parent (not directly readable in this call):", ...ss.map((s) => `- ${s.name ? `${s.name}: ` : ""}${s.path}`));
-  return lines.join("\n");
-}
 
+  const pathsBlock = ps.length
+    ? `  <paths>
+${ps.map((p) => `    <path>${xmlEscape(p)}</path>`).join("\n")}
+  </paths>`
+    : "";
+  const sourcesBlock = ss.length
+    ? `  <sources>
+${ss.map((s) => `    <source>${xmlEscape(`${s.name ? `${s.name}: ` : ""}${s.path}`)}</source>`).join("\n")}
+  </sources>`
+    : "";
+
+  return renderTemplate(MAX_DEPTH_LEAF_PROMPT, {
+    prompt,
+    pathsBlock,
+    sourcesBlock,
+  });
+}

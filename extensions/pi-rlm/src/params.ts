@@ -3,8 +3,6 @@ import { Type } from "typebox";
 
 import {
   CONTEXT_MODES,
-  CHILD_MODES,
-  DEFAULT_CHILD_MODE,
   DEFAULT_MAX_BUDGET,
   DEFAULT_MAX_CALLS,
   DEFAULT_MAX_CONCURRENT,
@@ -59,11 +57,6 @@ export const SourceParam = Type.Object({
   path: Type.String({ description: "File or directory path for this file-backed context source." }),
 });
 
-export const ChildModeParam = Type.Optional(StringEnum(CHILD_MODES, {
-  description:
-    `Deprecated/internal compatibility field. Children now expose only the upstream-style REPL contract.`,
-}));
-
 export const RlmBatchItem = Type.Object({
   prompt: Type.String({ description: "Prompt for this batch item." }),
   rootPrompt: Type.Optional(Type.String({ description: "Small visible/root prompt or question for this item; analogous to upstream root_prompt. Appended separately from large context." })),
@@ -71,11 +64,9 @@ export const RlmBatchItem = Type.Object({
 
   context: Type.Optional(Type.String({ description: "Optional inline context for this item." })),
   contextMode: ContextModeParam,
-  childMode: ChildModeParam,
   paths: Type.Optional(Type.Array(Type.String(), { description: "Paths for this child RLM to inspect. Used by rlm_query_batched only. Paths are file-backed context sources." })),
   sources: Type.Optional(Type.Array(SourceParam, { description: "Named file-backed sources for this child RLM. Not accepted for llm_query calls." })),
   contextName: Type.Optional(Type.String({ description: "Optional name/label for materialized inline context." })),
-  allowWrites: Type.Optional(Type.Boolean({ description: "Also give this child edit/write tools. Used by rlm_query_batched only." })),
 });
 
 export const RlmParams = Type.Object({
@@ -91,7 +82,6 @@ export const RlmParams = Type.Object({
     Type.String({ description: "Optional context. For llm_query this is inlined. For recursive RLM calls, large context is materialized into the file-backed context store when contextMode='auto' or 'file_backed'." }),
   ),
   contextMode: ContextModeParam,
-  childMode: ChildModeParam,
   paths: Type.Optional(
     Type.Array(Type.String(), { description: "Paths for rlm_query/rlm_query_batched children. They are kept outside chat and loaded into the child REPL context; not accepted for llm_query calls." }),
   ),
@@ -101,10 +91,7 @@ export const RlmParams = Type.Object({
     Type.Array(Type.String(), { description: "Prompts for batched calls. Shared context/paths apply to each item." }),
   ),
   items: Type.Optional(
-    Type.Array(RlmBatchItem, { description: "Structured batch items with per-item prompt/context/contextMode/childMode/paths/sources/contextName." }),
-  ),
-  allowWrites: Type.Optional(
-    Type.Boolean({ description: "Deprecated/internal compatibility field. Child RLM calls expose only the REPL contract; project writes require explicit Python/file operations and user permission." }),
+    Type.Array(RlmBatchItem, { description: "Structured batch items with per-item prompt/context/contextMode/paths/sources/contextName." }),
   ),
   ...LimitParams,
   logPath: Type.Optional(Type.String({ description: "Optional JSONL trajectory log path for this RLM run." })),
@@ -128,13 +115,11 @@ export const RLM_PARAM_KEYS = new Set([
 
   "context",
   "contextMode",
-  "childMode",
   "paths",
   "sources",
   "contextName",
   "prompts",
   "items",
-  "allowWrites",
   "maxDepth",
   "maxTurns",
   "maxCalls",
@@ -157,6 +142,5 @@ export const RLM_PARAM_KEYS = new Set([
   "logDir",
 ]);
 
-export const RLM_ITEM_KEYS = new Set(["model", "prompt", "rootPrompt", "context", "contextMode", "childMode", "paths", "sources", "contextName", "allowWrites"]);
+export const RLM_ITEM_KEYS = new Set(["model", "prompt", "rootPrompt", "context", "contextMode", "paths", "sources", "contextName"]);
 export const REPL_PARAM_KEYS = new Set(["code", "reset", "timeoutMs", "data", "setup", "resetHistory"]);
-
