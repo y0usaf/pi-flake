@@ -5,6 +5,8 @@ Nix flake for building [pi](https://github.com/earendil-works/pi) with optional 
 **Features:**
 - Base `pi` package built from source
 - Pre-configured extension packages
+- Upstream tool controls incl. `--exclude-tools`
+- Optional persistent `/tools` UI via `pi-tool-management`
 - **Builder functions** for custom extension combinations
 - Flag-driven extension selection for downstream flakes
 - Bundled extensions load automatically without writing to `settings.json`
@@ -116,9 +118,9 @@ Only flags set to `true` are copied into the bundled wrapper.
             #   "codex-fast" = true;
             #   compact = true;
             #   "context-janitor" = true;
+            #   # tool-management = true; # persistent disabled-tools menu/UI
             #   webfetch = true;
             #   hashline = true;
-            #   # morph = true; # opt-in; not included by full/pi-full by default
             #   "minimal-editor" = true;
             #   "working-indicator" = true;
             #   rlm = true;
@@ -150,7 +152,7 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-compact` | Compaction utilities |
 | `pi-context-janitor` | Hash-gated context truncation + undo UI |
 | `pi-morph` | Morph edit tool via Vercel AI Gateway (available as opt-in extension; not bundled in `pi-full`) |
-| `pi-tool-management` | Tool management interface |
+| `pi-tool-management` | Persistent disabled-tools menu/UI via `/tools` |
 | `pi-webfetch` | HTTP fetching utilities |
 | `pi-hashline` | Hashline v2 read/edit tool override |
 | `pi-minimal-editor` | Minimal editor borders with footer/status metadata |
@@ -265,7 +267,7 @@ nix build .#checks.x86_64-linux.biome-lint
 
 ## Patches
 
-Current patch set applied to upstream `pi-mono`:
+Current patch set applied to upstream `pi`:
 
 - `disable-install-telemetry.patch` - Disables install/update telemetry
 - `avoid-network-model-regeneration.patch` - Uses checked-in model registry during builds

@@ -1,8 +1,6 @@
-diff --git a/packages/coding-agent/src/core/package-manager.ts b/packages/coding-agent/src/core/package-manager.ts
-index 8cd1baa9..996e83d2 100644
 --- a/packages/coding-agent/src/core/package-manager.ts
 +++ b/packages/coding-agent/src/core/package-manager.ts
-@@ -195,6 +195,7 @@ const FILE_PATTERNS: Record<ResourceType, RegExp> = {
+@@ -195,6 +195,7 @@
  };
  
  const IGNORE_FILE_NAMES = [".gitignore", ".ignore", ".fdignore"];
@@ -10,7 +8,7 @@ index 8cd1baa9..996e83d2 100644
  
  type IgnoreMatcher = ReturnType<typeof ignore>;
  
-@@ -206,6 +207,16 @@ function getHomeDir(): string {
+@@ -206,6 +207,16 @@
  	return process.env.HOME || homedir();
  }
  
@@ -24,10 +22,10 @@ index 8cd1baa9..996e83d2 100644
 +		.filter(Boolean) as PackageSource[];
 +}
 +
- function prefixIgnorePattern(line: string, prefix: string): string | null {
- 	const trimmed = line.trim();
- 	if (!trimmed) return null;
-@@ -855,6 +866,9 @@ export class DefaultPackageManager implements PackageManager {
+ export function getExtensionTempFolder(agentDir: string): string {
+ 	const tempFolder = join(agentDir, "tmp", "extensions");
+ 	mkdirSync(tempFolder, { recursive: true, mode: 0o700 });
+@@ -874,6 +885,9 @@
  
  		// Collect all packages with scope (project first so cwd resources win collisions)
  		const allPackages: Array<{ pkg: PackageSource; scope: SourceScope }> = [];

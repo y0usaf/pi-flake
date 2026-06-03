@@ -72,7 +72,7 @@ in {
       compact = mkEnableOption "pi-compact extension";
       "context-janitor" = mkEnableOption "pi-context-janitor background context pruning extension";
       morph = mkEnableOption "pi-morph Morph edit tool via Vercel AI Gateway";
-      "tool-management" = mkEnableOption "pi-tool-management extension";
+      "tool-management" = mkEnableOption "pi-tool-management persistent disabled-tools UI extension";
       webfetch = mkEnableOption "pi-webfetch extension";
       hashline = mkEnableOption "pi-hashline v2 read/edit tool override";
       "minimal-editor" = mkEnableOption "pi-minimal-editor editor border extension";
