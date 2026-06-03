@@ -1,23 +1,21 @@
-diff --git a/packages/coding-agent/src/modes/interactive/interactive-mode.ts b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
-index 006ee7c5..2eada39a 100644
 --- a/packages/coding-agent/src/modes/interactive/interactive-mode.ts
 +++ b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
-@@ -81,14 +81,12 @@ import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../cor
- import { type SessionContext, SessionManager } from "../../core/session-manager.js";
- import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
- import type { SourceInfo } from "../../core/source-info.js";
--import { isInstallTelemetryEnabled } from "../../core/telemetry.js";
- import type { TruncationResult } from "../../core/tools/truncate.js";
- import { getChangelogPath, getNewEntries, parseChangelog } from "../../utils/changelog.js";
- import { copyToClipboard } from "../../utils/clipboard.js";
- import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.js";
- import { parseGitUrl } from "../../utils/git.js";
- import { getCwdRelativePath } from "../../utils/paths.js";
--import { getPiUserAgent } from "../../utils/pi-user-agent.js";
- import { killTrackedDetachedChildren } from "../../utils/shell.js";
- import { ensureTool } from "../../utils/tools-manager.js";
- import { checkForNewPiVersion } from "../../utils/version-check.js";
-@@ -863,23 +861,8 @@ export class InteractiveMode {
+@@ -83,14 +83,12 @@
+ import { type SessionContext, SessionManager } from "../../core/session-manager.ts";
+ import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
+ import type { SourceInfo } from "../../core/source-info.ts";
+-import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
+ import type { TruncationResult } from "../../core/tools/truncate.ts";
+ import { getChangelogPath, getNewEntries, parseChangelog } from "../../utils/changelog.ts";
+ import { copyToClipboard } from "../../utils/clipboard.ts";
+ import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
+ import { parseGitUrl } from "../../utils/git.ts";
+ import { getCwdRelativePath } from "../../utils/paths.ts";
+-import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
+ import { killTrackedDetachedChildren } from "../../utils/shell.ts";
+ import { ensureTool } from "../../utils/tools-manager.ts";
+ import { checkForNewPiVersion, type LatestPiRelease } from "../../utils/version-check.ts";
+@@ -908,23 +906,8 @@
  		return undefined;
  	}
  

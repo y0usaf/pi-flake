@@ -1,8 +1,6 @@
-diff --git a/packages/coding-agent/src/modes/interactive/components/tree-selector.ts b/packages/coding-agent/src/modes/interactive/components/tree-selector.ts
-index 29962d7e..0eb2aa76 100644
 --- a/packages/coding-agent/src/modes/interactive/components/tree-selector.ts
 +++ b/packages/coding-agent/src/modes/interactive/components/tree-selector.ts
-@@ -962,15 +962,8 @@ class TreeList implements Component {
+@@ -962,15 +962,8 @@
  			this.filterMode = this.filterMode === "all" ? "default" : "all";
  			this.foldedNodes.clear();
  			this.applyFilter();
@@ -19,7 +17,7 @@ index 29962d7e..0eb2aa76 100644
  			const modes: FilterMode[] = ["default", "no-tools", "user-only", "labeled-only", "all"];
  			const currentIndex = modes.indexOf(this.filterMode);
  			this.filterMode = modes[(currentIndex + 1) % modes.length];
-@@ -1184,7 +1177,7 @@ export class TreeSelectorComponent extends Container implements Focusable {
+@@ -1188,7 +1181,7 @@
  			keyText("app.tree.filter.labeledOnly"),
  			keyText("app.tree.filter.all"),
  		].join("/");

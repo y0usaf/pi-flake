@@ -32,7 +32,6 @@
 
     piWebfetch.url = "path:./extensions/pi-webfetch";
     piWebfetch.inputs.nixpkgs.follows = "nixpkgs";
-
     piHashline.url = "path:./extensions/pi-hashline";
     piHashline.inputs.nixpkgs.follows = "nixpkgs";
 
@@ -75,7 +74,6 @@
     piPatches = [
       ./patches/disable-install-telemetry.patch
       ./patches/avoid-network-model-regeneration.patch
-      ./patches/add-package-lock-registry-metadata.patch
       ./patches/remove-tree-filter-backcycle.patch
       ./patches/default-package-sources-env.patch
     ];
@@ -104,7 +102,7 @@
 
         # Regenerate after dependency changes:
         #   nix build .#pi 2>&1 | grep 'got:' | awk '{print $2}'
-        npmDepsHash = "sha256-U+R8ekslHAcPmychptczVNp8p/w95au//DJ8S8M/ahA=";
+        npmDepsHash = "sha256-vNXInQTvB8h8/8PA0WcQ69Ni+pABK7n9wMr3pY3aY4c=";
 
         nodejs = pkgs.nodejs_22;
 
@@ -141,7 +139,6 @@
       "pi-compact" = piCompact.packages.${system}.default;
       "pi-context-janitor" = piContextJanitor.packages.${system}.default;
       "pi-morph" = piMorph.packages.${system}.default;
-
       "pi-tool-management" = piToolManagement.packages.${system}.default;
       "pi-webfetch" = piWebfetch.packages.${system}.default;
       "pi-hashline" = piHashline.packages.${system}.default;
@@ -365,7 +362,6 @@
       compact = self.packages.${system}."pi-compact";
       "context-janitor" = self.packages.${system}."pi-context-janitor";
       morph = self.packages.${system}."pi-morph";
-
       "tool-management" = self.packages.${system}."pi-tool-management";
       webfetch = self.packages.${system}."pi-webfetch";
       hashline = self.packages.${system}."pi-hashline";
