@@ -1,5 +1,5 @@
 import type { ToolSummaryAdapter } from "./types.js";
-import { squash } from "../shared.js";
+import { clip, firstTextLine, squash } from "../shared.js";
 
 export const REPL_TOOL_NAME = "repl";
 
@@ -102,6 +102,57 @@ export function summarizeReplCode(code: unknown, setup: unknown): string {
   }
 
   return skippedBootstrap ? "" : squash(code);
+}
+
+function cleanReplProgressLine(line: string): string {
+  return squash(line)
+    .replace(/^repl:\s*/i, "")
+    .replace(/^rlm_query(?:_batched)?:\s*/i, "rlm ")
+    .replace(/^llm_query(?:_batched)?:\s*/i, "llm ")
+    .trim();
+}
+
+function formatBudgetShort(prefix: string, used: unknown, max: unknown): string | undefined {
+  if (typeof used !== "number" || !Number.isFinite(used)) return undefined;
+  const usedText = Math.trunc(used);
+  if (typeof max === "number" && Number.isFinite(max) && max > 0) return `${prefix}${usedText}/${Math.trunc(max)}`;
+  return `${prefix}${usedText}`;
+}
+
+function summarizeRlmDetails(result: any): string | undefined {
+  const details = result?.details;
+  const kind = details?.kind === "rlm" || details?.kind === "llm" ? details.kind : undefined;
+  if (!kind) return undefined;
+
+  const parts: string[] = [kind];
+  if (details?.batch === true && typeof details?.batchSize === "number" && details.batchSize > 1) parts.push(`×${Math.trunc(details.batchSize)}`);
+  if (typeof details?.depth === "number") parts.push(`d${Math.trunc(details.depth)}`);
+  if (kind === "rlm" && typeof details?.turns === "number") {
+    parts.push(
+      typeof details?.maxTurns === "number" && Number.isFinite(details.maxTurns) && details.maxTurns > 0
+        ? `t${Math.trunc(details.turns)}/${Math.trunc(details.maxTurns)}`
+        : `t${Math.trunc(details.turns)}`,
+    );
+  }
+
+  const calls = formatBudgetShort("c", details?.callsUsed, details?.maxCalls);
+  const queries = formatBudgetShort("q", details?.queriesUsed, details?.maxQueries);
+  if (calls) parts.push(calls);
+  if (queries) parts.push(queries);
+
+  const status = cleanReplProgressLine(firstTextLine(result));
+  return clip([parts.join(" · "), status].filter(Boolean).join(" • "), 96);
+}
+
+export function summarizeReplProgress(result: any, args?: any): string | undefined {
+  const detailed = summarizeRlmDetails(result);
+  if (detailed) return detailed;
+
+  const line = cleanReplProgressLine(firstTextLine(result));
+  if (line) return clip(line, 96);
+
+  const code = summarizeReplCode(args?.code, args?.setup);
+  return code ? `running ${clip(code, 72)}` : undefined;
 }
 
 function isReplBootstrapRenderedLine(line: string): boolean {

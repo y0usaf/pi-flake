@@ -271,7 +271,6 @@ Current patch set applied to upstream `pi`:
 
 - `disable-install-telemetry.patch` - Disables install/update telemetry
 - `avoid-network-model-regeneration.patch` - Uses checked-in model registry during builds
-- `remove-tree-filter-backcycle.patch` - Removes extra `Ctrl+Shift+O` shortcut
 - `default-package-sources-env.patch` - Adds non-persistent `PI_DEFAULT_PACKAGES` package sources for Nix-bundled resources
 
 ---

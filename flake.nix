@@ -75,6 +75,8 @@
       ./patches/disable-install-telemetry.patch
       ./patches/avoid-network-model-regeneration.patch
       ./patches/remove-tree-filter-backcycle.patch
+      ./patches/add-package-lock-registry-metadata.patch
+      ./patches/bun-undici-install-compat.patch
       ./patches/default-package-sources-env.patch
     ];
   in {
@@ -279,22 +281,6 @@
         '';
       };
 
-      patch-remove-tree-filter-backcycle = pkgs.stdenvNoCC.mkDerivation {
-        pname = "pi-patch-remove-tree-filter-backcycle";
-        version = packageJson.version;
-        src = piSrc;
-        patches = piPatches;
-        nativeBuildInputs = [pkgs.gnugrep];
-        dontConfigure = true;
-        dontBuild = true;
-        installPhase = ''
-          runHook preInstall
-          ! grep -q 'app.tree.filter.cycleBackward' packages/coding-agent/src/modes/interactive/components/tree-selector.ts
-          grep -q 'const cycleKeys = keyText("app.tree.filter.cycleForward");' packages/coding-agent/src/modes/interactive/components/tree-selector.ts
-          touch $out
-          runHook postInstall
-        '';
-      };
 
       patch-default-package-sources-env = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-patch-default-package-sources-env";
