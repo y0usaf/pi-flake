@@ -1,7 +1,7 @@
 import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { state } from "./state.js";
 import { MAX_SUMMARY_LENGTH, TOOL_ORIGINAL_RENDER_KEY, TOOL_ORIGINAL_SET_EXPANDED_KEY, TOOL_RULE, TOOL_SPINNER_FRAME_KEY, TOOL_SPINNER_INTERVAL_KEY, type ToolBgToken } from "./types.js";
-import { summarizeArgs, summarizeResult, filterToolViewLines, isReplBootstrapOnlyArgs, isReplTool } from "./tool-summaries/index.js";
+import { summarizeArgs, summarizeResult, filterToolViewLines, isReplBootstrapOnlyArgs, isReplTool, summarizeReplProgress } from "./tool-summaries/index.js";
 import { clip, getThemeToolBgFn, isBlankRenderedLine, isRecord, renderOneLine } from "./shared.js";
 export { filterToolViewLines, isReplBootstrapImportLine, isReplBootstrapOnlyArgs, summarizeArgs, summarizeReplCode, summarizeResult } from "./tool-summaries/index.js";
 
@@ -20,6 +20,12 @@ export function toolStatusPrefix(state: any): string {
 export function buildToolLine(state: any): string {
   const toolName = state?.toolName ?? "tool";
   const prefix = toolStatusPrefix(state);
+
+  if (state?.isPartial && isReplTool(toolName)) {
+    const live = summarizeReplProgress(state?.result, state?.args);
+    if (live) return `${prefix} ${toolName} ${TOOL_RULE} ${clip(live, MAX_SUMMARY_LENGTH)}`;
+  }
+
   const summary = clip(summarizeArgs(toolName, state?.args), MAX_SUMMARY_LENGTH);
   const suffix = summarizeResult(toolName, state?.result);
   const detail = summary || suffix ? ` ${TOOL_RULE} ${summary || "…"}${suffix}` : "";

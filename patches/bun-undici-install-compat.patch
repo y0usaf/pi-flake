@@ -1,0 +1,27 @@
+--- a/packages/coding-agent/src/cli.ts
++++ b/packages/coding-agent/src/cli.ts
+@@ -5,9 +5,11 @@
+  *
+  * Test with: npx tsx src/cli-new.ts [args...]
+  */
+-import { EnvHttpProxyAgent, install as installUndiciGlobals, setGlobalDispatcher } from "undici";
++import * as undici from "undici";
+ import { APP_NAME } from "./config.js";
+ import { main } from "./main.js";
++
++const { EnvHttpProxyAgent, setGlobalDispatcher } = undici;
+ 
+ process.title = APP_NAME;
+ process.env.PI_CODING_AGENT = "true";
+@@ -22,6 +24,10 @@
+ // Keep fetch and the dispatcher on the same undici implementation. Node 26.0's
+ // bundled fetch can otherwise consume compressed responses through npm undici's
+ // dispatcher without decompressing them, causing response.json() failures.
+-installUndiciGlobals();
++// Bun's built-in undici shim does not currently export install(), so only call
++// it when available.
++if (typeof undici.install === "function") {
++	undici.install();
++}
+ 
+ main(process.argv.slice(2));

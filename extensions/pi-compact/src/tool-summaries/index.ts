@@ -10,6 +10,7 @@ export {
   isReplBootstrapOnlyArgs,
   isReplTool,
   summarizeReplCode,
+  summarizeReplProgress,
 } from "./repl-adapter.js";
 export type { ToolSummaryAdapter, ToolSummaryRegistry } from "./types.js";
 
