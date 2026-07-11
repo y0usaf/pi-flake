@@ -75,8 +75,6 @@
       ./patches/disable-install-telemetry.patch
       ./patches/avoid-network-model-regeneration.patch
       ./patches/remove-tree-filter-backcycle.patch
-      ./patches/add-package-lock-registry-metadata.patch
-      ./patches/bun-undici-install-compat.patch
       ./patches/default-package-sources-env.patch
     ];
   in {
@@ -104,7 +102,7 @@
 
         # Regenerate after dependency changes:
         #   nix build .#pi 2>&1 | grep 'got:' | awk '{print $2}'
-        npmDepsHash = "sha256-vNXInQTvB8h8/8PA0WcQ69Ni+pABK7n9wMr3pY3aY4c=";
+        npmDepsHash = "sha256-Y6dIQbmwdR3YqpdMA5ioNf/qUzAwGXjynXhxRrmCRYE=";
 
         nodejs = pkgs.nodejs_22;
 
