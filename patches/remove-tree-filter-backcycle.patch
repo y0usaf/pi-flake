@@ -1,6 +1,8 @@
+diff --git a/packages/coding-agent/src/modes/interactive/components/tree-selector.ts b/packages/coding-agent/src/modes/interactive/components/tree-selector.ts
+index f70e206..fd65431 100644
 --- a/packages/coding-agent/src/modes/interactive/components/tree-selector.ts
 +++ b/packages/coding-agent/src/modes/interactive/components/tree-selector.ts
-@@ -962,15 +962,8 @@
+@@ -1061,15 +1061,8 @@ class TreeList implements Component {
  			this.filterMode = this.filterMode === "all" ? "default" : "all";
  			this.foldedNodes.clear();
  			this.applyFilter();
@@ -17,12 +19,12 @@
  			const modes: FilterMode[] = ["default", "no-tools", "user-only", "labeled-only", "all"];
  			const currentIndex = modes.indexOf(this.filterMode);
  			this.filterMode = modes[(currentIndex + 1) % modes.length];
-@@ -1188,7 +1181,7 @@
- 			keyText("app.tree.filter.labeledOnly"),
- 			keyText("app.tree.filter.all"),
- 		].join("/");
--		const cycleKeys = `${keyText("app.tree.filter.cycleForward")}/${keyText("app.tree.filter.cycleBackward")}`;
-+		const cycleKeys = keyText("app.tree.filter.cycleForward");
- 		const branchKeys = `${keyText("app.tree.foldOrUp")}/${keyText("app.tree.unfoldOrDown")}`;
- 		this.addChild(
- 			new TruncatedText(
+@@ -1232,7 +1225,7 @@ const TREE_HELP_ITEMS: Array<{ keys: Keybinding[]; label: string; labelFirst?: b
+ 		label: "filters",
+ 		labelFirst: true,
+ 	},
+-	{ keys: ["app.tree.filter.cycleForward", "app.tree.filter.cycleBackward"], label: "cycle", labelFirst: true },
++	{ keys: ["app.tree.filter.cycleForward"], label: "cycle", labelFirst: true },
+ ];
+ 
+ function formatHelpKeys(keybindings: Keybinding[]): string {
