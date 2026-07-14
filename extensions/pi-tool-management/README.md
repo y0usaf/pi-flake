@@ -50,4 +50,6 @@ Notes:
 - enforcement is still hook-order dependent: another extension that runs later and rewrites active tools can override this extension’s filtering
 - reopening `/tools` rescans the current tool list; if a tool is registered while the menu is already open, close + reopen to refresh it
 - unknown disabled tool names are retained even when the current session has not loaded those tools yet
-- if a save fails, the extension keeps the in-memory settings for the current session; change a toggle again to retry persistence
+- malformed/unreadable settings retain the last-known-good in-memory state and report an unchanged warning only once; `/tools-status` keeps the warning visible
+- deleting the settings file resets the in-memory disabled list on the next reconciliation
+- saves are serialized + atomically replace the settings file; if a save fails, in-memory changes remain active for the current session and another toggle retries persistence
