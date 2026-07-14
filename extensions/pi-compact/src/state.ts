@@ -5,7 +5,6 @@ export const state = {
   lastToolPatchError: undefined as string | undefined,
   lastUserPatchError: undefined as string | undefined,
   lastAssistantPatchError: undefined as string | undefined,
-  lastCustomPatchError: undefined as string | undefined,
   lastConfigError: undefined as string | undefined,
   toolRendering: { ...DEFAULT_PI_COMPACT_SETTINGS.tools },
   userRendering: { ...DEFAULT_PI_COMPACT_SETTINGS.user },

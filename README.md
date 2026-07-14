@@ -76,8 +76,6 @@ Flake `inputs` cannot pass arbitrary booleans into another flake's outputs. Use 
         "gecko-websearch" = false;
         rtk = false;
         compact = true;
-        "context-janitor" = true;
-        morph = false; # opt in with true if you want pi-morph bundled
         "tool-management" = false;
         webfetch = true;
         hashline = true;
@@ -118,7 +116,6 @@ Only flags set to `true` are copied into the bundled wrapper.
             # extensions = {
             #   "codex-fast" = true;
             #   compact = true;
-            #   "context-janitor" = true;
             #   # tool-management = true; # persistent disabled-tools menu/UI
             #   webfetch = true;
             #   hashline = true;
@@ -152,8 +149,6 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-gecko-websearch` | Web search using Firefox's engine |
 | `pi-rtk` | Real-time keyboard events |
 | `pi-compact` | Compaction utilities |
-| `pi-context-janitor` | Hash-gated context truncation + undo UI |
-| `pi-morph` | Morph edit tool via Vercel AI Gateway (available as opt-in extension; not bundled in `pi-full`) |
 | `pi-tool-management` | Persistent disabled-tools menu/UI via `/tools` |
 | `pi-webfetch` | HTTP fetching utilities |
 | `pi-hashline` | Hashline v2 read/edit tool override |
@@ -215,8 +210,6 @@ inputs.pi-flake.packages.<system>."pi-codex-fast"
 inputs.pi-flake.packages.<system>."pi-gecko-websearch"
 inputs.pi-flake.packages.<system>."pi-rtk"
 inputs.pi-flake.packages.<system>."pi-compact"
-inputs.pi-flake.packages.<system>."pi-context-janitor"
-inputs.pi-flake.packages.<system>."pi-morph"
 inputs.pi-flake.packages.<system>."pi-tool-management"
 inputs.pi-flake.packages.<system>."pi-webfetch"
 inputs.pi-flake.packages.<system>."pi-hashline"
@@ -235,8 +228,7 @@ inputs.pi-flake.packages.<system>."pi-vcc"
 ### Variants
 
 - `pi` - Base pi, no extensions
-- `pi-full` - pi with default extensions bundled and loaded at runtime; excludes opt-in `pi-morph`
-- `pi-morph` - standalone Morph edit extension package, available for explicit bundling/flags
+- `pi-full` - pi with default extensions bundled and loaded at runtime
 
 ### Library helpers / modules
 

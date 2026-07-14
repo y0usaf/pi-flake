@@ -3,7 +3,6 @@ import { PI_COMPACT_GLOBAL_KEY, DEFAULT_PI_COMPACT_SETTINGS } from "./types.js";
 import { state } from "./state.js";
 import { cloneGapRendering } from "./shared.js";
 import { resolvePiCompactSettings } from "./settings.js";
-import { registerJanitorMessageRenderers } from "./custom-messages.js";
 import { recordAssistantThinkingTimingForEvent } from "./thinking-rendering.js";
 import { hasStatusError, parseGapRenderingArg, parseThinkingArg, patchPiCompactComponents, statusMessage } from "./patching.js";
 
@@ -11,7 +10,6 @@ void patchPiCompactComponents();
 
 export default function (pi: ExtensionAPI) {
   (globalThis as Record<string, unknown>)[PI_COMPACT_GLOBAL_KEY] = true;
-  registerJanitorMessageRenderers(pi);
 
   pi.on("message_update", (event) => {
     recordAssistantThinkingTimingForEvent(event);

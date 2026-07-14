@@ -10,7 +10,6 @@ Pi extension: compact chat rendering for Pi's interactive TUI.
 - expanded tool calls → original rendering/output
 - thinking blocks → compact tool-style `🧠 1.2s · 420 chars` row by default, or hidden entirely
 - user messages → configurable: Pi default, hidden, borderless markdown, or compact prompt-style `::: …` summaries; optional plain gap line
-- `pi-context-janitor` notices → compact one-line `🧹 truncated …` status rows; janitor metadata entries stay hidden
 
 ## Configuration
 
