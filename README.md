@@ -83,6 +83,7 @@ Flake `inputs` cannot pass arbitrary booleans into another flake's outputs. Use 
         hashline = true;
         "minimal-editor" = true;
         "working-indicator" = true;
+        advisor = true;
         rlm = true;
         review = true;
         vcc = true;
@@ -123,6 +124,7 @@ Only flags set to `true` are copied into the bundled wrapper.
             #   hashline = true;
             #   "minimal-editor" = true;
             #   "working-indicator" = true;
+            #   advisor = true;
             #   rlm = true;
             #   review = true;
             #   vcc = true;
@@ -157,6 +159,7 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-hashline` | Hashline v2 read/edit tool override |
 | `pi-minimal-editor` | Minimal editor borders with footer/status metadata |
 | `pi-working-indicator` | Compact animated working indicator |
+| `pi-advisor` | Stage-aware strategic guidance from a separately configured advisor model |
 | `pi-rlm` | Recursive Pi/RLM-style child-agent calls via `pi_recurse` |
 | `pi-review` | `/review` and `/end-review` code review workflow |
 | `pi-vcc` | Algorithmic conversation compactor with `/pi-vcc`, `/pi-vcc-recall`, and `vcc_recall` |
@@ -217,10 +220,13 @@ inputs.pi-flake.packages.<system>."pi-morph"
 inputs.pi-flake.packages.<system>."pi-tool-management"
 inputs.pi-flake.packages.<system>."pi-webfetch"
 inputs.pi-flake.packages.<system>."pi-hashline"
+inputs.pi-flake.packages.<system>."pi-advisor"
 inputs.pi-flake.packages.<system>."pi-rlm"
 inputs.pi-flake.packages.<system>."pi-review"
 inputs.pi-flake.packages.<system>."pi-vcc"
 ```
+
+`pi-advisor` is bundled in `pi-full`, but its `advisor` tool starts disabled. Run `/advisor on [provider/model]` to configure and enable it.
 
 `pi-review` PR review mode shells out to `gh`; install and authenticate GitHub CLI separately if you want `/review pr ...`.
 

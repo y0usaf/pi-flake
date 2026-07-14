@@ -78,6 +78,7 @@ in {
       "minimal-editor" = mkEnableOption "pi-minimal-editor editor border extension";
       "working-indicator" = mkEnableOption "pi-working-indicator compact working indicator extension";
       pomodoro = mkEnableOption "pi-pomodoro synced non-blocking timer extension";
+      advisor = mkEnableOption "pi-advisor strategic advisor-model extension";
       rlm = mkEnableOption "pi-rlm recursive Pi/RLM-style child RLM calls";
       review = mkEnableOption "pi-review /review and /end-review code review workflow extension";
       vcc = mkEnableOption "pi-vcc algorithmic conversation compactor and vcc_recall history search";

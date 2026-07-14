@@ -146,6 +146,36 @@
       "pi-working-indicator" = piWorkingIndicator.packages.${system}.default;
       "pi-pomodoro" = piPomodoro.packages.${system}.default;
       "pi-rlm" = piRlm.packages.${system}.default;
+      "pi-advisor" = let
+        advisorPackageJson = builtins.fromJSON (builtins.readFile ./extensions/RimuruW_pi-advisor/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-advisor";
+          version = advisorPackageJson.version;
+          src = lib.cleanSource ./extensions/RimuruW_pi-advisor;
+
+          dontBuild = true;
+
+          installPhase = ''
+            runHook preInstall
+
+            mkdir -p "$out"
+            cp package.json README.md CHANGELOG.md LICENSE index.ts "$out"/
+            cp -r src "$out"/
+
+            runHook postInstall
+          '';
+
+          passthru.packageName = advisorPackageJson.name;
+
+          meta = with lib; {
+            description = advisorPackageJson.description;
+            homepage = advisorPackageJson.homepage;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
       "pi-review" = let
         reviewPackageJson = builtins.fromJSON (builtins.readFile ./extensions/earendil_pi-review/package.json);
       in
@@ -353,11 +383,13 @@
       "working-indicator" = self.packages.${system}."pi-working-indicator";
       pomodoro = self.packages.${system}."pi-pomodoro";
       rlm = self.packages.${system}."pi-rlm";
+      advisor = self.packages.${system}."pi-advisor";
       review = self.packages.${system}."pi-review";
       vcc = self.packages.${system}."pi-vcc";
     };
 
-    # Default bundle used by pi-full. Keep remote/API-key-dependent extensions opt-in.
+    # Default bundle used by pi-full. Keep extensions that require credentials
+    # immediately opt-in; advisor itself starts disabled.
     lib.defaultExtensionPackagesFor = system:
       builtins.removeAttrs (self.lib.extensionPackagesFor system) ["morph"];
 
