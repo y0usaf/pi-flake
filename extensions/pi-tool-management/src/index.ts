@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getSettingsListTheme, getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
@@ -28,11 +28,6 @@ const BLOCKED_EXTERNALLY = "blocked (external)";
 
 function uniqueSorted(arr: string[]): string[] {
 	return [...new Set(arr)].sort((a, b) => a.localeCompare(b));
-}
-
-function toStringArray(value: unknown): string[] {
-	if (!Array.isArray(value)) return [];
-	return value.filter((v): v is string => typeof v === "string").map((s) => s.trim()).filter(Boolean);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -74,60 +69,105 @@ function getAllToolRecords(pi: ExtensionAPI): ToolRecord[] {
 
 // ── Settings I/O ───────────────────────────────────────────────────
 
+type SettingsParseResult =
+	| { settings: ToolSettingsFile }
+	| { warning: string };
+
 let disabledTools = new Set<string>();
 let lastWarning: string | undefined;
+let lastReportedWarning: string | undefined;
 let lastSaveError: string | undefined;
+let saveSequence = 0;
+let saveQueue = Promise.resolve();
 
-function parseSettings(raw: string): { disabledTools: string[]; warning?: string } {
+function reportLoadWarning(message: string): void {
+	lastWarning = message;
+	if (lastReportedWarning === message) return;
+	lastReportedWarning = message;
+	console.warn(`[pi-tool-management] ${message}`);
+}
+
+function clearLoadWarning(): void {
+	lastWarning = undefined;
+	lastReportedWarning = undefined;
+}
+
+function parseSettings(raw: string): SettingsParseResult {
 	const parsed: unknown = JSON.parse(raw);
-
-	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-		return { disabledTools: [], warning: `Ignoring invalid settings in ${SETTINGS_PATH}: expected object` };
+	if (!isRecord(parsed)) {
+		return { warning: `Ignoring invalid settings in ${SETTINGS_PATH}: expected object` };
+	}
+	if (parsed.version !== SETTINGS_VERSION) {
+		return { warning: `Ignoring unsupported settings version in ${SETTINGS_PATH}: ${String(parsed.version)}` };
+	}
+	if (!Array.isArray(parsed.disabledTools) || parsed.disabledTools.some((value) => typeof value !== "string" || !value.trim())) {
+		return { warning: `Ignoring invalid settings in ${SETTINGS_PATH}: disabledTools must be an array of non-empty strings` };
 	}
 
-	const obj = parsed as Record<string, unknown>;
-	if (obj.version !== SETTINGS_VERSION) {
-		return { disabledTools: [], warning: `Ignoring unsupported settings version in ${SETTINGS_PATH}: ${String(obj.version)}` };
-	}
-
-	return { disabledTools: uniqueSorted(toStringArray(obj.disabledTools)) };
+	return {
+		settings: {
+			version: SETTINGS_VERSION,
+			disabledTools: uniqueSorted(parsed.disabledTools.map((name) => name.trim())),
+		},
+	};
 }
 
 async function loadSettings(): Promise<void> {
+	let raw: string;
 	try {
-		const raw = await readFile(SETTINGS_PATH, "utf-8");
-		try {
-			const result = parseSettings(raw);
-			disabledTools = new Set(result.disabledTools);
-			lastWarning = result.warning;
-			if (lastWarning) console.warn(`[pi-tool-management] ${lastWarning}`);
-		} catch (e) {
-			const msg = `Failed to parse ${SETTINGS_PATH}: ${e instanceof Error ? e.message : String(e)}`;
-			lastWarning = msg;
-			console.warn(`[pi-tool-management] ${msg}`);
-		}
+		raw = await readFile(SETTINGS_PATH, "utf-8");
 	} catch (e) {
 		const err = e as NodeJS.ErrnoException;
-		if (err?.code !== "ENOENT") {
-			const msg = `Failed to load ${SETTINGS_PATH}: ${err.message}`;
-			lastWarning = msg;
-			console.warn(`[pi-tool-management] ${msg}`);
+		if (err?.code === "ENOENT") {
+			disabledTools = new Set();
+			clearLoadWarning();
+			return;
 		}
-		// ENOENT: no file yet, keep current disabledTools (empty on first load)
+		reportLoadWarning(`Failed to load ${SETTINGS_PATH}: ${err.message}`);
+		return;
+	}
+
+	let result: SettingsParseResult;
+	try {
+		result = parseSettings(raw);
+	} catch (e) {
+		reportLoadWarning(`Failed to parse ${SETTINGS_PATH}: ${e instanceof Error ? e.message : String(e)}`);
+		return;
+	}
+	if ("warning" in result) {
+		reportLoadWarning(result.warning);
+		return;
+	}
+
+	disabledTools = new Set(result.settings.disabledTools);
+	clearLoadWarning();
+}
+
+async function persistSettings(file: ToolSettingsFile): Promise<void> {
+	const tempPath = `${SETTINGS_PATH}.${process.pid}.${saveSequence++}.tmp`;
+	try {
+		await mkdir(getAgentDir(), { recursive: true });
+		await writeFile(tempPath, `${JSON.stringify(file, null, 2)}\n`, "utf-8");
+		await rename(tempPath, SETTINGS_PATH);
+		lastSaveError = undefined;
+		clearLoadWarning();
+	} catch (e) {
+		let detail = e instanceof Error ? e.message : String(e);
+		try {
+			await rm(tempPath, { force: true });
+		} catch (cleanupError) {
+			detail += `; failed to remove temporary file: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`;
+		}
+		const message = `Failed to save ${SETTINGS_PATH}: ${detail}`;
+		lastSaveError = message;
+		console.error(`[pi-tool-management] ${message}`);
 	}
 }
 
-async function saveSettings(): Promise<void> {
+function saveSettings(): Promise<void> {
 	const file: ToolSettingsFile = { version: SETTINGS_VERSION, disabledTools: uniqueSorted([...disabledTools]) };
-	try {
-		await mkdir(getAgentDir(), { recursive: true });
-		await writeFile(SETTINGS_PATH, `${JSON.stringify(file, null, 2)}\n`, "utf-8");
-		lastSaveError = undefined;
-	} catch (e) {
-		const msg = `Failed to save ${SETTINGS_PATH}: ${e instanceof Error ? e.message : String(e)}`;
-		lastSaveError = msg;
-		console.error(`[pi-tool-management] ${msg}`);
-	}
+	saveQueue = saveQueue.then(() => persistSettings(file));
+	return saveQueue;
 }
 
 // ── Tool sorting & enforcement ─────────────────────────────────────
