@@ -70,14 +70,11 @@ in {
       "gecko-websearch" = mkEnableOption "pi-gecko-websearch extension";
       rtk = mkEnableOption "pi-rtk extension";
       compact = mkEnableOption "pi-compact extension";
-      "context-janitor" = mkEnableOption "pi-context-janitor background context pruning extension";
-      morph = mkEnableOption "pi-morph Morph edit tool via Vercel AI Gateway";
       "tool-management" = mkEnableOption "pi-tool-management persistent disabled-tools UI extension";
       webfetch = mkEnableOption "pi-webfetch extension";
       hashline = mkEnableOption "pi-hashline v2 read/edit tool override";
       "minimal-editor" = mkEnableOption "pi-minimal-editor editor border extension";
       "working-indicator" = mkEnableOption "pi-working-indicator compact working indicator extension";
-      pomodoro = mkEnableOption "pi-pomodoro synced non-blocking timer extension";
       advisor = mkEnableOption "pi-advisor strategic advisor-model extension";
       rlm = mkEnableOption "pi-rlm recursive Pi/RLM-style child RLM calls";
       review = mkEnableOption "pi-review /review and /end-review code review workflow extension";

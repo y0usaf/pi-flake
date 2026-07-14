@@ -4,7 +4,6 @@ import { cloneGapRendering } from "./shared.js";
 import { patchToolExecutionComponent } from "./tool-rendering.js";
 import { patchUserMessageComponent } from "./user-rendering.js";
 import { patchAssistantMessageComponent } from "./thinking-rendering.js";
-import { patchCustomMessageComponent } from "./custom-messages.js";
 
 export async function patchPiCompactComponents(): Promise<boolean> {
   if (state.patchPromise) return state.patchPromise;
@@ -13,8 +12,7 @@ export async function patchPiCompactComponents(): Promise<boolean> {
     const toolsOk = patchToolExecutionComponent();
     const usersOk = patchUserMessageComponent();
     const assistantOk = patchAssistantMessageComponent();
-    const customOk = patchCustomMessageComponent();
-    return toolsOk && usersOk && assistantOk && customOk;
+    return toolsOk && usersOk && assistantOk;
   })();
 
   return state.patchPromise;
@@ -25,7 +23,6 @@ export function patchErrorDetails(): string {
   if (state.lastToolPatchError) errors.push(`tools: ${state.lastToolPatchError}`);
   if (state.lastUserPatchError) errors.push(`user-messages: ${state.lastUserPatchError}`);
   if (state.lastAssistantPatchError) errors.push(`thinking: ${state.lastAssistantPatchError}`);
-  if (state.lastCustomPatchError) errors.push(`custom-messages: ${state.lastCustomPatchError}`);
   if (state.lastConfigError) errors.push(`config: ${state.lastConfigError}`);
   return errors.length > 0 ? `\n${errors.join("\n")}` : "";
 }
@@ -38,12 +35,11 @@ export function statusMessage(): string {
   const toolsStatus = state.lastToolPatchError ? "failed" : formatGapRendering(state.toolRendering);
   const userStatus = state.lastUserPatchError ? "failed" : formatGapRendering(state.userRendering);
   const thinkingStatus = state.lastAssistantPatchError ? "failed" : state.thinkingMode;
-  const customStatus = state.lastCustomPatchError ? "failed" : "compact";
-  return `pi-compact: tools=${toolsStatus} • user=${userStatus} • thinking=${thinkingStatus} • custom=${customStatus}${patchErrorDetails()}`;
+  return `pi-compact: tools=${toolsStatus} • user=${userStatus} • thinking=${thinkingStatus}${patchErrorDetails()}`;
 }
 
 export function hasStatusError(): boolean {
-  return Boolean(state.lastToolPatchError || state.lastUserPatchError || state.lastAssistantPatchError || state.lastCustomPatchError || state.lastConfigError);
+  return Boolean(state.lastToolPatchError || state.lastUserPatchError || state.lastAssistantPatchError || state.lastConfigError);
 }
 
 export function parseGapRenderingArg(args: string, current: GapRendering, defaultValue: GapRendering): GapRendering | undefined {

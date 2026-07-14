@@ -21,12 +21,6 @@
     piCompact.url = "path:./extensions/pi-compact";
     piCompact.inputs.nixpkgs.follows = "nixpkgs";
 
-    piContextJanitor.url = "path:./extensions/pi-context-janitor";
-    piContextJanitor.inputs.nixpkgs.follows = "nixpkgs";
-
-    piMorph.url = "path:./extensions/pi-morph";
-    piMorph.inputs.nixpkgs.follows = "nixpkgs";
-
     piToolManagement.url = "path:./extensions/pi-tool-management";
     piToolManagement.inputs.nixpkgs.follows = "nixpkgs";
 
@@ -41,9 +35,6 @@
     piWorkingIndicator.url = "path:./extensions/pi-working-indicator";
     piWorkingIndicator.inputs.nixpkgs.follows = "nixpkgs";
 
-    piPomodoro.url = "path:./extensions/pi-pomodoro";
-    piPomodoro.inputs.nixpkgs.follows = "nixpkgs";
-
     piRlm.url = "path:./extensions/pi-rlm";
     piRlm.inputs.nixpkgs.follows = "nixpkgs";
   };
@@ -56,14 +47,11 @@
     piGeckoWebsearch,
     piRtk,
     piCompact,
-    piContextJanitor,
-    piMorph,
     piToolManagement,
     piWebfetch,
     piHashline,
     piMinimalEditor,
     piWorkingIndicator,
-    piPomodoro,
     piRlm,
     ...
   }: let
@@ -137,14 +125,11 @@
       "pi-gecko-websearch" = piGeckoWebsearch.packages.${system}.default;
       "pi-rtk" = piRtk.packages.${system}.default;
       "pi-compact" = piCompact.packages.${system}.default;
-      "pi-context-janitor" = piContextJanitor.packages.${system}.default;
-      "pi-morph" = piMorph.packages.${system}.default;
       "pi-tool-management" = piToolManagement.packages.${system}.default;
       "pi-webfetch" = piWebfetch.packages.${system}.default;
       "pi-hashline" = piHashline.packages.${system}.default;
       "pi-minimal-editor" = piMinimalEditor.packages.${system}.default;
       "pi-working-indicator" = piWorkingIndicator.packages.${system}.default;
-      "pi-pomodoro" = piPomodoro.packages.${system}.default;
       "pi-rlm" = piRlm.packages.${system}.default;
       "pi-advisor" = let
         advisorPackageJson = builtins.fromJSON (builtins.readFile ./extensions/RimuruW_pi-advisor/package.json);
@@ -232,9 +217,7 @@
           };
         };
 
-      # pi with default extensions pre-bundled. Morph is offered as an extension
-      # package/flag but is excluded from pi-full by default because it requires
-      # remote credentials and is best opted into explicitly.
+      # pi with default extensions pre-bundled.
       pi-full = self.lib.piWithExtensions {
         inherit pkgs;
         pi = self.packages.${system}.pi;
@@ -374,24 +357,19 @@
       "gecko-websearch" = self.packages.${system}."pi-gecko-websearch";
       rtk = self.packages.${system}."pi-rtk";
       compact = self.packages.${system}."pi-compact";
-      "context-janitor" = self.packages.${system}."pi-context-janitor";
-      morph = self.packages.${system}."pi-morph";
       "tool-management" = self.packages.${system}."pi-tool-management";
       webfetch = self.packages.${system}."pi-webfetch";
       hashline = self.packages.${system}."pi-hashline";
       "minimal-editor" = self.packages.${system}."pi-minimal-editor";
       "working-indicator" = self.packages.${system}."pi-working-indicator";
-      pomodoro = self.packages.${system}."pi-pomodoro";
       rlm = self.packages.${system}."pi-rlm";
       advisor = self.packages.${system}."pi-advisor";
       review = self.packages.${system}."pi-review";
       vcc = self.packages.${system}."pi-vcc";
     };
 
-    # Default bundle used by pi-full. Keep extensions that require credentials
-    # immediately opt-in; advisor itself starts disabled.
-    lib.defaultExtensionPackagesFor = system:
-      builtins.removeAttrs (self.lib.extensionPackagesFor system) ["morph"];
+    # Default bundle used by pi-full; advisor itself starts disabled.
+    lib.defaultExtensionPackagesFor = self.lib.extensionPackagesFor;
 
     lib.enabledExtensions = {
       system,
