@@ -202,6 +202,36 @@
           };
         };
 
+      "pi-caveman" = let
+        cavemanPackageJson = builtins.fromJSON (builtins.readFile ./extensions/jonjonrankin_pi-caveman/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-caveman";
+          version = cavemanPackageJson.version;
+          src = lib.cleanSource ./extensions/jonjonrankin_pi-caveman;
+
+          dontBuild = true;
+
+          installPhase = ''
+            runHook preInstall
+
+            mkdir -p "$out"
+            cp package.json README.md LICENSE pi-caveman.gif shoutout.jpg "$out"/
+            cp -r extensions "$out"/
+
+            runHook postInstall
+          '';
+
+          passthru.packageName = cavemanPackageJson.name;
+
+          meta = with lib; {
+            description = cavemanPackageJson.description;
+            homepage = cavemanPackageJson.homepage;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
       # pi with default extensions pre-bundled.
       pi-full = self.lib.piWithExtensions {
         inherit pkgs;
@@ -348,6 +378,7 @@
       advisor = self.packages.${system}."pi-advisor";
       review = self.packages.${system}."pi-review";
       vcc = self.packages.${system}."pi-vcc";
+      caveman = self.packages.${system}."pi-caveman";
     };
 
     # Default bundle used by pi-full; advisor itself starts disabled.
