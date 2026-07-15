@@ -8,24 +8,14 @@ import {
   USER_ORIGINAL_RENDER_KEY,
   USER_PROMPT_MARKER,
 } from "./types.js";
-import { clip, renderOneLine, squash, stripAnsi } from "./shared.js";
+import { clip, paint, renderOneLine, squash } from "./shared.js";
 
-export type UserMessageComponentShape = {
-  contentBox?: { children?: unknown };
-};
-
-function userTextFromComponent(component: UserMessageComponentShape): string {
+function userTextFromComponent(component: any): string {
   const children = component.contentBox?.children;
-  if (!Array.isArray(children)) return "";
-  for (const child of children) {
-    if (typeof (child as any)?.text === "string") return (child as any).text;
-  }
-  return "";
+  return Array.isArray(children) ? children.find((child: any) => typeof child?.text === "string")?.text ?? "" : "";
 }
 
-function userTextFromRendered(lines: string[]): string {
-  return squash(stripAnsi(lines.join(" ")));
-}
+const userThinkingLevels = new WeakMap<object, typeof state.thinkingLevel>();
 
 function withZoneMarkers(lines: string[]): string[] {
   if (lines.length === 0) return lines;
@@ -36,13 +26,17 @@ function withZoneMarkers(lines: string[]): string[] {
 }
 
 export function renderCompactUserMessage(
-  component: UserMessageComponentShape,
+  component: any,
   width: number,
   originalRender: (width: number) => string[],
 ): string[] {
-  const text = userTextFromComponent(component) || userTextFromRendered(originalRender.call(component, width));
-  const summary = clip(squash(text), MAX_USER_MESSAGE_LENGTH) || "…";
-  return withZoneMarkers(renderOneLine(`${USER_PROMPT_MARKER} ${summary}`, width));
+  const thinkingLevel = userThinkingLevels.get(component) ?? state.thinkingLevel;
+  userThinkingLevels.set(component, thinkingLevel);
+  const text = userTextFromComponent(component) || squash(originalRender.call(component, width).join(" "));
+  const summary = clip(text, MAX_USER_MESSAGE_LENGTH) || "…";
+  const line = `${paint("accent", USER_PROMPT_MARKER, true, thinkingLevel)} ${paint("userMessageText", summary)}`;
+  const lines = withZoneMarkers(renderOneLine(line, width));
+  return lines.length > 0 ? [...lines, ""] : lines;
 }
 
 export function patchUserMessageComponent(): boolean {
@@ -51,7 +45,7 @@ export function patchUserMessageComponent(): boolean {
     if (!proto || typeof proto.render !== "function") throw new Error("UserMessageComponent unavailable");
 
     const originalRender = typeof proto[USER_ORIGINAL_RENDER_KEY] === "function" ? proto[USER_ORIGINAL_RENDER_KEY] : proto.render;
-    proto.render = function piCompactUserRender(this: UserMessageComponentShape, width: number) {
+    proto.render = function piCompactUserRender(this: any, width: number) {
       return renderCompactUserMessage(this, width, originalRender);
     };
     proto[USER_ORIGINAL_RENDER_KEY] = originalRender;
