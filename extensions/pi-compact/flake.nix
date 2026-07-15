@@ -46,7 +46,7 @@
         };
 
         meta = with lib; {
-          description = "Pi extension that compacts tools/thinking and configures user-message rendering";
+          description = "Minimal Pi tool and message rendering with explicit tool labels";
           license = licenses.mit;
           platforms = platforms.all;
         };
