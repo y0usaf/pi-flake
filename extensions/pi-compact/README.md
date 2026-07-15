@@ -25,14 +25,30 @@ Icons come from the extracted `pi-harness` compact tool renderer:
 | `ls` | `▦` |
 | other tools | `•` |
 
-User messages render as one line with `>`, followed by one blank line. Thinking blocks stay hidden in the transcript. Expand tools with Pi's native tool-expansion key to see original output.
+User messages render as one line with `>`, followed by one blank line. Thinking blocks render as one compact row by default. Pi's native `Ctrl-T` toggle still hides/shows thinking; expand tools with Pi's native tool-expansion key to see original output.
 Rows use active Pi theme: accent icons, turn-specific thinking-level prompt marker, dim arguments, semantic pending/success/error status.
 
-No settings, modes, or runtime commands.
+## Thinking display
+
+Default mode: `compact`, shown as `∴ thinking · 420 chars` while streaming or `∴ thought · 420 chars` after completion.
+
+Set mode in `~/.pi/agent/settings.json` or `.pi/settings.json`:
+
+```json
+{
+  "extensionSettings": {
+    "pi-compact": {
+      "thinking": { "mode": "compact" }
+    }
+  }
+}
+```
+
+Modes: `compact`, `hidden`, `normal`. Project settings override global settings. Runtime: `/compact-thinking compact|hidden|normal|toggle`.
 
 ## Scope
 
-UI-only. Tool execution, messages, thinking, and conversation context remain unchanged. Hidden thinking affects display only.
+UI-only. Tool execution, messages, thinking, and conversation context remain unchanged. Thinking mode only affects display.
 
 Extension tools always show tool name plus generic argument summaries, so unfamiliar tools remain explicit.
 
