@@ -48,7 +48,7 @@ nix profile install github:your-org/pi-flake#pi-full
       pi = pi-flake.packages.${system}.pi;
       extensions = {
         # Only include extensions you want
-        "codex-fast" = pi-flake.packages.${system}."pi-codex-fast";
+        hashline = pi-flake.packages.${system}."pi-hashline";
         "gecko-websearch" = pi-flake.packages.${system}."pi-gecko-websearch";
       };
     };
@@ -72,7 +72,6 @@ Flake `inputs` cannot pass arbitrary booleans into another flake's outputs. Use 
     packages.${system}.my-pi = pi-flake.lib.piWithExtensionFlags {
       inherit pkgs;
       extensionFlags = {
-        "codex-fast" = true;
         "gecko-websearch" = false;
         rtk = false;
         compact = true;
@@ -80,9 +79,7 @@ Flake `inputs` cannot pass arbitrary booleans into another flake's outputs. Use 
         webfetch = true;
         hashline = true;
         "minimal-editor" = true;
-        "working-indicator" = true;
         advisor = true;
-        rlm = true;
         review = true;
         vcc = true;
       };
@@ -114,15 +111,12 @@ Only flags set to `true` are copied into the bundled wrapper.
 
             # Option 2: selected bundled extensions
             # extensions = {
-            #   "codex-fast" = true;
             #   compact = true;
             #   # tool-management = true; # persistent disabled-tools menu/UI
             #   webfetch = true;
             #   hashline = true;
             #   "minimal-editor" = true;
-            #   "working-indicator" = true;
             #   advisor = true;
-            #   rlm = true;
             #   review = true;
             #   vcc = true;
             # };
@@ -145,17 +139,14 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 
 | Name | Description |
 |------|-------------|
-| `pi-codex-fast` | Fast code completion tool |
 | `pi-gecko-websearch` | Web search using Firefox's engine |
-| `pi-rtk` | Real-time keyboard events |
+| `pi-rtk` | `rtk rewrite` shell-command optimization to cut token usage |
 | `pi-compact` | Compaction utilities |
 | `pi-tool-management` | Persistent disabled-tools menu/UI via `/tools` |
 | `pi-webfetch` | HTTP fetching utilities |
 | `pi-hashline` | Hashline v2 read/edit tool override |
 | `pi-minimal-editor` | Minimal editor borders with footer/status metadata |
-| `pi-working-indicator` | Compact animated working indicator |
 | `pi-advisor` | Stage-aware strategic guidance from a separately configured advisor model |
-| `pi-rlm` | Recursive Pi/RLM-style child-agent calls via `pi_recurse` |
 | `pi-review` | `/review` and `/end-review` code review workflow |
 | `pi-vcc` | Algorithmic conversation compactor with `/pi-vcc`, `/pi-vcc-recall`, and `vcc_recall` |
 
@@ -187,14 +178,14 @@ If you want full control:
 
 2. Build your chosen extensions:
    ```bash
-   nix build .#pi-codex-fast
+   nix build .#pi-hashline
    ```
 
 3. Add to `~/.pi/agent/settings.json`:
    ```json
    {
      "packages": [
-       "/path/to/result-pi-codex-fast"
+       "/path/to/result-pi-hashline"
      ]
    }
    ```
@@ -206,15 +197,14 @@ If you want full control:
 ### Extension packages
 
 ```nix
-inputs.pi-flake.packages.<system>."pi-codex-fast"
 inputs.pi-flake.packages.<system>."pi-gecko-websearch"
 inputs.pi-flake.packages.<system>."pi-rtk"
 inputs.pi-flake.packages.<system>."pi-compact"
 inputs.pi-flake.packages.<system>."pi-tool-management"
 inputs.pi-flake.packages.<system>."pi-webfetch"
 inputs.pi-flake.packages.<system>."pi-hashline"
+inputs.pi-flake.packages.<system>."pi-minimal-editor"
 inputs.pi-flake.packages.<system>."pi-advisor"
-inputs.pi-flake.packages.<system>."pi-rlm"
 inputs.pi-flake.packages.<system>."pi-review"
 inputs.pi-flake.packages.<system>."pi-vcc"
 ```
@@ -246,7 +236,7 @@ inputs.pi-flake.packages.<system>."pi-vcc"
 nix build .#pi
 
 # Build extension
-nix build .#pi-codex-fast
+nix build .#pi-hashline
 # Build full bundle
 nix build .#pi-full
 

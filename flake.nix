@@ -9,9 +9,6 @@
       flake = false;
     };
 
-    piCodexFast.url = "path:./extensions/pi-codex-fast";
-    piCodexFast.inputs.nixpkgs.follows = "nixpkgs";
-
     piGeckoWebsearch.url = "path:./extensions/pi-gecko-websearch";
     piGeckoWebsearch.inputs.nixpkgs.follows = "nixpkgs";
 
@@ -31,19 +28,12 @@
 
     piMinimalEditor.url = "path:./extensions/pi-minimal-editor";
     piMinimalEditor.inputs.nixpkgs.follows = "nixpkgs";
-
-    piWorkingIndicator.url = "path:./extensions/pi-working-indicator";
-    piWorkingIndicator.inputs.nixpkgs.follows = "nixpkgs";
-
-    piRlm.url = "path:./extensions/pi-rlm";
-    piRlm.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs = {
     self,
     nixpkgs,
     piSrc,
-    piCodexFast,
     piGeckoWebsearch,
     piRtk,
     piCompact,
@@ -51,8 +41,6 @@
     piWebfetch,
     piHashline,
     piMinimalEditor,
-    piWorkingIndicator,
-    piRlm,
     ...
   }: let
     systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
@@ -121,7 +109,6 @@
         };
       };
 
-      "pi-codex-fast" = piCodexFast.packages.${system}.default;
       "pi-gecko-websearch" = piGeckoWebsearch.packages.${system}.default;
       "pi-rtk" = piRtk.packages.${system}.default;
       "pi-compact" = piCompact.packages.${system}.default;
@@ -129,8 +116,6 @@
       "pi-webfetch" = piWebfetch.packages.${system}.default;
       "pi-hashline" = piHashline.packages.${system}.default;
       "pi-minimal-editor" = piMinimalEditor.packages.${system}.default;
-      "pi-working-indicator" = piWorkingIndicator.packages.${system}.default;
-      "pi-rlm" = piRlm.packages.${system}.default;
       "pi-advisor" = let
         advisorPackageJson = builtins.fromJSON (builtins.readFile ./extensions/RimuruW_pi-advisor/package.json);
       in
@@ -241,7 +226,8 @@
           filter = path: type: let
             name = baseNameOf path;
           in
-            !(name == ".git"
+            !(name
+              == ".git"
               || name == "node_modules"
               || name == "ref"
               || name == "result"
@@ -291,7 +277,6 @@
           runHook postInstall
         '';
       };
-
 
       patch-default-package-sources-env = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-patch-default-package-sources-env";
@@ -353,7 +338,6 @@
 
     # Extension package set keyed by bundled extension name.
     lib.extensionPackagesFor = system: {
-      "codex-fast" = self.packages.${system}."pi-codex-fast";
       "gecko-websearch" = self.packages.${system}."pi-gecko-websearch";
       rtk = self.packages.${system}."pi-rtk";
       compact = self.packages.${system}."pi-compact";
@@ -361,8 +345,6 @@
       webfetch = self.packages.${system}."pi-webfetch";
       hashline = self.packages.${system}."pi-hashline";
       "minimal-editor" = self.packages.${system}."pi-minimal-editor";
-      "working-indicator" = self.packages.${system}."pi-working-indicator";
-      rlm = self.packages.${system}."pi-rlm";
       advisor = self.packages.${system}."pi-advisor";
       review = self.packages.${system}."pi-review";
       vcc = self.packages.${system}."pi-vcc";
@@ -442,8 +424,6 @@
 
           export PI_PACKAGE_DIR="${pi}/share/pi"
           export PI_SKIP_VERSION_CHECK=1
-          export PI_RLM_PYTHON="${pkgs.python3}/bin/python3"
-          export PATH="${pkgs.python3}/bin:$PATH"
 
           if [ -n "''${PI_DEFAULT_PACKAGES:-}" ]; then
             export PI_DEFAULT_PACKAGES="@out@/share/pi:''${PI_DEFAULT_PACKAGES}"
