@@ -16,22 +16,6 @@
         "type": "github"
       }
     },
-    "piCodexFast": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-codex-fast",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-codex-fast",
-        "type": "path"
-      },
-      "parent": []
-    },
     "piCompact": {
       "inputs": {
         "nixpkgs": [
@@ -92,22 +76,6 @@
       },
       "original": {
         "path": "./extensions/pi-minimal-editor",
-        "type": "path"
-      },
-      "parent": []
-    },
-    "piRlm": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-rlm",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-rlm",
         "type": "path"
       },
       "parent": []
@@ -177,36 +145,17 @@
       },
       "parent": []
     },
-    "piWorkingIndicator": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-working-indicator",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-working-indicator",
-        "type": "path"
-      },
-      "parent": []
-    },
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
-        "piCodexFast": "piCodexFast",
         "piCompact": "piCompact",
         "piGeckoWebsearch": "piGeckoWebsearch",
         "piHashline": "piHashline",
         "piMinimalEditor": "piMinimalEditor",
-        "piRlm": "piRlm",
         "piRtk": "piRtk",
         "piSrc": "piSrc",
         "piToolManagement": "piToolManagement",
-        "piWebfetch": "piWebfetch",
-        "piWorkingIndicator": "piWorkingIndicator"
+        "piWebfetch": "piWebfetch"
       }
     }
   },
