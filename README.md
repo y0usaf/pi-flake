@@ -143,7 +143,7 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 |------|-------------|
 | `pi-gecko-websearch` | Web search using Firefox's engine |
 | `pi-rtk` | `rtk rewrite` shell-command optimization to cut token usage |
-| `pi-compact` | Compaction utilities |
+| `pi-compact` | Minimal explicit tool/chat rendering |
 | `pi-tool-management` | Persistent disabled-tools menu/UI via `/tools` |
 | `pi-webfetch` | HTTP fetching utilities |
 | `pi-hashline` | Hashline v2 read/edit tool override |
