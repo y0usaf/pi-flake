@@ -1,5 +1,7 @@
+import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import { homedir } from "node:os";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { state } from "./state.js";
 import { ANSI_PATTERN } from "./types.js";
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -8,6 +10,13 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function stripAnsi(value: string): string {
   return value.replace(ANSI_PATTERN, "");
+}
+
+export function paint(color: ThemeColor, value: string, emphasize = false, thinkingLevel?: typeof state.thinkingLevel): string {
+  const theme = state.theme;
+  if (!theme) return value;
+  const text = emphasize ? theme.bold(value) : value;
+  return thinkingLevel ? theme.getThinkingBorderColor(thinkingLevel)(text) : theme.fg(color, text);
 }
 
 export function squash(value: unknown): string {

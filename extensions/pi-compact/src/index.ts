@@ -19,7 +19,11 @@ function patchErrors(): string {
 void patchComponents();
 
 export default function (pi: ExtensionAPI) {
+  pi.on("thinking_level_select", (event) => { state.thinkingLevel = event.level; });
+
   pi.on("session_start", (_event, ctx) => {
+    state.theme = ctx.mode === "tui" ? ctx.ui.theme : undefined;
+    state.thinkingLevel = pi.getThinkingLevel();
     if (!patchComponents() && ctx.hasUI) ctx.ui.notify(`pi-compact: renderer patch failed${patchErrors()}`, "error");
   });
 }

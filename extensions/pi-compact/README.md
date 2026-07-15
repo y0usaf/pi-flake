@@ -1,6 +1,6 @@
 # pi-compact
 
-Minimal Pi TUI renderer. Tool rows stay explicit without boxes or noise.
+Minimal Pi TUI renderer. Tool rows stay explicit without boxes or noise, with theme-aware colour accents.
 
 ## Display
 
@@ -25,9 +25,10 @@ Icons come from the extracted `pi-harness` compact tool renderer:
 | `ls` | `▦` |
 | other tools | `•` |
 
-User messages render as one line with `>`. Thinking blocks stay hidden in the transcript. Expand tools with Pi's native tool-expansion key to see original output.
+User messages render as one line with `>`, followed by one blank line. Thinking blocks stay hidden in the transcript. Expand tools with Pi's native tool-expansion key to see original output.
+Rows use active Pi theme: accent icons, turn-specific thinking-level prompt marker, dim arguments, semantic pending/success/error status.
 
-No settings, modes, gaps, backgrounds, or runtime commands.
+No settings, modes, or runtime commands.
 
 ## Scope
 
