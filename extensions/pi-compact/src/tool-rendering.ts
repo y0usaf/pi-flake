@@ -1,211 +1,208 @@
 import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { state } from "./state.js";
-import { MAX_SUMMARY_LENGTH, TOOL_ORIGINAL_RENDER_KEY, TOOL_ORIGINAL_SET_EXPANDED_KEY, TOOL_RULE, TOOL_SPINNER_FRAME_KEY, TOOL_SPINNER_INTERVAL_KEY, type ToolBgToken } from "./types.js";
-import { summarizeArgs, summarizeResult, filterToolViewLines, isReplBootstrapOnlyArgs, isReplTool, summarizeReplProgress } from "./tool-summaries/index.js";
-import { clip, getThemeToolBgFn, isBlankRenderedLine, isRecord, renderOneLine } from "./shared.js";
-export { filterToolViewLines, isReplBootstrapImportLine, isReplBootstrapOnlyArgs, summarizeArgs, summarizeReplCode, summarizeResult } from "./tool-summaries/index.js";
+import {
+  MAX_RESULT_LENGTH,
+  MAX_SUMMARY_LENGTH,
+  TOOL_ARROW,
+  TOOL_ORIGINAL_RENDER_KEY,
+  TOOL_ORIGINAL_SET_EXPANDED_KEY,
+  TOOL_SEPARATOR,
+} from "./types.js";
+import {
+  clip,
+  countDetailsLineDiff,
+  countLabel,
+  firstTextLine,
+  formatScalar,
+  lineCount,
+  normalizePath,
+  renderOneLine,
+  squash,
+  textLineCount,
+  type LineDiffCounts,
+} from "./shared.js";
 
-export function getToolSpinnerFrame(_state: any): string {
-  // Keep pending compact tool rows static. An animated spinner repeatedly
-  // requested renders while tools were collapsed, which made browser-side
-  // scroll anchoring/observers loop when Ctrl+O expanded tool uses.
-  return "⠋";
+// Icon vocabulary extracted from @pi-harness's compact tool renderer.
+const TOOL_ICONS: Record<string, string> = {
+  read: "◰",
+  bash: "$",
+  edit: "✎",
+  write: "+",
+  find: "⌕",
+  grep: "⌕",
+  ls: "▦",
+};
+
+const PREFERRED_ARG_KEYS = ["path", "url", "query", "id", "name", "command", "pattern", "glob", "prompt", "message", "action"];
+const toolExpandedState = new WeakMap<object, boolean>();
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-export function toolStatusPrefix(state: any): string {
-  if (state?.isPartial) return getToolSpinnerFrame(state);
-  return state?.result?.isError ? "✗" : "✓";
+function formatLineRange(args: any): string {
+  const offset = finiteNumber(args?.offset);
+  const limit = finiteNumber(args?.limit);
+  if (offset === undefined && limit === undefined) return "";
+  const start = offset ?? 1;
+  return limit === undefined ? `:${start}` : `:${start}-${start + limit - 1}`;
 }
 
-export function buildToolLine(state: any): string {
-  const toolName = state?.toolName ?? "tool";
-  const prefix = toolStatusPrefix(state);
+function formatGenericArgs(args: any, cwd?: string): string {
+  if (args === undefined || args === null) return "";
+  if (typeof args !== "object") return formatScalar(args);
+  if (Array.isArray(args)) return `[${args.length}]`;
 
-  if (state?.isPartial && isReplTool(toolName)) {
-    const live = summarizeReplProgress(state?.result, state?.args);
-    if (live) return `${prefix} ${toolName} ${TOOL_RULE} ${clip(live, MAX_SUMMARY_LENGTH)}`;
+  const parts: string[] = [];
+  for (const key of PREFERRED_ARG_KEYS) {
+    if (!(key in args) || args[key] === undefined) continue;
+    const value = key === "path" ? normalizePath(args[key], ".", cwd) : formatScalar(args[key]);
+    if (!value) continue;
+    parts.push(key === "path" ? value : `${key}=${value}`);
+    if (parts.length === 2) break;
   }
+  if (parts.length > 0) return parts.join(" · ");
 
-  const summary = clip(summarizeArgs(toolName, state?.args), MAX_SUMMARY_LENGTH);
-  const suffix = summarizeResult(toolName, state?.result);
-  const detail = summary || suffix ? ` ${TOOL_RULE} ${summary || "…"}${suffix}` : "";
-  return `${prefix} ${toolName}${detail}`;
+  for (const [key, value] of Object.entries(args)) {
+    const formatted = formatScalar(value);
+    if (!formatted) continue;
+    parts.push(`${key}=${formatted}`);
+    if (parts.length === 2) break;
+  }
+  return parts.join(" · ");
 }
 
-export function getToolBgToken(state: any): ToolBgToken {
-  if (state?.isPartial) return "toolPendingBg";
-  return state?.result?.isError ? "toolErrorBg" : "toolSuccessBg";
+export function summarizeArgs(toolName: string, args: any, cwd?: string): string {
+  const name = toolName.trim().toLowerCase();
+  switch (name) {
+    case "read": {
+      const path = normalizePath(args?.path, "?", cwd);
+      return `${path}${formatLineRange(args)}`;
+    }
+    case "bash":
+      return squash(args?.command) || "…";
+    case "edit":
+      return normalizePath(args?.path, "?", cwd);
+    case "write": {
+      const path = normalizePath(args?.path, "?", cwd);
+      const lines = lineCount(args?.content);
+      return lines > 0 ? `${path} (${countLabel(lines, "line")})` : path;
+    }
+    case "find":
+      return `${squash(args?.pattern) || "*"} @ ${normalizePath(args?.path, ".", cwd)}`;
+    case "grep":
+      return `/${squash(args?.pattern) || ".*"}/ @ ${normalizePath(args?.path, ".", cwd)}`;
+    case "ls":
+      return normalizePath(args?.path, ".", cwd);
+    case "agent_task": {
+      const action = squash(args?.action) || "?";
+      const id = squash(args?.id);
+      const task = squash(args?.task);
+      return action === "start" && task ? `${action} ${id ? `${id} ` : ""}${clip(task, 64)}` : `${action}${id ? ` ${id}` : ""}`;
+    }
+    case "report":
+      return clip(squash(args?.message) || "report", 80);
+    case "web_fetch": {
+      const url = squash(args?.url) || "?";
+      const prompt = squash(args?.prompt);
+      return prompt ? `${url} · ${clip(prompt, 48)}` : url;
+    }
+    case "web_search": {
+      const query = squash(args?.query) || "?";
+      const engine = squash(args?.engine);
+      return engine ? `${query} · ${engine}` : query;
+    }
+    case "web_browse":
+      return `${squash(args?.url) || "?"}${args?.extract ? " · extract" : ""}`;
+    case "repl": {
+      const code = squash(args?.code);
+      return code ? clip(code.split(";")[0] ?? code, 96) : "";
+    }
+    default:
+      return formatGenericArgs(args, cwd);
+  }
 }
 
-export function getToolBgFn(state: any): ((text: string) => string) | undefined {
-  const token = getToolBgToken(state);
-
-  // Do not inherit from ToolExecutionComponent internals: self-shell tools keep
-  // contentBox at the pending colour, which makes settled compact rows look grey.
-  return getThemeToolBgFn(token);
+function diffSummary(counts: LineDiffCounts | undefined): string {
+  return counts ? `+${counts.added} -${counts.removed}` : "";
 }
 
-export function renderCompactToolLine(state: any, width: number): string[] {
-  return renderOneLine(buildToolLine(state), width, getToolBgFn(state), true);
+export function summarizeResult(toolName: string, result: any): string {
+  if (!result) return "";
+  const name = toolName.trim().toLowerCase();
+  const details = result.details;
+  const firstLine = firstTextLine(result);
+
+  if (result.isError) return clip(firstLine || "error", MAX_RESULT_LENGTH);
+
+  if (name === "edit") return diffSummary(countDetailsLineDiff(details)) || "applied";
+  if (name === "write") return "written";
+  if (name === "bash") {
+    const exitCode = finiteNumber(details?.exitCode);
+    if (exitCode !== undefined && exitCode !== 0) return `exit ${Math.trunc(exitCode)}`;
+    const lines = textLineCount(result);
+    return lines > 0 ? countLabel(lines, "line") : "";
+  }
+  if (name === "read") {
+    if (result.content?.some((block: any) => block?.type === "image")) return "image";
+    const lines = textLineCount(result);
+    return lines > 0 ? countLabel(lines, "line") : "";
+  }
+  if (name === "find" || name === "ls") {
+    const count = textLineCount(result);
+    return count > 0 ? countLabel(count, name === "find" ? "file" : "entry") : "";
+  }
+  if (name === "grep") {
+    const count = textLineCount(result);
+    return count > 0 ? countLabel(count, "match") : "";
+  }
+  if (name === "agent_task") {
+    if (typeof details?.status === "string") return details.status;
+    if (Array.isArray(details?.tasks)) return countLabel(details.tasks.length, "task");
+    if (Array.isArray(details?.cancelled)) return `${details.cancelled.length} cancelled`;
+  }
+  if (name === "web_fetch" && details?.fromCache) return "cache";
+  if (name === "web_search" && finiteNumber(details?.resultCount) !== undefined) return countLabel(Math.trunc(details.resultCount), "result");
+  if (name === "web_browse" && finiteNumber(details?.contentLength) !== undefined) return `${Math.trunc(details.contentLength)} chars`;
+
+  if (!firstLine || firstLine === "done" || firstLine === "(no output)") return "";
+  return clip(firstLine, MAX_RESULT_LENGTH);
 }
 
-export type UserMessageWithContentBox = {
-  contentBox?: unknown;
-};
+export function toolIcon(toolName: string): string {
+  return TOOL_ICONS[toolName.trim().toLowerCase()] ?? "•";
+}
 
-export type BoxWithVerticalPadding = Record<string, unknown> & {
-  paddingY: number;
-  bgFn?: unknown;
-  children?: unknown;
-  cache?: unknown;
-  cachedText?: unknown;
-  cachedWidth?: unknown;
-  cachedLines?: unknown;
-};
+export function toolStatus(component: any): string {
+  if (component?.isPartial) return "…";
+  return component?.result?.isError ? "✕" : "✓";
+}
 
-export type ToolExecutionWithShells = {
-  contentBox?: unknown;
-  contentText?: unknown;
-  /**
-   * Older Pi builds exposed expansion as a public field. Current Pi stores it
-   * in a private #expanded slot, so pi-compact must not rely on this existing.
-   */
+export function buildToolLine(component: any): string {
+  const toolName = squash(component?.toolName) || "tool";
+  const detail = clip(summarizeArgs(toolName, component?.args, component?.cwd), MAX_SUMMARY_LENGTH);
+  const outcome = component?.isPartial ? "" : clip(summarizeResult(toolName, component?.result), MAX_RESULT_LENGTH);
+  return `${TOOL_ARROW} ${toolIcon(toolName)} ${toolName}${detail ? ` ${detail}` : ""} ${TOOL_SEPARATOR} ${toolStatus(component)}${outcome ? ` ${outcome}` : ""}`;
+}
+
+export function renderCompactToolLine(component: any, width: number): string[] {
+  return renderOneLine(buildToolLine(component), width);
+}
+
+export type ToolExecutionComponentShape = {
   expanded?: boolean;
-  setExpanded?: (expanded: boolean) => void;
   isPartial?: boolean;
   toolName?: string;
   args?: any;
-  result?: { isError?: boolean };
+  cwd?: string;
+  result?: { isError?: boolean; details?: any; content?: any[] };
   ui?: { requestRender?: (force?: boolean) => void };
-  [TOOL_SPINNER_INTERVAL_KEY]?: ReturnType<typeof setInterval>;
-  [TOOL_SPINNER_FRAME_KEY]?: number;
 };
 
-const toolExpandedState = new WeakMap<object, boolean>();
-
-export function hasToolExpandedState(component: ToolExecutionWithShells): boolean {
-  return toolExpandedState.has(component);
+export function getToolExpanded(component: ToolExecutionComponentShape): boolean {
+  const tracked = toolExpandedState.get(component as object);
+  return tracked ?? component.expanded === true;
 }
-
-export function getToolExpanded(component: ToolExecutionWithShells): boolean {
-  const tracked = toolExpandedState.get(component);
-  if (tracked !== undefined) return tracked;
-  return component.expanded === true;
-}
-
-export function setToolExpandedState(component: ToolExecutionWithShells, expanded: boolean): void {
-  toolExpandedState.set(component, expanded);
-}
-
-export function requestToolRender(component: ToolExecutionWithShells, force = false): void {
-  const requestRender = component.ui?.requestRender;
-  if (typeof requestRender !== "function") {
-    stopToolSpinner(component);
-    return;
-  }
-
-  try {
-    requestRender.call(component.ui, force);
-  } catch {
-    stopToolSpinner(component);
-  }
-}
-
-export function startToolSpinner(component: ToolExecutionWithShells): void {
-  // Historical cleanup/no-op: compact pending tools used to start a render
-  // interval here. The interval could keep mutating output while expansion was
-  // toggled, causing an infinite scrolling loop in the UI. Leave the exported
-  // helper in place, but ensure any old interval is cleared and render static
-  // pending indicators instead.
-  stopToolSpinner(component);
-}
-
-export function stopToolSpinner(component: ToolExecutionWithShells): void {
-  const interval = component[TOOL_SPINNER_INTERVAL_KEY];
-  if (interval !== undefined) clearInterval(interval);
-  component[TOOL_SPINNER_INTERVAL_KEY] = undefined;
-  component[TOOL_SPINNER_FRAME_KEY] = 0;
-}
-
-export function shouldRenderCompactToolLine(component: ToolExecutionWithShells): boolean {
-  return state.toolRendering.mode === "compact" && !getToolExpanded(component);
-}
-
-export function syncToolSpinner(component: ToolExecutionWithShells, _compactLine: boolean): void {
-  stopToolSpinner(component);
-}
-
-export function syncToolSpinnerForCurrentExpansion(component: ToolExecutionWithShells): void {
-  syncToolSpinner(component, shouldRenderCompactToolLine(component));
-}
-
-export function getVerticalPaddingShell(value: unknown): BoxWithVerticalPadding | undefined {
-  return isRecord(value) && typeof value.paddingY === "number" ? (value as BoxWithVerticalPadding) : undefined;
-}
-
-export function clearShellCache(shell: BoxWithVerticalPadding): void {
-  shell.cache = undefined;
-  shell.cachedText = undefined;
-  shell.cachedWidth = undefined;
-  shell.cachedLines = undefined;
-}
-
-export function withPaddingY<T>(shells: BoxWithVerticalPadding[], paddingY: number, render: () => T): T {
-  const previous = shells.map((shell) => shell.paddingY);
-  for (const shell of shells) {
-    shell.paddingY = paddingY;
-    clearShellCache(shell);
-  }
-
-  try {
-    return render();
-  } finally {
-    shells.forEach((shell, index) => {
-      shell.paddingY = previous[index] ?? shell.paddingY;
-      clearShellCache(shell);
-    });
-  }
-}
-
-export function clearToolShellCaches(component: ToolExecutionWithShells): void {
-  const shells = [getVerticalPaddingShell(component.contentBox), getVerticalPaddingShell(component.contentText)].filter(
-    (shell): shell is BoxWithVerticalPadding => shell !== undefined,
-  );
-  for (const shell of shells) clearShellCache(shell);
-}
-
-export function withoutLeadingBlankLine(lines: string[]): string[] {
-  return lines.length > 0 && isBlankRenderedLine(lines[0]) ? lines.slice(1) : lines;
-}
-
-export function withToolGap(lines: string[]): string[] {
-  const content = withoutLeadingBlankLine(lines);
-  return state.toolRendering.gap && content.length > 0 ? ["", ...content] : content;
-}
-
-export function renderBorderlessTool(
-  component: ToolExecutionWithShells,
-  width: number,
-  originalRender: (width: number) => string[],
-): string[] {
-  const shells = [getVerticalPaddingShell(component.contentBox), getVerticalPaddingShell(component.contentText)].filter(
-    (shell): shell is BoxWithVerticalPadding => shell !== undefined,
-  );
-  return withPaddingY(shells, 0, () => withToolGap(filterToolViewLines(originalRender.call(component, width))));
-}
-
-export function renderConfiguredTool(component: ToolExecutionWithShells, width: number, originalRender: (width: number) => string[]): string[] {
-  const compactLine = shouldRenderCompactToolLine(component);
-  syncToolSpinner(component, compactLine);
-
-  if (isReplTool(component.toolName ?? "") && isReplBootstrapOnlyArgs(component.args) && component.result?.isError !== true) return [];
-  if (state.toolRendering.mode === "hidden" || !Number.isFinite(width) || width <= 0) return [];
-
-  if (compactLine) return withToolGap(renderCompactToolLine(component, width));
-  if (state.toolRendering.mode === "borderless") return renderBorderlessTool(component, width, originalRender);
-  return withToolGap(filterToolViewLines(originalRender.call(component, width)));
-}
-
 
 export function patchToolExecutionComponent(): boolean {
   try {
@@ -218,37 +215,21 @@ export function patchToolExecutionComponent(): boolean {
     const originalSetExpanded =
       typeof proto[TOOL_ORIGINAL_SET_EXPANDED_KEY] === "function" ? proto[TOOL_ORIGINAL_SET_EXPANDED_KEY] : proto.setExpanded;
 
-    proto.render = function piCompactToolRender(this: ToolExecutionWithShells & { hideComponent?: boolean }, width: number) {
-      if (this.hideComponent) {
-        stopToolSpinner(this);
-        return [];
-      }
-      return renderConfiguredTool(this, width, originalRender);
+    proto.render = function piCompactToolRender(this: ToolExecutionComponentShape, width: number) {
+      if (getToolExpanded(this)) return originalRender.call(this, width);
+      return renderCompactToolLine(this, width);
     };
 
-    proto.setExpanded = function piCompactToolSetExpanded(this: ToolExecutionWithShells, expanded: boolean) {
-      // Ctrl+O should still use Pi's native expansion implementation. We only
-      // mirror the requested state because modern ToolExecutionComponent keeps
-      // its actual expansion flag in a private #expanded field that patches
-      // cannot read. Without this mirror, compact rendering always thinks the
-      // tool is collapsed and fights the native expanded display.
-      const hadTrackedExpansion = hasToolExpandedState(this);
-      const wasExpanded = getToolExpanded(this);
+    proto.setExpanded = function piCompactToolSetExpanded(this: ToolExecutionComponentShape, expanded: boolean) {
       const result = originalSetExpanded.call(this, expanded);
-      setToolExpandedState(this, expanded);
-      syncToolSpinnerForCurrentExpansion(this);
-
-      // Collapsing expanded tool output back to one compact row can shrink the
-      // rendered chat by many off-screen rows. Pi's differential renderer usually
-      // clears visible rows, but terminal scrollback can retain old expanded
-      // output and make the session look duplicated until it is reopened. Force a
-      // single full redraw on real compact-mode collapses, matching the clean
-      // state users get after reopening without making every render expensive.
-      if (state.toolRendering.mode === "compact" && hadTrackedExpansion && wasExpanded !== expanded && !expanded) {
-        clearToolShellCaches(this);
-        requestToolRender(this, true);
+      toolExpandedState.set(this as object, expanded);
+      if (!expanded) {
+        try {
+          this.ui?.requestRender?.(true);
+        } catch {
+          // Rendering remains correct on the next scheduled frame.
+        }
       }
-
       return result;
     };
 
