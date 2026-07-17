@@ -256,7 +256,8 @@
       lib = pkgs.lib;
     in {
       pi-build = self.packages.${system}.pi;
-
+      pi-rtk-build = self.packages.${system}."pi-rtk";
+      pi-rtk-test = piRtk.checks.${system}.test;
       biome-lint = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-flake-biome-lint";
         version = "1";
