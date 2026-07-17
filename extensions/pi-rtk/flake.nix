@@ -38,8 +38,7 @@
           cp package.json README.md CHANGELOG.md LICENSE index.ts "$out"/
 
           substituteInPlace "$out/index.ts" \
-            --replace-fail 'execFileSync("rtk", ["rewrite", command], {' 'execFileSync("${pkgs.rtk}/bin/rtk", ["rewrite", command], {'
-
+            --replace-fail 'const RTK_COMMAND = "rtk";' 'const RTK_COMMAND = "${pkgs.rtk}/bin/rtk";'
           runHook postInstall
         '';
 
@@ -59,17 +58,43 @@
       default = self.packages.${system}.pi-rtk;
     });
 
+    checks = forAllSystems (system: let
+      pkgs = pkgsFor.${system};
+    in {
+      test = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-rtk-test";
+        version = (builtins.fromJSON (builtins.readFile ./package.json)).version;
+        src = pkgs.lib.cleanSource ./.;
+
+        nativeBuildInputs = [pkgs.bun];
+        dontConfigure = true;
+        dontBuild = true;
+
+        installPhase = ''
+          runHook preInstall
+
+          export HOME="$TMPDIR/home"
+          mkdir -p "$HOME"
+          bun test
+          touch "$out"
+
+          runHook postInstall
+        '';
+      };
+    });
+
     devShells = forAllSystems (system: let
       pkgs = pkgsFor.${system};
     in {
       default = pkgs.mkShell {
         packages = with pkgs; [
+          bun
           nodejs_22
           rtk
         ];
 
         shellHook = ''
-          echo "pi-rtk dev shell — node $(node --version), rtk $(rtk --version 2>/dev/null || echo unavailable)"
+          echo "pi-rtk dev shell — node $(node --version), bun v$(bun --version), rtk $(rtk --version 2>/dev/null || echo unavailable)"
         '';
       };
     });
