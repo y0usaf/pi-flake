@@ -2,54 +2,310 @@
  * pi-rtk — Pi extension that uses `rtk rewrite` to optimize shell commands.
  *
  * The extension participates in two Pi execution paths:
- * - agent-initiated `bash` tool calls via a replacement bash tool
+ * - agent-initiated `bash` tool calls via the mutable `tool_call` event
  * - user-issued `!<cmd>` shell commands via the `user_bash` event
  *
- * In both paths, optimization is best-effort: when `rtk rewrite` succeeds,
- * Pi executes the rewritten command; when rewrite fails, times out, or `rtk`
- * is unavailable, execution falls back to Pi's normal shell behavior.
+ * In both paths, optimization is best-effort and asynchronous: when `rtk
+ * rewrite` succeeds, Pi executes the rewritten command; when rewrite fails,
+ * times out, or `rtk` is unavailable, execution falls back to Pi's normal
+ * shell behavior.
  *
  * Commands entered with `!!<cmd>` are intentionally not intercepted so the
  * user's choice to exclude shell output from model context is preserved.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import {
-  createBashTool,
-  createLocalBashOperations,
+import type {
+  ExtensionAPI,
+  ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { execFileSync } from "node:child_process";
+import {
+  createLocalBashOperations,
+  isToolCallEventType,
+} from "@earendil-works/pi-coding-agent";
+import { execFile } from "node:child_process";
 
+const RTK_COMMAND = "rtk";
 const REWRITE_TIMEOUT_MS = 5000;
+const PROBE_TIMEOUT_MS = 1000;
+const MAX_OUTPUT_BYTES = 1024 * 1024;
 
-function rtkRewriteCommand(command: string): string | undefined {
-  try {
-    return execFileSync("rtk", ["rewrite", command], {
-      encoding: "utf-8",
-      timeout: REWRITE_TIMEOUT_MS,
-    }).trimEnd();
-  } catch {
-    return undefined;
-  }
+export type RtkAvailability = "unknown" | "available" | "unavailable";
+export type RtkFailureKind = "aborted" | "failed" | "timeout" | "unavailable";
+
+export interface RtkStatus {
+  availability: RtkAvailability;
+  attempts: number;
+  applied: number;
+  empty: number;
+  unchanged: number;
+  failures: number;
+  unavailableSkips: number;
+  lastFailure?: RtkFailureKind;
 }
 
-export default function (pi: ExtensionAPI) {
-  const cwd = process.cwd();
-  const localBashOperations = createLocalBashOperations();
+export interface RtkRewriter {
+  rewrite(command: string, signal?: AbortSignal): Promise<string | undefined>;
+  probe(signal?: AbortSignal): Promise<RtkAvailability>;
+  resetAvailability(): void;
+  getStatus(): RtkStatus;
+}
 
-  const bashTool = createBashTool(cwd, {
-    spawnHook: (ctx) => ({ ...ctx, command: rtkRewriteCommand(ctx.command) ?? ctx.command }),
+export interface RtkRewriterOptions {
+  command?: string;
+  timeoutMs?: number;
+  probeTimeoutMs?: number;
+}
+
+interface ExecFileTextOptions {
+  timeoutMs: number;
+  signal?: AbortSignal;
+}
+
+function execFileText(
+  file: string,
+  args: string[],
+  options: ExecFileTextOptions,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      file,
+      args,
+      {
+        encoding: "utf8",
+        killSignal: "SIGTERM",
+        maxBuffer: MAX_OUTPUT_BYTES,
+        signal: options.signal,
+        timeout: options.timeoutMs,
+      },
+      (error, stdout) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve(String(stdout).trimEnd());
+      },
+    );
+  });
+}
+
+function classifyError(error: unknown): RtkFailureKind {
+  const err = error as {
+    code?: unknown;
+    killed?: unknown;
+    name?: unknown;
+  } | null;
+
+  if (err?.name === "AbortError" || err?.code === "ABORT_ERR") {
+    return "aborted";
+  }
+
+  if (err?.code === "ENOENT" || err?.code === "EACCES") {
+    return "unavailable";
+  }
+
+  if (err?.killed === true || err?.code === "ETIMEDOUT") {
+    return "timeout";
+  }
+
+  return "failed";
+}
+
+export function createRtkRewriter(
+  options: RtkRewriterOptions = {},
+): RtkRewriter {
+  const command = options.command ?? RTK_COMMAND;
+  const timeoutMs = options.timeoutMs ?? REWRITE_TIMEOUT_MS;
+  const probeTimeoutMs = options.probeTimeoutMs ?? PROBE_TIMEOUT_MS;
+
+  let availability: RtkAvailability = "unknown";
+  const counters: Omit<RtkStatus, "availability"> = {
+    attempts: 0,
+    applied: 0,
+    empty: 0,
+    unchanged: 0,
+    failures: 0,
+    unavailableSkips: 0,
+    lastFailure: undefined,
+  };
+
+  function recordFailure(failure: RtkFailureKind): void {
+    counters.failures += 1;
+    counters.lastFailure = failure;
+
+    if (failure === "unavailable") {
+      availability = "unavailable";
+    } else if (failure !== "aborted") {
+      // Timeouts and non-zero exits prove that the binary itself spawned.
+      availability = "available";
+    }
+  }
+
+  return {
+    async rewrite(shellCommand, signal) {
+      if (availability === "unavailable") {
+        counters.unavailableSkips += 1;
+        return undefined;
+      }
+
+      counters.attempts += 1;
+
+      try {
+        const rewritten = await execFileText(
+          command,
+          ["rewrite", shellCommand],
+          { timeoutMs, signal },
+        );
+        availability = "available";
+
+        if (!rewritten) {
+          counters.empty += 1;
+          return undefined;
+        }
+
+        if (rewritten === shellCommand) {
+          counters.unchanged += 1;
+          return undefined;
+        }
+
+        counters.applied += 1;
+        return rewritten;
+      } catch (error) {
+        recordFailure(classifyError(error));
+        return undefined;
+      }
+    },
+
+    async probe(signal) {
+      try {
+        await execFileText(command, ["--version"], {
+          timeoutMs: probeTimeoutMs,
+          signal,
+        });
+        availability = "available";
+      } catch (error) {
+        recordFailure(classifyError(error));
+      }
+
+      return availability;
+    },
+
+    resetAvailability() {
+      if (availability === "unavailable") {
+        availability = "unknown";
+      }
+    },
+
+    getStatus() {
+      return {
+        ...counters,
+        availability,
+      };
+    },
+  };
+}
+
+function formatStatus(enabled: boolean, status: RtkStatus): string {
+  return [
+    `rtk — state: ${enabled ? "on" : "off"}`,
+    `binary: ${status.availability}`,
+    `rewrites: ${status.applied}/${status.attempts}`,
+    `empty: ${status.empty}`,
+    `unchanged: ${status.unchanged}`,
+    `unavailable skips: ${status.unavailableSkips}`,
+    `last failure: ${status.lastFailure ?? "none"}`,
+  ].join(" · ");
+}
+
+function updateFooter(ctx: ExtensionContext, enabled: boolean): void {
+  if (!ctx.hasUI) {
+    return;
+  }
+
+  ctx.ui.setStatus("pi-rtk", enabled ? "rtk:on" : "rtk:off");
+}
+
+export function registerPiRtk(
+  pi: ExtensionAPI,
+  rewriter: RtkRewriter = createRtkRewriter(),
+): void {
+  const localBashOperations = createLocalBashOperations();
+  let enabled = true;
+
+  async function rewriteIfEnabled(
+    command: string,
+    signal?: AbortSignal,
+  ): Promise<string | undefined> {
+    if (!enabled) {
+      return undefined;
+    }
+
+    return rewriter.rewrite(command, signal);
+  }
+
+  pi.registerCommand("rtk", {
+    description: "Toggle or inspect rtk shell command rewriting",
+    getArgumentCompletions(prefix) {
+      const items = ["on", "off", "status"].map((value) => ({
+        value,
+        label: value,
+      }));
+      const matches = items.filter((item) => item.value.startsWith(prefix));
+      return matches.length > 0 ? matches : null;
+    },
+    handler: async (args, ctx) => {
+      const action = args.trim().toLowerCase();
+
+      if (action === "status") {
+        const availability = await rewriter.probe(ctx.signal);
+        ctx.ui.notify(
+          formatStatus(enabled, { ...rewriter.getStatus(), availability }),
+          "info",
+        );
+        return;
+      }
+
+      if (action === "" || action === "on" || action === "off") {
+        enabled = action === "" ? !enabled : action === "on";
+
+        if (enabled) {
+          rewriter.resetAvailability();
+        }
+
+        updateFooter(ctx, enabled);
+        ctx.ui.notify(
+          `rtk ${enabled ? "on" : "off"}`,
+          enabled ? "info" : "warning",
+        );
+        return;
+      }
+
+      ctx.ui.notify("Usage: /rtk [on|off|status]", "warning");
+    },
   });
 
-  pi.registerTool(bashTool);
+  pi.on("session_start", (_event, ctx) => {
+    updateFooter(ctx, enabled);
+  });
 
-  pi.on("user_bash", (event) => {
+  pi.on("tool_call", async (event, ctx) => {
+    if (!isToolCallEventType("bash", event)) {
+      return;
+    }
+
+    const rewritten = await rewriteIfEnabled(event.input.command, ctx.signal);
+    if (rewritten && enabled) {
+      event.input.command = rewritten;
+    }
+  });
+
+  pi.on("user_bash", async (event, ctx) => {
     if (event.excludeFromContext) {
       return;
     }
 
-    const rewritten = rtkRewriteCommand(event.command);
-    if (!rewritten) {
+    const rewritten = await rewriteIfEnabled(event.command, ctx.signal);
+    if (!rewritten || !enabled) {
       return;
     }
 
@@ -61,4 +317,8 @@ export default function (pi: ExtensionAPI) {
       },
     };
   });
+}
+
+export default function (pi: ExtensionAPI) {
+  registerPiRtk(pi);
 }
