@@ -7,13 +7,13 @@ When `pi-rtk` is loaded, it participates in two Pi shell paths:
 - agent-initiated `bash` tool calls
 - user-issued `!<cmd>` shell commands whose output is included in model context
 
-In both cases, `pi-rtk` first attempts to rewrite the command with:
+In both cases, `pi-rtk` asynchronously attempts to rewrite the command with:
 
 ```shell
 rtk rewrite "<original command>"
 ```
 
-If rewrite succeeds, Pi executes the rewritten command. If rewrite fails for any reason, `pi-rtk` falls back silently so normal Pi shell behavior continues.
+If rewrite succeeds and returns a different, non-empty command, Pi executes the rewritten command. If rewrite fails for any reason, `pi-rtk` falls back silently so normal Pi shell behavior continues.
 
 Commands entered with `!!<cmd>` are intentionally not intercepted. They continue through Pi's normal context-excluded shell execution path unchanged.
 
@@ -22,7 +22,7 @@ Commands entered with `!!<cmd>` are intentionally not intercepted. They continue
 - Pi v0.60.0 or later
 - [rtk](https://github.com/rtk-ai/rtk), installed and available on your `PATH`
 
-If `rtk` is unavailable, `pi-rtk` still preserves normal shell behavior by falling back to the original command.
+If `rtk` is unavailable, `pi-rtk` preserves normal shell behavior by falling back to the original command. After an unavailable binary is detected, rewrite attempts are skipped for the rest of the session unless `/rtk on` is used to retry discovery.
 
 ## Install
 
@@ -74,15 +74,39 @@ For development, enter the dev shell:
 nix develop
 ```
 
+## Runtime control
+
+`pi-rtk` is enabled by default for each session. Use `/rtk` to control it without reloading Pi:
+
+```text
+/rtk          Toggle rewriting on or off
+/rtk on       Enable rewriting and retry unavailable-binary discovery
+/rtk off      Disable rewriting
+/rtk status   Show runtime state
+```
+
+The setting is session-scoped. It is not persisted to Pi settings.
+
+`/rtk status` reports only operational metadata:
+
+- enabled state
+- `rtk` binary availability
+- rewrite attempts and applied rewrites
+- empty and unchanged rewrite counts
+- unavailable-binary skips
+- last failure category
+
+It does not include shell command contents.
+
+When disabled, both agent `bash` calls and user `!<cmd>` commands pass through unchanged. `!!<cmd>` always bypasses `pi-rtk`, even while enabled.
+
 ## How It Works
 
 ### Agent `bash` tool calls
 
-`pi-rtk` registers a replacement `bash` tool for Pi. Before the tool executes a command, the extension attempts an `rtk rewrite` and uses the rewritten command when available.
+`pi-rtk` hooks Pi's mutable `tool_call` event for the built-in `bash` tool. Before Pi executes the tool, the extension asynchronously attempts an `rtk rewrite` and mutates the command only when rewrite returns a usable replacement.
 
-This preserves the normal `bash` tool interface while routing supported commands through `rtk`, which can filter and compress output before it reaches the model.
-
-If `rtk` is unavailable, times out, or cannot rewrite the command, the original command runs unchanged.
+This keeps Pi's built-in `bash` tool as the execution owner. `pi-rtk` does not register a replacement tool, override tool rendering, or change the tool schema exposed to the model.
 
 #### Behavior summary
 
@@ -90,24 +114,22 @@ If `rtk` is unavailable, times out, or cannot rewrite the command, the original 
 Agent bash tool call
         │
         ▼
-pi-rtk replacement bash tool
+pi-rtk tool_call hook
         │
         ├─ try: rtk rewrite "<command>"
         │      │
-        │      ├─ success -> execute rewritten command
-        │      └─ failure -> execute original command unchanged
+        │      ├─ usable rewrite -> mutate bash input command
+        │      └─ failure/empty/unchanged -> keep original command
         │
         ▼
-    same bash tool interface to Pi
+Pi built-in bash tool executes normally
 ```
 
 ### User `!<cmd>` shell commands
 
 `pi-rtk` also hooks Pi's `user_bash` event for context-visible user shell commands entered with `!<cmd>`.
 
-For these commands, the extension probes rewrite eligibility before claiming the event. If rewrite succeeds, it returns custom bash operations so Pi can keep owning the normal execution lifecycle and UI behavior. If rewrite does not succeed, the extension falls through and Pi handles the command normally.
-
-This keeps optimization best-effort, silent, and non-disruptive during normal operation.
+For these commands, the extension asynchronously probes rewrite eligibility before claiming the event. If rewrite succeeds, it returns custom bash operations so Pi can keep owning the normal execution lifecycle and UI behavior. If rewrite does not succeed, the extension falls through and Pi handles the command normally.
 
 #### Behavior summary
 
@@ -116,8 +138,8 @@ User !<cmd>
         │
         ├─ try: rtk rewrite "<command>"
         │      │
-        │      ├─ success -> return custom bash operations
-        │      └─ failure -> fall through to normal Pi user_bash handling
+        │      ├─ usable rewrite -> return custom bash operations
+        │      └─ failure/empty/unchanged -> fall through to normal Pi handling
         │
         ▼
     same user shell experience in Pi
@@ -136,4 +158,42 @@ User !!<cmd>
         │
         ▼
     bypass pi-rtk and use normal Pi context-excluded shell handling
+```
+
+## Fallback behavior
+
+Rewrite is best-effort. The original command is preserved when:
+
+- rewriting is disabled with `/rtk off`
+- `rtk` is missing or not executable
+- `rtk rewrite` exits unsuccessfully
+- rewrite exceeds the 5-second timeout
+- Pi aborts the rewrite operation
+- rewrite returns empty output
+- rewrite returns the original command unchanged
+- `rtk` was previously unavailable and discovery has not been retried with `/rtk on`
+
+Rewrite subprocesses are asynchronous and abort-aware, so they do not block Pi's UI or agent event loop.
+
+## Development
+
+Run tests:
+
+```shell
+bun test
+```
+
+Run package checks:
+
+```shell
+npm run type-check
+npm run lint
+npm run format-check
+```
+
+Validate through Nix:
+
+```shell
+nix build .#
+nix flake check
 ```
