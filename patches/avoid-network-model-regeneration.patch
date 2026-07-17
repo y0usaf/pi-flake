@@ -1,12 +1,12 @@
+diff --git a/packages/ai/package.json b/packages/ai/package.json
+index a3ed55f..147af3d 100644
 --- a/packages/ai/package.json
 +++ b/packages/ai/package.json
-@@ -60,9 +60,7 @@
- 	],
- 	"scripts": {
- 		"clean": "shx rm -rf dist",
--		"generate-models": "node scripts/generate-models.ts",
--		"generate-image-models": "node scripts/generate-image-models.ts",
--		"build": "npm run generate-models && npm run generate-image-models && tsgo -p tsconfig.build.json",
+@@ -52,7 +52,7 @@
+ 		"generate-models": "node scripts/generate-models.ts",
+ 		"generate-model-catalog": "node scripts/generate-models.ts --strict --json-only --json-output ../../.artifacts/model-catalog",
+ 		"generate-image-models": "node scripts/generate-image-models.ts",
+-		"build": "npm run generate-models && tsgo -p tsconfig.build.json && shx rm -rf dist/providers/data && shx cp -r src/providers/data dist/providers/data",
 +		"build": "tsgo -p tsconfig.build.json",
  		"test": "vitest --run",
  		"prepublishOnly": "npm run clean && npm run build"
