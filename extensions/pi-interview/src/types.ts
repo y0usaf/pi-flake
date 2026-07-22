@@ -1,4 +1,4 @@
-export const INTERVIEW_MODES = ["off", "auto", "strict"] as const;
+export const INTERVIEW_MODES = ["off", "manual", "auto", "strict"] as const;
 export type InterviewMode = (typeof INTERVIEW_MODES)[number];
 
 export const INTERVIEW_REASONING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -33,11 +33,6 @@ export interface InterviewQuestion {
 	allowOther: boolean;
 }
 
-export interface InterviewDecision {
-	action: "ask" | "proceed";
-	questions: InterviewQuestion[];
-}
-
 export interface InterviewAnswer {
 	id: string;
 	value: string;
@@ -58,21 +53,20 @@ export interface InterviewUsage {
 	attempts: number;
 }
 
-export interface InterviewRunResult {
-	decision: InterviewDecision;
+export interface AutoAnswerRunResult {
+	answers: InterviewAnswer[];
 	modelRef: string;
 	usage: InterviewUsage;
 }
 
-export interface InterviewMessageDetails {
-	modelRef: string;
-	questions: InterviewQuestion[];
-	answers: InterviewAnswer[];
-	cancelled: boolean;
+export interface InterviewToolDetails {
+	mode?: InterviewMode;
+	answerSource?: "user" | "model" | "fallback";
+	modelRef?: string;
+	questions?: InterviewQuestion[];
+	answers?: InterviewAnswer[];
+	cancelled?: boolean;
 	usage?: InterviewUsage;
-}
-
-export interface InterviewToolDetails extends Partial<InterviewMessageDetails> {
 	error?: string;
 	message?: string;
 }

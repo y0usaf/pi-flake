@@ -1,32 +1,48 @@
 # pi-interview
 
-Secondary-model requirements interviewer for [Pi](https://github.com/earendil-works/pi). Before primary agent starts, separate model decides whether clarification matters and generates structured multiple-choice questions.
+Standard ask-user-question workflow for [Pi](https://github.com/earendil-works/pi), with optional automatic answers from a separate model context.
+
+Main-session model always composes complete questionnaire and, outside strict mode, decides when clarification matters. Extension never delegates question generation.
 
 ## Flow
 
 ```text
-user request
-  → secondary interviewer: proceed | ask
-  → questionnaire UI when needed
-  → user answers injected as requirements
-  → primary model starts
+manual
+user request → main model investigates → interview_user({ questions })
+             → questionnaire UI → user answers → same main-session tool call resumes
+
+auto
+user request → main model investigates → interview_user({ questions })
+             → separate model answers same questionnaire from bounded session context
+             → same main-session tool call resumes
+
+strict
+same as manual, but main model must call interview_user once for every request
 ```
 
-Primary model remains unchanged. Secondary call uses configured provider/model directly through Pi model registry. Later uncertainty discovered during repository inspection routes through `interview_user` tool and same questionnaire UI.
+No Pi session, branch, or agent thread is created. Auto mode uses isolated provider inference only for selecting answers.
 
 ## Modes
 
 | Mode | Behavior |
 |---|---|
-| `off` | No preflight or interview tool. Default. |
-| `auto` | Secondary model asks only when user-owned choice materially changes path. |
-| `strict` | Every request receives at least one questionnaire before primary model starts. |
+| `off` | Tool disabled. Default. |
+| `manual` | Main model may ask when material clarification is needed; user answers. |
+| `auto` | Main model asks same questions; configured separate inference answers them. |
+| `strict` | Main model must ask at least once every request; user answers. |
 
-Enable with model:
+Enable manual/strict without secondary model:
+
+```text
+/interview manual
+/interview strict
+```
+
+Enable auto with answer model:
 
 ```text
 /interview auto anthropic/claude-haiku-4-5
-/interview strict openai/gpt-5.4
+/interview auto openai/gpt-5.4
 ```
 
 Omit model to use saved model or open authenticated-model selector:
@@ -45,8 +61,9 @@ Disable/status:
 ## Commands
 
 ```text
+/interview manual
 /interview auto [provider/model]
-/interview strict [provider/model]
+/interview strict
 /interview off
 /interview model [provider/model]
 /interview config
@@ -60,10 +77,10 @@ Configuration persists to `~/.pi/agent/interview.json`.
 | `reasoning` | `low` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `maxTokens` | `4096` | 256–16384 |
 | `maxQuestions` | `3` | 1–5 |
-| `maxOptions` | `5` | 2–7, including injected “Use your judgment” option |
-| `maxContextMessages` | `8` | 0–30 recent user/assistant/custom messages |
-| `maxContextChars` | `24000` | 2000–100000 |
-| `includeContextFiles` | `false` | Share loaded AGENTS.md/context files with interviewer |
+| `maxOptions` | `5` | 2–7, including host-added “Use your judgment” |
+| `maxContextMessages` | `8` | 0–30 recent session messages for auto-answer |
+| `maxContextChars` | `24000` | 2000–100000 session-context chars; questionnaire excluded |
+| `includeContextFiles` | `false` | Share loaded AGENTS.md/context files with auto-answer model |
 | `timeoutMs` | `45000` | 5000–180000 |
 
 Example:
@@ -76,29 +93,36 @@ Example:
 
 ## Context and privacy
 
-Secondary model receives:
+Manual/strict modes make no secondary model call.
 
+Auto-answer model receives:
+
+- Questionnaire composed by main-session model
 - Current user request
 - Bounded recent user/assistant/custom messages
-- Primary agent findings passed to `interview_user`
+- Prior `interview_user` answers
 - Project context files only when explicitly enabled
 
 Not sent:
 
 - Primary system prompt
-- Tool outputs
+- General tool outputs
+- Thinking blocks
 - Image bytes
 
-Choosing model on different provider sends selected context to that provider. Keep `includeContextFiles=false` or `maxContextMessages=0` when cross-provider sharing is unwanted.
+Choosing model on different provider sends request, questionnaire, and selected context to that provider. Use `includeContextFiles=false` and/or `maxContextMessages=0` to minimize additional sharing.
+
+Auto-answers are explicitly marked model-generated; direct user answers are marked user-selected.
 
 ## Reliability
 
-- Output must match validated JSON questionnaire schema.
-- One malformed-output retry, then fail open with warning.
+- Main model supplies structured questions/options through validated tool schema.
+- Host caps and normalizes questionnaire, adds “Use your judgment”, and optionally allows free text.
+- Auto-answer output must match validated JSON answer schema.
+- One malformed-output retry, then every question falls back to “Use your judgment”.
 - Model/auth/timeouts fail open; primary agent continues.
-- “Use your judgment” and optional free-text answer are host-added.
 - TUI uses multi-question tab UI. RPC falls back to sequential `select`/`input` dialogs.
-- Print/JSON modes skip preflight because no interactive UI exists.
+- Manual/strict tool is unavailable without interactive UI; auto mode works without questionnaire UI.
 
 ## Development
 

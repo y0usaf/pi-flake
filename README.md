@@ -146,7 +146,7 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-gecko-websearch` | Web search using Firefox's engine |
 | `pi-rtk` | `rtk rewrite` shell-command optimization to cut token usage |
 | `pi-minimal` | Minimal TUI: compact tool/chat/thinking rendering + borderless editor, per-feature `/minimal` toggles |
-| `pi-interview` | Secondary-model ambiguity triage + structured multiple-choice clarification (`/interview`) |
+| `pi-interview` | Main-session ask-user questionnaire + optional separate-context auto-answers (`/interview`) |
 | `pi-tool-management` | Persistent disabled-tools menu/UI via `/tools` |
 | `pi-webfetch` | HTTP fetching utilities |
 | `pi-hashline` | Hashline v2 read/edit tool override |
@@ -218,7 +218,7 @@ inputs.pi-flake.packages.<system>."pi-caveman"
 ```
 
 `pi-advisor` is bundled in `pi-full`, but its `advisor` tool starts disabled. Run `/advisor on [provider/model]` to configure and enable it.
-`pi-interview` is bundled in `pi-full` but defaults to `off`. Run `/interview auto [provider/model]` or `/interview strict [provider/model]`; configuration persists to `~/.pi/agent/interview.json`.
+`pi-interview` is bundled in `pi-full` but defaults to `off`. Use `/interview manual`, `/interview auto [provider/model]`, or `/interview strict`; configuration persists to `~/.pi/agent/interview.json`.
 
 `pi-review` PR review mode shells out to `gh`; install and authenticate GitHub CLI separately if you want `/review pr ...`.
 

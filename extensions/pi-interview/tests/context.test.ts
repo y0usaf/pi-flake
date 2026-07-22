@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { buildContextPacket } from "../src/context.ts";
-import type { InterviewConfig } from "../src/types.ts";
+import { buildAutoAnswerPacket, buildContextPacket } from "../src/context.ts";
+import type { InterviewConfig, InterviewQuestion } from "../src/types.ts";
 
 const config: InterviewConfig = {
 	mode: "auto",
 	provider: "test",
-	model: "interviewer",
+	model: "answerer",
 	reasoning: "low",
 	maxTokens: 4096,
 	maxQuestions: 3,
@@ -16,6 +16,19 @@ const config: InterviewConfig = {
 	timeoutMs: 45000,
 };
 
+const questions: InterviewQuestion[] = [
+	{
+		id: "scope",
+		label: "Scope",
+		prompt: "Which scope should implementation use?",
+		options: [
+			{ value: "minimal", label: "Minimal" },
+			{ value: "broad", label: "Broad" },
+		],
+		allowOther: true,
+	},
+];
+
 const branch = [
 	{
 		type: "message",
@@ -23,34 +36,50 @@ const branch = [
 	},
 	{
 		type: "message",
-		message: { role: "toolResult", content: [{ type: "text", text: "SECRET_TOOL_OUTPUT" }] },
+		message: { role: "toolResult", toolName: "bash", content: [{ type: "text", text: "SECRET_TOOL_OUTPUT" }] },
 	},
 	{
 		type: "message",
-		message: { role: "assistant", content: [{ type: "thinking", thinking: "SECRET_THINKING" }, { type: "text", text: "Known tradeoff" }] },
+		message: {
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: "SECRET_THINKING" },
+				{ type: "text", text: "Known tradeoff" },
+			],
+		},
 	},
 	{
 		type: "message",
-		message: { role: "custom", customType: "pi-interview", content: "Prior selected answer" },
+		message: {
+			role: "toolResult",
+			toolName: "interview_user",
+			content: [{ type: "text", text: "Prior interview answer" }],
+		},
 	},
 ];
 
-describe("buildContextPacket", () => {
-	test("includes conversational decisions but excludes tool output and thinking", () => {
-		const packet = buildContextPacket({ prompt: "Current request", branch, config });
+describe("auto-answer context", () => {
+	test("includes exact questionnaire and bounded session context but excludes general tool output and thinking", () => {
+		const packet = buildAutoAnswerPacket({ prompt: "Current request", questions, branch, config });
 		expect(packet).toContain("Current request");
+		expect(packet).toContain("QUESTIONNAIRE TO ANSWER");
+		expect(packet).toContain("Which scope should implementation use?");
 		expect(packet).toContain("Earlier requirement");
 		expect(packet).toContain("Known tradeoff");
-		expect(packet).toContain("Prior selected answer");
+		expect(packet).toContain("Prior interview answer");
 		expect(packet).not.toContain("SECRET_TOOL_OUTPUT");
 		expect(packet).not.toContain("SECRET_THINKING");
+
+		const sessionContext = buildContextPacket({ prompt: "Current request", branch, config });
+		expect(sessionContext.length).toBeLessThanOrEqual(config.maxContextChars);
 	});
 
 	test("shares context files only when enabled", () => {
 		const contextFiles = [{ path: "AGENTS.md", content: "PROJECT_CONSTRAINT" }];
-		const hidden = buildContextPacket({ prompt: "Current request", branch: [], contextFiles, config });
-		const shared = buildContextPacket({
+		const hidden = buildAutoAnswerPacket({ prompt: "Current request", questions, branch: [], contextFiles, config });
+		const shared = buildAutoAnswerPacket({
 			prompt: "Current request",
+			questions,
 			branch: [],
 			contextFiles,
 			config: { ...config, includeContextFiles: true },

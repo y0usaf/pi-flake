@@ -69,7 +69,7 @@ in {
       "gecko-websearch" = mkEnableOption "pi-gecko-websearch extension";
       rtk = mkEnableOption "pi-rtk extension";
       minimal = mkEnableOption "pi-minimal compact rendering and borderless editor extension";
-      interview = mkEnableOption "pi-interview secondary-model clarification workflow extension";
+      interview = mkEnableOption "pi-interview ask-user questionnaire and auto-answer extension";
       "tool-management" = mkEnableOption "pi-tool-management persistent disabled-tools UI extension";
       webfetch = mkEnableOption "pi-webfetch extension";
       hashline = mkEnableOption "pi-hashline v2 read/edit tool override";
