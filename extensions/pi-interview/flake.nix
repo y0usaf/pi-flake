@@ -1,5 +1,5 @@
 {
-  description = "Nix flake for pi-minimal-editor";
+  description = "Nix flake for pi-interview";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -24,8 +24,8 @@
       lib = pkgs.lib;
       packageJson = builtins.fromJSON (builtins.readFile ./package.json);
     in {
-      pi-minimal-editor = pkgs.stdenvNoCC.mkDerivation {
-        pname = "pi-minimal-editor";
+      pi-interview = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-interview";
         version = packageJson.version;
         src = lib.cleanSource ./.;
 
@@ -33,33 +33,51 @@
 
         installPhase = ''
           runHook preInstall
+
           mkdir -p "$out"
           cp package.json README.md "$out"/
           cp -r src "$out"/
+
           runHook postInstall
         '';
 
-        passthru = {
-          packageName = packageJson.name;
-        };
+        passthru.packageName = packageJson.name;
 
         meta = with lib; {
-          description = "Pi minimal editor border extension";
+          description = packageJson.description;
           license = licenses.mit;
           platforms = platforms.all;
         };
       };
 
-      default = self.packages.${system}.pi-minimal-editor;
+      default = self.packages.${system}.pi-interview;
+    });
+
+    checks = forAllSystems (system: let
+      pkgs = pkgsFor.${system};
+      lib = pkgs.lib;
+    in {
+      test = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-interview-tests";
+        version = "0.1.0";
+        src = lib.cleanSource ./.;
+        nativeBuildInputs = [pkgs.bun];
+        dontConfigure = true;
+        dontBuild = true;
+        installPhase = ''
+          bun test ./tests
+          touch "$out"
+        '';
+      };
     });
 
     devShells = forAllSystems (system: let
       pkgs = pkgsFor.${system};
     in {
       default = pkgs.mkShell {
-        packages = with pkgs; [nodejs_22];
+        packages = with pkgs; [bun nodejs_22];
         shellHook = ''
-          echo "pi-minimal-editor dev shell — node $(node --version)"
+          echo "pi-interview dev shell — node $(node --version), bun v$(bun --version)"
         '';
       };
     });

@@ -16,22 +16,6 @@
         "type": "github"
       }
     },
-    "piCompact": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-compact",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-compact",
-        "type": "path"
-      },
-      "parent": []
-    },
     "piGeckoWebsearch": {
       "inputs": {
         "nixpkgs": [
@@ -64,18 +48,50 @@
       },
       "parent": []
     },
-    "piMinimalEditor": {
+    "piInterview": {
       "inputs": {
         "nixpkgs": [
           "nixpkgs"
         ]
       },
       "locked": {
-        "path": "./extensions/pi-minimal-editor",
+        "path": "./extensions/pi-interview",
         "type": "path"
       },
       "original": {
-        "path": "./extensions/pi-minimal-editor",
+        "path": "./extensions/pi-interview",
+        "type": "path"
+      },
+      "parent": []
+    },
+    "piKimi": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-kimi",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-kimi",
+        "type": "path"
+      },
+      "parent": []
+    },
+    "piMinimal": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-minimal",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-minimal",
         "type": "path"
       },
       "parent": []
@@ -148,10 +164,11 @@
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
-        "piCompact": "piCompact",
         "piGeckoWebsearch": "piGeckoWebsearch",
         "piHashline": "piHashline",
-        "piMinimalEditor": "piMinimalEditor",
+        "piInterview": "piInterview",
+        "piKimi": "piKimi",
+        "piMinimal": "piMinimal",
         "piRtk": "piRtk",
         "piSrc": "piSrc",
         "piToolManagement": "piToolManagement",

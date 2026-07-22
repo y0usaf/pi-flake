@@ -1,5 +1,5 @@
 {
-  description = "Nix flake for pi-compact";
+  description = "Nix flake for pi-kimi";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -24,9 +24,10 @@
       lib = pkgs.lib;
       packageJson = builtins.fromJSON (builtins.readFile ./package.json);
     in {
-      pi-compact = pkgs.stdenvNoCC.mkDerivation {
-        pname = "pi-compact";
+      pi-kimi = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-kimi";
         version = packageJson.version;
+
         src = lib.cleanSource ./.;
 
         dontBuild = true;
@@ -46,13 +47,13 @@
         };
 
         meta = with lib; {
-          description = "Minimal Pi tool and message rendering with explicit tool labels";
+          description = "Kimi Code-style agent features for pi: subagents, plan mode, permissions, hooks, todos";
           license = licenses.mit;
           platforms = platforms.all;
         };
       };
 
-      default = self.packages.${system}.pi-compact;
+      default = self.packages.${system}.pi-kimi;
     });
 
     devShells = forAllSystems (system: let
@@ -64,7 +65,7 @@
         ];
 
         shellHook = ''
-          echo "pi-compact dev shell — node $(node --version)"
+          echo "pi-kimi dev shell — node $(node --version)"
         '';
       };
     });

@@ -1,0 +1,37 @@
+{
+  "name": "pi-interview",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Secondary-model requirements interviewer with structured multiple-choice clarification for Pi.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "interview",
+    "clarification"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.80.10",
+    "@earendil-works/pi-coding-agent": "^0.80.10",
+    "@earendil-works/pi-tui": "^0.80.10",
+    "@types/node": "^22.0.0",
+    "typebox": "^1.1.38",
+    "typescript": "^5.9.3"
+  }
+}

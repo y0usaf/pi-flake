@@ -68,11 +68,12 @@ in {
     extensions = {
       "gecko-websearch" = mkEnableOption "pi-gecko-websearch extension";
       rtk = mkEnableOption "pi-rtk extension";
-      compact = mkEnableOption "pi-compact extension";
+      minimal = mkEnableOption "pi-minimal compact rendering and borderless editor extension";
+      interview = mkEnableOption "pi-interview secondary-model clarification workflow extension";
       "tool-management" = mkEnableOption "pi-tool-management persistent disabled-tools UI extension";
       webfetch = mkEnableOption "pi-webfetch extension";
       hashline = mkEnableOption "pi-hashline v2 read/edit tool override";
-      "minimal-editor" = mkEnableOption "pi-minimal-editor editor border extension";
+
       advisor = mkEnableOption "pi-advisor strategic advisor-model extension";
       review = mkEnableOption "pi-review /review and /end-review code review workflow extension";
       vcc = mkEnableOption "pi-vcc algorithmic conversation compactor and vcc_recall history search";

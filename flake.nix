@@ -15,8 +15,11 @@
     piRtk.url = "path:./extensions/pi-rtk";
     piRtk.inputs.nixpkgs.follows = "nixpkgs";
 
-    piCompact.url = "path:./extensions/pi-compact";
-    piCompact.inputs.nixpkgs.follows = "nixpkgs";
+    piMinimal.url = "path:./extensions/pi-minimal";
+    piMinimal.inputs.nixpkgs.follows = "nixpkgs";
+
+    piInterview.url = "path:./extensions/pi-interview";
+    piInterview.inputs.nixpkgs.follows = "nixpkgs";
 
     piToolManagement.url = "path:./extensions/pi-tool-management";
     piToolManagement.inputs.nixpkgs.follows = "nixpkgs";
@@ -26,8 +29,8 @@
     piHashline.url = "path:./extensions/pi-hashline";
     piHashline.inputs.nixpkgs.follows = "nixpkgs";
 
-    piMinimalEditor.url = "path:./extensions/pi-minimal-editor";
-    piMinimalEditor.inputs.nixpkgs.follows = "nixpkgs";
+    piKimi.url = "path:./extensions/pi-kimi";
+    piKimi.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs = {
@@ -36,11 +39,12 @@
     piSrc,
     piGeckoWebsearch,
     piRtk,
-    piCompact,
+    piMinimal,
+    piInterview,
     piToolManagement,
     piWebfetch,
     piHashline,
-    piMinimalEditor,
+    piKimi,
     ...
   }: let
     systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
@@ -120,11 +124,12 @@
 
       "pi-gecko-websearch" = piGeckoWebsearch.packages.${system}.default;
       "pi-rtk" = piRtk.packages.${system}.default;
-      "pi-compact" = piCompact.packages.${system}.default;
+      "pi-minimal" = piMinimal.packages.${system}.default;
+      "pi-interview" = piInterview.packages.${system}.default;
       "pi-tool-management" = piToolManagement.packages.${system}.default;
       "pi-webfetch" = piWebfetch.packages.${system}.default;
       "pi-hashline" = piHashline.packages.${system}.default;
-      "pi-minimal-editor" = piMinimalEditor.packages.${system}.default;
+
       "pi-advisor" = let
         advisorPackageJson = builtins.fromJSON (builtins.readFile ./extensions/RimuruW_pi-advisor/package.json);
       in
@@ -248,6 +253,19 @@
         extensions = self.lib.defaultExtensionPackagesFor system;
       };
 
+      # pi-kimi extension package on its own.
+      "pi-kimi-ext" = piKimi.packages.${system}.default;
+
+      # pi with the default extensions plus pi-kimi (subagents, plan mode,
+      # permissions, hooks, todos) — Kimi Code-style agent loop features.
+      pi-kimi = self.lib.piWithExtensions {
+        inherit pkgs;
+        pi = self.packages.${system}.pi;
+        extensions =
+          self.lib.defaultExtensionPackagesFor system
+          // {kimi = self.packages.${system}."pi-kimi-ext";};
+      };
+
       default = self.packages.${system}.pi;
     });
 
@@ -256,8 +274,10 @@
       lib = pkgs.lib;
     in {
       pi-build = self.packages.${system}.pi;
+      pi-kimi-build = self.packages.${system}.pi-kimi;
       pi-rtk-build = self.packages.${system}."pi-rtk";
       pi-rtk-test = piRtk.checks.${system}.test;
+      pi-interview-test = piInterview.checks.${system}.test;
       biome-lint = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-flake-biome-lint";
         version = "1";
@@ -380,18 +400,19 @@
     lib.extensionPackagesFor = system: {
       "gecko-websearch" = self.packages.${system}."pi-gecko-websearch";
       rtk = self.packages.${system}."pi-rtk";
-      compact = self.packages.${system}."pi-compact";
+      minimal = self.packages.${system}."pi-minimal";
+      interview = self.packages.${system}."pi-interview";
       "tool-management" = self.packages.${system}."pi-tool-management";
       webfetch = self.packages.${system}."pi-webfetch";
       hashline = self.packages.${system}."pi-hashline";
-      "minimal-editor" = self.packages.${system}."pi-minimal-editor";
+
       advisor = self.packages.${system}."pi-advisor";
       review = self.packages.${system}."pi-review";
       vcc = self.packages.${system}."pi-vcc";
       caveman = self.packages.${system}."pi-caveman";
     };
 
-    # Default bundle used by pi-full; advisor itself starts disabled.
+    # Default bundle used by pi-full; opt-in extensions remain disabled internally.
     lib.defaultExtensionPackagesFor = self.lib.extensionPackagesFor;
 
     lib.enabledExtensions = {
