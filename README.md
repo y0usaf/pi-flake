@@ -74,11 +74,12 @@ Flake `inputs` cannot pass arbitrary booleans into another flake's outputs. Use 
       extensionFlags = {
         "gecko-websearch" = false;
         rtk = false;
-        compact = true;
+        minimal = true;
+        interview = true;
         "tool-management" = false;
         webfetch = true;
         hashline = true;
-        "minimal-editor" = true;
+
         advisor = true;
         review = true;
         vcc = true;
@@ -112,11 +113,12 @@ Only flags set to `true` are copied into the bundled wrapper.
 
             # Option 2: selected bundled extensions
             # extensions = {
-            #   compact = true;
+            #   minimal = true;
+            #   interview = true;
             #   # tool-management = true; # persistent disabled-tools menu/UI
             #   webfetch = true;
             #   hashline = true;
-            #   "minimal-editor" = true;
+
             #   advisor = true;
             #   review = true;
             #   vcc = true;
@@ -143,11 +145,12 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 |------|-------------|
 | `pi-gecko-websearch` | Web search using Firefox's engine |
 | `pi-rtk` | `rtk rewrite` shell-command optimization to cut token usage |
-| `pi-compact` | Minimal explicit tool/chat rendering |
+| `pi-minimal` | Minimal TUI: compact tool/chat/thinking rendering + borderless editor, per-feature `/minimal` toggles |
+| `pi-interview` | Secondary-model ambiguity triage + structured multiple-choice clarification (`/interview`) |
 | `pi-tool-management` | Persistent disabled-tools menu/UI via `/tools` |
 | `pi-webfetch` | HTTP fetching utilities |
 | `pi-hashline` | Hashline v2 read/edit tool override |
-| `pi-minimal-editor` | Minimal editor borders with footer/status metadata |
+
 | `pi-advisor` | Stage-aware strategic guidance from a separately configured advisor model |
 | `pi-review` | `/review` and `/end-review` code review workflow |
 | `pi-vcc` | Algorithmic conversation compactor with `/pi-vcc`, `/pi-vcc-recall`, and `vcc_recall` |
@@ -202,11 +205,12 @@ If you want full control:
 ```nix
 inputs.pi-flake.packages.<system>."pi-gecko-websearch"
 inputs.pi-flake.packages.<system>."pi-rtk"
-inputs.pi-flake.packages.<system>."pi-compact"
+inputs.pi-flake.packages.<system>."pi-minimal"
+inputs.pi-flake.packages.<system>."pi-interview"
 inputs.pi-flake.packages.<system>."pi-tool-management"
 inputs.pi-flake.packages.<system>."pi-webfetch"
 inputs.pi-flake.packages.<system>."pi-hashline"
-inputs.pi-flake.packages.<system>."pi-minimal-editor"
+
 inputs.pi-flake.packages.<system>."pi-advisor"
 inputs.pi-flake.packages.<system>."pi-review"
 inputs.pi-flake.packages.<system>."pi-vcc"
@@ -214,6 +218,7 @@ inputs.pi-flake.packages.<system>."pi-caveman"
 ```
 
 `pi-advisor` is bundled in `pi-full`, but its `advisor` tool starts disabled. Run `/advisor on [provider/model]` to configure and enable it.
+`pi-interview` is bundled in `pi-full` but defaults to `off`. Run `/interview auto [provider/model]` or `/interview strict [provider/model]`; configuration persists to `~/.pi/agent/interview.json`.
 
 `pi-review` PR review mode shells out to `gh`; install and authenticate GitHub CLI separately if you want `/review pr ...`.
 
