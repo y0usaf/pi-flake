@@ -5,35 +5,73 @@ import {
 	type ExtensionContext,
 	keyHint,
 } from "@earendil-works/pi-coding-agent";
-import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
+import { Container, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { configPath, loadConfig, parseBoolean, saveConfig } from "./config.js";
-import { buildPreflightContext, buildToolContext } from "./context.js";
-import { runInterviewer } from "./interviewer.js";
+import { buildAutoAnswerContext } from "./context.js";
+import { createJudgmentAnswers, normalizeQuestions } from "./protocol.js";
+import { runAutoAnswerer } from "./answerer.js";
 import { runWithLoader } from "./loader.js";
 import { runQuestionnaire } from "./questionnaire.js";
 import {
 	INTERVIEW_REASONING_LEVELS,
 	type InterviewAnswer,
 	type InterviewConfig,
-	type InterviewMessageDetails,
 	type InterviewMode,
 	type InterviewQuestion,
-	type InterviewRunResult,
 	type InterviewToolDetails,
 	type QuestionnaireResult,
 } from "./types.js";
 
-const MESSAGE_TYPE = "pi-interview";
 const TOOL_NAME = "interview_user";
 const STATUS_KEY = "pi-interview";
 
-const PRIMARY_GUIDANCE = `[PI INTERVIEW POLICY]
-User clarification is handled through the interview_user tool.
-- If a new user-owned decision appears after repository inspection, call interview_user with concise findings and the exact decision point.
-- Do not ask free-form clarification questions in assistant prose when interview_user is available.
-- Do not ask user for facts discoverable from repository, tools, or conventional safe defaults.
-- Treat answers in PI INTERVIEW CLARIFICATIONS messages as direct user requirements. Do not re-ask answered questions unless evidence conflicts.`;
+const QuestionOptionSchema = Type.Object({
+	value: Type.Optional(Type.String({ description: "Stable option value; derived from label when omitted" })),
+	label: Type.String({ description: "Short display label" }),
+	description: Type.Optional(Type.String({ description: "Concise tradeoff or consequence" })),
+	recommended: Type.Optional(Type.Boolean({ description: "Mark at most one recommended option per question" })),
+});
+
+const InterviewQuestionSchema = Type.Object({
+	id: Type.Optional(Type.String({ description: "Stable question identifier; derived from label when omitted" })),
+	label: Type.Optional(Type.String({ description: "Short tab label, e.g. Scope or Compatibility" })),
+	prompt: Type.String({ description: "Exact question to ask" }),
+	options: Type.Array(QuestionOptionSchema, {
+		minItems: 1,
+		maxItems: 6,
+		description: "Concrete, mutually distinct choices",
+	}),
+	allowOther: Type.Optional(Type.Boolean({ description: "Allow a free-text answer; default true" })),
+});
+
+const InterviewParams = Type.Object({
+	questions: Type.Array(InterviewQuestionSchema, {
+		minItems: 1,
+		maxItems: 5,
+		description: "Fully composed questionnaire to present unchanged or auto-answer",
+	}),
+});
+
+function primaryGuidance(config: InterviewConfig): string {
+	const answerRule =
+		config.mode === "auto"
+			? "Auto mode: compose exactly the questions you would ask the user. A separate inference context answers that same questionnaire using bounded current-session context."
+			: "User-answer mode: the questionnaire is shown to the user and selections return to this tool call.";
+	const strictRule =
+		config.mode === "strict"
+			? "\n- STRICT MODE: Call interview_user at least once during every user request before your final response. When no material ambiguity exists, ask one concise question about proceeding with recommended defaults, seeing a plan first, or adding constraints."
+			: "";
+	return `[PI INTERVIEW POLICY]
+User clarification uses interview_user, following the standard ask-user-question pattern.
+- The main-session model must compose the complete questions and options passed to interview_user; never delegate question generation.
+- ${answerRule}
+- Outside strict mode, ask only decision-relevant questions whose answers can change implementation, scope, risk, compatibility, or UX.
+- Inspect the repository first when facts are discoverable. Do not ask for facts available through tools or conventional safe defaults.
+- Do not ask free-form clarification questions in assistant prose while interview_user is available.
+- Batch at most ${config.maxQuestions} questions with at most ${Math.max(1, config.maxOptions - 1)} domain options each. Host adds “Use your judgment”; optional free text follows allowOther.
+- Treat returned answers according to their source label: direct user selections are requirements; auto-answers are inferred defaults.${strictRule}`;
+}
 
 function modelRef(config: InterviewConfig): string {
 	return config.provider && config.model ? `${config.provider}/${config.model}` : "not configured";
@@ -45,7 +83,7 @@ function formatTokens(count: number): string {
 	return `${Math.round(count / 1000)}k`;
 }
 
-function answerLines(questions: InterviewQuestion[], answers: InterviewAnswer[]): string[] {
+function answerLines(questions: readonly InterviewQuestion[], answers: readonly InterviewAnswer[]): string[] {
 	const byId = new Map(answers.map((answer) => [answer.id, answer]));
 	return questions.flatMap((question) => {
 		const answer = byId.get(question.id);
@@ -53,37 +91,42 @@ function answerLines(questions: InterviewQuestion[], answers: InterviewAnswer[])
 	});
 }
 
-function clarificationContent(result: QuestionnaireResult): string {
+function questionnaireContent(
+	result: QuestionnaireResult,
+	source: "user" | "model" | "fallback",
+	autoModelRef?: string,
+): string {
 	if (result.cancelled) {
-		return `[PI INTERVIEW CLARIFICATIONS]\nUser cancelled the questionnaire. Continue with best judgment and avoid repeating the same questions unless work is blocked.`;
+		return `[PI INTERVIEW ANSWERS]\nUser cancelled the questionnaire. Continue with best judgment and avoid repeating the same questions unless work is blocked.`;
 	}
-	return `[PI INTERVIEW CLARIFICATIONS — answers selected directly by user]\n${answerLines(result.questions, result.answers).join("\n\n")}\n\nTreat these answers as requirements for current request.`;
+	const heading =
+		source === "user"
+			? "[PI INTERVIEW ANSWERS — selected directly by user]"
+			: source === "model"
+				? `[PI INTERVIEW AUTO-ANSWERS — selected by ${autoModelRef ?? "configured model"}]`
+				: "[PI INTERVIEW AUTO-ANSWER FALLBACK]";
+	const instruction =
+		source === "user"
+			? "Treat these answers as requirements for current request."
+			: source === "model"
+				? "Use these model-inferred answers as resolved defaults for current request; they are not direct user statements."
+				: "Auto-answer inference failed. Continue using primary-agent judgment for these decisions.";
+	return `${heading}\n${answerLines(result.questions, result.answers).join("\n\n")}\n\n${instruction}`;
 }
 
-function messageDetails(run: InterviewRunResult, questionnaire: QuestionnaireResult): InterviewMessageDetails {
-	return {
-		modelRef: run.modelRef,
-		questions: questionnaire.questions,
-		answers: questionnaire.answers,
-		cancelled: questionnaire.cancelled,
-		usage: run.usage,
-	};
-}
 
 function renderSummary(
-	details: InterviewMessageDetails | InterviewToolDetails | undefined,
+	details: InterviewToolDetails | undefined,
 	fallback: string,
 	theme: ExtensionContext["ui"]["theme"],
 	expanded: boolean,
 ): Container {
 	const container = new Container();
-	const error = details && "error" in details ? details.error : undefined;
-	const failureMessage = details && "message" in details ? details.message : undefined;
-	const titleColor = error ? "error" : details?.cancelled ? "warning" : "toolTitle";
-	container.addChild(new Text(theme.fg(titleColor, theme.bold("Interview")), 0, 0));
-	if (error) {
-		container.addChild(new Text(theme.fg("dim", failureMessage ?? fallback), 0, 0));
-		return container;
+	const title = details?.answerSource === "model" ? "Interview · auto" : details?.answerSource === "fallback" ? "Interview · fallback" : "Interview";
+	const titleColor = details?.error ? "warning" : details?.cancelled ? "warning" : "toolTitle";
+	container.addChild(new Text(theme.fg(titleColor, theme.bold(title)), 0, 0));
+	if (details?.error) {
+		container.addChild(new Text(theme.fg("warning", details.message ?? fallback), 0, 0));
 	}
 	if (details?.cancelled) {
 		container.addChild(new Text(theme.fg("warning", "Questionnaire cancelled; primary agent will use judgment."), 0, 0));
@@ -98,7 +141,7 @@ function renderSummary(
 				new Text(`${theme.fg("muted", `${question.label}: `)}${theme.fg("accent", answer.label)}`, 0, 0),
 			);
 		}
-	} else {
+	} else if (!details?.error) {
 		container.addChild(new Text(fallback, 0, 0));
 	}
 	if (expanded && details?.modelRef) {
@@ -149,42 +192,44 @@ async function selectModel(
 		ctx.ui.notify("No authenticated models available. Run /login first.", "error");
 		return undefined;
 	}
-	const selected = await ctx.ui.select("Select secondary interviewer model", choices);
+	const selected = await ctx.ui.select("Select auto-answer model", choices);
 	return selected ? parseModelRef(selected) : undefined;
 }
 
 function configStatus(config: InterviewConfig): string {
 	return [
 		`pi-interview: ${config.mode}`,
-		`Model: ${modelRef(config)}`,
+		`Auto-answer model: ${modelRef(config)}`,
 		`Reasoning: ${config.reasoning}`,
 		`Questions/options: ${config.maxQuestions}/${config.maxOptions}`,
-		`Recent messages shared: ${config.maxContextMessages}`,
-		`Context budget: ${config.maxContextChars} chars`,
-		`Project context files: ${config.includeContextFiles ? "shared" : "not shared"}`,
+		`Recent messages shared for auto-answer: ${config.maxContextMessages}`,
+		`Session-context budget: ${config.maxContextChars} chars (questionnaire excluded)`,
+		`Project context files: ${config.includeContextFiles ? "shared for auto-answer" : "not shared"}`,
 		`Timeout: ${config.timeoutMs}ms`,
 		`Config: ${configPath()}`,
 		"",
-		"Current request + bounded recent conversation are sent to secondary model.",
-		"Tool outputs, primary system prompt, and image bytes are not sent.",
+		"manual: main model asks when needed; user answers.",
+		"auto: main model asks when needed; separate model answers.",
+		"strict: main model must ask every request; user answers.",
 	].join("\n");
 }
 
 export default function piInterview(pi: ExtensionAPI): void {
 	let loaded = loadConfig();
 	let config = loaded.config;
+	let currentPrompt = "Current user request";
+	let currentContextFiles: unknown;
+	let currentImageCount = 0;
 
 	function applyModeState(ctx: ExtensionContext): void {
 		const active = pi.getActiveTools();
-		const shouldEnableTool = config.mode !== "off" && ctx.hasUI;
-		if (shouldEnableTool && !active.includes(TOOL_NAME)) pi.setActiveTools([...active, TOOL_NAME]);
-		if (!shouldEnableTool && active.includes(TOOL_NAME)) {
+		const canRun = config.mode === "auto" || ((config.mode === "manual" || config.mode === "strict") && ctx.hasUI);
+		if (canRun && !active.includes(TOOL_NAME)) pi.setActiveTools([...active, TOOL_NAME]);
+		if (!canRun && active.includes(TOOL_NAME)) {
 			pi.setActiveTools(active.filter((name) => name !== TOOL_NAME));
 		}
-		ctx.ui.setStatus(
-			STATUS_KEY,
-			config.mode === "off" ? undefined : `interview:${config.mode} · ${modelRef(config)}`,
-		);
+		const status = config.mode === "auto" ? `interview:auto · ${modelRef(config)}` : `interview:${config.mode}`;
+		ctx.ui.setStatus(STATUS_KEY, config.mode === "off" ? undefined : status);
 	}
 
 	function persist(next: InterviewConfig, ctx: ExtensionContext): boolean {
@@ -202,6 +247,9 @@ export default function piInterview(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => {
 		loaded = loadConfig();
 		config = loaded.config;
+		currentPrompt = "Current user request";
+		currentContextFiles = undefined;
+		currentImageCount = 0;
 		applyModeState(ctx);
 		if (loaded.error && ctx.hasUI) ctx.ui.notify(loaded.error, "error");
 	});
@@ -210,117 +258,142 @@ export default function piInterview(pi: ExtensionAPI): void {
 		ctx.ui.setStatus(STATUS_KEY, undefined);
 	});
 
-	pi.on("before_agent_start", async (event, ctx) => {
-		if (config.mode === "off" || !ctx.hasUI) return;
-		const augmentedSystemPrompt = `${event.systemPrompt}\n\n${PRIMARY_GUIDANCE}`;
-		const packet = buildPreflightContext(event, ctx, config);
-		const run = await runWithLoader(
-			ctx,
-			`Checking clarification needs with ${modelRef(config)}…`,
-			(signal) => runInterviewer(ctx, config, packet, config.mode === "strict", signal),
-		);
-		if (run.status === "cancelled") {
-			ctx.ui.notify("Interviewer skipped; primary agent will continue.", "info");
-			return { systemPrompt: augmentedSystemPrompt };
-		}
-		if (run.status === "error") {
-			ctx.ui.notify(`Interviewer unavailable: ${run.error}. Primary agent will continue.`, "warning");
-			return { systemPrompt: augmentedSystemPrompt };
-		}
-		if (run.value.decision.action === "proceed") return { systemPrompt: augmentedSystemPrompt };
-
-		const questionnaire = await runQuestionnaire(ctx, run.value.decision.questions);
-		return {
-			systemPrompt: augmentedSystemPrompt,
-			message: {
-				customType: MESSAGE_TYPE,
-				content: clarificationContent(questionnaire),
-				display: true,
-				details: messageDetails(run.value, questionnaire),
-			},
-		};
+	pi.on("before_agent_start", (event, ctx) => {
+		currentPrompt = event.prompt;
+		currentContextFiles = event.systemPromptOptions.contextFiles;
+		currentImageCount = event.images?.length ?? 0;
+		if (config.mode === "off") return;
+		if ((config.mode === "manual" || config.mode === "strict") && !ctx.hasUI) return;
+		return { systemPrompt: `${event.systemPrompt}\n\n${primaryGuidance(config)}` };
 	});
 
 	pi.registerTool({
 		name: TOOL_NAME,
 		label: "Interview user",
 		description:
-			"Delegate a material user decision to the configured secondary interviewer model. The model generates a multiple-choice questionnaire; selected answers are returned as direct user requirements.",
-		promptSnippet: "interview_user({ context }): ask user structured multiple-choice clarification via secondary model",
+			"Ask one or more structured multiple-choice questions composed by the main-session model. Depending on /interview mode, answers come from the user or a separate auto-answer inference.",
+		promptSnippet: "interview_user({ questions }): ask a structured questionnaire composed in the main session",
 		promptGuidelines: [
-			"Use interview_user when repository inspection reveals a user-owned decision that materially changes implementation.",
-			"Pass interview_user concise findings, known constraints, and exact decision point; do not pre-compose questions.",
+			"Use interview_user when a user-owned decision materially changes implementation, scope, compatibility, risk, or UX.",
+			"Compose interview_user questions and concrete options in the tool arguments; never ask another model to generate them.",
 			"Do not ask free-form clarification in assistant prose while interview_user is active.",
-			"Do not use interview_user for facts discoverable with read/search tools or for reversible conventional defaults.",
+			"Outside strict mode, do not use interview_user for facts discoverable with read/search tools or for reversible conventional defaults.",
 		],
-		parameters: Type.Object({
-			context: Type.String({
-				description: "Concise findings, constraints, alternatives, and exact user-owned decision requiring clarification",
-			}),
-		}),
+		parameters: InterviewParams,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (config.mode === "off") {
 				return {
 					content: [{ type: "text", text: "pi-interview is disabled. Continue using best judgment." }],
-					details: { error: "disabled", message: "pi-interview is disabled" } as InterviewToolDetails,
+					details: { mode: config.mode, error: "disabled", message: "pi-interview is disabled" } as InterviewToolDetails,
 				};
 			}
+
+			const questions = normalizeQuestions(params.questions, config);
+			if (questions.length === 0) throw new Error("interview_user requires at least one valid question with options");
+
+			if (config.mode === "auto") {
+				const packet = buildAutoAnswerContext(
+					ctx,
+					config,
+					currentPrompt,
+					questions,
+					currentContextFiles,
+					currentImageCount,
+				);
+				const run = await runWithLoader(
+					ctx,
+					`Auto-answering with ${modelRef(config)}…`,
+					(uiSignal) => runAutoAnswerer(ctx, config, packet, questions, uiSignal ?? signal),
+					signal,
+				);
+				if (run.status !== "ok") {
+					const message = run.status === "cancelled" ? "Auto-answer cancelled" : run.error;
+					const answers = createJudgmentAnswers(questions);
+					const questionnaire = { questions, answers, cancelled: false };
+					return {
+						content: [
+							{
+								type: "text",
+								text: `${questionnaireContent(questionnaire, "fallback")}\n\nAuto-answer unavailable: ${message}`,
+							},
+						],
+						details: {
+							mode: config.mode,
+							answerSource: "fallback",
+							modelRef: modelRef(config),
+							questions,
+							answers,
+							cancelled: false,
+							error: run.status,
+							message,
+						} as InterviewToolDetails,
+					};
+				}
+				const questionnaire = { questions, answers: run.value.answers, cancelled: false };
+				return {
+					content: [{ type: "text", text: questionnaireContent(questionnaire, "model", run.value.modelRef) }],
+					details: {
+						mode: config.mode,
+						answerSource: "model",
+						modelRef: run.value.modelRef,
+						questions,
+						answers: run.value.answers,
+						cancelled: false,
+						usage: run.value.usage,
+					} as InterviewToolDetails,
+				};
+			}
+
 			if (!ctx.hasUI) {
 				return {
 					content: [{ type: "text", text: "Interactive UI unavailable. Continue using best judgment." }],
-					details: { error: "ui_unavailable", message: "Interactive UI unavailable" } as InterviewToolDetails,
+					details: {
+						mode: config.mode,
+						error: "ui_unavailable",
+						message: "Interactive UI unavailable",
+						questions,
+					} as InterviewToolDetails,
 				};
 			}
-			const packet = buildToolContext(ctx, config, params.context);
-			const run = await runWithLoader(
-				ctx,
-				`Preparing questions with ${modelRef(config)}…`,
-				(uiSignal) => runInterviewer(ctx, config, packet, true, uiSignal ?? signal),
-				signal,
-			);
-			if (run.status !== "ok") {
-				const message = run.status === "cancelled" ? "Interviewer cancelled" : run.error;
-				return {
-					content: [{ type: "text", text: `${message}. Continue using best judgment.` }],
-					details: { error: run.status, message } as InterviewToolDetails,
-				};
-			}
-			const questionnaire = await runQuestionnaire(ctx, run.value.decision.questions);
+			const questionnaire = await runQuestionnaire(ctx, questions);
 			return {
-				content: [{ type: "text", text: clarificationContent(questionnaire) }],
-				details: messageDetails(run.value, questionnaire) as InterviewToolDetails,
+				content: [{ type: "text", text: questionnaireContent(questionnaire, "user") }],
+				details: {
+					mode: config.mode,
+					answerSource: "user",
+					questions: questionnaire.questions,
+					answers: questionnaire.answers,
+					cancelled: questionnaire.cancelled,
+				} as InterviewToolDetails,
 			};
 		},
-		renderCall(_args, theme) {
-			return new Text(theme.fg("toolTitle", theme.bold("Interview user")), 0, 0);
+		renderCall(args, theme) {
+			const count = Array.isArray(args.questions) ? args.questions.length : 0;
+			return new Text(
+				`${theme.fg("toolTitle", theme.bold("Interview"))}${theme.fg("muted", count ? ` · ${count} question${count === 1 ? "" : "s"}` : "")}`,
+				0,
+				0,
+			);
 		},
 		renderResult(result, { expanded, isPartial }, theme) {
 			if (isPartial) return new Text(theme.fg("muted", "Interviewing…"), 0, 0);
 			const fallback = result.content[0]?.type === "text" ? result.content[0].text : "(no result)";
 			const details = result.details as InterviewToolDetails | undefined;
 			const container = renderSummary(details, fallback, theme, expanded);
-			if (!expanded && !details?.error && details?.answers?.length) {
+			if (!expanded && details?.modelRef && details.answers?.length) {
 				container.addChild(new Text(theme.fg("dim", keyHint("app.tools.expand", "for model + usage")), 0, 0));
 			}
 			return container;
 		},
 	});
 
-	pi.registerMessageRenderer(MESSAGE_TYPE, (message, { expanded }, theme) => {
-		const details = message.details as InterviewMessageDetails | undefined;
-		const fallback = typeof message.content === "string" ? message.content : "Interview complete";
-		const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-		box.addChild(renderSummary(details, fallback, theme, expanded));
-		return box;
-	});
-
 	pi.registerCommand("interview", {
-		description: "Manage secondary-model interviews: auto, strict, off, model, config",
+		description: "Manage ask-user interviews: manual, auto, strict, off, model, config",
 		getArgumentCompletions: (prefix) => {
 			const trimmed = prefix.trim();
 			if (!trimmed.includes(" ")) {
-				const values = ["auto", "strict", "off", "model", "config"];
+				const values = ["manual", "auto", "strict", "off", "model", "config"];
 				const matches = values.filter((value) => value.startsWith(trimmed));
 				return matches.length ? matches.map((value) => ({ value, label: value })) : null;
 			}
@@ -346,18 +419,34 @@ export default function piInterview(pi: ExtensionAPI): void {
 			const [command = "", ...tail] = args.trim().split(/\s+/).filter(Boolean);
 			const rest = tail.join(" ");
 
-			if (command === "auto" || command === "strict") {
+			if (command === "manual" || command === "strict") {
+				if (rest) {
+					ctx.ui.notify(`${command} mode uses direct user answers and does not take a model`, "warning");
+					return;
+				}
+				if (persist({ ...config, mode: command as InterviewMode }, ctx)) {
+					ctx.ui.notify(
+						command === "manual"
+							? "pi-interview manual: main model may ask; user answers"
+							: "pi-interview strict: main model must ask every request; user answers",
+						"info",
+					);
+				}
+				return;
+			}
+
+			if (command === "auto") {
 				let selected = rest ? await selectModel(ctx, rest) : undefined;
 				if (!selected && !rest && config.provider && config.model && ctx.modelRegistry.find(config.provider, config.model)) {
 					selected = { provider: config.provider, model: config.model };
 				}
 				if (!selected && !rest) selected = await selectModel(ctx);
 				if (!selected) return;
-				const next = { ...config, mode: command as InterviewMode, ...selected };
+				const next = { ...config, mode: "auto" as const, ...selected };
 				if (!persist(next, ctx)) return;
 				const sameAsPrimary = ctx.model?.provider === selected.provider && ctx.model.id === selected.model;
 				ctx.ui.notify(
-					`pi-interview ${command}: ${selected.provider}/${selected.model}${sameAsPrimary ? " (same as primary model)" : ""}`,
+					`pi-interview auto-answer: ${selected.provider}/${selected.model}${sameAsPrimary ? " (same model as primary; separate context)" : ""}`,
 					sameAsPrimary ? "warning" : "info",
 				);
 				return;
@@ -372,7 +461,7 @@ export default function piInterview(pi: ExtensionAPI): void {
 				const selected = await selectModel(ctx, rest || undefined);
 				if (!selected) return;
 				if (persist({ ...config, ...selected }, ctx)) {
-					ctx.ui.notify(`Interviewer model: ${selected.provider}/${selected.model}`, "info");
+					ctx.ui.notify(`Auto-answer model: ${selected.provider}/${selected.model}`, "info");
 				}
 				return;
 			}

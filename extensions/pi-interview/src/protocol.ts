@@ -1,14 +1,14 @@
-import type { InterviewDecision, InterviewQuestion, QuestionOption } from "./types.js";
+import type { InterviewAnswer, InterviewQuestion, QuestionOption } from "./types.js";
 
 export const USE_JUDGMENT_VALUE = "__use_judgment__";
 
-export interface DecisionLimits {
+export interface QuestionLimits {
 	maxQuestions: number;
 	maxOptions: number;
 }
 
-export type DecisionParseResult =
-	| { ok: true; decision: InterviewDecision }
+export type AnswerParseResult =
+	| { ok: true; answers: InterviewAnswer[] }
 	| { ok: false; error: string };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -84,10 +84,10 @@ function parseOption(raw: unknown, index: number): QuestionOption | undefined {
 	};
 }
 
-function parseQuestion(
+function normalizeQuestion(
 	raw: unknown,
 	index: number,
-	limits: DecisionLimits,
+	limits: QuestionLimits,
 	usedQuestionIds: Set<string>,
 ): InterviewQuestion | undefined {
 	if (!isRecord(raw)) return undefined;
@@ -121,7 +121,7 @@ function parseQuestion(
 		description: "Let primary agent choose using available evidence and conventional defaults.",
 	});
 
-	const requestedId = cleanText(raw.id, 80) ?? cleanText(raw.label, 80) ?? `question-${index + 1}`;
+	const requestedId = cleanText(raw.id, 80) ?? cleanText(raw.label ?? raw.header, 80) ?? `question-${index + 1}`;
 	const baseId = slug(requestedId, `question-${index + 1}`);
 	let id = baseId;
 	let suffix = 2;
@@ -133,75 +133,92 @@ function parseQuestion(
 
 	return {
 		id,
-		label: cleanText(raw.label, 32) ?? `Q${index + 1}`,
+		label: cleanText(raw.label ?? raw.header, 32) ?? `Q${index + 1}`,
 		prompt,
 		options,
-		allowOther: true,
+		allowOther: raw.allowOther !== false,
 	};
 }
 
-export function parseDecision(rawText: string, limits: DecisionLimits): DecisionParseResult {
+export function normalizeQuestions(rawQuestions: readonly unknown[], limits: QuestionLimits): InterviewQuestion[] {
+	const maxQuestions = Math.max(1, limits.maxQuestions);
+	const safeLimits = { maxQuestions, maxOptions: Math.max(2, limits.maxOptions) };
+	const questions: InterviewQuestion[] = [];
+	const usedQuestionIds = new Set<string>();
+	for (const candidate of rawQuestions) {
+		if (questions.length >= maxQuestions) break;
+		const question = normalizeQuestion(candidate, questions.length, safeLimits, usedQuestionIds);
+		if (question) questions.push(question);
+	}
+	return questions;
+}
+
+export function parseAutoAnswers(rawText: string, questions: readonly InterviewQuestion[]): AnswerParseResult {
 	let parsed: unknown;
 	try {
 		parsed = parseJson(rawText);
 	} catch (error) {
 		return { ok: false, error: error instanceof Error ? error.message : String(error) };
 	}
-	if (!isRecord(parsed)) return { ok: false, error: "Interviewer output must be a JSON object" };
-
-	const action = parsed.action;
-	if (action !== "ask" && action !== "proceed") {
-		return { ok: false, error: 'Interviewer output needs action="ask" or action="proceed"' };
-	}
-	if (action === "proceed") return { ok: true, decision: { action, questions: [] } };
-	if (!Array.isArray(parsed.questions)) {
-		return { ok: false, error: 'action="ask" requires a questions array' };
+	if (!isRecord(parsed) || !Array.isArray(parsed.answers)) {
+		return { ok: false, error: "Auto-answer output must be an object with an answers array" };
 	}
 
-	const maxQuestions = Math.max(1, limits.maxQuestions);
-	const safeLimits = { maxQuestions, maxOptions: Math.max(2, limits.maxOptions) };
-	const questions: InterviewQuestion[] = [];
-	const usedQuestionIds = new Set<string>();
-	for (const candidate of parsed.questions) {
-		if (questions.length >= maxQuestions) break;
-		const question = parseQuestion(candidate, questions.length, safeLimits, usedQuestionIds);
-		if (question) questions.push(question);
+	const candidates = new Map<string, Record<string, unknown>>();
+	for (const raw of parsed.answers) {
+		if (!isRecord(raw)) continue;
+		const id = cleanText(raw.id, 80);
+		if (!id) continue;
+		if (candidates.has(id)) return { ok: false, error: `Duplicate answer for question ${id}` };
+		candidates.set(id, raw);
 	}
-	if (questions.length === 0) {
-		return { ok: false, error: 'action="ask" did not contain any valid multiple-choice questions' };
+
+	const answers: InterviewAnswer[] = [];
+	for (const question of questions) {
+		const candidate = candidates.get(question.id);
+		if (!candidate) return { ok: false, error: `Missing answer for question ${question.id}` };
+
+		const custom = cleanText(candidate.custom, 500);
+		if (custom) {
+			if (!question.allowOther) return { ok: false, error: `Question ${question.id} does not allow a custom answer` };
+			answers.push({ id: question.id, value: custom, label: custom, wasCustom: true });
+			continue;
+		}
+
+		const selected = cleanText(candidate.value ?? candidate.answer, 120);
+		if (!selected) return { ok: false, error: `Answer for question ${question.id} needs value or custom` };
+		const selectedLower = selected.toLowerCase();
+		const optionIndex = question.options.findIndex(
+			(option) => option.value === selected || option.label.toLowerCase() === selectedLower,
+		);
+		const option = question.options[optionIndex];
+		if (!option) return { ok: false, error: `Unknown option ${selected} for question ${question.id}` };
+		answers.push({
+			id: question.id,
+			value: option.value,
+			label: option.label,
+			wasCustom: false,
+			index: optionIndex + 1,
+		});
 	}
-	return { ok: true, decision: { action, questions } };
+
+	return { ok: true, answers };
 }
 
-export function createStrictFallback(maxOptions = 5): InterviewDecision {
-	const domainOptions: QuestionOption[] = [
-		{
-			value: "recommended-defaults",
-			label: "Proceed with recommended defaults",
-			description: "Use conventional, reversible choices and continue.",
-			recommended: true,
-		},
-		{
-			value: "plan-first",
-			label: "Present plan before changes",
-			description: "Pause after investigation and show proposed implementation path.",
-		},
-	];
-	const judgment: QuestionOption = {
-		value: USE_JUDGMENT_VALUE,
-		label: "Use your judgment",
-		description: "Let primary agent choose based on available evidence.",
-	};
-	return {
-		action: "ask",
-		questions: [
-			{
-				id: "defaults",
-				label: "Defaults",
-				prompt: "No material ambiguity was found. How should primary agent proceed?",
-				options: [...domainOptions.slice(0, Math.max(1, maxOptions - 1)), judgment],
-				allowOther: true,
-			},
-		],
-	};
+export function createJudgmentAnswers(questions: readonly InterviewQuestion[]): InterviewAnswer[] {
+	const answers: InterviewAnswer[] = [];
+	for (const question of questions) {
+		const optionIndex = question.options.findIndex((option) => option.value === USE_JUDGMENT_VALUE);
+		const fallbackIndex = optionIndex >= 0 ? optionIndex : 0;
+		const option = question.options[fallbackIndex];
+		if (!option) continue;
+		answers.push({
+			id: question.id,
+			value: option.value,
+			label: option.label,
+			wasCustom: false,
+			index: fallbackIndex + 1,
+		});
+	}
+	return answers;
 }

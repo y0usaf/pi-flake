@@ -2,7 +2,7 @@
   "name": "pi-interview",
   "private": true,
   "version": "0.1.0",
-  "description": "Secondary-model requirements interviewer with structured multiple-choice clarification for Pi.",
+  "description": "Ask-user questionnaire tool with optional separate-context auto-answers for Pi.",
   "type": "module",
   "keywords": [
     "pi-package",
