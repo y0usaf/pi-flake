@@ -55,16 +55,40 @@
       default = self.packages.${system}.pi-hashline;
     });
 
+    checks = forAllSystems (system: let
+      pkgs = pkgsFor.${system};
+      lib = pkgs.lib;
+      packageJson = builtins.fromJSON (builtins.readFile ./package.json);
+    in {
+      test = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-hashline-tests";
+        version = packageJson.version;
+        src = lib.cleanSource ./.;
+        nativeBuildInputs = [pkgs.bun];
+        dontConfigure = true;
+        dontBuild = true;
+        installPhase = ''
+          runHook preInstall
+          bun test
+          touch $out
+          runHook postInstall
+        '';
+      };
+
+      default = self.checks.${system}.test;
+    });
+
     devShells = forAllSystems (system: let
       pkgs = pkgsFor.${system};
     in {
       default = pkgs.mkShell {
         packages = with pkgs; [
+          bun
           nodejs_22
         ];
 
         shellHook = ''
-          echo "pi-hashline dev shell — node $(node --version)"
+          echo "pi-hashline dev shell — bun $(bun --version), node $(node --version)"
         '';
       };
     });
