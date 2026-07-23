@@ -1,11 +1,15 @@
 export const MAX_SUMMARY_LENGTH = 120;
 export const MAX_RESULT_LENGTH = 72;
-export const MAX_USER_MESSAGE_LENGTH = 240;
 
-export const TOOL_ARROW = "→";
+export const MAX_PATH_LENGTH = 64;
+
 export const TOOL_SEPARATOR = "·";
 export const USER_PROMPT_MARKER = "✨";
 export const THINKING_MARKER = "∴";
+
+// Pi's default loader frames (packages/tui loader).
+export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+export const SPINNER_INTERVAL_MS = 80;
 
 export const OSC133_ZONE_START = "\x1b]133;A\x07";
 export const OSC133_ZONE_END = "\x1b]133;B\x07";

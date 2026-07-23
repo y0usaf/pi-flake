@@ -46,7 +46,7 @@
         };
 
         meta = with lib; {
-          description = "Minimal Pi TUI: compact tool/message rendering and borderless editor, per-feature toggles";
+          description = "Minimal Pi TUI: compact tools/thinking, full user messages, borderless editor";
           license = licenses.mit;
           platforms = platforms.all;
         };
