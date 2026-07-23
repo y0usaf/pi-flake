@@ -145,11 +145,11 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 |------|-------------|
 | `pi-gecko-websearch` | Web search using Firefox's engine |
 | `pi-rtk` | `rtk rewrite` shell-command optimization to cut token usage |
-| `pi-minimal` | Minimal TUI: compact tool/chat/thinking rendering + borderless editor, per-feature `/minimal` toggles |
+| `pi-minimal` | Minimal TUI: compact tools/thinking, full user prompts, borderless editor, per-feature `/minimal` toggles |
 | `pi-interview` | Main-session ask-user questionnaire + optional separate-context auto-answers (`/interview`) |
 | `pi-tool-management` | Persistent disabled-tools menu/UI via `/tools` |
 | `pi-webfetch` | HTTP fetching utilities |
-| `pi-hashline` | Hashline v2 read/edit tool override |
+| `pi-hashline` | Strict hashline v3 read/edit tool override |
 
 | `pi-advisor` | Stage-aware strategic guidance from a separately configured advisor model |
 | `pi-review` | `/review` and `/end-review` code review workflow |
