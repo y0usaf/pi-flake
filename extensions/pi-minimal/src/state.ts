@@ -5,7 +5,6 @@ type FeatureFlags = Record<FeatureId, boolean>;
 
 export const state = {
 	theme: undefined as Theme | undefined,
-	thinkingLevel: "off" as Parameters<Theme["getThinkingBorderColor"]>[0],
 	thinkingMode: DEFAULT_THINKING_MODE as ThinkingMode,
 	features: { tools: true, user: true, thinking: true, editor: true } as FeatureFlags,
 

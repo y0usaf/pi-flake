@@ -4,7 +4,7 @@ export const MAX_USER_MESSAGE_LENGTH = 240;
 
 export const TOOL_ARROW = "→";
 export const TOOL_SEPARATOR = "·";
-export const USER_PROMPT_MARKER = ">";
+export const USER_PROMPT_MARKER = "✨";
 export const THINKING_MARKER = "∴";
 
 export const OSC133_ZONE_START = "\x1b]133;A\x07";

@@ -5,7 +5,7 @@ Minimal Pi TUI. Compact tool rows, one-line user messages, compact thinking, bor
 ## Display
 
 ```text
-> refactor the auth middleware
+✨ refactor the auth middleware
 
 → ◰ read src/auth.ts:1-20 · ✓ 20 lines
 → $ bash git status · ✓ 3 lines
@@ -18,11 +18,11 @@ Minimal Pi TUI. Compact tool rows, one-line user messages, compact thinking, bor
 ```
 
 - Tool rows: single explicit line, icon + name + argument summary + status. Expand with Pi's native tool-expansion key for original output.
-- User messages: one `>` line + blank line.
+- User messages: one bold, warning-colored `✨` line + blank line.
 - Thinking: one `∴` row (`compact`), full block (`normal`), or gone (`hidden`). Pi's native `Ctrl-T` hide still wins.
 - Editor: borderless `>` / `|` prompt, footer unchanged.
 
-Rows use the active Pi theme: accent icons, thinking-level prompt marker, dim arguments, semantic pending/success/error status.
+Rows use active Pi theme: accent tool icons, bold warning-colored user messages, dim arguments, semantic pending/success/error status.
 
 ## Commands
 

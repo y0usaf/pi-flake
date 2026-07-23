@@ -26,19 +26,26 @@ export async function runWithLoader<T>(
 
 	const result = await ctx.ui.custom<LoaderResult<T>>((tui, theme, _keybindings, done) => {
 		const loader = new BorderedLoader(tui, theme, message);
+		const taskSignal = fallbackSignal ? AbortSignal.any([loader.signal, fallbackSignal]) : loader.signal;
 		let finished = false;
 		const finish = (value: LoaderResult<T>) => {
 			if (finished) return;
 			finished = true;
+			taskSignal.removeEventListener("abort", abortTask);
 			done(value);
 		};
-		loader.onAbort = () => finish({ status: "cancelled" });
-		void task(loader.signal)
-			.then((value) => finish({ status: "ok", value }))
-			.catch((error) => {
-				if (loader.signal.aborted) finish({ status: "cancelled" });
-				else finish({ status: "error", error: errorMessage(error) });
-			});
+		const abortTask = () => finish({ status: "cancelled" });
+		loader.onAbort = abortTask;
+		taskSignal.addEventListener("abort", abortTask, { once: true });
+		if (taskSignal.aborted) abortTask();
+		else {
+			void task(taskSignal)
+				.then((value) => finish({ status: "ok", value }))
+				.catch((error) => {
+					if (taskSignal.aborted) finish({ status: "cancelled" });
+					else finish({ status: "error", error: errorMessage(error) });
+				});
+		}
 		return loader;
 	});
 

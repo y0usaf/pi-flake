@@ -50,10 +50,25 @@ export async function runAutoAnswerer(
 	if (!model) throw new Error(`Auto-answer model ${config.provider}/${config.model} was not found`);
 	const registryWithProvider = ctx.modelRegistry as typeof ctx.modelRegistry & {
 		getProvider?(provider: string): Provider | undefined;
+		getProviderAuth?(provider: string): Promise<
+			| {
+					auth: {
+						apiKey?: string;
+						headers?: Record<string, string | null>;
+						baseUrl?: string;
+					};
+					env?: Record<string, string>;
+			  }
+			| undefined
+		>;
 	};
 	const provider = registryWithProvider.getProvider?.(model.provider);
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 	if (!auth.ok) throw new Error(auth.error);
+	const providerAuth = await registryWithProvider.getProviderAuth?.(model.provider);
+	const requestModel = providerAuth?.auth.baseUrl ? { ...model, baseUrl: providerAuth.auth.baseUrl } : model;
+	const requestHeaders =
+		providerAuth?.auth.headers || auth.headers ? { ...providerAuth?.auth.headers, ...auth.headers } : undefined;
 
 	const modelRef = `${config.provider}/${config.model}`;
 	const usage: InterviewUsage = { inputTokens: 0, outputTokens: 0, attempts: 0 };
@@ -72,7 +87,7 @@ export async function runAutoAnswerer(
 		const requestContext = { systemPrompt: systemPrompt(), messages: [userMessage] };
 		const requestOptions = {
 			apiKey: auth.apiKey,
-			headers: auth.headers,
+			headers: requestHeaders,
 			env: auth.env,
 			maxTokens: config.maxTokens,
 			reasoning: config.reasoning as ThinkingLevel,
@@ -82,8 +97,12 @@ export async function runAutoAnswerer(
 			sessionId: ctx.sessionManager.getSessionId(),
 		};
 		const response = provider
-			? await provider.streamSimple(model, requestContext, requestOptions).result()
-			: await (await import("@earendil-works/pi-ai/compat")).completeSimple(model, requestContext, requestOptions);
+			? await provider.streamSimple(requestModel, requestContext, requestOptions).result()
+			: await (await import("@earendil-works/pi-ai/compat")).completeSimple(
+					requestModel,
+					requestContext,
+					requestOptions,
+				);
 		usage.inputTokens += response.usage?.input ?? 0;
 		usage.outputTokens += response.usage?.output ?? 0;
 

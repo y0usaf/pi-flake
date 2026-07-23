@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	createJudgmentAnswers,
+	normalizeCustomAnswer,
 	normalizeQuestions,
 	parseAutoAnswers,
 	USE_JUDGMENT_VALUE,
@@ -73,6 +74,15 @@ describe("normalizeQuestions", () => {
 	test("strips terminal control characters", () => {
 		const questions = normalizeQuestions([{ prompt: "\u001b[2JChoose", options: ["Safe"] }], limits);
 		expect(questions[0].prompt).not.toContain("\u001b");
+	});
+});
+
+describe("normalizeCustomAnswer", () => {
+	test("strips control characters, collapses whitespace, and caps length", () => {
+		const answer = normalizeCustomAnswer(`\u001b[2J  Linux\nonly  ${"x".repeat(600)}`);
+		expect(answer).not.toContain("\u001b");
+		expect(answer).toStartWith("[2J Linux only ");
+		expect(answer).toHaveLength(500);
 	});
 });
 

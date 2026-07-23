@@ -12,16 +12,11 @@ export function stripAnsi(value: string): string {
 	return value.replace(ANSI_PATTERN, "");
 }
 
-export function paint(
-	color: ThemeColor,
-	value: string,
-	emphasize = false,
-	thinkingLevel?: typeof state.thinkingLevel,
-): string {
+export function paint(color: ThemeColor, value: string, emphasize = false): string {
 	const theme = state.theme;
 	if (!theme) return value;
 	const text = emphasize ? theme.bold(value) : value;
-	return thinkingLevel ? theme.getThinkingBorderColor(thinkingLevel)(text) : theme.fg(color, text);
+	return theme.fg(color, text);
 }
 
 export function squash(value: unknown): string {
