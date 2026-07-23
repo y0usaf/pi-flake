@@ -4,6 +4,9 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { state } from "./state.js";
 import { ANSI_PATTERN, SPINNER_FRAMES, SPINNER_INTERVAL_MS } from "./types.js";
 
+const ANSI_BRIGHT_YELLOW = "\x1b[93m";
+const ANSI_FOREGROUND_RESET = "\x1b[39m";
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
@@ -16,6 +19,13 @@ export function paint(color: ThemeColor, value: string, emphasize = false): stri
 	const theme = state.theme;
 	if (!theme) return value;
 	const text = theme.fg(color, value);
+	return emphasize ? theme.bold(text) : text;
+}
+
+export function paintBrightYellow(value: string, emphasize = false): string {
+	const theme = state.theme;
+	if (!theme) return value;
+	const text = `${ANSI_BRIGHT_YELLOW}${value}${ANSI_FOREGROUND_RESET}`;
 	return emphasize ? theme.bold(text) : text;
 }
 
