@@ -84,10 +84,10 @@ export function registerReadTool(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "read",
     label: "Read",
-    description: `Read a UTF-8 text file. Every returned line is prefixed as LINEID|content (hashline v2). Copy LINEID anchors into edit. Output is capped at ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}. Supported images are delegated to Pi's built-in read tool.`,
-    promptSnippet: "Read files with hashline v2 LINEID anchors for edit.",
+    description: `Read a UTF-8 text file. Every returned line is prefixed as LINEID|content (hashline v3). LINEID is line number plus a four-letter, two-bigram content hash. Copy current LINEID anchors into edit. Output is capped at ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}. Supported images are delegated to Pi's built-in read tool.`,
+    promptSnippet: "Read files with strict hashline v3 LINEID anchors for edit.",
     promptGuidelines: [
-      "Use read before edit so you can copy full LINEID anchors exactly (e.g. 160sr).",
+      "Use read before edit so you can copy current full LINEID anchors exactly (e.g. 160sray). Hashline v2 anchors are rejected.",
       "When read output is truncated, continue with the suggested offset before editing unseen lines.",
     ],
     parameters: Type.Object({

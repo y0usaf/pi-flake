@@ -1,7 +1,14 @@
 import { constants } from "node:fs";
 import { access as fsAccess } from "node:fs/promises";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { DEFAULT_MAX_BYTES, withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  DEFAULT_MAX_BYTES,
+  generateDiffString,
+  generateUnifiedPatch,
+  renderDiff,
+  withFileMutationQueue,
+  type ExtensionAPI,
+} from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { resolveMutationTargetPath, writeTextFileAtomically } from "./fs-write";
@@ -68,7 +75,7 @@ function assertEditRequest(value: unknown): asserts value is EditRequest {
     const hasLoc = "loc" in edit;
     if (hasLoc) {
       if (op !== undefined || "pos" in edit || "end" in edit || "lines" in edit || "oldText" in edit || "newText" in edit) {
-        throw new Error(`Edit ${index} with v2 loc only supports loc and content.`);
+        throw new Error(`Edit ${index} with loc only supports loc and content.`);
       }
       const loc = edit.loc;
       const validBoundary = loc === "append" || loc === "prepend";
@@ -92,7 +99,7 @@ function assertEditRequest(value: unknown): asserts value is EditRequest {
     }
 
     if (op !== "replace" && op !== "append" && op !== "prepend" && op !== "replace_text") {
-      throw new Error(`Edit ${index} uses unknown op ${JSON.stringify(op)}. Expected v2 loc/content or legacy replace, append, prepend, replace_text.`);
+      throw new Error(`Edit ${index} uses unknown op ${JSON.stringify(op)}. Expected loc/content or legacy replace, append, prepend, replace_text.`);
     }
 
     if ("pos" in edit && typeof edit.pos !== "string") {
@@ -182,16 +189,16 @@ export function registerEditTool(pi: ExtensionAPI): void {
     name: "edit",
     label: "Edit",
     description: [
-      "Patch a UTF-8 text file using hashline v2 LINEID anchors copied from read output (e.g. 160sr).",
+      "Patch a UTF-8 text file using strict hashline v3 LINEID anchors copied from current read output (e.g. 160sray).",
       "Preferred entries: {loc,content}. loc: \"append\", \"prepend\", {append:LINEID}, {prepend:LINEID}, {range:{pos,end}}.",
       "content is literal file content lines (string[]/string) or null to delete.",
-      "Anchors are strict; stale hash mismatches are rejected with fresh retry anchors.",
+      "Anchors never relocate; stale hash mismatches are rejected with fresh retry anchors.",
       "Multiple anchor edits validate against the same pre-edit snapshot and apply bottom-up. Merge overlapping or adjacent edits.",
-      "Legacy op/pos/end/lines and replace_text remain accepted for compatibility.",
+      "Hashline v2 anchors are rejected. Legacy op/pos/end/lines and replace_text remain accepted for request-shape compatibility.",
     ].join("\n"),
-    promptSnippet: "Patch files using hashline v2 LINEID anchors from read output.",
+    promptSnippet: "Patch files using strict hashline v3 LINEID anchors from current read output.",
     promptGuidelines: [
-      "Use read before edit; copy full LINEID anchors exactly (e.g. 160sr, not sr).",
+      "Use read before edit; copy current full LINEID anchors exactly (e.g. 160sray, not sray). Hashline v2 anchors are rejected.",
       "Use loc/content: {range:{pos,end}} for replacements/deletes, {append}/{prepend} for inserts.",
       "Use literal file content in content lines, without LINEID| prefixes or diff prefixes.",
       "Merge overlapping or adjacent edits in the same file into one replace range.",
@@ -214,10 +221,19 @@ export function registerEditTool(pi: ExtensionAPI): void {
         text.setText(theme.fg("warning", "Editing..."));
         return text;
       }
+
       const body = result.content
         ?.map((entry) => entry.type === "text" ? entry.text ?? "" : "")
         .filter((entry) => entry.length > 0)
         .join("\n") ?? "";
+      const details = isRecord(result.details) ? result.details : undefined;
+      const diff = details && typeof details.diff === "string" ? details.diff : "";
+      if (!context.isError && diff) {
+        const path = isRecord(context.args) && typeof context.args.path === "string" ? context.args.path : undefined;
+        text.setText(renderDiff(diff, { filePath: path }));
+        return text;
+      }
+
       text.setText(context.isError ? theme.fg("error", body) : body);
       return text;
     },
@@ -260,7 +276,7 @@ export function registerEditTool(pi: ExtensionAPI): void {
         if (result === original) {
           return {
             content: [{ type: "text", text: "No changes made. The requested edits produced identical content." }],
-            details: { classification: "noop", snapshotId: snapshot.snapshotId },
+            details: { classification: "noop", snapshotId: snapshot.snapshotId, diff: "", patch: "" },
           };
         }
 
@@ -277,7 +293,7 @@ export function registerEditTool(pi: ExtensionAPI): void {
           if (result === original) {
             return {
               content: [{ type: "text", text: "No changes made. The requested edits produced identical content." }],
-              details: { classification: "noop", snapshotId: snapshot.snapshotId },
+              details: { classification: "noop", snapshotId: snapshot.snapshotId, diff: "", patch: "" },
             };
           }
           latestSnapshot = snapshot;
@@ -290,10 +306,14 @@ export function registerEditTool(pi: ExtensionAPI): void {
 
         const response = buildChangedAnchorResponse(original, result, { maxBytes: DEFAULT_MAX_BYTES });
         const metrics = computeEditLineMetrics(original, params.edits);
+        const diffResult = generateDiffString(original, result);
+        const patch = generateUnifiedPatch(path, original, result);
         return {
           content: [{ type: "text", text: response.text }],
           details: {
-            firstChangedLine: response.firstChangedLine,
+            diff: diffResult.diff,
+            patch,
+            firstChangedLine: diffResult.firstChangedLine ?? response.firstChangedLine,
             snapshotId: updatedSnapshot.snapshotId,
             metrics: {
               edits_attempted: params.edits.length,
