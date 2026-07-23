@@ -2,7 +2,7 @@ import { UserMessageComponent } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { state } from "./state.js";
 import { OSC133_ZONE_END, OSC133_ZONE_FINAL, OSC133_ZONE_START, USER_ORIGINAL_RENDER_KEY, USER_PROMPT_MARKER } from "./types.js";
-import { paint } from "./shared.js";
+import { paintBrightYellow } from "./shared.js";
 
 function userTextFromComponent(component: any): string | undefined {
 	if (typeof component?.text === "string") return component.text;
@@ -35,7 +35,7 @@ export function renderCompactUserMessage(
 	const text = userTextFromComponent(component);
 	if (text === undefined) return originalRender.call(component, width);
 
-	const line = paint("warning", `${USER_PROMPT_MARKER} ${text}`, true);
+	const line = paintBrightYellow(`${USER_PROMPT_MARKER} ${text}`, true);
 	const lines = withZoneMarkers(renderWrappedText(line, width));
 	return lines.length > 0 ? [...lines, ""] : lines;
 }

@@ -23,11 +23,11 @@ add regression coverage
 - Tool rows: single explicit line, status-first — `✓`/`✕` glyph (or braille spinner while running), icon + name + argument summary + outcome. Expand with Pi's native tool-expansion key for original output.
 - Edit outcomes: diff counts colored per theme (`+4` success, `-2` error).
 - Long paths middle-truncate (`packages/…/tools/read.ts`) so the basename stays visible; truncated text elsewhere is hard-cut, no `…` suffix.
-- User messages: full, unclipped input with original line breaks and terminal wrapping; bold warning-colored `✨` prefix + blank line.
+- User messages: full, unclipped input with original line breaks and terminal wrapping; bold terminal bright-yellow `✨` prefix + blank line.
 - Thinking: spinner + live elapsed time while streaming, `∴ thought · 12s` when done (`compact`); historic rows without timing fall back to char count. Full block (`normal`) or gone (`hidden`); Pi's native `Ctrl-T` hide still wins.
 - Editor: borderless `>` / `|` prompt, footer unchanged.
 
-Rows use active Pi theme: accent tool icons + spinner, bold warning-colored user messages, dim arguments, semantic success/error status and diff counts.
+Rows use active Pi theme for tool/thinking colors; user messages use terminal bright-yellow palette for Kimi-style emphasis.
 
 ## Commands
 
