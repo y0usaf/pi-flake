@@ -98,7 +98,7 @@ Manual/strict modes make no secondary model call.
 Auto-answer model receives:
 
 - Questionnaire composed by main-session model
-- Current user request
+- Expanded current request, including invoked skill or prompt-template text
 - Bounded recent user/assistant/custom messages
 - Prior `interview_user` answers
 - Project context files only when explicitly enabled
@@ -110,7 +110,7 @@ Not sent:
 - Thinking blocks
 - Image bytes
 
-Choosing model on different provider sends request, questionnaire, and selected context to that provider. Use `includeContextFiles=false` and/or `maxContextMessages=0` to minimize additional sharing.
+Choosing model on different provider sends request, questionnaire, and selected context to that provider. Use `includeContextFiles=false` and/or `maxContextMessages=0` to minimize additional sharing. `includeContextFiles=false` does not remove skill or prompt-template text expanded into current request.
 
 Auto-answers are explicitly marked model-generated; direct user answers are marked user-selected.
 
@@ -118,6 +118,7 @@ Auto-answers are explicitly marked model-generated; direct user answers are mark
 
 - Main model supplies structured questions/options through validated tool schema.
 - Host caps and normalizes questionnaire, adds “Use your judgment”, and optionally allows free text.
+- Free-text answers are normalized and capped at 500 characters.
 - Auto-answer output must match validated JSON answer schema.
 - One malformed-output retry, then every question falls back to “Use your judgment”.
 - Model/auth/timeouts fail open; primary agent continues.

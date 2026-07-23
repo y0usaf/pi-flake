@@ -105,10 +105,6 @@ async function minimalCommand(args: string, ctx: ExtensionCommandContext): Promi
 }
 
 export default function (pi: ExtensionAPI) {
-	pi.on("thinking_level_select", (event) => {
-		state.thinkingLevel = event.level;
-	});
-
 	pi.registerCommand("minimal", {
 		description: "Toggle minimal UI features: /minimal [tools|user|thinking|editor] [on|off|toggle|status]",
 		handler: minimalCommand,
@@ -122,7 +118,6 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		state.theme = ctx.mode === "tui" ? ctx.ui.theme : undefined;
-		state.thinkingLevel = pi.getThinkingLevel();
 		resolveConfig({
 			global: join(getAgentDir(), "settings.json"),
 			project: ctx.isProjectTrusted() ? join(ctx.cwd, CONFIG_DIR_NAME, "settings.json") : undefined,

@@ -22,6 +22,10 @@ function cleanText(value: unknown, maxLength: number): string | undefined {
 	return cleaned.slice(0, maxLength);
 }
 
+export function normalizeCustomAnswer(value: unknown): string | undefined {
+	return cleanText(value, 500);
+}
+
 function slug(value: string, fallback: string): string {
 	const normalized = value
 		.toLowerCase()
@@ -178,7 +182,7 @@ export function parseAutoAnswers(rawText: string, questions: readonly InterviewQ
 		const candidate = candidates.get(question.id);
 		if (!candidate) return { ok: false, error: `Missing answer for question ${question.id}` };
 
-		const custom = cleanText(candidate.custom, 500);
+		const custom = normalizeCustomAnswer(candidate.custom);
 		if (custom) {
 			if (!question.allowOther) return { ok: false, error: `Question ${question.id} does not allow a custom answer` };
 			answers.push({ id: question.id, value: custom, label: custom, wasCustom: true });

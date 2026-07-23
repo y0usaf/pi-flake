@@ -15,8 +15,6 @@ function userTextFromComponent(component: any): string {
 	return Array.isArray(children) ? (children.find((child: any) => typeof child?.text === "string")?.text ?? "") : "";
 }
 
-const userThinkingLevels = new WeakMap<object, typeof state.thinkingLevel>();
-
 function withZoneMarkers(lines: string[]): string[] {
 	if (lines.length === 0) return lines;
 	const marked = [...lines];
@@ -30,11 +28,9 @@ export function renderCompactUserMessage(
 	width: number,
 	originalRender: (width: number) => string[],
 ): string[] {
-	const thinkingLevel = userThinkingLevels.get(component) ?? state.thinkingLevel;
-	userThinkingLevels.set(component, thinkingLevel);
 	const text = userTextFromComponent(component) || squash(originalRender.call(component, width).join(" "));
 	const summary = clip(text, MAX_USER_MESSAGE_LENGTH) || "…";
-	const line = `${paint("accent", USER_PROMPT_MARKER, true, thinkingLevel)} ${paint("userMessageText", summary)}`;
+	const line = `${paint("warning", USER_PROMPT_MARKER, true)} ${paint("warning", summary, true)}`;
 	const lines = withZoneMarkers(renderOneLine(line, width));
 	return lines.length > 0 ? [...lines, ""] : lines;
 }

@@ -7,6 +7,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import { normalizeCustomAnswer } from "./protocol.js";
 import type {
 	InterviewAnswer,
 	InterviewQuestion,
@@ -42,21 +43,24 @@ function answerForOption(question: InterviewQuestion, option: QuestionOption, in
 async function runRpcQuestionnaire(
 	ctx: ExtensionContext,
 	questions: InterviewQuestion[],
+	signal?: AbortSignal,
 ): Promise<QuestionnaireResult> {
 	const answers: InterviewAnswer[] = [];
 	for (const question of questions) {
+		if (signal?.aborted) return { questions, answers, cancelled: true };
 		const options: RenderOption[] = [...question.options];
 		if (question.allowOther) options.push({ value: OTHER_VALUE, label: "Type something…", isOther: true });
 		const labels = options.map(displayLabel);
-		const selected = await ctx.ui.select(question.prompt, labels);
-		if (selected === undefined) return { questions, answers, cancelled: true };
+		const selected = await ctx.ui.select(question.prompt, labels, { signal });
+		if (selected === undefined || signal?.aborted) return { questions, answers, cancelled: true };
 		const index = labels.indexOf(selected);
 		const option = options[index];
 		if (!option) return { questions, answers, cancelled: true };
 		if (option.isOther) {
-			const custom = await ctx.ui.input(`${question.label}:`, "Type your answer");
-			if (custom === undefined || !custom.trim()) return { questions, answers, cancelled: true };
-			answers.push({ id: question.id, value: custom.trim(), label: custom.trim(), wasCustom: true });
+			const rawCustom = await ctx.ui.input(`${question.label}:`, "Type your answer", { signal });
+			const custom = normalizeCustomAnswer(rawCustom);
+			if (!custom || signal?.aborted) return { questions, answers, cancelled: true };
+			answers.push({ id: question.id, value: custom, label: custom, wasCustom: true });
 		} else {
 			answers.push(answerForOption(question, option, index));
 		}
@@ -67,9 +71,11 @@ async function runRpcQuestionnaire(
 export async function runQuestionnaire(
 	ctx: ExtensionContext,
 	questions: InterviewQuestion[],
+	signal?: AbortSignal,
 ): Promise<QuestionnaireResult> {
 	if (questions.length === 0) return { questions, answers: [], cancelled: false };
-	if (ctx.mode !== "tui") return runRpcQuestionnaire(ctx, questions);
+	if (signal?.aborted) return { questions, answers: [], cancelled: true };
+	if (ctx.mode !== "tui") return runRpcQuestionnaire(ctx, questions, signal);
 
 	const isMulti = questions.length > 1;
 	const totalTabs = questions.length + 1;
@@ -80,6 +86,8 @@ export async function runQuestionnaire(
 		let inputQuestionId: string | null = null;
 		let cachedWidth: number | undefined;
 		let cachedLines: string[] | undefined;
+		let finished = false;
+		let signalAbortHandler: (() => void) | undefined;
 		const answers = new Map<string, InterviewAnswer>();
 
 		const editorTheme: EditorTheme = {
@@ -94,6 +102,10 @@ export async function runQuestionnaire(
 		};
 		const editor = new Editor(tui, editorTheme);
 
+		function cleanupSignal(): void {
+			if (signalAbortHandler) signal?.removeEventListener("abort", signalAbortHandler);
+		}
+
 		function refresh(): void {
 			cachedWidth = undefined;
 			cachedLines = undefined;
@@ -101,8 +113,15 @@ export async function runQuestionnaire(
 		}
 
 		function submit(cancelled: boolean): void {
+			if (finished) return;
+			finished = true;
+			cleanupSignal();
 			done({ questions, answers: Array.from(answers.values()), cancelled });
 		}
+
+		signalAbortHandler = () => submit(true);
+		if (signal?.aborted) signalAbortHandler();
+		else signal?.addEventListener("abort", signalAbortHandler, { once: true });
 
 		function currentQuestion(): InterviewQuestion | undefined {
 			return questions[currentTab];
@@ -132,15 +151,15 @@ export async function runQuestionnaire(
 
 		editor.onSubmit = (value) => {
 			if (!inputQuestionId) return;
-			const trimmed = value.trim();
-			if (!trimmed) {
+			const custom = normalizeCustomAnswer(value);
+			if (!custom) {
 				refresh();
 				return;
 			}
 			answers.set(inputQuestionId, {
 				id: inputQuestionId,
-				value: trimmed,
-				label: trimmed,
+				value: custom,
+				label: custom,
 				wasCustom: true,
 			});
 			inputMode = false;
@@ -326,6 +345,7 @@ export async function runQuestionnaire(
 				cachedLines = undefined;
 			},
 			handleInput,
+			dispose: cleanupSignal,
 		};
 	});
 

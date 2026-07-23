@@ -304,7 +304,7 @@ export default function piInterview(pi: ExtensionAPI): void {
 				const run = await runWithLoader(
 					ctx,
 					`Auto-answering with ${modelRef(config)}…`,
-					(uiSignal) => runAutoAnswerer(ctx, config, packet, questions, uiSignal ?? signal),
+					(taskSignal) => runAutoAnswerer(ctx, config, packet, questions, taskSignal),
 					signal,
 				);
 				if (run.status !== "ok") {
@@ -356,7 +356,7 @@ export default function piInterview(pi: ExtensionAPI): void {
 					} as InterviewToolDetails,
 				};
 			}
-			const questionnaire = await runQuestionnaire(ctx, questions);
+			const questionnaire = await runQuestionnaire(ctx, questions, signal);
 			return {
 				content: [{ type: "text", text: questionnaireContent(questionnaire, "user") }],
 				details: {
@@ -483,7 +483,7 @@ export default function piInterview(pi: ExtensionAPI): void {
 					return;
 				}
 				const next = { ...config };
-				const integer = Number.parseInt(value, 10);
+				const integer = /^\d+$/.test(value) ? Number(value) : Number.NaN;
 				switch (key) {
 					case "reasoning":
 						if (!INTERVIEW_REASONING_LEVELS.includes(value as ThinkingLevel)) {
