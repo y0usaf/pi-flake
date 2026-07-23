@@ -30,14 +30,17 @@ describe("hashline formatting", () => {
     expect(getVisibleLines("a\n\nb\n")).toEqual(["a", "", "b"]);
   });
 
-  test("hashes are two characters from the custom alphabet", () => {
+  test("hashes use two BPE-friendly bigrams", () => {
     const hash = computeLineHash(12, "  return value;");
-    expect(hash).toMatch(/^[a-z]{2}$/);
+    expect(hash).toMatch(/^[a-z]{4}$/);
     expect(computeLineHash(12, "  return value;")).toBe(hash);
   });
 
-  test("symbol-only lines include line number seed", () => {
-    expect(computeLineHash(1, "}")).not.toBe(computeLineHash(2, "}"));
+  test("hashes every line's exact content without position shortcuts", () => {
+    expect(computeLineHash(1, "}")).toBe(computeLineHash(2, "}"));
+    expect(computeLineHash(1, "}")).not.toBe(computeLineHash(1, "{"));
+    expect(computeLineHash(1, "value")).not.toBe(computeLineHash(1, "value "));
+    expect(computeLineHash(1, "")).not.toBe(computeLineHash(1, " "));
   });
 
   test("formatted region prefixes LINEID|content", () => {
@@ -79,10 +82,13 @@ describe("anchor edits", () => {
     expect(apply("", [{ op: "append", lines: ["a", "b"] }])).toBe("a\nb");
   });
 
-  test("stale and malformed anchors reject", () => {
+  test("stale, v2, and malformed anchors reject", () => {
+    expect(() => apply("a\nb\n", [
+      { op: "replace", pos: anchor(2, "not-b"), lines: ["B"] },
+    ])).toThrow("[E_STALE_ANCHOR]");
     expect(() => apply("a\nb\n", [
       { op: "replace", pos: "2aa", lines: ["B"] },
-    ])).toThrow("[E_STALE_ANCHOR]");
+    ])).toThrow("[E_BAD_REF]");
     expect(() => apply("a\nb\n", [
       { op: "replace", pos: "2#ZZ", lines: ["B"] },
     ])).toThrow("[E_BAD_REF]");
@@ -91,11 +97,10 @@ describe("anchor edits", () => {
     ])).toThrow("[E_BAD_REF]");
   });
 
-  test("rebases a stale anchor to a nearby identical hash", () => {
-    const result = apply("a\nbar\nfoo\nb\n", [
+  test("never relocates stale anchors to nearby matching content", () => {
+    expect(() => apply("a\nbar\nfoo\nb\n", [
       { op: "replace", pos: anchor(2, "foo"), lines: ["FOO"] },
-    ]);
-    expect(result).toBe("a\nbar\nFOO\nb\n");
+    ])).toThrow("[E_STALE_ANCHOR]");
   });
 
   test("overlapping or adjacent edits reject", () => {
@@ -105,9 +110,12 @@ describe("anchor edits", () => {
     ])).toThrow("[E_EDIT_CONFLICT]");
   });
 
-  test("rendered hashline and diff prefixes are rejected in patch lines", () => {
+  test("rendered v2/v3 hashline and diff prefixes are rejected in patch lines", () => {
     expect(() => apply("a\n", [
       { op: "replace", pos: anchor(1, "a"), lines: [`1${computeLineHash(1, "a")}|a`] },
+    ])).toThrow("[E_INVALID_PATCH]");
+    expect(() => apply("a\n", [
+      { op: "replace", pos: anchor(1, "a"), lines: ["1aa|a"] },
     ])).toThrow("[E_INVALID_PATCH]");
     expect(() => apply("a\n", [
       { op: "replace", pos: anchor(1, "a"), lines: [`+ 1${computeLineHash(1, "a")}|a`] },
@@ -117,7 +125,7 @@ describe("anchor edits", () => {
     ])).toBe("+ legitimate text\n");
   });
 
-  test("v2 loc/content edits apply", () => {
+  test("v3 loc/content edits apply", () => {
     expect(apply("a\nb\nc\n", [
       { loc: { range: { pos: anchor(2, "b"), end: anchor(2, "b") } }, content: ["B"] },
       { loc: { append: anchor(3, "c") }, content: ["d"] },

@@ -1,4 +1,4 @@
-export const HASH_LENGTH = 2;
+export const HASH_LENGTH = 4;
 
 export const HASHLINE_BIGRAMS = [
 	"aa",
@@ -652,21 +652,19 @@ export const HASHLINE_BIGRAMS = [
 
 export const HASHLINE_BIGRAMS_COUNT = HASHLINE_BIGRAMS.length;
 
-/**
- * Regex source matching exactly one bigram from {@link HASHLINE_BIGRAMS}.
- * Used by hashline parsers — keep in sync with the alphabet array above.
- */
+// One generated hash body contains two BPE-friendly bigrams.
 export const HASHLINE_BIGRAM_RE_SRC = `(?:${HASHLINE_BIGRAMS.join("|")})`;
+export const HASHLINE_HASH_RE_SRC = `(?:${HASHLINE_BIGRAM_RE_SRC}){2}`;
+export const HASH_RE = new RegExp(`^${HASHLINE_HASH_RE_SRC}$`);
 
-export const HASH_RE = new RegExp(`^(?:${HASHLINE_BIGRAM_RE_SRC})$`);
+// Keep recognizing v2 prefixes in patch content so stale read output cannot be
+// pasted into files during migration. Anchor parsing accepts v3 only.
+const HASHLINE_PATCH_HASH_RE_SRC = `(?:${HASHLINE_HASH_RE_SRC}|${HASHLINE_BIGRAM_RE_SRC})`;
 
 export const HASHLINE_PREFIX_RE = new RegExp(
-  `^\\s*(?:>>>|>>)?\\s*(?:\\+\\s*)?\\d+${HASHLINE_BIGRAM_RE_SRC}[:|]`,
+  `^\\s*(?:>>>|>>)?\\s*(?:\\+\\s*)?\\d+${HASHLINE_PATCH_HASH_RE_SRC}[:|]`,
 );
 export const HASHLINE_PLUS_PREFIX_RE = new RegExp(
-  `^\\s*(?:>>>|>>)?\\s*\\+\\s*\\d+${HASHLINE_BIGRAM_RE_SRC}[:|]`,
+  `^\\s*(?:>>>|>>)?\\s*\\+\\s*\\d+${HASHLINE_PATCH_HASH_RE_SRC}[:|]`,
 );
-export const DIFF_DELETE_PREFIX_RE = new RegExp(`^-\\s*(?:\\d+${HASHLINE_BIGRAM_RE_SRC}[:|]|\\d+\\s{2,})`);
-
-export const SIGNIFICANT_RE = /[\p{L}\p{N}]/u;
-export const STRUCTURAL_STRIP_RE = /[\s{}]/g;
+export const DIFF_DELETE_PREFIX_RE = new RegExp(`^-\\s*(?:\\d+${HASHLINE_PATCH_HASH_RE_SRC}[:|]|\\d+\\s{2,})`);

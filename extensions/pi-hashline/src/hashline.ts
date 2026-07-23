@@ -4,11 +4,9 @@ import {
   HASH_RE,
   HASHLINE_BIGRAMS,
   HASHLINE_BIGRAMS_COUNT,
-  HASHLINE_BIGRAM_RE_SRC,
+  HASHLINE_HASH_RE_SRC,
   HASHLINE_PLUS_PREFIX_RE,
   HASHLINE_PREFIX_RE,
-  SIGNIFICANT_RE,
-  STRUCTURAL_STRIP_RE,
 } from "./constants";
 import {
   joinTextLineRecords,
@@ -66,52 +64,18 @@ type StaleAnchor = {
   reason?: string;
 };
 
-const ANCHOR_REBASE_WINDOW = 5;
+const HASH_SPACE_SIZE = HASHLINE_BIGRAMS_COUNT * HASHLINE_BIGRAMS_COUNT;
 
-function tryRebaseAnchor(
-  anchor: { line: number; hash: string },
-  fileLines: string[],
-  window: number = ANCHOR_REBASE_WINDOW,
-): number | null {
-  const lo = Math.max(1, anchor.line - window);
-  const hi = Math.min(fileLines.length, anchor.line + window);
-  let found: number | null = null;
-  for (let line = lo; line <= hi; line++) {
-    if (line === anchor.line) continue;
-    if (computeLineHash(line, fileLines[line - 1] ?? "") !== anchor.hash) continue;
-    if (found !== null) return null;
-    found = line;
-  }
-  return found;
-}
-
-function structuralBigram(lineNumber: number): string {
-  const mod100 = lineNumber % 100;
-  if (mod100 >= 11 && mod100 <= 13) return "th";
-  switch (lineNumber % 10) {
-    case 1:
-      return "st";
-    case 2:
-      return "nd";
-    case 3:
-      return "rd";
-    default:
-      return "th";
-  }
-}
-
-export function computeLineHash(lineNumber: number, line: string): string {
-  const normalized = line.replace(/\r/g, "").trimEnd();
-  if (normalized.replace(STRUCTURAL_STRIP_RE, "").length === 0) {
-    return structuralBigram(lineNumber);
-  }
-
-  const seed = SIGNIFICANT_RE.test(normalized) ? 0 : lineNumber;
+export function computeLineHash(_lineNumber: number, line: string): string {
   const xxHash32 = (globalThis as unknown as { Bun?: { hash?: { xxHash32?: (value: string, seed?: number) => number } } }).Bun?.hash?.xxHash32;
   if (typeof xxHash32 !== "function") {
-    throw new Error("[E_HASH_UNAVAILABLE] Bun.hash.xxHash32 is required for hashline v2 anchors.");
+    throw new Error("[E_HASH_UNAVAILABLE] Bun.hash.xxHash32 is required for hashline v3 anchors.");
   }
-  return HASHLINE_BIGRAMS[xxHash32(normalized, seed) % HASHLINE_BIGRAMS_COUNT]!;
+
+  const encoded = (xxHash32(line, 0) >>> 0) % HASH_SPACE_SIZE;
+  const first = Math.floor(encoded / HASHLINE_BIGRAMS_COUNT);
+  const second = encoded % HASHLINE_BIGRAMS_COUNT;
+  return `${HASHLINE_BIGRAMS[first]!}${HASHLINE_BIGRAMS[second]!}`;
 }
 
 export function getVisibleLines(text: string): string[] {
@@ -138,9 +102,9 @@ export function formatHashlineRegion(lines: string[], startLine: number): string
 
 function parseAnchor(ref: string): Anchor {
   const core = ref.replace(/^\s*[>+-]*\s*/, "").trimEnd();
-  const match = core.match(new RegExp(`^([0-9]+)(${HASHLINE_BIGRAM_RE_SRC})(?:[:|].*)?$`, "s"));
+  const match = core.match(new RegExp(`^([0-9]+)(${HASHLINE_HASH_RE_SRC})(?:[:|].*)?$`, "s"));
   if (!match) {
-    throw new Error(`[E_BAD_REF] Invalid line reference ${JSON.stringify(ref)}. Expected hashline v2 anchor from read output, e.g. "12th".`);
+    throw new Error(`[E_BAD_REF] Invalid line reference ${JSON.stringify(ref)}. Expected hashline v3 anchor from current read output, e.g. "12abcd". Hashline v2 anchors are not accepted; re-read the file.`);
   }
 
   const line = Number.parseInt(match[1]!, 10);
@@ -150,7 +114,7 @@ function parseAnchor(ref: string): Anchor {
 
   const hash = match[2]!;
   if (hash.length !== HASH_LENGTH || !HASH_RE.test(hash)) {
-    throw new Error(`[E_BAD_REF] Invalid hash in ${JSON.stringify(ref)}. Hashes are two-letter hashline v2 bigrams.`);
+    throw new Error(`[E_BAD_REF] Invalid hash in ${JSON.stringify(ref)}. Hashline v3 hashes contain two BPE-friendly bigrams (four letters).`);
   }
 
   return { line, hash };
@@ -193,15 +157,7 @@ function validateAnchor(anchor: Anchor, fileLines: string[], staleAnchors: Stale
   }
 
   const actual = computeLineHash(anchor.line, current);
-  if (actual === anchor.hash) return;
-
-  const rebased = tryRebaseAnchor(anchor, fileLines);
-  if (rebased !== null) {
-    anchor.line = rebased;
-    return;
-  }
-
-  staleAnchors.push({ requested: anchor, actual });
+  if (actual !== anchor.hash) staleAnchors.push({ requested: anchor, actual });
 }
 
 function formatStaleAnchorError(staleAnchors: StaleAnchor[], fileLines: string[]): string {

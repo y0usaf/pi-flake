@@ -72,7 +72,7 @@ in {
       interview = mkEnableOption "pi-interview ask-user questionnaire and auto-answer extension";
       "tool-management" = mkEnableOption "pi-tool-management persistent disabled-tools UI extension";
       webfetch = mkEnableOption "pi-webfetch extension";
-      hashline = mkEnableOption "pi-hashline v2 read/edit tool override";
+      hashline = mkEnableOption "pi-hashline v3 read/edit tool override";
 
       advisor = mkEnableOption "pi-advisor strategic advisor-model extension";
       review = mkEnableOption "pi-review /review and /end-review code review workflow extension";

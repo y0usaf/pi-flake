@@ -1,33 +1,39 @@
 # pi-hashline
 
-Strict hashline v2 read/edit tool override for Pi.
+Strict hashline v3 read/edit tool override for Pi.
 
-Inspired by Can Bölük's "harness problem" write-up and Oh My Pi's hashline v2 format. This extension replaces Pi's built-in `read` and `edit` tools with a line-anchor workflow:
+Inspired by Can Bölük's "harness problem" write-up and Oh My Pi's hashline v2 format. This extension replaces Pi's built-in `read` and `edit` tools with a strict line-anchor workflow:
 
 ```text
-10ab|function hello() {
-11th|  return "world";
-12rd|}
+10cltz|function hello() {
+11zmry|  return "world";
+12vnrk|}
 ```
 
-Edits reference anchors copied from `read` output instead of reproducing old text exactly.
+Edits reference anchors copied from current `read` output instead of reproducing old text exactly.
 
 ```json
 {
   "path": "src/main.ts",
   "edits": [
-    { "loc": { "range": { "pos": "11th", "end": "11th" } }, "content": ["  return \"hashline\";"] }
+    { "loc": { "range": { "pos": "11zmry", "end": "11zmry" } }, "content": ["  return \"hashline\";"] }
   ]
 }
 ```
 
-## Hashline v2
+## Hashline v3
 
-- Read output: `LINEID|content` (for example `160sr|const x = 1;`)
-- Edit anchors: `LINEID` (for example `160sr`)
-- IDs: two-letter BPE-friendly bigrams from the Oh My Pi stable 647-bigram set
-- Hashing: `Bun.hash.xxHash32` over CR-stripped, trailing-whitespace-trimmed line text
-- Brace/whitespace-only lines use ordinal suffix anchors (`1st`, `2nd`, `3rd`, `4th`, ...)
+- Read output: `LINEID|content` (for example `160heah|const x = 1;`)
+- Edit anchors: full `LINEID` (for example `160heah`)
+- IDs: decimal line number + two BPE-friendly bigrams from Oh My Pi's stable 647-bigram set
+- Hash space: `647² = 418,609` four-letter bodies
+- Hashing: `Bun.hash.xxHash32` over exact line content, including trailing whitespace and structural-only lines
+- Validation: line number fixes location; hash body validates current content
+- No relocation or fuzzy fallback: any mismatch fails with fresh retry anchors
+
+### v2 migration
+
+v3 intentionally rejects old two-letter/ordinal v2 anchors. Existing sessions must call `read` again—or start a new session—before editing. This clean break removes ordinal brace shortcuts and nearby stale-anchor rebasing.
 
 ## Tools
 
@@ -45,17 +51,17 @@ Large output is capped using Pi's default truncation limits. Supported image ext
 
 ### `edit`
 
-Patches a UTF-8 text file using anchors from the latest `read` output.
+Patches a UTF-8 text file using anchors from current `read` output.
 
-Preferred v2 edit entries use `{ loc, content }`:
+Preferred v3 edit entries use `{ loc, content }`:
 
 - `loc: "append"` / `loc: "prepend"`: insert at EOF/BOF
-- `loc: { "append": "123th" }`: insert after anchored line
-- `loc: { "prepend": "123th" }`: insert before anchored line
-- `loc: { "range": { "pos": "123th", "end": "125sr" } }`: replace inclusive range
-- `content`: literal file content as `string[]` or newline-split `string`; `null` deletes the target range
+- `loc: { "append": "123wmaa" }`: insert after anchored line
+- `loc: { "prepend": "123wmaa" }`: insert before anchored line
+- `loc: { "range": { "pos": "123wmaa", "end": "125nkgu" } }`: replace inclusive range
+- `content`: literal file content as `string[]` or newline-split `string`; `null` deletes target range
 
-Legacy entries remain accepted for compatibility:
+Legacy request shapes remain accepted for compatibility:
 
 - `replace(pos,end?,lines)`
 - `append(pos?,lines)`
@@ -64,13 +70,13 @@ Legacy entries remain accepted for compatibility:
 
 Rules:
 
-- Copy full anchors exactly from `read` or a prior successful `edit` result (`160sr`, not just `sr`).
+- Copy full current anchors exactly from `read` or prior successful `edit` result (`160heah`, not `heah`).
 - `content` / `lines` must be literal file content: no `LINEID|` prefixes, no diff `+`/`-` prefixes.
-- Anchors are strict. If the line's current hash differs, the edit is rejected with fresh retry anchors.
-- Multiple anchor edits in one call validate against the same pre-edit snapshot and are applied bottom-up.
-- Overlapping or adjacent edits are rejected; merge them into one edit.
+- Anchors are strict. Any current line/hash mismatch rejects; anchors never relocate.
+- Multiple anchor edits in one call validate against same pre-edit snapshot and apply bottom-up.
+- Overlapping or adjacent edits reject; merge them into one edit.
 
-On success, `edit` returns fresh anchors for the changed region plus nearby context so follow-up edits can chain without rereading the whole file.
+On success, `edit` exposes host-visible diff/patch details and returns fresh anchors for changed region plus nearby context, letting follow-up edits chain without rereading whole file.
 
 ## Usage
 
