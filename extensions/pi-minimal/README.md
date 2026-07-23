@@ -1,35 +1,40 @@
 # pi-minimal
 
-Minimal Pi TUI. Compact tool rows, one-line user messages, compact thinking, borderless editor — every feature toggleable at runtime, everything on by default.
+Minimal Pi TUI. Compact tool rows + thinking, fully visible user messages, borderless editor — every feature toggleable at runtime, everything on by default.
 
 ## Display
 
 ```text
 ✨ refactor the auth middleware
+keep API behavior unchanged
+add regression coverage
 
-→ ◰ read src/auth.ts:1-20 · ✓ 20 lines
-→ $ bash git status · ✓ 3 lines
-→ ✎ edit src/auth.ts · ✓ +4 -2
-∴ thought · 420 chars
+✓ ◰ read src/auth.ts:1-20 · 20 lines
+✓ $ bash git status · 3 lines
+✓ ✎ edit src/auth.ts · +4 -2
+⠹ ⌕ grep TODO @ .
+∴ thought · 12s
 
 > ask pi to
 | refactor this
 ~/Dev/pi-flake (main)
 ```
 
-- Tool rows: single explicit line, icon + name + argument summary + status. Expand with Pi's native tool-expansion key for original output.
-- User messages: one bold, warning-colored `✨` line + blank line.
-- Thinking: one `∴` row (`compact`), full block (`normal`), or gone (`hidden`). Pi's native `Ctrl-T` hide still wins.
+- Tool rows: single explicit line, status-first — `✓`/`✕` glyph (or braille spinner while running), icon + name + argument summary + outcome. Expand with Pi's native tool-expansion key for original output.
+- Edit outcomes: diff counts colored per theme (`+4` success, `-2` error).
+- Long paths middle-truncate (`packages/…/tools/read.ts`) so the basename stays visible; truncated text elsewhere is hard-cut, no `…` suffix.
+- User messages: full, unclipped input with original line breaks and terminal wrapping; bold warning-colored `✨` prefix + blank line.
+- Thinking: spinner + live elapsed time while streaming, `∴ thought · 12s` when done (`compact`); historic rows without timing fall back to char count. Full block (`normal`) or gone (`hidden`); Pi's native `Ctrl-T` hide still wins.
 - Editor: borderless `>` / `|` prompt, footer unchanged.
 
-Rows use active Pi theme: accent tool icons, bold warning-colored user messages, dim arguments, semantic pending/success/error status.
+Rows use active Pi theme: accent tool icons + spinner, bold warning-colored user messages, dim arguments, semantic success/error status and diff counts.
 
 ## Commands
 
 ```text
 /minimal                                   status of all features
 /minimal tools on|off|toggle               compact tool rows
-/minimal user on|off|toggle                one-line user messages
+/minimal user on|off|toggle                unclipped user messages
 /minimal thinking normal|compact|hidden    thinking display
 /minimal thinking on|off|toggle            feature off = normal
 /minimal editor on|off|toggle              borderless editor

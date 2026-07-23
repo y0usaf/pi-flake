@@ -7,11 +7,14 @@ import {
 	THINKING_MARKER,
 	type ThinkingMode,
 } from "./types.js";
-import { clip, paint, renderOneLine, stripAnsi } from "./shared.js";
+import { countLabel, formatDuration, paint, renderOneLine, spinnerFrame, stripAnsi } from "./shared.js";
 
 type ThinkingDisplayState = {
 	charCount: number;
 	active: boolean;
+	/** Set when thinking was observed streaming in this process; absent for historic rows. */
+	startedAt?: number;
+	finishedAt?: number;
 };
 
 const thinkingStates = new WeakMap<object, ThinkingDisplayState>();
@@ -45,9 +48,15 @@ function updateThinkingState(component: any, message: any, blocks: string[]): Th
 		return undefined;
 	}
 
-	const next = {
+	const prev = thinkingStates.get(component as object);
+	const active = isThinkingActive(message);
+	const now = Date.now();
+	const startedAt = prev?.startedAt ?? (active ? now : undefined);
+	const next: ThinkingDisplayState = {
 		charCount: stripAnsi(blocks.join("\n")).length,
-		active: isThinkingActive(message),
+		active,
+		startedAt,
+		finishedAt: active ? undefined : (prev?.finishedAt ?? (startedAt !== undefined ? now : undefined)),
 	};
 	thinkingStates.set(component as object, next);
 	return next;
@@ -72,14 +81,21 @@ function getAssistantThinkingMode(component: any): ThinkingMode {
 	return state.features.thinking ? state.thinkingMode : "normal";
 }
 
+function thinkingSuffix(displayState: ThinkingDisplayState): string {
+	if (displayState.startedAt !== undefined) {
+		const end = displayState.active ? Date.now() : (displayState.finishedAt ?? Date.now());
+		return formatDuration(end - displayState.startedAt);
+	}
+	return countLabel(displayState.charCount, "char");
+}
+
 function buildThinkingLine(displayState: ThinkingDisplayState): string {
-	const label = displayState.active ? "thinking" : "thought";
-	const count = `${displayState.charCount} ${displayState.charCount === 1 ? "char" : "chars"}`;
+	const suffix = thinkingSuffix(displayState);
 	return [
-		paint("accent", THINKING_MARKER),
+		paint("accent", displayState.active ? spinnerFrame() : THINKING_MARKER),
 		" ",
-		paint(displayState.active ? "warning" : "muted", label),
-		` ${paint("dim", `· ${clip(count, 32)}`)}`,
+		paint(displayState.active ? "warning" : "muted", displayState.active ? "thinking" : "thought"),
+		suffix ? ` ${paint("dim", `· ${suffix}`)}` : "",
 	].join("");
 }
 

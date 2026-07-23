@@ -1,18 +1,15 @@
 import { UserMessageComponent } from "@earendil-works/pi-coding-agent";
+import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { state } from "./state.js";
-import {
-	MAX_USER_MESSAGE_LENGTH,
-	OSC133_ZONE_END,
-	OSC133_ZONE_FINAL,
-	OSC133_ZONE_START,
-	USER_ORIGINAL_RENDER_KEY,
-	USER_PROMPT_MARKER,
-} from "./types.js";
-import { clip, paint, renderOneLine, squash } from "./shared.js";
+import { OSC133_ZONE_END, OSC133_ZONE_FINAL, OSC133_ZONE_START, USER_ORIGINAL_RENDER_KEY, USER_PROMPT_MARKER } from "./types.js";
+import { paint } from "./shared.js";
 
-function userTextFromComponent(component: any): string {
-	const children = component.contentBox?.children;
-	return Array.isArray(children) ? (children.find((child: any) => typeof child?.text === "string")?.text ?? "") : "";
+function userTextFromComponent(component: any): string | undefined {
+	if (typeof component?.text === "string") return component.text;
+
+	const children = component?.contentBox?.children;
+	if (!Array.isArray(children)) return undefined;
+	return children.find((child: any) => typeof child?.text === "string")?.text;
 }
 
 function withZoneMarkers(lines: string[]): string[] {
@@ -23,15 +20,23 @@ function withZoneMarkers(lines: string[]): string[] {
 	return marked;
 }
 
+function renderWrappedText(text: string, width: number): string[] {
+	if (!Number.isFinite(width) || width <= 0) return [];
+	return wrapTextWithAnsi(text.replace(/\t/g, "   "), width).map((line) =>
+		`${line}${" ".repeat(Math.max(0, width - visibleWidth(line)))}`,
+	);
+}
+
 export function renderCompactUserMessage(
 	component: any,
 	width: number,
 	originalRender: (width: number) => string[],
 ): string[] {
-	const text = userTextFromComponent(component) || squash(originalRender.call(component, width).join(" "));
-	const summary = clip(text, MAX_USER_MESSAGE_LENGTH) || "…";
-	const line = `${paint("warning", USER_PROMPT_MARKER, true)} ${paint("warning", summary, true)}`;
-	const lines = withZoneMarkers(renderOneLine(line, width));
+	const text = userTextFromComponent(component);
+	if (text === undefined) return originalRender.call(component, width);
+
+	const line = paint("warning", `${USER_PROMPT_MARKER} ${text}`, true);
+	const lines = withZoneMarkers(renderWrappedText(line, width));
 	return lines.length > 0 ? [...lines, ""] : lines;
 }
 

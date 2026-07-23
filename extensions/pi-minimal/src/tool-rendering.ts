@@ -1,16 +1,16 @@
 import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { state } from "./state.js";
 import {
+	MAX_PATH_LENGTH,
 	MAX_RESULT_LENGTH,
 	MAX_SUMMARY_LENGTH,
-	TOOL_ARROW,
-
 	TOOL_ORIGINAL_RENDER_KEY,
 	TOOL_ORIGINAL_SET_EXPANDED_KEY,
 	TOOL_SEPARATOR,
 } from "./types.js";
 import {
 	clip,
+	clipPath,
 	countDetailsLineDiff,
 	countLabel,
 	firstTextLine,
@@ -19,6 +19,7 @@ import {
 	normalizePath,
 	paint,
 	renderOneLine,
+	spinnerFrame,
 	squash,
 	textLineCount,
 } from "./shared.js";
@@ -73,11 +74,12 @@ function formatGenericArgs(args: any, cwd?: string): string {
 	return parts.join(" · ");
 }
 
-const pathArg = (args: any, cwd?: string, fallback = "?"): string => normalizePath(args?.path, fallback, cwd);
+const pathArg = (args: any, cwd?: string, fallback = "?"): string =>
+	clipPath(normalizePath(args?.path, fallback, cwd), MAX_PATH_LENGTH);
 
 const ARG_SUMMARIES: Record<string, (args: any, cwd?: string) => string> = {
 	read: (args, cwd) => `${pathArg(args, cwd)}${formatLineRange(args)}`,
-	bash: (args) => squash(args?.command) || "…",
+	bash: (args) => squash(args?.command) || "?",
 	edit: (args, cwd) => pathArg(args, cwd),
 	write: (args, cwd) => {
 		const path = pathArg(args, cwd);
@@ -128,10 +130,7 @@ export function summarizeResult(toolName: string, result: any): string {
 
 	if (result.isError) return clip(firstLine || "error", MAX_RESULT_LENGTH);
 
-	if (name === "edit") {
-		const counts = countDetailsLineDiff(details);
-		return counts ? `+${counts.added} -${counts.removed}` : "applied";
-	}
+	if (name === "edit") return countDetailsLineDiff(details) ? "" : "applied";
 	if (name === "write") return "written";
 	if (name === "bash") {
 		const exitCode = finiteNumber(details?.exitCode);
@@ -161,23 +160,36 @@ export function toolIcon(toolName: string): string {
 	return TOOL_ICONS[toolName.trim().toLowerCase()] ?? "•";
 }
 
+/** Painted (theme-colored) outcome segment; empty while pending or when nothing to say. */
+function paintedOutcome(toolName: string, result: any): string {
+	if (!result) return "";
+	if (result.isError) return paint("error", clip(firstTextLine(result) || "error", MAX_RESULT_LENGTH));
+
+	const counts = toolName === "edit" ? countDetailsLineDiff(result.details) : undefined;
+	if (counts) return `${paint("success", `+${counts.added}`)} ${paint("error", `-${counts.removed}`)}`;
+
+	const text = clip(summarizeResult(toolName, result), MAX_RESULT_LENGTH);
+	return text ? paint("muted", text) : "";
+}
+
 export function buildToolLine(component: any): string {
 	const toolName = squash(component?.toolName) || "tool";
 	const detail = clip(summarizeArgs(toolName, component?.args, component?.cwd), MAX_SUMMARY_LENGTH);
-	const outcome = component?.isPartial ? "" : clip(summarizeResult(toolName, component?.result), MAX_RESULT_LENGTH);
-	const status = component?.isPartial ? "…" : component?.result?.isError ? "✕" : "✓";
-	const statusColor = component?.isPartial ? "warning" : component?.result?.isError ? "error" : "success";
-	const outcomeColor = component?.result?.isError ? "error" : "muted";
+	const status = component?.isPartial
+		? paint("accent", spinnerFrame())
+		: component?.result?.isError
+			? paint("error", "✕")
+			: paint("success", "✓");
+	const outcome = component?.isPartial ? "" : paintedOutcome(toolName.trim().toLowerCase(), component?.result);
 
 	return [
-		paint("muted", TOOL_ARROW),
+		status,
 		" ",
 		paint("accent", toolIcon(toolName)),
 		" ",
 		paint("toolTitle", toolName, true),
 		detail ? ` ${paint("dim", detail)}` : "",
-		` ${paint("borderMuted", TOOL_SEPARATOR)} ${paint(statusColor, status)}`,
-		outcome ? ` ${paint(outcomeColor, outcome)}` : "",
+		outcome ? ` ${paint("borderMuted", TOOL_SEPARATOR)} ${outcome}` : "",
 	].join("");
 }
 

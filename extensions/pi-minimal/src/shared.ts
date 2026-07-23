@@ -2,7 +2,7 @@ import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import { homedir } from "node:os";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { state } from "./state.js";
-import { ANSI_PATTERN } from "./types.js";
+import { ANSI_PATTERN, SPINNER_FRAMES, SPINNER_INTERVAL_MS } from "./types.js";
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
@@ -15,8 +15,8 @@ export function stripAnsi(value: string): string {
 export function paint(color: ThemeColor, value: string, emphasize = false): string {
 	const theme = state.theme;
 	if (!theme) return value;
-	const text = emphasize ? theme.bold(value) : value;
-	return theme.fg(color, text);
+	const text = theme.fg(color, value);
+	return emphasize ? theme.bold(text) : text;
 }
 
 export function squash(value: unknown): string {
@@ -24,7 +24,34 @@ export function squash(value: unknown): string {
 }
 
 export function clip(value: string, max: number): string {
-	return value.length > max ? `${value.slice(0, Math.max(1, max - 1))}…` : value;
+	return value.length > max ? value.slice(0, Math.max(1, max)) : value;
+}
+
+/** Middle-truncate a path, keeping the basename (and leading segments that fit). */
+export function clipPath(path: string, max: number): string {
+	if (path.length <= max) return path;
+	const segments = path.split("/");
+	const basename = segments.pop() ?? path;
+	if (segments.length === 0 || basename.length + 2 >= max) return clip(basename, max);
+	let lead = "";
+	for (const segment of segments) {
+		const candidate = lead ? `${lead}/${segment}` : segment;
+		if (candidate.length + basename.length + 3 > max) break;
+		lead = candidate;
+	}
+	return lead ? `${lead}/…/${basename}` : `…/${basename}`;
+}
+
+export function formatDuration(ms: number): string {
+	const totalSeconds = Math.max(1, Math.round(ms / 1000));
+	const minutes = Math.floor(totalSeconds / 60);
+	const seconds = totalSeconds % 60;
+	return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+/** Current braille spinner frame; animates across renders while streaming. */
+export function spinnerFrame(): string {
+	return SPINNER_FRAMES[Math.floor(Date.now() / SPINNER_INTERVAL_MS) % SPINNER_FRAMES.length] ?? "";
 }
 
 export function shortenPath(path: string): string {
@@ -48,7 +75,7 @@ export function formatScalar(value: unknown): string {
 	if (typeof value === "number" || typeof value === "boolean") return String(value);
 	if (value === null) return "null";
 	if (Array.isArray(value)) return `[${value.length}]`;
-	if (typeof value === "object") return "{…}";
+	if (typeof value === "object") return "{}";
 	return "";
 }
 
@@ -113,6 +140,6 @@ export function countLabel(count: number, noun: string): string {
 
 export function renderOneLine(rawLine: string, width: number): string[] {
 	if (!Number.isFinite(width) || width <= 0) return [];
-	const line = truncateToWidth(rawLine, Math.max(1, width), "…");
+	const line = truncateToWidth(rawLine, Math.max(1, width), "");
 	return [`${line}${" ".repeat(Math.max(0, width - visibleWidth(line)))}`];
 }
