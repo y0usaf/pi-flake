@@ -229,7 +229,7 @@ export default function piInterview(pi: ExtensionAPI): void {
 			pi.setActiveTools(active.filter((name) => name !== TOOL_NAME));
 		}
 		const status = config.mode === "auto" ? `interview:auto · ${modelRef(config)}` : `interview:${config.mode}`;
-		ctx.ui.setStatus(STATUS_KEY, config.mode === "off" ? undefined : status);
+		ctx.ui.setStatus(STATUS_KEY, config.mode === "off" ? undefined : ctx.ui.theme.fg("accent", status));
 	}
 
 	function persist(next: InterviewConfig, ctx: ExtensionContext): boolean {

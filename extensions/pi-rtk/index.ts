@@ -222,7 +222,10 @@ function updateFooter(ctx: ExtensionContext, enabled: boolean): void {
     return;
   }
 
-  ctx.ui.setStatus("pi-rtk", enabled ? "rtk:on" : "rtk:off");
+  ctx.ui.setStatus(
+    "pi-rtk",
+    ctx.ui.theme.fg(enabled ? "success" : "warning", enabled ? "rtk:on" : "rtk:off"),
+  );
 }
 
 export function registerPiRtk(
