@@ -249,6 +249,36 @@
           };
         };
 
+      "pi-atelier" = let
+        atelierPackageJson = builtins.fromJSON (builtins.readFile ./extensions/michaelmjhhhh_pi-atelier/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-atelier";
+          version = atelierPackageJson.version;
+          src = lib.cleanSource ./extensions/michaelmjhhhh_pi-atelier;
+
+          dontBuild = true;
+
+          installPhase = ''
+            runHook preInstall
+
+            mkdir -p "$out"
+            cp package.json README.md CHANGELOG.md LICENSE "$out"/
+            cp -r extensions src assets "$out"/
+
+            runHook postInstall
+          '';
+
+          passthru.packageName = atelierPackageJson.name;
+
+          meta = with lib; {
+            description = atelierPackageJson.description;
+            homepage = atelierPackageJson.homepage;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
       # pi with default extensions pre-bundled.
       pi-full = self.lib.piWithExtensions {
         inherit pkgs;
@@ -414,6 +444,7 @@
       review = self.packages.${system}."pi-review";
       vcc = self.packages.${system}."pi-vcc";
       caveman = self.packages.${system}."pi-caveman";
+      atelier = self.packages.${system}."pi-atelier";
     };
 
     # Default bundle used by pi-full; opt-in extensions remain disabled internally.
