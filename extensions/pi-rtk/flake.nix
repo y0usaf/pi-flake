@@ -17,7 +17,17 @@
       "aarch64-darwin"
     ];
     forAllSystems = nixpkgs.lib.genAttrs systems;
-    pkgsFor = forAllSystems (system: import nixpkgs {inherit system;});
+    pkgsFor = forAllSystems (system:
+      import nixpkgs {
+        inherit system;
+        # rtk 0.43.0 source fails cargo test under newer rustc (dead-code
+        # lints deny). Binary is fine — skip upstream checkPhase.
+        overlays = [
+          (_final: prev: {
+            rtk = prev.rtk.overrideAttrs (_old: {doCheck = false;});
+          })
+        ];
+      });
   in {
     packages = forAllSystems (system: let
       pkgs = pkgsFor.${system};

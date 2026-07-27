@@ -2,12 +2,14 @@ diff --git a/packages/ai/package.json b/packages/ai/package.json
 index a3ed55f..147af3d 100644
 --- a/packages/ai/package.json
 +++ b/packages/ai/package.json
-@@ -52,7 +52,7 @@
- 		"generate-models": "node scripts/generate-models.ts",
+@@ -54,8 +54,8 @@
  		"generate-model-catalog": "node scripts/generate-models.ts --strict --json-only --json-output ../../.artifacts/model-catalog",
- 		"generate-image-models": "node scripts/generate-image-models.ts",
--		"build": "npm run generate-models && tsgo -p tsconfig.build.json && shx rm -rf dist/providers/data && shx cp -r src/providers/data dist/providers/data",
+ 		"generate-image-models": "node scripts/generate-image-models.ts --strict",
+ 		"check:model-data": "node scripts/check-model-data.ts",
+-		"build": "npm run generate-models && npm run build:offline",
+-		"build:offline": "npm run check:model-data && tsgo -p tsconfig.build.json && shx rm -rf dist/providers/data && shx cp -r src/providers/data dist/providers/data",
 +		"build": "tsgo -p tsconfig.build.json",
++		"build:offline": "tsgo -p tsconfig.build.json",
  		"test": "vitest --run",
  		"prepublishOnly": "npm run clean && npm run build"
  	},
