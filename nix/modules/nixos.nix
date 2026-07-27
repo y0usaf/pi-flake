@@ -78,6 +78,7 @@ in {
       review = mkEnableOption "pi-review /review and /end-review code review workflow extension";
       vcc = mkEnableOption "pi-vcc algorithmic conversation compactor and vcc_recall history search";
       caveman = mkEnableOption "pi-caveman terse-response mode extension";
+      atelier = mkEnableOption "pi-atelier status rail and live-activity sidebar extension";
     };
 
     extraExtensions = mkOption {
