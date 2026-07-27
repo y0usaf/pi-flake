@@ -56,7 +56,7 @@
       ./patches/avoid-network-model-regeneration.patch
       ./patches/remove-tree-filter-backcycle.patch
       ./patches/default-package-sources-env.patch
-      ./patches/fix-kimi-coding-models-drift.patch
+
     ];
   in {
     packages = forAllSystems (system: let
@@ -78,11 +78,14 @@
         src = piSrc;
         patches = piPatches;
 
-        # Vendored output of packages/ai/scripts/generate-models.ts (network at
-        # build time otherwise). Regenerate after piSrc bumps:
+        # Vendored output of packages/ai/scripts/generate-models.ts --strict
+        # --data-only (network at build time otherwise). Regenerate after piSrc
+        # bumps:
         #   cp packages/ai/src/providers/data/*.json nix/model-data/
+        #   cp packages/ai/src/providers/data/.manifest.json nix/model-data/
         postPatch = ''
           mkdir -p packages/ai/src/providers/data
+          cp ${./nix/model-data}/.manifest.json packages/ai/src/providers/data/
           cp ${./nix/model-data}/*.json packages/ai/src/providers/data/
         '';
         npmWorkspace = "packages/coding-agent";
@@ -91,7 +94,7 @@
 
         # Regenerate after dependency changes:
         #   nix build .#pi 2>&1 | grep 'got:' | awk '{print $2}'
-        npmDepsHash = "sha256-Ro2ovgqH6EpFb20M5DvcP6KIxXZPHcjeEdo1Sh4JbDM=";
+        npmDepsHash = "sha256-+7Kss4l85CSC84Y9qHp65AXjxIlsWzITPuA6uqQ+9XE=";
 
         nodejs = pkgs.nodejs_22;
 
