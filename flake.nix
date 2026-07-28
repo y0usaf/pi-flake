@@ -56,10 +56,12 @@
     pkgsFor = forAllSystems (system: import nixpkgs {inherit system;});
     packageJson = builtins.fromJSON (builtins.readFile "${piSrc}/packages/coding-agent/package.json");
     extensionRegistry = import ./extensions/registry.nix;
+    # Kept minimal on purpose: anything achievable via env var or user config
+    # must not be a patch (patches rot on every piSrc bump).
+    #   install telemetry  -> PI_TELEMETRY=0 in the wrappers
+    #   tree filter cycle  -> "app.tree.filter.cycleBackward": [] in keybindings.json
     piPatches = [
-      ./patches/disable-install-telemetry.patch
       ./patches/avoid-network-model-regeneration.patch
-      ./patches/remove-tree-filter-backcycle.patch
       ./patches/default-package-sources-env.patch
     ];
   in {
@@ -117,7 +119,8 @@
             install -Dm755 packages/coding-agent/dist/pi $out/bin/pi
             wrapProgram $out/bin/pi \
               --set PI_PACKAGE_DIR $out/share/pi \
-              --set PI_SKIP_VERSION_CHECK 1
+              --set PI_SKIP_VERSION_CHECK 1 \
+              --set PI_TELEMETRY 0
 
             runHook postInstall
           '';
@@ -391,22 +394,13 @@
           '';
         };
 
-        patch-disable-install-telemetry = pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-patch-disable-install-telemetry";
-          version = packageJson.version;
-          src = piSrc;
-          patches = piPatches;
-          nativeBuildInputs = [pkgs.gnugrep];
-          dontConfigure = true;
-          dontBuild = true;
-          installPhase = ''
-            runHook preInstall
-            grep -q 'return;' packages/coding-agent/src/modes/interactive/interactive-mode.ts
-            ! grep -q 'https://pi.dev/install' packages/coding-agent/src/modes/interactive/interactive-mode.ts
-            touch $out
-            runHook postInstall
-          '';
-        };
+        # Install telemetry is disabled via env, not a patch: assert both
+        # wrappers really export it (upstream reads PI_TELEMETRY before settings).
+        telemetry-disabled = pkgs.runCommand "pi-telemetry-disabled" {} ''
+          grep -q 'PI_TELEMETRY' ${self.packages.${system}.pi}/bin/pi
+          grep -q 'PI_TELEMETRY=0' ${self.packages.${system}.pi-full}/bin/pi
+          touch $out
+        '';
 
         patch-avoid-network-model-regeneration = pkgs.stdenvNoCC.mkDerivation {
           pname = "pi-patch-avoid-network-model-regeneration";
@@ -587,6 +581,7 @@
 
           export PI_PACKAGE_DIR="${pi}/share/pi"
           export PI_SKIP_VERSION_CHECK=1
+          export PI_TELEMETRY=0
 
           # Real node for pi-extensible-workflows child processes (bun binary
           # cannot re-exec node flags; see patches in extensions/vekexasia_pi-extensible-workflows).

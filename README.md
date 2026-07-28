@@ -278,11 +278,24 @@ nix build .#checks.x86_64-linux.biome-lint
 
 ## Patches
 
+Patches are a last resort: anything reachable through an env var or user
+config is done that way instead, because context diffs rot on every `piSrc`
+bump.
+
 Current patch set applied to upstream `pi`:
 
-- `disable-install-telemetry.patch` - Disables install/update telemetry
 - `avoid-network-model-regeneration.patch` - Uses checked-in model registry during builds
 - `default-package-sources-env.patch` - Adds non-persistent `PI_DEFAULT_PACKAGES` package sources for Nix-bundled resources
+
+Removed patches and their replacements:
+
+- install telemetry: `PI_TELEMETRY=0` exported by both wrappers and by the
+  NixOS module. `isInstallTelemetryEnabled` prefers the env var over settings,
+  and gates both `reportInstallTelemetry` and the provider attribution headers
+  in `provider-attribution.ts` (the old patch only covered the former).
+- tree-filter backward cycle: unbind it in `~/.pi/agent/keybindings.json`
+  (`getAgentDir` = `$HOME/.pi/agent`) with
+  `{ "app.tree.filter.cycleBackward": [] }` — an empty key list never matches.
 
 ---
 

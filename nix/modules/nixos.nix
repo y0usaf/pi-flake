@@ -137,5 +137,7 @@ in {
 
     environment.systemPackages = [package];
     environment.variables.PI_SKIP_VERSION_CHECK = "1";
+    # Install/update telemetry off without patching upstream.
+    environment.variables.PI_TELEMETRY = "0";
   };
 }
