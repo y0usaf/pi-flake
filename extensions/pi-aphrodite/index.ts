@@ -1,14 +1,13 @@
 /**
- * pi-aphrodite — Pi extension that compresses oversized tool output through
- * an Aphrodite proxy's CCR store before it reaches the model context.
+ * pi-aphrodite — Pi extension that compresses oversized tool output into a
+ * local SQLite CCR store before it reaches the model context. No server, no
+ * proxy: hashing and storage happen in-process.
  *
- * The extension hooks the mutable `tool_result` event: raw output above
- * the byte threshold is POSTed to the Aphrodite proxy's `/ccr/create`
- * endpoint and replaced with a compact preview plus a
- * `<<<CCR:hash|type|size>>>` marker. The model can recover the original
- * text with the `aphrodite_retrieve` tool, which proxies `/retrieve`. Any
- * failure (proxy down, CCR disabled, timeout, abort) falls back silently
- * to the uncompressed output.
+ * The extension hooks the mutable `tool_result` event: raw output above the
+ * byte threshold is written to the local store and replaced with a compact
+ * preview plus a `<<<CCR:hash|type|size>>>` marker. The model can recover
+ * the original text with the `aphrodite_retrieve` tool. Any failure
+ * (database unwritable, etc.) falls back silently to uncompressed output.
  *
  * User `!<cmd>` shell output lands in model context, so it is compressed
  * too — on by default. BashOperations.exec streams via onData, so this
@@ -16,15 +15,45 @@
  * (excluded from context) is never intercepted, and `/aphrodite bash off`
  * restores raw streaming for `!<cmd>`.
  *
- * Aphrodite's compression pipeline is fully programmatic (regex classifier
- * + type-aware previews + BLAKE3/SQLite store); no model call happens
- * inside the compress step.
+ * The compression pipeline is fully programmatic (regex classifier +
+ * type-aware previews + sha256/SQLite store); no model call happens inside
+ * the compress step.
  *
  * Configuration:
- * - APHRODITE_URL        proxy base URL (default http://127.0.0.1:9797)
- * - APHRODITE_MGMT_TOKEN bearer token for the management endpoints (optional)
  * - APHRODITE_MIN_BYTES  minimum output size to compress (default 1024)
+ * - APHRODITE_DB_PATH    SQLite file for the CCR store (default
+ *                        $XDG_STATE_HOME/pi/aphrodite-ccr.db or
+ *                        ~/.local/state/pi/aphrodite-ccr.db)
  */
+
+import { createHash } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { createRequire } from "node:module";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+
+// Pi runs extensions on Node.js (jiti); tests and the Nix sandbox check run
+// on Bun, which has no node:sqlite alias. Resolve whichever SQLite binding
+// the current runtime provides.
+type SqliteDatabase = {
+  exec(sql: string): void;
+  prepare(sql: string): {
+    run(...params: unknown[]): unknown;
+    get(...params: unknown[]): unknown;
+  };
+  close(): void;
+};
+type SqliteConstructor = new (path: string) => SqliteDatabase;
+
+function loadSqlite(): SqliteConstructor {
+  const require = createRequire(import.meta.url);
+  try {
+    return (require("node:sqlite") as { DatabaseSync: SqliteConstructor })
+      .DatabaseSync;
+  } catch {
+    return (require("bun:sqlite") as { Database: SqliteConstructor }).Database;
+  }
+}
 
 import type {
   ExtensionAPI,
@@ -33,18 +62,13 @@ import type {
 import { createLocalBashOperations } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-const DEFAULT_BASE_URL = "http://127.0.0.1:9797";
 const DEFAULT_MIN_BYTES = 1024;
-const REQUEST_TIMEOUT_MS = 4000;
-const PROBE_TIMEOUT_MS = 1000;
 const PREVIEW_FIRST_LINE_MAX = 120;
+const RETRIEVE_LINE_CAP = 2000;
+const HASH_HEX_LENGTH = 16;
 
 export type AphroditeAvailability = "unknown" | "available" | "unavailable";
-export type AphroditeFailureKind =
-  | "aborted"
-  | "failed"
-  | "timeout"
-  | "unavailable";
+export type AphroditeFailureKind = "failed" | "unavailable";
 
 export interface AphroditeStatus {
   availability: AphroditeAvailability;
@@ -75,71 +99,46 @@ export interface AphroditeRetrieveOptions {
 export interface AphroditeClient {
   store(
     content: string,
-    signal?: AbortSignal,
+    type: string,
   ): Promise<AphroditeStored | undefined>;
   retrieve(
     hash: string,
     options: AphroditeRetrieveOptions,
-    signal?: AbortSignal,
   ): Promise<string>;
-  probe(signal?: AbortSignal): Promise<AphroditeAvailability>;
+  probe(): Promise<AphroditeAvailability>;
   resetAvailability(): void;
   getStatus(): AphroditeStatus;
+  close(): void;
 }
 
 export interface AphroditeClientOptions {
-  baseUrl?: string;
-  token?: string;
-  fetchImpl?: typeof fetch;
-  requestTimeoutMs?: number;
-  probeTimeoutMs?: number;
+  dbPath?: string;
 }
 
-function combineSignals(
-  signal: AbortSignal | undefined,
-  timeoutMs: number,
-): AbortSignal {
-  const timeout = AbortSignal.timeout(timeoutMs);
-  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+export function defaultDbPath(): string {
+  const stateHome =
+    process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state");
+  return join(stateHome, "pi", "aphrodite-ccr.db");
 }
 
-function classifyError(error: unknown): AphroditeFailureKind {
-  const err = error as { name?: unknown } | null;
-
-  if (err?.name === "AbortError") {
-    return "aborted";
-  }
-
-  if (err?.name === "TimeoutError") {
-    return "timeout";
-  }
-
-  if (err?.name === "CcrDisabledError") {
-    return "unavailable";
-  }
-
-  // fetch TypeError = connection refused / DNS / socket — the proxy is not
-  // there; plain Error with an HTTP status means it answered, so it exists.
-  if (err instanceof TypeError) {
-    return "unavailable";
-  }
-
-  return "failed";
+function hashContent(content: string): string {
+  return createHash("sha256")
+    .update(content)
+    .digest("hex")
+    .slice(0, HASH_HEX_LENGTH);
 }
 
-export function createAphroditeClient(
+function markerSizeFor(hash: string, type: string, originalSize: number): number {
+  return Buffer.byteLength(`<<<CCR:${hash}|${type}|${originalSize}>>>`, "utf8");
+}
+
+export function createLocalAphroditeClient(
   options: AphroditeClientOptions = {},
 ): AphroditeClient {
-  const baseUrl = (
-    options.baseUrl ??
-    process.env.APHRODITE_URL ??
-    DEFAULT_BASE_URL
-  ).replace(/\/+$/, "");
-  const token = options.token ?? process.env.APHRODITE_MGMT_TOKEN;
-  const fetchImpl = options.fetchImpl ?? fetch;
-  const requestTimeoutMs = options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS;
-  const probeTimeoutMs = options.probeTimeoutMs ?? PROBE_TIMEOUT_MS;
+  const dbPath = options.dbPath ?? process.env.APHRODITE_DB_PATH ?? defaultDbPath();
 
+  const SqliteDb = loadSqlite();
+  let db: SqliteDatabase | undefined;
   let availability: AphroditeAvailability = "unknown";
   const counters: Omit<AphroditeStatus, "availability"> = {
     attempts: 0,
@@ -152,51 +151,41 @@ export function createAphroditeClient(
     lastFailure: undefined,
   };
 
-  function authHeaders(): Record<string, string> {
-    return token ? { authorization: `Bearer ${token}` } : {};
-  }
-
   function recordFailure(failure: AphroditeFailureKind): void {
     counters.failures += 1;
     counters.lastFailure = failure;
-
     if (failure === "unavailable") {
       availability = "unavailable";
-    } else if (failure !== "aborted") {
-      // HTTP-level failures prove the proxy itself is reachable.
-      availability = "available";
     }
   }
 
-  async function post(
-    path: string,
-    body: string,
-    contentType: string,
-    signal: AbortSignal | undefined,
-    timeoutMs: number,
-  ): Promise<Response> {
-    const response = await fetchImpl(`${baseUrl}${path}`, {
-      method: "POST",
-      headers: { "content-type": contentType, ...authHeaders() },
-      body,
-      signal: combineSignals(signal, timeoutMs),
-    });
-
-    if (response.status === 503) {
-      const error = new Error("CCR not enabled on Aphrodite proxy");
-      error.name = "CcrDisabledError";
-      throw error;
+  function ensureDb(): SqliteDatabase | undefined {
+    if (db) {
+      return db;
     }
 
-    if (!response.ok) {
-      throw new Error(`aphrodite ${path} failed: HTTP ${response.status}`);
+    try {
+      mkdirSync(dirname(dbPath), { recursive: true });
+      const opened = new SqliteDb(dbPath);
+      opened.exec(
+        "CREATE TABLE IF NOT EXISTS ccr (" +
+          "hash TEXT PRIMARY KEY, " +
+          "content TEXT NOT NULL, " +
+          "original_size INTEGER NOT NULL, " +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch())" +
+          ")",
+      );
+      db = opened;
+      availability = "available";
+      return db;
+    } catch {
+      recordFailure("unavailable");
+      return undefined;
     }
-
-    return response;
   }
 
   return {
-    async store(content, signal) {
+    async store(content, type) {
       if (availability === "unavailable") {
         counters.unavailableSkips += 1;
         return undefined;
@@ -204,102 +193,74 @@ export function createAphroditeClient(
 
       counters.attempts += 1;
 
+      const handle = ensureDb();
+      if (!handle) {
+        return undefined;
+      }
+
       try {
-        const response = await post(
-          "/ccr/create",
-          content,
-          "application/octet-stream",
-          signal,
-          requestTimeoutMs,
-        );
-        const json = (await response.json()) as {
-          hash?: unknown;
-          token_savings_ratio?: unknown;
-          original_size?: unknown;
-          compressed_size?: unknown;
-          marker_size?: unknown;
-        };
+        const hash = hashContent(content);
+        const originalSize = Buffer.byteLength(content, "utf8");
+        handle
+          .prepare(
+            "INSERT OR IGNORE INTO ccr (hash, content, original_size) VALUES (?, ?, ?)",
+          )
+          .run(hash, content, originalSize);
 
-        if (typeof json.hash !== "string" || json.hash.length === 0) {
-          recordFailure("failed");
-          return undefined;
-        }
-
-        availability = "available";
+        const markerSize = markerSizeFor(hash, type, originalSize);
         counters.stored += 1;
-        counters.originalBytes +=
-          typeof json.original_size === "number"
-            ? json.original_size
-            : content.length;
-        counters.markerBytes +=
-          typeof json.marker_size === "number" ? json.marker_size : 0;
+        counters.originalBytes += originalSize;
+        counters.markerBytes += markerSize;
 
         return {
-          hash: json.hash,
-          ratio:
-            typeof json.token_savings_ratio === "number"
-              ? json.token_savings_ratio
-              : 0,
-          originalSize:
-            typeof json.original_size === "number"
-              ? json.original_size
-              : content.length,
-          compressedSize:
-            typeof json.compressed_size === "number"
-              ? json.compressed_size
-              : 0,
-          markerSize:
-            typeof json.marker_size === "number" ? json.marker_size : 0,
+          hash,
+          ratio: Math.round((originalSize / Math.max(markerSize, 1)) * 10) / 10,
+          originalSize,
+          compressedSize: originalSize,
+          markerSize,
         };
-      } catch (error) {
-        recordFailure(classifyError(error));
+      } catch {
+        recordFailure("failed");
         return undefined;
       }
     },
 
-    async retrieve(hash, retrieveOptions, signal) {
+    async retrieve(hash, retrieveOptions) {
       if (availability === "unavailable") {
-        throw new Error("aphrodite proxy is unavailable");
+        throw new Error("aphrodite store is unavailable");
       }
 
-      const response = await post(
-        "/retrieve",
-        JSON.stringify({
-          hash,
-          query: retrieveOptions.query,
-          offset: retrieveOptions.offset ?? 0,
-          limit: retrieveOptions.limit ?? 0,
-        }),
-        "application/json",
-        signal,
-        requestTimeoutMs,
-      );
-      const json = (await response.json()) as {
-        found?: boolean;
-        content?: string | null;
-        error?: string | null;
-      };
+      const handle = ensureDb();
+      if (!handle) {
+        throw new Error("aphrodite store is unavailable");
+      }
+
+      const row = handle
+        .prepare("SELECT content FROM ccr WHERE hash = ?")
+        .get(hash) as { content?: string } | undefined;
+
+      if (!row || typeof row.content !== "string") {
+        throw new Error(`CCR entry not found: ${hash}`);
+      }
 
       counters.retrieves += 1;
 
-      if (!json.found) {
-        throw new Error(json.error ?? `CCR entry not found: ${hash}`);
+      let lines = row.content.split("\n");
+      const query = retrieveOptions.query?.toLowerCase();
+      if (query) {
+        lines = lines.filter((line) => line.toLowerCase().includes(query));
       }
 
-      return json.content ?? "";
+      const offset = Math.max(0, retrieveOptions.offset ?? 0);
+      const limit =
+        retrieveOptions.limit && retrieveOptions.limit > 0
+          ? retrieveOptions.limit
+          : RETRIEVE_LINE_CAP;
+      return lines.slice(offset, offset + limit).join("\n");
     },
 
-    async probe(signal) {
-      try {
-        const response = await fetchImpl(`${baseUrl}/ccr/list`, {
-          headers: authHeaders(),
-          signal: combineSignals(signal, probeTimeoutMs),
-        });
-        availability = response.ok ? "available" : "unavailable";
-      } catch (error) {
-        recordFailure(classifyError(error));
-      }
-
+    async probe() {
+      ensureDb();
       return availability;
     },
 
@@ -311,6 +272,11 @@ export function createAphroditeClient(
 
     getStatus() {
       return { ...counters, availability };
+    },
+
+    close() {
+      db?.close();
+      db = undefined;
     },
   };
 }
@@ -423,7 +389,7 @@ function formatStatus(
   return [
     `aphrodite — state: ${enabled ? "on" : "off"}`,
     `user-bash: ${bashEnabled ? "on" : "off"}`,
-    `proxy: ${status.availability}`,
+    `store: ${status.availability}`,
     `stored: ${status.stored}/${status.attempts}`,
     `retrieves: ${status.retrieves}`,
     `context: ${formatBytes(status.originalBytes)} → ${formatBytes(status.markerBytes)} markers`,
@@ -457,7 +423,7 @@ function updateFooter(
 
 export function registerPiAphrodite(
   pi: ExtensionAPI,
-  client: AphroditeClient = createAphroditeClient(),
+  client: AphroditeClient = createLocalAphroditeClient(),
   minBytes: number = readMinBytes(),
 ): void {
 
@@ -484,7 +450,6 @@ export function registerPiAphrodite(
   async function compressIfUseful(
     text: string,
     toolName: string | undefined,
-    signal?: AbortSignal,
   ): Promise<string | undefined> {
     if (!enabled) {
       return undefined;
@@ -494,12 +459,12 @@ export function registerPiAphrodite(
       return undefined;
     }
 
-    const stored = await client.store(text, signal);
+    const type = detectType(text, toolName);
+    const stored = await client.store(text, type);
     if (!stored) {
       return undefined;
     }
 
-    const type = detectType(text, toolName);
     const preview = buildPreview(text, toolName, type);
     return renderCompressedResult(preview, type, stored);
   }
@@ -518,7 +483,7 @@ export function registerPiAphrodite(
       const action = args.trim().toLowerCase();
 
       if (action === "status") {
-        const availability = await client.probe(ctx.signal);
+        const availability = await client.probe();
         publishFooter(ctx);
         ctx.ui.notify(
           formatStatus(enabled, bashEnabled, { ...client.getStatus(), availability }),
@@ -572,7 +537,7 @@ export function registerPiAphrodite(
     ],
     parameters: Type.Object({
       hash: Type.String({
-        description: "BLAKE3 hash from the <<<CCR:hash|type|size>>> marker.",
+        description: "Hash from the <<<CCR:hash|type|size>>> marker.",
       }),
       query: Type.Optional(
         Type.String({
@@ -583,16 +548,16 @@ export function registerPiAphrodite(
         Type.Number({ description: "0-based line offset for pagination." }),
       ),
       limit: Type.Optional(
-        Type.Number({ description: "Max lines to return (0 = server cap)." }),
+        Type.Number({ description: "Max lines to return (0 = default cap)." }),
       ),
     }),
-    async execute(_toolCallId, params, signal) {
+    async execute(_toolCallId, params, _signal) {
       try {
-        const content = await client.retrieve(
-          params.hash,
-          { query: params.query, offset: params.offset, limit: params.limit },
-          signal,
-        );
+        const content = await client.retrieve(params.hash, {
+          query: params.query,
+          offset: params.offset,
+          limit: params.limit,
+        });
         return {
           content: [{ type: "text", text: content }],
           details: { hash: params.hash } as { hash: string; error?: string },
@@ -611,9 +576,9 @@ export function registerPiAphrodite(
 
   pi.on("session_start", (_event, ctx) => {
     publishFooter(ctx);
-    // Probe once per session so the footer reflects proxy health even
-    // before the first compressible tool result.
-    void client.probe(ctx.signal).then(() => publishFooter(ctx));
+    // Open the store once per session so the footer reflects store health
+    // even before the first compressible tool result.
+    void client.probe().then(() => publishFooter(ctx));
   });
 
   pi.on("tool_result", async (event, ctx) => {
@@ -622,7 +587,7 @@ export function registerPiAphrodite(
       return;
     }
 
-    const compressed = await compressIfUseful(text, event.toolName, ctx.signal);
+    const compressed = await compressIfUseful(text, event.toolName);
     publishFooter(ctx);
     if (!compressed) {
       return;
@@ -653,7 +618,7 @@ export function registerPiAphrodite(
           });
 
           const raw = Buffer.concat(chunks).toString("utf8");
-          const compressed = await compressIfUseful(raw, "bash", ctx.signal);
+          const compressed = await compressIfUseful(raw, "bash");
           const finalText = compressed ?? raw;
           if (finalText.length > 0) {
             options.onData(Buffer.from(finalText));
@@ -666,6 +631,7 @@ export function registerPiAphrodite(
     };
   });
 }
+
 export default function (pi: ExtensionAPI) {
   registerPiAphrodite(pi);
 }

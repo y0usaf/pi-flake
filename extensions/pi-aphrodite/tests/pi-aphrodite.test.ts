@@ -1,4 +1,7 @@
-import { describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const BASH_OUTPUT = "line one of output\n" + "x".repeat(2048);
 
@@ -18,7 +21,6 @@ mock.module("@earendil-works/pi-coding-agent", () => ({
   }),
 }));
 
-
 // typebox is only used to declare tool parameters; stub it so tests run
 // without node_modules (the Nix check sandbox has no network).
 mock.module("typebox", () => ({
@@ -32,7 +34,7 @@ mock.module("typebox", () => ({
 
 const {
   buildPreview,
-  createAphroditeClient,
+  createLocalAphroditeClient,
   detectType,
   registerPiAphrodite,
 } = await import("../index.ts");
@@ -66,31 +68,6 @@ type FakeTool = {
   ): Promise<{ content: Array<{ type: string; text: string }> }>;
 };
 
-type FetchHandler = (
-  url: string,
-  init: { method?: string; body?: string },
-) => { status?: number; json?: unknown };
-
-function makeFetch(handler: FetchHandler): typeof fetch {
-  const impl = async (url: string | URL, init?: RequestInit) => {
-    const result = handler(String(url), {
-      method: init?.method,
-      body: typeof init?.body === "string" ? init.body : undefined,
-    });
-    return new Response(JSON.stringify(result.json ?? {}), {
-      status: result.status ?? 200,
-    });
-  };
-  return impl as unknown as typeof fetch;
-}
-
-function failingFetch(): typeof fetch {
-  const impl = async () => {
-    throw new TypeError("fetch failed");
-  };
-  return impl as unknown as typeof fetch;
-}
-
 function makeCtx(hasUI = false): TestContext & {
   notifications: string[];
   statuses: Array<[string, string | undefined]>;
@@ -102,10 +79,10 @@ function makeCtx(hasUI = false): TestContext & {
     notifications,
     statuses,
     ui: {
-      notify(message: string) {
+      notify(message) {
         notifications.push(message);
       },
-      setStatus(key: string, value: string | undefined) {
+      setStatus(key, value) {
         statuses.push([key, value]);
       },
       theme: { fg: (_color, value) => value },
@@ -128,27 +105,19 @@ function createFakePi() {
   return { pi, handlers, commands, tools };
 }
 
-const HASH = "0123456789abcdef0123456789abcdef01234567";
+const tempDirs: string[] = [];
 
-function storeFetch(): ReturnType<typeof makeFetch> {
-  return makeFetch((url) => {
-    if (url.endsWith("/ccr/create")) {
-      return {
-        json: {
-          hash: HASH,
-          token_savings_ratio: 12.5,
-          original_size: BASH_OUTPUT.length,
-          compressed_size: 400,
-          marker_size: 60,
-        },
-      };
-    }
-    if (url.endsWith("/ccr/list")) {
-      return { json: { entries: 1, backend: "sqlite", mode: "token" } };
-    }
-    return { status: 404, json: {} };
-  });
+function tempDbPath(): string {
+  const dir = mkdtempSync(join(tmpdir(), "pi-aphrodite-test-"));
+  tempDirs.push(dir);
+  return join(dir, "ccr.db");
 }
+
+afterEach(() => {
+  while (tempDirs.length > 0) {
+    rmSync(tempDirs.pop()!, { recursive: true, force: true });
+  }
+});
 
 describe("detectType", () => {
   test("classifies common shapes", () => {
@@ -170,47 +139,84 @@ describe("buildPreview", () => {
   });
 });
 
-describe("createAphroditeClient", () => {
+describe("createLocalAphroditeClient", () => {
   test("stores content and tracks counters", async () => {
-    const client = createAphroditeClient({ fetchImpl: storeFetch() });
-    const stored = await client.store(BASH_OUTPUT);
+    const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
+    const stored = await client.store(BASH_OUTPUT, "terminal");
 
-    expect(stored?.hash).toBe(HASH);
+    expect(stored?.hash).toMatch(/^[0-9a-f]{16}$/);
+    expect(stored?.originalSize).toBe(BASH_OUTPUT.length);
+    expect(stored?.markerSize).toBeGreaterThan(0);
+    expect(stored?.ratio).toBeGreaterThan(1);
     expect(client.getStatus()).toMatchObject({
       availability: "available",
       stored: 1,
       attempts: 1,
       originalBytes: BASH_OUTPUT.length,
     });
+    client.close();
   });
 
-  test("marks proxy unavailable on network failure and skips retries", async () => {
-    const client = createAphroditeClient({ fetchImpl: failingFetch() });
+  test("retrieves stored content with query, offset, and limit", async () => {
+    const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
+    const text = "alpha\nbeta\ngamma\nBeta two\ndelta";
+    const stored = await client.store(text, "text");
 
-    expect(await client.store(BASH_OUTPUT)).toBeUndefined();
-    expect(await client.store(BASH_OUTPUT)).toBeUndefined();
+    expect(await client.retrieve(stored!.hash, {})).toBe(text);
+    expect(await client.retrieve(stored!.hash, { query: "beta" })).toBe(
+      "beta\nBeta two",
+    );
+    expect(await client.retrieve(stored!.hash, { offset: 1, limit: 2 })).toBe(
+      "beta\ngamma",
+    );
+    expect(client.getStatus().retrieves).toBe(3);
+    client.close();
+  });
+
+  test("throws on missing hash", async () => {
+    const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
+    await expect(client.retrieve("nope", {})).rejects.toThrow(
+      "CCR entry not found: nope",
+    );
+    client.close();
+  });
+
+  test("persists entries across client instances", async () => {
+    const dbPath = tempDbPath();
+    const writer = createLocalAphroditeClient({ dbPath });
+    const stored = await writer.store(BASH_OUTPUT, "terminal");
+    writer.close();
+
+    const reader = createLocalAphroditeClient({ dbPath });
+    expect(await reader.retrieve(stored!.hash, {})).toBe(BASH_OUTPUT);
+    reader.close();
+  });
+
+  test("marks store unavailable when the database cannot be opened", async () => {
+    // A directory path is not a valid SQLite database file.
+    const dir = mkdtempSync(join(tmpdir(), "pi-aphrodite-test-"));
+    tempDirs.push(dir);
+    const client = createLocalAphroditeClient({ dbPath: dir });
+
+    expect(await client.store(BASH_OUTPUT, "terminal")).toBeUndefined();
+    expect(await client.store(BASH_OUTPUT, "terminal")).toBeUndefined();
 
     const status = client.getStatus();
     expect(status.availability).toBe("unavailable");
     expect(status.attempts).toBe(1);
     expect(status.unavailableSkips).toBe(1);
     expect(status.lastFailure).toBe("unavailable");
-  });
 
-  test("treats HTTP 503 as CCR disabled (unavailable)", async () => {
-    const client = createAphroditeClient({
-      fetchImpl: makeFetch(() => ({ status: 503, json: { error: "off" } })),
-    });
-
-    expect(await client.store(BASH_OUTPUT)).toBeUndefined();
-    expect(client.getStatus().availability).toBe("unavailable");
+    client.resetAvailability();
+    expect(await client.probe()).toBe("unavailable");
+    client.close();
   });
 });
 
 describe("registerPiAphrodite", () => {
   test("replaces oversized tool_result content with a CCR marker", async () => {
     const { pi, handlers } = createFakePi();
-    const client = createAphroditeClient({ fetchImpl: storeFetch() });
+    const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
     registerPiAphrodite(pi as never, client, 1024);
 
     const handler = handlers.get("tool_result");
@@ -225,14 +231,15 @@ describe("registerPiAphrodite", () => {
     )) as { content: Array<{ text: string }> } | undefined;
 
     const text = result?.content[0]?.text ?? "";
-    expect(text).toContain(`<<<CCR:${HASH}|terminal|`);
+    expect(text).toMatch(/<<<CCR:[0-9a-f]{16}\|terminal\|\d+>>>/);
     expect(text).toContain("aphrodite_retrieve");
     expect(text).not.toContain(BASH_OUTPUT);
+    client.close();
   });
 
   test("leaves small output untouched", async () => {
     const { pi, handlers } = createFakePi();
-    const client = createAphroditeClient({ fetchImpl: storeFetch() });
+    const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
     registerPiAphrodite(pi as never, client, 1024);
 
     const handler = handlers.get("tool_result");
@@ -243,63 +250,41 @@ describe("registerPiAphrodite", () => {
 
     expect(result).toBeUndefined();
     expect(client.getStatus().attempts).toBe(0);
+    client.close();
   });
 
-  test("passes through when the proxy is down", async () => {
-    const { pi, handlers } = createFakePi();
-    const client = createAphroditeClient({ fetchImpl: failingFetch() });
+  test("aphrodite_retrieve returns stored content", async () => {
+    const { pi, handlers, tools } = createFakePi();
+    const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
     registerPiAphrodite(pi as never, client, 1024);
 
     const handler = handlers.get("tool_result");
-    const result = await handler!(
+    const result = (await handler!(
       {
         toolName: "bash",
         content: [{ type: "text", text: BASH_OUTPUT }],
       },
       makeCtx(),
-    );
+    )) as { content: Array<{ text: string }> } | undefined;
 
-    expect(result).toBeUndefined();
-  });
-
-  test("aphrodite_retrieve returns stored content", async () => {
-    const { pi, tools } = createFakePi();
-    const client = createAphroditeClient({
-      fetchImpl: makeFetch((url, init) => {
-        if (url.endsWith("/retrieve")) {
-          const body = JSON.parse(init.body ?? "{}") as { hash?: string };
-          return body.hash === HASH
-            ? {
-                json: {
-                  found: true,
-                  content: BASH_OUTPUT,
-                  source: "ccr",
-                  truncated: false,
-                },
-              }
-            : {
-                status: 404,
-                json: { found: false, error: "CCR entry not found" },
-              };
-        }
-        return { json: {} };
-      }),
-    });
-    registerPiAphrodite(pi as never, client, 1024);
+    const hash =
+      result?.content[0]?.text.match(/<<<CCR:([0-9a-f]{16})\|/)?.[1] ?? "";
+    expect(hash).not.toBe("");
 
     const tool = tools.find((t) => t.name === "aphrodite_retrieve");
     expect(tool).toBeDefined();
 
-    const ok = await tool!.execute("id", { hash: HASH });
+    const ok = await tool!.execute("id", { hash });
     expect(ok.content[0]?.text).toBe(BASH_OUTPUT);
 
     const missing = await tool!.execute("id", { hash: "nope" });
     expect(missing.content[0]?.text).toContain("aphrodite_retrieve failed");
+    client.close();
   });
 
   test("/aphrodite off disables compression; status reports state", async () => {
     const { pi, handlers, commands } = createFakePi();
-    const client = createAphroditeClient({ fetchImpl: storeFetch() });
+    const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
     registerPiAphrodite(pi as never, client, 1024);
 
     const command = commands.get("aphrodite");
@@ -321,11 +306,12 @@ describe("registerPiAphrodite", () => {
 
     await command!.handler("status", ctx);
     expect(ctx.notifications.at(-1)).toContain("aphrodite — state: off");
+    client.close();
   });
 
-  test("publishes availability transitions to the footer status", async () => {
+  test("publishes up state to the footer once the store opens", async () => {
     const { pi, handlers } = createFakePi();
-    const client = createAphroditeClient({ fetchImpl: storeFetch() });
+    const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
     registerPiAphrodite(pi as never, client, 1024);
 
     const ctx = makeCtx(true);
@@ -342,28 +328,13 @@ describe("registerPiAphrodite", () => {
     const values = ctx.statuses.filter(([key]) => key === "pi-aphrodite").map(([, value]) => value);
     expect(values.length).toBeGreaterThan(0);
     expect(values.at(-1)).toBe("aphrodite:on·up");
-  });
-
-  test("publishes down state when the proxy fails", async () => {
-    const { pi, handlers } = createFakePi();
-    const client = createAphroditeClient({ fetchImpl: failingFetch() });
-    registerPiAphrodite(pi as never, client, 1024);
-
-    const ctx = makeCtx(true);
-    const handler = handlers.get("tool_result");
-    await handler!(
-      { toolName: "bash", content: [{ type: "text", text: BASH_OUTPUT }] },
-      ctx,
-    );
-
-    const values = ctx.statuses.filter(([key]) => key === "pi-aphrodite").map(([, value]) => value);
-    expect(values.at(-1)).toBe("aphrodite:on·down");
+    client.close();
   });
 
   test("compresses user_bash output (default on), buffering then emitting once", async () => {
     localExecOutput = BASH_OUTPUT;
     const { pi, handlers } = createFakePi();
-    const client = createAphroditeClient({ fetchImpl: storeFetch() });
+    const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
     registerPiAphrodite(pi as never, client, 1024);
 
     const handler = handlers.get("user_bash");
@@ -387,14 +358,15 @@ describe("registerPiAphrodite", () => {
 
     expect(result.exitCode).toBe(0);
     expect(received).toHaveLength(1);
-    expect(received[0]).toContain(`<<<CCR:${HASH}|terminal|`);
+    expect(received[0]).toMatch(/<<<CCR:[0-9a-f]{16}\|terminal\|/);
     expect(received[0]).not.toContain(BASH_OUTPUT);
+    client.close();
   });
 
   test("passes small user_bash output through raw", async () => {
     localExecOutput = "tiny output";
     const { pi, handlers } = createFakePi();
-    const client = createAphroditeClient({ fetchImpl: storeFetch() });
+    const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
     registerPiAphrodite(pi as never, client, 1024);
 
     const handler = handlers.get("user_bash");
@@ -419,12 +391,13 @@ describe("registerPiAphrodite", () => {
     expect(received.join("")).toBe("tiny output");
     expect(client.getStatus().attempts).toBe(0);
     localExecOutput = BASH_OUTPUT;
+    client.close();
   });
 
   test("skips !! commands and respects /aphrodite bash off", async () => {
     localExecOutput = BASH_OUTPUT;
     const { pi, handlers, commands } = createFakePi();
-    const client = createAphroditeClient({ fetchImpl: storeFetch() });
+    const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
     registerPiAphrodite(pi as never, client, 1024);
 
     const handler = handlers.get("user_bash");
@@ -449,5 +422,6 @@ describe("registerPiAphrodite", () => {
     // /aphrodite bash re-enables (toggle)
     await commands.get("aphrodite")!.handler("bash", ctx);
     expect(ctx.notifications.at(-1)).toContain("user-bash compression on");
+    client.close();
   });
 });

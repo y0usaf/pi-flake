@@ -1,7 +1,7 @@
 {
   "name": "@y0usaf/pi-aphrodite",
-  "version": "0.2.0",
-  "description": "Pi extension that compresses oversized tool output through an Aphrodite CCR proxy for LLM token savings",
+  "version": "0.3.0",
+  "description": "Pi extension that compresses oversized tool output into a local SQLite CCR store for LLM token savings",
   "keywords": [
     "aphrodite",
     "ccr",
