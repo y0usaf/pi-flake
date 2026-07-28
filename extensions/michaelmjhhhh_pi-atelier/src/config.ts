@@ -24,7 +24,6 @@ const segmentIds = new Set<SegmentId>([
 	"context",
 	"model",
 	"git",
-	"statuses",
 	"menu",
 ]);
 
@@ -60,6 +59,8 @@ export function validateConfig(input: unknown, base: AtelierConfig = DEFAULT_CON
 		const seen = new Set<string>();
 		const valid: SegmentId[] = [];
 		for (const value of input.segments) {
+			// "statuses" was removed from the footer; accept legacy configs silently.
+			if (value === "statuses") continue;
 			if (typeof value !== "string" || !segmentIds.has(value as SegmentId)) {
 				warnings.push(`Unknown segment: ${String(value)}`);
 				continue;
@@ -101,7 +102,6 @@ export function validateConfig(input: unknown, base: AtelierConfig = DEFAULT_CON
 		} else warnings.push("currencyDecimals must be an integer from 0 through 6");
 	}
 	for (const key of [
-		"showExtensionStatuses",
 		"showSessionActions",
 		"showSidebarToolNames",
 		"completionNotifications",

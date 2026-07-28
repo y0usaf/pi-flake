@@ -285,7 +285,7 @@ describe("menu actions", () => {
 		h.actions.setPreset("classic");
 		expect(h.runtime.getConfig()).toMatchObject({
 			preset: "classic",
-			segments: ["metrics", "context", "model", "git", "statuses"],
+			segments: ["metrics", "context", "model", "git"],
 			density: "comfortable",
 			ornament: "none",
 		});

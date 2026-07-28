@@ -125,7 +125,7 @@ The sidebar starts hidden in every session. Use these commands to control it exp
 
 You can also press `alt+a` to access separate sidebar visibility and tool-detail controls from the menu. When enabled, the session-scoped rail attaches to the top-right, fills the terminal height, and stays visible without taking editor focus.
 
-The scan-first hierarchy leads with agent state and model, followed by a compact segmented context meter and a merged workspace summary. Below 40 sidebar columns, a unified compact mode stacks Agent and Workspace metadata, uses inline Usage pairs, and collapses tool details so important values remain complete instead of truncating. At wider sizes, paired metrics and tool columns use intrinsic content measurements rather than stretching gaps across the available width. Usage appears only when token or cost data exists. Access type remains visible with the agent metadata. Active tool names are collapsed by default behind the tool count and can be expanded through the command or menu; that preference is saved to user configuration. Expanded names automatically collapse below 40 sidebar columns and reappear when widened. Routine healthy extension statuses stay hidden, while warnings and errors appear as explicit alerts.
+The scan-first hierarchy leads with agent state and model, followed by a compact segmented context meter and a merged workspace summary. Below 40 sidebar columns, a unified compact mode stacks Agent and Workspace metadata, uses inline Usage pairs, and collapses tool details so important values remain complete instead of truncating. At wider sizes, paired metrics and tool columns use intrinsic content measurements rather than stretching gaps across the available width. Usage appears only when token or cost data exists. Access type remains visible with the agent metadata. Active tool names are collapsed by default behind the tool count and can be expanded through the command or menu; that preference is saved to user configuration. Expanded names automatically collapse below 40 sidebar columns and reappear when widened. An Extensions panel lists every status other extensions publish through `ctx.ui.setStatus`, keyed by extension name, while warnings and errors also surface as explicit alerts.
 
 ## Completion notifications
 
@@ -174,7 +174,6 @@ Complete example:
     "context",
     "model",
     "git",
-    "statuses",
     "menu"
   ],
   "density": "comfortable",
@@ -182,7 +181,6 @@ Complete example:
   "contextWarning": 70,
   "contextDanger": 90,
   "currencyDecimals": 3,
-  "showExtensionStatuses": true,
   "showSessionActions": true,
   "showSidebarToolNames": false,
   "completionNotifications": true
@@ -195,11 +193,11 @@ Unknown or invalid values are ignored with one warning. The required `metrics` a
 
 - **editorial** — default Status Rail with activity, workspace identity, cache-hit summary, and telemetry
 - **minimal** — compact activity, metrics, context, model, and menu
-- **classic** — detailed cache telemetry, context, model, Git, and extension statuses
+- **classic** — detailed cache telemetry, context, model, and Git
 
 ## Responsive behavior
 
-The Status Rail removes optional information by priority as the terminal narrows instead of switching to fixed layouts. Brand and extension statuses are removed first, followed by Git and thinking level, cost, model, input and output totals, cache, and finally the menu shortcut. Activity and context are retained longest, and the result is truncated safely rather than wrapping when space is exceptionally tight.
+The Status Rail removes optional information by priority as the terminal narrows instead of switching to fixed layouts. Brand is removed first, followed by Git and thinking level, cost, model, input and output totals, cache, and finally the menu shortcut. Activity and context are retained longest, and the result is truncated safely rather than wrapping when space is exceptionally tight. Extension statuses live in the sidebar Extensions panel instead of the Status Rail.
 
 ## Privacy and security
 

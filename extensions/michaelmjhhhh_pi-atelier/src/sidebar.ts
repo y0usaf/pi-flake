@@ -12,7 +12,7 @@ import {
 	type ToolActivity,
 } from "./run-activity.js";
 import { createSplitPaneController, type SplitPaneController } from "./split-pane.js";
-import type { AtelierConfig, AtelierState } from "./types.js";
+import type { AtelierConfig, AtelierState, ExtensionStatus } from "./types.js";
 
 export interface SidebarSnapshotInput {
 	state: AtelierState;
@@ -23,7 +23,7 @@ export interface SidebarSnapshotInput {
 	activeToolCount: number;
 	availableToolCount: number;
 	activeToolNames?: readonly string[];
-	extensionStatuses: readonly string[];
+	extensionStatuses: readonly ExtensionStatus[];
 	runActivity?: RunActivitySnapshot;
 }
 
@@ -420,27 +420,54 @@ function activeToolNameRows(
 const exceptionStatusPattern =
 	/\b(error|failed?|failure|warn(?:ing)?|offline|unavailable|blocked|degraded)\b/i;
 
+const errorStatusPattern = /\b(error|failed?|failure|offline|unavailable)\b/i;
+
+function statusSeverity(text: string): "error" | "warning" | undefined {
+	if (errorStatusPattern.test(text)) return "error";
+	if (exceptionStatusPattern.test(text)) return "warning";
+	return undefined;
+}
+
 function statusDetailPanelRole(snapshot: SidebarSnapshot): PaletteRole {
-	return snapshot.extensionStatuses.some((status) =>
-		/\b(error|failed?|failure|offline|unavailable)\b/i.test(sanitize(status)),
-	)
+	return snapshot.extensionStatuses.some((entry) => statusSeverity(sanitize(entry.text)) === "error")
 		? "error"
 		: "warning";
 }
 
 function statusDetailRows(snapshot: SidebarSnapshot, palette: AtelierPalette): string[] {
 	const statuses = snapshot.extensionStatuses
-		.map(sanitize)
-		.filter((status) => status && exceptionStatusPattern.test(status));
+		.map((entry) => sanitize(entry.text))
+		.filter((text) => text && statusSeverity(text) !== undefined);
 	if (statuses.length === 0) return [];
-	return [
-		...statuses.map((status) => {
-			const role: PaletteRole = /\b(error|failed?|failure|offline|unavailable)\b/i.test(status)
-				? "error"
-				: "warning";
-			return palette.paint(role, `${role === "error" ? "✕" : "▲"} ${status}`);
-		}),
-	];
+	return statuses.map((status) => {
+		const severity = statusSeverity(status);
+		const role: PaletteRole = severity === "error" ? "error" : "warning";
+		return palette.paint(role, `${role === "error" ? "✕" : "▲"} ${status}`);
+	});
+}
+
+function extensionsPanelRole(snapshot: SidebarSnapshot): PaletteRole {
+	let warning = false;
+	for (const entry of snapshot.extensionStatuses) {
+		const severity = statusSeverity(sanitize(entry.text));
+		if (severity === "error") return "error";
+		if (severity === "warning") warning = true;
+	}
+	return warning ? "warning" : "accent";
+}
+
+function extensionStatusRows(snapshot: SidebarSnapshot, palette: AtelierPalette): string[] {
+	const rows: string[] = [];
+	for (const entry of snapshot.extensionStatuses) {
+		const text = sanitize(entry.text);
+		if (!text) continue;
+		const severity = statusSeverity(text);
+		const role: PaletteRole = severity === "error" ? "error" : severity === "warning" ? "warning" : "primary";
+		const key = sanitize(entry.key);
+		const label = key ? `${palette.paint("muted", key)} ${palette.paint("dim", "·")} ` : "";
+		rows.push(`${label}${palette.paint(role, text)}`);
+	}
+	return rows;
 }
 
 interface ActivityGroups {
@@ -704,6 +731,14 @@ export function renderSidebarLines(
 			rows: statusDetailRows(snapshot, palette),
 			required: false,
 			dropRank: 80,
+		},
+		{
+			name: "extensions",
+			panel: "EXTENSIONS",
+			panelRole: extensionsPanelRole(snapshot),
+			rows: extensionStatusRows(snapshot, palette),
+			required: false,
+			dropRank: 45,
 		},
 		{
 			name: "context",

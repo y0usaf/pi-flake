@@ -24,7 +24,7 @@ import {
 	type SidebarSnapshot,
 } from "../src/sidebar.js";
 import { AtelierRuntime } from "../src/state.js";
-import type { AtelierState } from "../src/types.js";
+import type { AtelierState, ExtensionStatus } from "../src/types.js";
 
 export interface AtelierExtensionDependencies {
 	saveConfig?: typeof saveUserConfig;
@@ -49,7 +49,7 @@ export default function atelierExtension(
 	let unsubscribeAskUserBlocked: (() => void) | undefined;
 	let askUserBlocked = false;
 	let inputRequestSequence = 0;
-	let extensionStatuses: readonly string[] = [];
+	let extensionStatuses: readonly ExtensionStatus[] = [];
 	let enabled = true;
 	let shortcutRegistered = false;
 	let resizeShortcutRegistered = false;
@@ -60,10 +60,13 @@ export default function atelierExtension(
 		sidebar?.requestRender();
 	};
 
-	function updateExtensionStatuses(next: readonly string[]): void {
+	function updateExtensionStatuses(next: readonly ExtensionStatus[]): void {
 		if (
 			next.length === extensionStatuses.length &&
-			next.every((status, index) => status === extensionStatuses[index])
+			next.every(
+				(status, index) =>
+					status.key === extensionStatuses[index]?.key && status.text === extensionStatuses[index]?.text,
+			)
 		) {
 			return;
 		}
@@ -193,7 +196,9 @@ export default function atelierExtension(
 					const state = targetRuntime.getState();
 					const branch = footerData.getGitBranch();
 					if (isCurrentFooter()) {
-						updateExtensionStatuses(Array.from(footerData.getExtensionStatuses().values()));
+						updateExtensionStatuses(
+							Array.from(footerData.getExtensionStatuses().entries(), ([key, text]) => ({ key, text })),
+						);
 					}
 					return {
 						...state,
