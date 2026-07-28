@@ -74,6 +74,7 @@ type SettingsParseResult =
 	| { warning: string };
 
 let disabledTools = new Set<string>();
+let removedByUs = new Set<string>();
 let lastWarning: string | undefined;
 let lastReportedWarning: string | undefined;
 let lastSaveError: string | undefined;
@@ -206,9 +207,26 @@ async function enforceDisabledTools(pi: ExtensionAPI): Promise<void> {
 	if (allNames.size === 0) return;
 
 	const active = pi.getActiveTools().filter((n) => allNames.has(n));
+	const activeSet = new Set(active);
+
+	// Forget removals that are active again (pi or another extension restored them)
+	for (const name of [...removedByUs]) {
+		if (activeSet.has(name) || !allNames.has(name)) removedByUs.delete(name);
+	}
+
+	// Restore tools we removed that are allowed again (appended at end)
+	const restored = [...removedByUs].filter((n) => !disabledTools.has(n));
+	for (const name of restored) removedByUs.delete(name);
+
+	// Filter out currently disabled tools and record that we removed them
 	const filtered = active.filter((n) => !disabledTools.has(n));
-	if (active.length !== filtered.length || active.some((n, i) => n !== filtered[i])) {
-		await pi.setActiveTools(filtered);
+	for (const name of active) {
+		if (disabledTools.has(name)) removedByUs.add(name);
+	}
+
+	const next = [...filtered, ...restored];
+	if (active.length !== next.length || active.some((n, i) => n !== next[i])) {
+		await pi.setActiveTools(next);
 	}
 }
 
