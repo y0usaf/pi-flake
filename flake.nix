@@ -31,6 +31,9 @@
 
     piKimi.url = "path:./extensions/pi-kimi";
     piKimi.inputs.nixpkgs.follows = "nixpkgs";
+
+    piSidebar.url = "path:./extensions/pi-sidebar";
+    piSidebar.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs = {
@@ -45,6 +48,7 @@
     piWebfetch,
     piHashline,
     piKimi,
+    piSidebar,
     ...
   }: let
     systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
@@ -132,6 +136,7 @@
       "pi-tool-management" = piToolManagement.packages.${system}.default;
       "pi-webfetch" = piWebfetch.packages.${system}.default;
       "pi-hashline" = piHashline.packages.${system}.default;
+      "pi-sidebar" = piSidebar.packages.${system}.default;
 
       "pi-advisor" = let
         advisorPackageJson = builtins.fromJSON (builtins.readFile ./extensions/RimuruW_pi-advisor/package.json);
@@ -439,6 +444,7 @@
       "tool-management" = self.packages.${system}."pi-tool-management";
       webfetch = self.packages.${system}."pi-webfetch";
       hashline = self.packages.${system}."pi-hashline";
+      sidebar = self.packages.${system}."pi-sidebar";
 
       advisor = self.packages.${system}."pi-advisor";
       review = self.packages.${system}."pi-review";

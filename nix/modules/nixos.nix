@@ -73,6 +73,7 @@ in {
       "tool-management" = mkEnableOption "pi-tool-management persistent disabled-tools UI extension";
       webfetch = mkEnableOption "pi-webfetch extension";
       hashline = mkEnableOption "pi-hashline v3 read/edit tool override";
+      sidebar = mkEnableOption "pi-sidebar crush-style right-docked sidebar extension";
 
       advisor = mkEnableOption "pi-advisor strategic advisor-model extension";
       review = mkEnableOption "pi-review /review and /end-review code review workflow extension";

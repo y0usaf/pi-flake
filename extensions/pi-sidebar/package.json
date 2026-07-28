@@ -1,0 +1,19 @@
+{
+  "name": "pi-sidebar",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Crush-style right-docked sidebar for Pi: session, model, context, files, and live tool activity",
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0"
+  }
+}
