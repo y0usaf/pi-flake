@@ -1,17 +1,17 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type, type Api, type Model } from "@earendil-works/pi-ai";
-import { copyToClipboard, getAgentDir, ModelSelectorComponent, SettingsManager, truncateToVisualLines, type ExtensionAPI, type ExtensionUIContext, type ModelRuntime, type Theme } from "@earendil-works/pi-coding-agent";
+import { copyToClipboard, defineTool, getAgentDir, ModelSelectorComponent, SettingsManager, truncateToVisualLines, type ExtensionAPI, type ExtensionUIContext, type ModelRuntime, type Theme } from "@earendil-works/pi-coding-agent";
 import { FairAgentScheduler, WorkflowAgentExecutor, localAgentTransport, type AgentActivity, type AgentAttempt, type AgentDefinition, type AgentProgress, type AgentProviderFailure, type AgentProviderRecovery } from "./agent-execution.js";
 import { acquireSessionLease, listPersistedSessionIds, listRunIds, RunStore, SessionLease, structuralPath as operationPath } from "./persistence.js";
 import type { AwaitingCheckpoint, PersistedRun, WorktreeReference } from "./persistence.js";
 import { budgetRelaxed, budgetUsage, mergeBudget, resumeBudgetAllowed, validateBudget, validateBudgetPatch, WorkflowBudgetRuntime } from "./budget.js";
 import { asWorkflowError, aliasDrift, createLaunchSnapshot, deepFreeze, errorCode, errorText, fail, isWorkflowAuthored, jsonValue, modelAliasErrorName, modelCapability, object, parseModelReference, parseThinking, positiveInteger, resolveModelReference, validateModelAliases } from "./utils.js";
-import { launchScriptForSnapshot, loadAgentDefinitions, preflight, resolveAgentResourcePolicy, resolveWorkflowSettings, saveModelAliases, validateAgentOptions, validateCheckpoint, validateModelAliasAvailability, validateShellOptions, validateWorkflowLaunchWithRegistry, workflowProjectSettingsPath, workflowPrompt, workflowSettingsPath } from "./validation.js";
+import { launchScriptForSnapshot, loadAgentDefinitions, loadSettings, preflight, resolveAgentResourcePolicy, resolveWorkflowSettings, saveExposeWorkflowTools, saveModelAliases, validateAgentOptions, validateCheckpoint, validateModelAliasAvailability, validateShellOptions, validateWorkflowLaunchWithRegistry, workflowProjectSettingsPath, workflowPrompt, workflowSettingsPath } from "./validation.js";
 import { beginWorkflowExtensionLoading, loadingRegistry, resetWorkflowRegistry, type WorkflowRegistryApi } from "./registry.js";
 import { agentIdentityPath, agentWorktree, encoded, executeShellCommand, persistActiveAgentAttempt, persistAgentAttempts, readShellResult, runWorkflow, shellIdentityPath } from "./execution.js";
 import { openWorkflowArtifact, workflowPromptArtifact, workflowResultArtifact, workflowScriptArtifact, type WorkflowArtifact } from "./workflow-artifacts.js";
@@ -1570,6 +1570,8 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
   beginWorkflowExtensionLoading();
   const registry = loadingRegistry();
   const extensionAgentDir = agentDir ?? getAgentDir();
+  const exposeWorkflowTools = loadSettings(workflowSettingsPath(extensionAgentDir)).exposeWorkflowTools === true;
+  const registerWorkflowTool: typeof pi.registerTool = (tool) => { if (exposeWorkflowTools) pi.registerTool(tool); };
   const registerEntryRenderer = piHostCapabilities(pi).registerEntryRenderer;
   registerEntryRenderer?.<WorkflowLogEntry>(WORKFLOW_LOG_ENTRY, (entry) => {
     const data = entry.data;
@@ -2023,7 +2025,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     };
   };
 
-  pi.registerTool({
+  registerWorkflowTool({
     name: "workflow_respond",
     label: "Workflow Respond",
     description: "Approve or reject one pending workflow checkpoint or budget decision",
@@ -2045,7 +2047,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     renderCall(args, theme) { return styledTextBlock(workflowControlCall("workflow_respond", args, theme)); },
     renderResult(result, options, theme, context) { return workflowCatalogBlock(workflowControlResult("workflow_respond", context.args, result, options.expanded, theme, context.isError), options.expanded); },
   });
-  pi.registerTool({
+  registerWorkflowTool({
     name: "workflow_stop",
     label: "Workflow Stop",
     description: "Stop an active workflow run by ID",
@@ -2061,7 +2063,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     renderCall(args, theme) { return styledTextBlock(workflowControlCall("workflow_stop", args, theme)); },
     renderResult(result, options, theme, context) { return workflowCatalogBlock(workflowControlResult("workflow_stop", context.args, result, options.expanded, theme, context.isError), options.expanded); },
   });
-  pi.registerTool({
+  registerWorkflowTool({
     name: "workflow_status",
     label: "Workflow Status",
     description: "Read a compact summary of a workflow run in the current project",
@@ -2396,7 +2398,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
       if (!childStarted) retryReservations.delete(lineageRootRunId);
     }
   };
-  pi.registerTool({
+  registerWorkflowTool({
     name: "workflow_retry",
     label: "Workflow Retry",
     description: "Retry a failed workflow run by replaying its completed structural operations",
@@ -2408,7 +2410,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     renderCall(args, theme) { return styledTextBlock(workflowControlCall("workflow_retry", args, theme)); },
     renderResult(result, options, theme, context) { return workflowCatalogBlock(workflowControlResult("workflow_retry", context.args, result, options.expanded, theme, context.isError), options.expanded); },
   });
-  pi.registerTool({
+  registerWorkflowTool({
     name: "workflow_resume",
     label: "Workflow Resume",
     description: "Resume an exhausted workflow with unchanged or patched aggregate budgets",
@@ -2492,7 +2494,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     const content = `Workflow role descriptions:\n${roles.map(([name, definition]) => `- \`${name}\`: ${String(definition.description)}`).join("\n")}`;
     return { systemPrompt: `${event.systemPrompt}\n\n${content}` };
   });
-  pi.registerTool({
+  const workflowTool = defineTool({
     name: "workflow",
     label: WORKFLOW_TOOL_LABEL,
     description: WORKFLOW_TOOL_DESCRIPTION,
@@ -2665,10 +2667,51 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
       return textBlock(isPartial ? "Workflow starting..." : runDetails?.preview ?? (content?.type === "text" ? content.text : "Workflow finished"));
     },
   });
+  if (exposeWorkflowTools) pi.registerTool(workflowTool);
+  type WorkflowCommandSpec = { name: string; description?: string; script?: string; args?: JsonValue };
+  const workflowCommandRoots = [join(dirname(fileURLToPath(import.meta.url)), "../workflows"), join(dirname(fileURLToPath(import.meta.url)), "../../workflows"), join(extensionAgentDir, "workflows")];
+  const seenWorkflowCommands = new Set<string>();
+  for (const root of workflowCommandRoots) {
+    if (!existsSync(root)) continue;
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const dir = join(root, entry.name);
+      const specPath = join(dir, "command.json");
+      if (!existsSync(specPath)) continue;
+      let parsedSpec: unknown;
+      try { parsedSpec = JSON.parse(readFileSync(specPath, "utf8")); }
+      catch (error) { throw new WorkflowError("CONFIG_ERROR", `Invalid workflow command JSON at ${specPath}: ${errorText(error)}`); }
+      if (!object(parsedSpec)) throw new WorkflowError("INVALID_METADATA", `Workflow command at ${specPath} must be an object`);
+      const spec = parsedSpec as WorkflowCommandSpec;
+      if (typeof spec.name !== "string" || !/^[a-zA-Z0-9][\w-]*$/.test(spec.name)) throw new WorkflowError("INVALID_METADATA", `Workflow command at ${specPath} requires a name matching /^[a-zA-Z0-9][\\w-]*$/`);
+      if (seenWorkflowCommands.has(spec.name)) continue;
+      const scriptFile = spec.script ?? "workflow.js";
+      const scriptPath = join(dir, scriptFile);
+      if (!existsSync(scriptPath)) throw new WorkflowError("INVALID_METADATA", `Workflow command ${spec.name} script not found: ${scriptPath}`);
+      seenWorkflowCommands.add(spec.name);
+      pi.registerCommand(spec.name, {
+        description: spec.description ?? `Run the ${spec.name} workflow`,
+        handler: async (args, ctx) => {
+          let workflowArgs: JsonValue = spec.args ?? null;
+          const trimmed = args.trim();
+          if (trimmed) { try { workflowArgs = JSON.parse(trimmed) as JsonValue; } catch { workflowArgs = trimmed; } }
+          const result = await workflowTool.execute(`command-${spec.name}`, { name: spec.name, scriptPath, args: workflowArgs }, undefined, undefined, ctx);
+          const details = result.details as { runId?: string } | undefined;
+          ctx.ui.notify(`Started workflow ${spec.name}${details?.runId ? ` (${details.runId})` : ""}. Control it with /workflow.`, "info");
+        },
+      });
+    }
+  }
   pi.registerCommand("workflow", {
     description: "Inspect and control workflows for this Pi session",
     handler: async (args, ctx) => {
       const command = args.trim();
+      if (command === "tools on" || command === "tools off") {
+        const enable = command === "tools on";
+        saveExposeWorkflowTools(workflowSettingsPath(extensionAgentDir), enable);
+        ctx.ui.notify(`Workflow agent tools ${enable ? "enabled" : "disabled"} in ${workflowSettingsPath(extensionAgentDir)}. Restart pi to apply.`, "info");
+        return;
+      }
       await ensureSessionLease(ctx.cwd, ctx.sessionManager.getSessionId());
       const loadStores = async () => {
         const entries = await Promise.all((await listRunIds(ctx.cwd, ctx.sessionManager.getSessionId(), home)).map(async (runId) => {

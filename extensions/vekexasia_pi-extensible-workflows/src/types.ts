@@ -63,9 +63,9 @@ export interface WorkflowModelAlias { resolve: (context: Readonly<WorkflowModelA
 export interface WorkflowMetadata { name: string; description?: string }
 export interface HerdrExtensionSettings { enableFullyInspectableMode?: boolean }
 export interface WorkflowExtensionSettings { herdr?: Readonly<HerdrExtensionSettings> }
-export interface WorkflowSettings { concurrency: number; modelAliases?: Readonly<Record<string, string>>; disabledAgentResources?: Readonly<AgentResourceExclusions>; extensions?: Readonly<WorkflowExtensionSettings> }
-export interface WorkflowSettingsOverrides { concurrency?: number; modelAliases?: Readonly<Record<string, string>>; disabledAgentResources?: Readonly<AgentResourceExclusions>; extensions?: Readonly<WorkflowExtensionSettings> }
-export interface WorkflowSettingsSources { concurrency: string; modelAliases: string; disabledAgentResources: string }
+export interface WorkflowSettings { concurrency: number; modelAliases?: Readonly<Record<string, string>>; disabledAgentResources?: Readonly<AgentResourceExclusions>; extensions?: Readonly<WorkflowExtensionSettings>; exposeWorkflowTools?: boolean }
+export interface WorkflowSettingsOverrides { concurrency?: number; modelAliases?: Readonly<Record<string, string>>; disabledAgentResources?: Readonly<AgentResourceExclusions>; extensions?: Readonly<WorkflowExtensionSettings>; exposeWorkflowTools?: boolean }
+export interface WorkflowSettingsSources { concurrency: string; modelAliases: string; disabledAgentResources: string; exposeWorkflowTools: string }
 export interface WorkflowSettingsResolution { globalSettingsPath: string; projectSettingsPath: string; projectTrusted: boolean; global: Readonly<WorkflowSettings>; project: Readonly<WorkflowSettingsOverrides>; effective: Readonly<WorkflowSettings>; sources: Readonly<WorkflowSettingsSources> }
 export interface AgentResourceExclusions { skills: readonly string[]; extensions: readonly string[] }
 export interface AgentResourcePolicy { globalSettingsPath: string; projectSettingsPath: string; projectTrusted: boolean; global: AgentResourceExclusions; project: AgentResourceExclusions; effective: AgentResourceExclusions; unmatchedSkills: readonly string[]; unmatchedExtensions: readonly string[]; excludedSkills?: readonly string[]; excludedExtensions?: readonly string[] }
