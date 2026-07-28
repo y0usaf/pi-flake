@@ -586,6 +586,10 @@
           export PI_PACKAGE_DIR="${pi}/share/pi"
           export PI_SKIP_VERSION_CHECK=1
 
+          # Real node for pi-extensible-workflows child processes (bun binary
+          # cannot re-exec node flags; see patches in extensions/vekexasia_pi-extensible-workflows).
+          export PI_WORKFLOW_NODE_PATH="${pkgs.nodejs_22}/bin/node"
+
           if [ -n "''${PI_DEFAULT_PACKAGES:-}" ]; then
             export PI_DEFAULT_PACKAGES="@out@/share/pi:''${PI_DEFAULT_PACKAGES}"
           else
