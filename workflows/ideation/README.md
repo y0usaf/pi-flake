@@ -38,14 +38,20 @@ Enable the extension in your system flake and rebuild:
 programs.pi.extensions.extensible-workflows = true;
 ```
 
+The system flake (`modules/dev/pi/workflows.nix`) places this directory into
+`~/.local/share/pi/agent/workflows/ideation/`, which the engine scans for
+`command.json` — that registers the slash command. The files here are the
+source of truth; the home-dir copy is a store symlink, never edited in place.
+
 ## Invoke
 
-From any pi session, ask in plain language, e.g.:
+Slash command:
 
-> Run the ideation workflow at `~/dev/pi-flake/workflows/ideation/ideate.js`
-> on the topic "a local-first sync engine for my notes".
+```
+/ideate '{ "topic": "a local-first sync engine for my notes" }'
+```
 
-The agent launches it with the `workflow` tool:
+Or via the `workflow` tool (adds a budget backstop):
 
 ```json
 {
