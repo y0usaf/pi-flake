@@ -26,9 +26,11 @@ That's all. The store is a local file; nothing else needs to run.
 
 ## Configuration
 
-| Variable              | Default                                            | Purpose                                 |
-| --------------------- | -------------------------------------------------- | --------------------------------------- |
-| `APHRODITE_MIN_BYTES` | `1024`                                             | Minimum output size (bytes) to compress |
+| Variable                     | Default                                            | Purpose                                 |
+| ---------------------------- | -------------------------------------------------- | --------------------------------------- |
+| `APHRODITE_TOOL_THRESHOLD`   | `4096`                                             | Minimum size (bytes) to compress generic tool output (matches upstream's `tool_threshold_token`) |
+| `APHRODITE_TERMINAL_THRESHOLD` | `1024`                                           | Minimum size (bytes) to compress shell output — bash tool and user `!<cmd>` alike (matches upstream's `terminal_threshold`) |
+| `APHRODITE_MIN_BYTES`        | unset                                              | Legacy fallback applied to both thresholds when the specific knob is unset |
 | `APHRODITE_DB_PATH`   | `$XDG_STATE_HOME/pi/aphrodite-ccr.db` (or `~/.local/state/pi/aphrodite-ccr.db`) | SQLite file for the CCR store |
 | `APHRODITE_TTL_SECONDS` | `604800` (7 days)                                | Entry time-to-live; `0` = never expire    |
 
