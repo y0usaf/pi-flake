@@ -34,7 +34,7 @@ for (let round = 1; round <= maxRounds; round++) {
     ? transcript
     : "(opening round — state your initial position)";
 
-  const replies = await parallel("round-" + String(round), {
+  const replies = await parallel("ideation-round", {
     advocate: () =>
       agent(
         prompt(
