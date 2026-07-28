@@ -68,6 +68,7 @@ in {
     extensions = {
       "gecko-websearch" = mkEnableOption "pi-gecko-websearch extension";
       rtk = mkEnableOption "pi-rtk extension";
+      aphrodite = mkEnableOption "pi-aphrodite Aphrodite CCR tool-output compression extension";
       minimal = mkEnableOption "pi-minimal compact rendering and borderless editor extension";
       interview = mkEnableOption "pi-interview ask-user questionnaire and auto-answer extension";
       "tool-management" = mkEnableOption "pi-tool-management persistent disabled-tools UI extension";
