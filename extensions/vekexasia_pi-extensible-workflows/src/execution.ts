@@ -398,6 +398,9 @@ export function runWorkflow(script: string, args: JsonValue = null, bridge: Work
   const childFile = join(childDir, "child.cjs");
   writeFileSync(childFile, childSource);
   const child: ChildProcess = fork(childFile, [String(RPC_LIMIT_BYTES), config], {
+    // Bun-compiled pi binaries cannot re-exec node flags; PI_WORKFLOW_NODE_PATH
+    // points at a real node binary (set by the pi-flake wrapper). Unset = default.
+    execPath: process.env.PI_WORKFLOW_NODE_PATH || undefined,
     execArgv: (() => {
       const filtered: string[] = [];
       const skip = new Set(["--input-type", "-e", "--eval", "-p", "--print"]);
