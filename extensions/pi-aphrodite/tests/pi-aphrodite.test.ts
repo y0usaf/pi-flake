@@ -303,7 +303,7 @@ describe("registerPiAphrodite", () => {
   test("replaces oversized tool_result content with a CCR marker", async () => {
     const { pi, handlers } = createFakePi();
     const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
-    registerPiAphrodite(pi as never, client, 1024);
+    registerPiAphrodite(pi as never, client, { tool: 1024, terminal: 1024 });
 
     const handler = handlers.get("tool_result");
     expect(handler).toBeDefined();
@@ -326,7 +326,7 @@ describe("registerPiAphrodite", () => {
   test("never compresses aphrodite_retrieve output", async () => {
     const { pi, handlers } = createFakePi();
     const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
-    registerPiAphrodite(pi as never, client, 1024);
+    registerPiAphrodite(pi as never, client, { tool: 1024, terminal: 1024 });
 
     const handler = handlers.get("tool_result");
     const big = "x".repeat(4096);
@@ -343,7 +343,7 @@ describe("registerPiAphrodite", () => {
   test("leaves small output untouched", async () => {
     const { pi, handlers } = createFakePi();
     const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
-    registerPiAphrodite(pi as never, client, 1024);
+    registerPiAphrodite(pi as never, client, { tool: 1024, terminal: 1024 });
 
     const handler = handlers.get("tool_result");
     const result = await handler!(
@@ -355,11 +355,34 @@ describe("registerPiAphrodite", () => {
     expect(client.getStatus().attempts).toBe(0);
     client.close();
   });
+  test("routes bash output to the terminal threshold, other tools to the tool threshold", async () => {
+    const { pi, handlers } = createFakePi();
+    const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
+    registerPiAphrodite(pi as never, client, { tool: 4096, terminal: 1024 });
+
+    const handler = handlers.get("tool_result");
+
+    // 2KB bash output: above terminal threshold (1024), below tool (4096).
+    const bashResult = (await handler!(
+      { toolName: "bash", content: [{ type: "text", text: BASH_OUTPUT }] },
+      makeCtx(),
+    )) as { content: Array<{ text: string }> } | undefined;
+    expect(bashResult?.content[0]?.text).toMatch(/<<<CCR:[0-9a-f]{16}\|/);
+
+    // Same 2KB from a generic tool: below the tool threshold, untouched.
+    const readResult = await handler!(
+      { toolName: "read", content: [{ type: "text", text: BASH_OUTPUT }] },
+      makeCtx(),
+    );
+    expect(readResult).toBeUndefined();
+    expect(client.getStatus().stored).toBe(1);
+    client.close();
+  });
 
   test("aphrodite_retrieve returns stored content", async () => {
     const { pi, handlers, tools } = createFakePi();
     const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
-    registerPiAphrodite(pi as never, client, 1024);
+    registerPiAphrodite(pi as never, client, { tool: 1024, terminal: 1024 });
 
     const handler = handlers.get("tool_result");
     const result = (await handler!(
@@ -388,7 +411,7 @@ describe("registerPiAphrodite", () => {
   test("/aphrodite off disables compression; status reports state", async () => {
     const { pi, handlers, commands } = createFakePi();
     const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
-    registerPiAphrodite(pi as never, client, 1024);
+    registerPiAphrodite(pi as never, client, { tool: 1024, terminal: 1024 });
 
     const command = commands.get("aphrodite");
     expect(command).toBeDefined();
@@ -415,7 +438,7 @@ describe("registerPiAphrodite", () => {
   test("publishes up state to the footer once the store opens", async () => {
     const { pi, handlers } = createFakePi();
     const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
-    registerPiAphrodite(pi as never, client, 1024);
+    registerPiAphrodite(pi as never, client, { tool: 1024, terminal: 1024 });
 
     const ctx = makeCtx(true);
     await handlers.get("session_start")!({}, ctx);
@@ -438,7 +461,7 @@ describe("registerPiAphrodite", () => {
     localExecOutput = BASH_OUTPUT;
     const { pi, handlers } = createFakePi();
     const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
-    registerPiAphrodite(pi as never, client, 1024);
+    registerPiAphrodite(pi as never, client, { tool: 1024, terminal: 1024 });
 
     const handler = handlers.get("user_bash");
     const wrapped = (await handler!(
@@ -470,7 +493,7 @@ describe("registerPiAphrodite", () => {
     localExecOutput = "tiny output";
     const { pi, handlers } = createFakePi();
     const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
-    registerPiAphrodite(pi as never, client, 1024);
+    registerPiAphrodite(pi as never, client, { tool: 1024, terminal: 1024 });
 
     const handler = handlers.get("user_bash");
     const wrapped = (await handler!(
@@ -501,7 +524,7 @@ describe("registerPiAphrodite", () => {
     localExecOutput = BASH_OUTPUT;
     const { pi, handlers, commands } = createFakePi();
     const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
-    registerPiAphrodite(pi as never, client, 1024);
+    registerPiAphrodite(pi as never, client, { tool: 1024, terminal: 1024 });
 
     const handler = handlers.get("user_bash");
 

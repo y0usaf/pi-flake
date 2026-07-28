@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Split the single compression threshold into two knobs matching upstream Aphrodite's routing: `APHRODITE_TOOL_THRESHOLD` (default `4096`, upstream's `tool_threshold_token`) for generic tool output and `APHRODITE_TERMINAL_THRESHOLD` (default `1024`, upstream's `terminal_threshold`) for shell output. Shell output means the bash tool and user `!<cmd>` alike — both route to the terminal threshold, as upstream's terminal hook does.
+- `APHRODITE_MIN_BYTES` remains honored as a legacy fallback for both thresholds when the specific knob is unset.
+
 ## 0.4.0
 
 - Entry retention, ported from upstream Aphrodite's `SqliteCcrStore`: entries now carry a per-row `ttl_seconds` and a lazy purge (debounced to one sweep per minute, no background thread) deletes expired rows on store/retrieve; reads exclude expired rows between sweeps.

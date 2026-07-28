@@ -24,6 +24,19 @@
  * - APHRODITE_DB_PATH      SQLite file for the CCR store (default
  *                          $XDG_STATE_HOME/pi/aphrodite-ccr.db or
  *                          ~/.local/state/pi/aphrodite-ccr.db)
+ * Configuration:
+ * - APHRODITE_TOOL_THRESHOLD       minimum byte size to compress generic
+ *                                  tool output (default 4096, matching
+ *                                  upstream's tool_threshold_token)
+ * - APHRODITE_TERMINAL_THRESHOLD   minimum byte size to compress shell
+ *                                  output (default 1024, matching upstream's
+ *                                  terminal_threshold); applies to the bash
+ *                                  tool and user `!<cmd>` output alike
+ * - APHRODITE_MIN_BYTES            legacy fallback for both thresholds when
+ *                                  the specific knob is unset
+ * - APHRODITE_DB_PATH      SQLite file for the CCR store (default
+ *                          $XDG_STATE_HOME/pi/aphrodite-ccr.db or
+ *                          ~/.local/state/pi/aphrodite-ccr.db)
  * - APHRODITE_TTL_SECONDS  entry time-to-live (default 604800 = 7d;
  *                          0 = never expire)
  *
@@ -69,7 +82,8 @@ import type {
 import { createLocalBashOperations } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-const DEFAULT_MIN_BYTES = 1024;
+const DEFAULT_TOOL_THRESHOLD_BYTES = 4096;
+const DEFAULT_TERMINAL_THRESHOLD_BYTES = 1024;
 const PREVIEW_FIRST_LINE_MAX = 120;
 const RETRIEVE_LINE_CAP = 2000;
 const HASH_HEX_LENGTH = 16;
@@ -440,10 +454,34 @@ function extractText(content: unknown): string | undefined {
   return texts.join("\n");
 }
 
-function readMinBytes(): number {
-  const raw = process.env.APHRODITE_MIN_BYTES;
+export type AphroditeThresholds = {
+  /** Minimum byte size to compress generic tool output. */
+  tool: number;
+  /** Minimum byte size to compress shell output (bash tool, user `!<cmd>`). */
+  terminal: number;
+};
+
+function readByteEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
   const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MIN_BYTES;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function readThresholds(): AphroditeThresholds {
+  // APHRODITE_MIN_BYTES stays honored as a legacy fallback for both knobs.
+  const legacy = readByteEnv("APHRODITE_MIN_BYTES", Number.NaN);
+  const legacyOr = (def: number) =>
+    Number.isFinite(legacy) ? legacy : def;
+  return {
+    tool: readByteEnv(
+      "APHRODITE_TOOL_THRESHOLD",
+      legacyOr(DEFAULT_TOOL_THRESHOLD_BYTES),
+    ),
+    terminal: readByteEnv(
+      "APHRODITE_TERMINAL_THRESHOLD",
+      legacyOr(DEFAULT_TERMINAL_THRESHOLD_BYTES),
+    ),
+  };
 }
 
 function readTtlSeconds(): number {
@@ -504,7 +542,7 @@ function updateFooter(
 export function registerPiAphrodite(
   pi: ExtensionAPI,
   client: AphroditeClient = createLocalAphroditeClient(),
-  minBytes: number = readMinBytes(),
+  thresholds: AphroditeThresholds = readThresholds(),
 ): void {
 
   const localBashOperations = createLocalBashOperations();
@@ -532,7 +570,7 @@ export function registerPiAphrodite(
     toolName: string | undefined,
   ): Promise<string | undefined> {
     // Never compress our own retrieve output — that would make stored
-    // content unreachable above minBytes.
+    // content unreachable above the tool threshold.
     if (toolName === "aphrodite_retrieve") {
       return undefined;
     }
@@ -541,10 +579,13 @@ export function registerPiAphrodite(
       return undefined;
     }
 
+    // Route by output kind, matching upstream: shell output (the bash tool
+    // and user `!<cmd>` alike) compresses aggressively; other tools get the
+    // higher bar since their full output is more often needed.
+    const minBytes = toolName === "bash" ? thresholds.terminal : thresholds.tool;
     if (Buffer.byteLength(text, "utf8") < minBytes) {
       return undefined;
     }
-
     const type = detectType(text, toolName);
     const stored = await client.store(text, type);
     if (!stored) {
