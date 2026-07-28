@@ -312,8 +312,8 @@
               mkdir -p "$out"
               cp package.json README.md CHANGELOG.md "$out"/
               cp -r src skills examples dist "$out"/
-              # Per-workflow slash commands: engine scans <pkg>/workflows/*/command.json
-              cp -r ${./workflows} "$out"/workflows
+              # Workflows are NOT shipped in the package: the system flake places
+              # workflows/*/ into <agentDir>/workflows, the engine's third scan root.
               cp -r node_modules "$out"/
 
               runHook postInstall

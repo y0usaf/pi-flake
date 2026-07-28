@@ -26,6 +26,9 @@ The loop stops at:
   sub-agents inherit session skills and are told to load it by name.
 - Tree clean enough that step 1 can commit; unrelated WIP contaminates every
   step's commit.
+- System flake places this directory into `~/.local/share/pi/agent/workflows/loop-next/`
+  (`modules/dev/pi/workflows.nix`); the engine scans that root for `command.json`
+  and registers `/loop-next`. Files here are the source of truth.
 
 ## Invoke
 
@@ -42,7 +45,7 @@ Workflow tool (adds a token/cost backstop):
 ```json
 {
   "name": "loop-next",
-  "scriptPath": "<this dir>/loop-next.js",
+  "scriptPath": "/home/y0usaf/dev/pi-flake/workflows/loop-next/loop-next.js",
   "args": { "maxSteps": 30 },
   "budget": { "agentLaunches": { "hard": 35 }, "tokens": { "hard": 5000000 } }
 }
