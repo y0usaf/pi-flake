@@ -15,6 +15,9 @@
     piRtk.url = "path:./extensions/pi-rtk";
     piRtk.inputs.nixpkgs.follows = "nixpkgs";
 
+    piAphrodite.url = "path:./extensions/pi-aphrodite";
+    piAphrodite.inputs.nixpkgs.follows = "nixpkgs";
+
     piMinimal.url = "path:./extensions/pi-minimal";
     piMinimal.inputs.nixpkgs.follows = "nixpkgs";
 
@@ -42,6 +45,7 @@
     piSrc,
     piGeckoWebsearch,
     piRtk,
+    piAphrodite,
     piMinimal,
     piInterview,
     piToolManagement,
@@ -131,6 +135,7 @@
 
       "pi-gecko-websearch" = piGeckoWebsearch.packages.${system}.default;
       "pi-rtk" = piRtk.packages.${system}.default;
+      "pi-aphrodite" = piAphrodite.packages.${system}.default;
       "pi-minimal" = piMinimal.packages.${system}.default;
       "pi-interview" = piInterview.packages.${system}.default;
       "pi-tool-management" = piToolManagement.packages.${system}.default;
@@ -315,6 +320,8 @@
       pi-kimi-build = self.packages.${system}.pi-kimi;
       pi-rtk-build = self.packages.${system}."pi-rtk";
       pi-rtk-test = piRtk.checks.${system}.test;
+      pi-aphrodite-build = self.packages.${system}."pi-aphrodite";
+      pi-aphrodite-test = piAphrodite.checks.${system}.test;
       pi-interview-test = piInterview.checks.${system}.test;
       pi-hashline-test = piHashline.checks.${system}.test;
       biome-lint = pkgs.stdenvNoCC.mkDerivation {
@@ -439,6 +446,7 @@
     lib.extensionPackagesFor = system: {
       "gecko-websearch" = self.packages.${system}."pi-gecko-websearch";
       rtk = self.packages.${system}."pi-rtk";
+      aphrodite = self.packages.${system}."pi-aphrodite";
       minimal = self.packages.${system}."pi-minimal";
       interview = self.packages.${system}."pi-interview";
       "tool-management" = self.packages.${system}."pi-tool-management";

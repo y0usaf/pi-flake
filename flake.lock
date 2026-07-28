@@ -16,6 +16,22 @@
         "type": "github"
       }
     },
+    "piAphrodite": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-aphrodite",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-aphrodite",
+        "type": "path"
+      },
+      "parent": []
+    },
     "piGeckoWebsearch": {
       "inputs": {
         "nixpkgs": [
@@ -180,6 +196,7 @@
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
+        "piAphrodite": "piAphrodite",
         "piGeckoWebsearch": "piGeckoWebsearch",
         "piHashline": "piHashline",
         "piInterview": "piInterview",
