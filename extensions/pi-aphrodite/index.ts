@@ -490,18 +490,15 @@ function updateFooter(
     return;
   }
 
-  const text = !enabled
-    ? "aphrodite:off"
-    : `aphrodite:on·${availability === "available" ? "up" : availability === "unavailable" ? "down" : "…"}`;
   const color = !enabled
-    ? "warning"
+    ? "muted"
     : availability === "available"
       ? "success"
       : availability === "unavailable"
         ? "error"
         : "accent";
 
-  ctx.ui.setStatus("pi-aphrodite", ctx.ui.theme.fg(color, text));
+  ctx.ui.setStatus("pi-aphrodite", ctx.ui.theme.fg(color, "aphrodite"));
 }
 
 export function registerPiAphrodite(
