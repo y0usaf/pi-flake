@@ -157,6 +157,19 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-caveman` | Terse-response mode with configurable compression levels |
 | `pi-atelier` | Status rail footer + docked live-activity sidebar with `/atelier` menu and display presets |
 
+## Extension Lifecycle
+
+`extensions/registry.nix` assigns every bundled extension a lifecycle stage:
+
+| Stage | Effect |
+| --- | --- |
+| `active` | In the default bundle (`pi-full`) and built by `nix flake check` |
+| `testing` | Built and checked, but excluded from the default bundle; opt-in via `programs.pi.extensions.<name>` (NixOS module emits a warning) |
+| `paused` | Source kept in the tree, but not built, bundled, or checked (e.g. `kimi`) |
+| `retired` | Entry removed from the registry and source deleted from `extensions/` |
+
+Promote/demote an extension by editing its `stage` in `extensions/registry.nix`; the flake's packages, checks, default bundle, and the NixOS module all follow from that single declaration.
+
 ---
 
 ## How Extension Auto-Discovery Works

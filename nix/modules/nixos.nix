@@ -12,6 +12,10 @@ self: {
     inherit system;
     extensionFlags = cfg.extensions;
   };
+  extensionRegistry = self.lib.extensionRegistry or {};
+  testingEnabled =
+    lib.filter (name: (extensionRegistry.${name}.stage or "active") == "testing")
+    (builtins.attrNames enabledFlagExtensions);
   selectedExtensions =
     (
       if cfg.full
@@ -79,6 +83,7 @@ in {
       vcc = mkEnableOption "pi-vcc algorithmic conversation compactor and vcc_recall history search";
       caveman = mkEnableOption "pi-caveman terse-response mode extension";
       atelier = mkEnableOption "pi-atelier status rail and live-activity sidebar extension";
+      "extensible-workflows" = mkEnableOption "pi-extensible-workflows workflow engine extension (lifecycle: testing)";
     };
 
     extraExtensions = mkOption {
@@ -124,9 +129,11 @@ in {
       bundledExtensionPaths = extensionPaths;
     };
 
-    warnings = lib.optional (cfg.package != null && (cfg.full || hasExtensionFlags || cfg.extraExtensions != {})) ''
-      programs.pi.package is set; programs.pi.full/extensions/extraExtensions are ignored.${optionalString cfg.full " Use package = null; full = true; to generate the full bundle from options."}
-    '';
+    warnings =
+      lib.optional (cfg.package != null && (cfg.full || hasExtensionFlags || cfg.extraExtensions != {})) ''
+        programs.pi.package is set; programs.pi.full/extensions/extraExtensions are ignored.${optionalString cfg.full " Use package = null; full = true; to generate the full bundle from options."}
+      ''
+      ++ map (name: "programs.pi.extensions.${name}: extension is in 'testing' lifecycle stage (see pi-flake extensions/registry.nix); expect churn.") testingEnabled;
 
     environment.systemPackages = [package];
     environment.variables.PI_SKIP_VERSION_CHECK = "1";
