@@ -20,10 +20,17 @@
  * the compress step.
  *
  * Configuration:
- * - APHRODITE_MIN_BYTES  minimum output size to compress (default 1024)
- * - APHRODITE_DB_PATH    SQLite file for the CCR store (default
- *                        $XDG_STATE_HOME/pi/aphrodite-ccr.db or
- *                        ~/.local/state/pi/aphrodite-ccr.db)
+ * - APHRODITE_MIN_BYTES    minimum output size to compress (default 1024)
+ * - APHRODITE_DB_PATH      SQLite file for the CCR store (default
+ *                          $XDG_STATE_HOME/pi/aphrodite-ccr.db or
+ *                          ~/.local/state/pi/aphrodite-ccr.db)
+ * - APHRODITE_TTL_SECONDS  entry time-to-live (default 604800 = 7d;
+ *                          0 = never expire)
+ *
+ * Retention mirrors upstream Aphrodite's SqliteCcrStore: lazy TTL purge on
+ * store/retrieve, debounced to one sweep per minute, no background thread.
+ * Reads exclude expired rows even between sweeps; re-storing identical
+ * content refreshes its TTL.
  */
 
 import { createHash } from "node:crypto";
@@ -66,6 +73,8 @@ const DEFAULT_MIN_BYTES = 1024;
 const PREVIEW_FIRST_LINE_MAX = 120;
 const RETRIEVE_LINE_CAP = 2000;
 const HASH_HEX_LENGTH = 16;
+const DEFAULT_TTL_SECONDS = 604_800;
+const PURGE_DEBOUNCE_MS = 60_000;
 
 export type AphroditeAvailability = "unknown" | "available" | "unavailable";
 export type AphroditeFailureKind = "failed" | "unavailable";
@@ -77,8 +86,10 @@ export interface AphroditeStatus {
   originalBytes: number;
   markerBytes: number;
   retrieves: number;
+  purged: number;
   failures: number;
   unavailableSkips: number;
+  ttlSeconds: number;
   lastFailure?: AphroditeFailureKind;
 }
 
@@ -113,6 +124,7 @@ export interface AphroditeClient {
 
 export interface AphroditeClientOptions {
   dbPath?: string;
+  ttlSeconds?: number;
 }
 
 export function defaultDbPath(): string {
@@ -136,6 +148,7 @@ export function createLocalAphroditeClient(
   options: AphroditeClientOptions = {},
 ): AphroditeClient {
   const dbPath = options.dbPath ?? process.env.APHRODITE_DB_PATH ?? defaultDbPath();
+  const ttlSeconds = options.ttlSeconds ?? readTtlSeconds();
 
   const SqliteDb = loadSqlite();
   let db: SqliteDatabase | undefined;
@@ -146,8 +159,10 @@ export function createLocalAphroditeClient(
     originalBytes: 0,
     markerBytes: 0,
     retrieves: 0,
+    purged: 0,
     failures: 0,
     unavailableSkips: 0,
+    ttlSeconds,
     lastFailure: undefined,
   };
 
@@ -172,15 +187,52 @@ export function createLocalAphroditeClient(
           "hash TEXT PRIMARY KEY, " +
           "content TEXT NOT NULL, " +
           "original_size INTEGER NOT NULL, " +
-          "created_at INTEGER NOT NULL DEFAULT (unixepoch())" +
+          "created_at INTEGER NOT NULL DEFAULT (unixepoch()), " +
+          "ttl_seconds INTEGER NOT NULL DEFAULT 0" +
           ")",
       );
+      // Migrate pre-TTL databases: add the column, then stamp legacy rows
+      // with the configured TTL so retention applies uniformly.
+      try {
+        opened.prepare("SELECT ttl_seconds FROM ccr LIMIT 0").get();
+      } catch {
+        opened.exec(
+          "ALTER TABLE ccr ADD COLUMN ttl_seconds INTEGER NOT NULL DEFAULT 0",
+        );
+        opened.prepare("UPDATE ccr SET ttl_seconds = ?").run(ttlSeconds);
+      }
       db = opened;
       availability = "available";
       return db;
     } catch {
       recordFailure("unavailable");
       return undefined;
+    }
+  }
+
+  let lastPurgeMs = 0;
+
+  // Lazy TTL purge, debounced to one sweep per minute — no background
+  // thread, matching upstream Aphrodite's SqliteCcrStore. Reads also filter
+  // expired rows, so a skipped sweep never resurrects them.
+  function maybePurge(handle: SqliteDatabase): void {
+    if (ttlSeconds <= 0) {
+      return;
+    }
+    const now = Date.now();
+    if (now - lastPurgeMs < PURGE_DEBOUNCE_MS) {
+      return;
+    }
+    lastPurgeMs = now;
+    try {
+      const result = handle
+        .prepare(
+          "DELETE FROM ccr WHERE ttl_seconds > 0 AND created_at + ttl_seconds <= unixepoch()",
+        )
+        .run() as { changes?: number };
+      counters.purged += result.changes ?? 0;
+    } catch {
+      // Best-effort: read-side filtering still hides expired rows.
     }
   }
 
@@ -199,13 +251,22 @@ export function createLocalAphroditeClient(
       }
 
       try {
+        maybePurge(handle);
+
         const hash = hashContent(content);
         const originalSize = Buffer.byteLength(content, "utf8");
+        // Upsert so re-storing identical content refreshes created_at and
+        // ttl_seconds — same refresh semantics as upstream's SqliteCcrStore.
         handle
           .prepare(
-            "INSERT OR IGNORE INTO ccr (hash, content, original_size) VALUES (?, ?, ?)",
+            "INSERT INTO ccr (hash, content, original_size, ttl_seconds) VALUES (?, ?, ?, ?) " +
+              "ON CONFLICT(hash) DO UPDATE SET " +
+              "content = excluded.content, " +
+              "original_size = excluded.original_size, " +
+              "created_at = unixepoch(), " +
+              "ttl_seconds = excluded.ttl_seconds",
           )
-          .run(hash, content, originalSize);
+          .run(hash, content, originalSize, ttlSeconds);
 
         const markerSize = markerSizeFor(hash, type, originalSize);
         counters.stored += 1;
@@ -235,8 +296,12 @@ export function createLocalAphroditeClient(
         throw new Error("aphrodite store is unavailable");
       }
 
+      maybePurge(handle);
+
       const row = handle
-        .prepare("SELECT content FROM ccr WHERE hash = ?")
+        .prepare(
+          "SELECT content FROM ccr WHERE hash = ? AND (ttl_seconds = 0 OR created_at + ttl_seconds > unixepoch())",
+        )
         .get(hash) as { content?: string } | undefined;
 
       if (!row || typeof row.content !== "string") {
@@ -381,6 +446,22 @@ function readMinBytes(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MIN_BYTES;
 }
 
+function readTtlSeconds(): number {
+  const raw = process.env.APHRODITE_TTL_SECONDS;
+  const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_TTL_SECONDS;
+}
+
+function formatTtl(seconds: number): string {
+  if (seconds % 86400 === 0) {
+    return `${seconds / 86400}d`;
+  }
+  if (seconds % 3600 === 0) {
+    return `${seconds / 3600}h`;
+  }
+  return `${seconds}s`;
+}
+
 function formatStatus(
   enabled: boolean,
   bashEnabled: boolean,
@@ -390,8 +471,10 @@ function formatStatus(
     `aphrodite — state: ${enabled ? "on" : "off"}`,
     `user-bash: ${bashEnabled ? "on" : "off"}`,
     `store: ${status.availability}`,
+    `ttl: ${status.ttlSeconds === 0 ? "off" : formatTtl(status.ttlSeconds)}`,
     `stored: ${status.stored}/${status.attempts}`,
     `retrieves: ${status.retrieves}`,
+    `purged: ${status.purged}`,
     `context: ${formatBytes(status.originalBytes)} → ${formatBytes(status.markerBytes)} markers`,
     `unavailable skips: ${status.unavailableSkips}`,
     `last failure: ${status.lastFailure ?? "none"}`,
