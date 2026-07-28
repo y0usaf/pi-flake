@@ -16,6 +16,8 @@ If the store file cannot be opened or a write fails, `pi-aphrodite` falls back s
 
 The compression pipeline is fully programmatic (regex classifier + type-aware previews + sha256/SQLite store). No model call happens inside the compress step; the only agent decision is whether to retrieve.
 
+Stored entries expire: a lazy purge (debounced to one sweep per minute, no background thread) deletes rows older than `APHRODITE_TTL_SECONDS` — default 7 days — and reads treat expired rows as missing between sweeps. Re-storing identical content refreshes its TTL. This mirrors upstream [Aphrodite](https://github.com/PlayForm/Aphrodite)'s `SqliteCcrStore` retention, whose own default is 1 hour.
+
 ## Prerequisites
 
 - Pi v0.60.0 or later (Node.js ≥ 22.19 runtime — uses `node:sqlite`; under Bun it uses `bun:sqlite`)
@@ -28,6 +30,7 @@ That's all. The store is a local file; nothing else needs to run.
 | --------------------- | -------------------------------------------------- | --------------------------------------- |
 | `APHRODITE_MIN_BYTES` | `1024`                                             | Minimum output size (bytes) to compress |
 | `APHRODITE_DB_PATH`   | `$XDG_STATE_HOME/pi/aphrodite-ccr.db` (or `~/.local/state/pi/aphrodite-ccr.db`) | SQLite file for the CCR store |
+| `APHRODITE_TTL_SECONDS` | `604800` (7 days)                                | Entry time-to-live; `0` = never expire    |
 
 ## Commands
 

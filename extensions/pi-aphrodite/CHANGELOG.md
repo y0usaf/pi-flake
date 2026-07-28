@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+- Entry retention, ported from upstream Aphrodite's `SqliteCcrStore`: entries now carry a per-row `ttl_seconds` and a lazy purge (debounced to one sweep per minute, no background thread) deletes expired rows on store/retrieve; reads exclude expired rows between sweeps.
+- New `APHRODITE_TTL_SECONDS` (default `604800` = 7 days; `0` = never expire). Upstream's own default is 1 hour.
+- Store is now an upsert: re-storing identical content refreshes `created_at`/TTL instead of `INSERT OR IGNORE`.
+- Pre-TTL databases migrate automatically on open: the `ttl_seconds` column is added and legacy rows are stamped with the configured TTL.
+- `/aphrodite status` now reports the configured TTL and the purged-row count.
+
 ## 0.3.0
 
 - **Breaking:** the Aphrodite proxy is gone. Compression now runs entirely in-process: output is hashed (sha256, 16 hex chars) and stored in a local SQLite file (`node:sqlite` on Node, `bun:sqlite` under Bun), and `aphrodite_retrieve` reads from the same file. No server, no `APHRODITE_URL`/`APHRODITE_MGMT_TOKEN`; new `APHRODITE_DB_PATH` (default `$XDG_STATE_HOME/pi/aphrodite-ccr.db`).

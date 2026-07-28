@@ -2,6 +2,18 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRequire } from "node:module";
+
+// Direct SQLite access for aging entries and building legacy schemas in TTL
+// tests. Resolved via createRequire so tsc needs no bun type declarations.
+const nodeRequire = createRequire(import.meta.url);
+const { Database } = nodeRequire("bun:sqlite") as {
+  Database: new (path: string) => {
+    exec(sql: string): void;
+    prepare(sql: string): { run(...params: unknown[]): unknown };
+    close(): void;
+  };
+};
 
 const BASH_OUTPUT = "line one of output\n" + "x".repeat(2048);
 
@@ -192,6 +204,80 @@ describe("createLocalAphroditeClient", () => {
     reader.close();
   });
 
+  test("expires entries past their TTL and counts the purge", async () => {
+    const dbPath = tempDbPath();
+    const writer = createLocalAphroditeClient({ dbPath, ttlSeconds: 60 });
+    const stored = await writer.store(BASH_OUTPUT, "terminal");
+    writer.close();
+
+    // Age the entry beyond its 60s TTL.
+    const db = new Database(dbPath);
+    db.exec("UPDATE ccr SET created_at = created_at - 120");
+    db.close();
+
+    // Fresh client: purge is debounced per instance, so its first access
+    // sweeps the expired row and the read then misses.
+    const reader = createLocalAphroditeClient({ dbPath, ttlSeconds: 60 });
+    await expect(reader.retrieve(stored!.hash, {})).rejects.toThrow(
+      "CCR entry not found",
+    );
+    expect(reader.getStatus().purged).toBe(1);
+    reader.close();
+  });
+
+  test("re-storing the same content refreshes its TTL", async () => {
+    const dbPath = tempDbPath();
+    const client = createLocalAphroditeClient({ dbPath, ttlSeconds: 60 });
+    const stored = await client.store(BASH_OUTPUT, "terminal");
+
+    const db = new Database(dbPath);
+    db.exec("UPDATE ccr SET created_at = created_at - 50");
+    db.close();
+
+    // Upsert resets created_at to now, so the entry survives the next read.
+    const restored = await client.store(BASH_OUTPUT, "terminal");
+    expect(restored?.hash).toBe(stored?.hash);
+    expect(await client.retrieve(stored!.hash, {})).toBe(BASH_OUTPUT);
+    client.close();
+  });
+
+  test("ttlSeconds 0 disables expiry", async () => {
+    const dbPath = tempDbPath();
+    const client = createLocalAphroditeClient({ dbPath, ttlSeconds: 0 });
+    const stored = await client.store(BASH_OUTPUT, "terminal");
+
+    const db = new Database(dbPath);
+    db.exec("UPDATE ccr SET created_at = created_at - 999999999");
+    db.close();
+
+    expect(await client.retrieve(stored!.hash, {})).toBe(BASH_OUTPUT);
+    expect(client.getStatus().purged).toBe(0);
+    client.close();
+  });
+
+  test("migrates a pre-TTL database by stamping legacy rows", async () => {
+    const dbPath = tempDbPath();
+    const legacy = new Database(dbPath);
+    legacy.exec(
+      "CREATE TABLE ccr (hash TEXT PRIMARY KEY, content TEXT NOT NULL, original_size INTEGER NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()))",
+    );
+    legacy
+      .prepare(
+        "INSERT INTO ccr (hash, content, original_size, created_at) VALUES (?, ?, ?, unixepoch() - 100)",
+      )
+      .run("legacyhash0000000", "legacy content", 14);
+    legacy.close();
+
+    // Opening with a 60s TTL stamps the legacy row; aged 100s, it is purged
+    // on first access and the read misses.
+    const client = createLocalAphroditeClient({ dbPath, ttlSeconds: 60 });
+    await expect(client.retrieve("legacyhash0000000", {})).rejects.toThrow(
+      "CCR entry not found",
+    );
+    expect(client.getStatus().purged).toBe(1);
+    client.close();
+  });
+
   test("marks store unavailable when the database cannot be opened", async () => {
     // A directory path is not a valid SQLite database file.
     const dir = mkdtempSync(join(tmpdir(), "pi-aphrodite-test-"));
@@ -344,7 +430,7 @@ describe("registerPiAphrodite", () => {
 
     const values = ctx.statuses.filter(([key]) => key === "pi-aphrodite").map(([, value]) => value);
     expect(values.length).toBeGreaterThan(0);
-    expect(values.at(-1)).toBe("aphrodite:on·up");
+    expect(values.at(-1)).toBe("aphrodite");
     client.close();
   });
 
