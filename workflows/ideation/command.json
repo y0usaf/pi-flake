@@ -1,0 +1,5 @@
+{
+  "name": "ideate",
+  "description": "Multi-model debate ideation workflow. Args as JSON: { \"topic\": \"...\", \"context\"?, \"maxRounds\"?, \"models\"?, \"judgeModel\"? }",
+  "script": "ideate.js"
+}

@@ -309,6 +309,8 @@
               mkdir -p "$out"
               cp package.json README.md CHANGELOG.md "$out"/
               cp -r src skills examples dist "$out"/
+              # Per-workflow slash commands: engine scans <pkg>/workflows/*/command.json
+              cp -r ${./workflows} "$out"/workflows
               cp -r node_modules "$out"/
 
               runHook postInstall
