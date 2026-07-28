@@ -128,22 +128,6 @@
       },
       "parent": []
     },
-    "piSidebar": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-sidebar",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-sidebar",
-        "type": "path"
-      },
-      "parent": []
-    },
     "piSrc": {
       "flake": false,
       "locked": {
@@ -203,7 +187,6 @@
         "piKimi": "piKimi",
         "piMinimal": "piMinimal",
         "piRtk": "piRtk",
-        "piSidebar": "piSidebar",
         "piSrc": "piSrc",
         "piToolManagement": "piToolManagement",
         "piWebfetch": "piWebfetch"
