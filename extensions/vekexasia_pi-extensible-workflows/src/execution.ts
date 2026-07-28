@@ -413,7 +413,10 @@ export function runWorkflow(script: string, args: JsonValue = null, bridge: Work
       return [...filtered, "--max-old-space-size=128", "--permission", `--allow-fs-read=${childDir}`];
     })(),
     stdio: ["ignore", "ignore", "ignore", "ipc"],
-    serialization: "advanced",
+    // Bun (parent) cannot parse node's "advanced" (V8) IPC serialization and
+    // closes the channel, killing the child with EPIPE. All child messages are
+    // JSON strings anyway, so use the default JSON serialization.
+    serialization: "json",
   });
   const controller = new AbortController();
   let settled = false;
