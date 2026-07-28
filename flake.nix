@@ -336,6 +336,33 @@
           extensions = self.lib.defaultExtensionPackagesFor system;
         };
 
+        # Workflow-first Pi ("loom"). Deliberately NOT a second pi binary:
+        # no extra piWithExtensions derivation, no renamed pi, no duplicate
+        # bundle — just argv plus one env var. `--no-extensions` discards the
+        # pi-full bundle so the loom stack is re-declared explicitly, which
+        # proves doctrine 06 (bare core must boot) at runtime.
+        # Design: extensions/pi-loom/DESIGN.md
+        pi-loom-cli = let
+          # P0 swaps pi-extensible-workflows -> pi-loom (engine) and adds
+          # pi-loom-builtins + pi-loom-router. See DESIGN.md roadmap.
+          loomStack = [
+            self.packages.${system}."pi-extensible-workflows"
+            self.packages.${system}."pi-interview" # backs human.ask
+            self.packages.${system}."pi-aphrodite" # compression for long runs
+            self.packages.${system}."pi-hashline" # edit anchors for executor sub-agents
+            self.packages.${system}."pi-atelier" # status rail = live run progress
+          ];
+          # pi-tool-management is excluded on purpose: it persists a global
+          # disabled-tools list and would fight the router's in-memory gate.
+          extArgs = lib.concatMapStringsSep " " (ext: "-e ${ext}") loomStack;
+        in
+          pkgs.writeShellScriptBin "loom" ''
+            # Only pi-full's wrapper exports this; loom wraps plain pi, so it
+            # must export it itself or workflow child processes fail to spawn.
+            export PI_WORKFLOW_NODE_PATH="${pkgs.nodejs_22}/bin/node"
+            exec ${self.packages.${system}.pi}/bin/pi --no-extensions ${extArgs} "$@"
+          '';
+
         default = self.packages.${system}.pi;
       }
       // lib.optionalAttrs (extensionRegistry.kimi.stage or "active" != "paused") {
@@ -365,6 +392,7 @@
         pi-rtk-test = piRtk.checks.${system}.test;
         pi-aphrodite-build = self.packages.${system}."pi-aphrodite";
         pi-extensible-workflows-build = self.packages.${system}."pi-extensible-workflows";
+        pi-loom-cli-build = self.packages.${system}.pi-loom-cli;
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;
