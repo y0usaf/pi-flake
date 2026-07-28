@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add a sidebar Extensions panel that lists every extension status published through `ctx.ui.setStatus`, keyed by extension name, with warning/error severity coloring.
+- Remove the footer `statuses` segment and the `showExtensionStatuses` option; extension statuses now live only in the sidebar (legacy config keys are accepted silently).
+
 ## 0.4.0 — 2026-07-27
 
 - Add best-effort native completion notifications on macOS and Windows when a Pi turn settles or the explicit ask-user tool requests input; failures remain silent without a Terminal fallback.

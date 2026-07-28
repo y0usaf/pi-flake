@@ -128,21 +128,18 @@ describe("footer", () => {
 		expect(cacheGone).toBeGreaterThan(menuGone);
 	});
 
-	it("removes configured brand and extension statuses before Git and thinking", () => {
+	it("removes configured brand before Git and thinking", () => {
 		const config: AtelierConfig = {
 			...DEFAULT_CONFIG,
 			preset: "classic",
 			ornament: "restrained",
 		};
-		const configuredState = { ...state, extensionStatuses: ["INDEXING"] };
-		expect(plainAt(180, config, configuredState)).toEqual(expect.stringContaining("ATELIER"));
-		expect(plainAt(180, config, configuredState)).toEqual(expect.stringContaining("INDEXING"));
+		expect(plainAt(180, config)).toEqual(expect.stringContaining("ATELIER"));
 
-		const brandGone = firstWidthWithout("ATELIER", config, configuredState);
-		const statusGone = firstWidthWithout("INDEXING", config, configuredState);
-		const gitGone = firstWidthWithout("main*", config, configuredState);
-		const thinkingGone = firstWidthWithout("medium", config, configuredState);
-		expect(Math.min(brandGone, statusGone)).toBeGreaterThan(Math.max(gitGone, thinkingGone));
+		const brandGone = firstWidthWithout("ATELIER", config);
+		const gitGone = firstWidthWithout("main*", config);
+		const thinkingGone = firstWidthWithout("medium", config);
+		expect(brandGone).toBeGreaterThan(Math.max(gitGone, thinkingGone));
 	});
 
 	it("keeps activity and context after optional information is removed", () => {
@@ -166,11 +163,8 @@ describe("footer", () => {
 	});
 
 	it("renders the actual classic preset segment set", () => {
-		const classic = plainAt(180, actualClassicPresetConfig, {
-			...state,
-			extensionStatuses: ["INDEXING"],
-		});
-		for (const text of ["in 324k", "ctx 27.0%", "gpt-5.6-sol", "medium", "main*", "INDEXING"]) {
+		const classic = plainAt(180, actualClassicPresetConfig);
+		for (const text of ["in 324k", "ctx 27.0%", "gpt-5.6-sol", "medium", "main*"]) {
 			expect(classic).toContain(text);
 		}
 		expect(classic).not.toContain("● READY");
@@ -490,33 +484,22 @@ describe("footer", () => {
 		expect(invalidLine).not.toMatch(/NaN|Infinity/);
 	});
 
-	it("sanitizes optional text and drops oversized statuses before state or telemetry", () => {
+	it("sanitizes optional text", () => {
 		const sanitized = renderFooterLine(
 			{
 				...state,
 				modelId: "gpt\n5",
 				thinkingLevel: "high\tnow",
 				branch: "feature\nrail",
-				extensionStatuses: ["workflow:\nrunning\t now"],
 			},
 			DEFAULT_CONFIG,
 			plainTheme,
 			180,
 		);
-		for (const text of ["gpt 5", "high now", "feature rail*", "workflow: running now"]) {
+		for (const text of ["gpt 5", "high now", "feature rail*"]) {
 			expect(sanitized).toContain(text);
 		}
 		expect(sanitized).not.toMatch(/[\n\t]/);
-
-		const oversized = renderFooterLine(
-			{ ...state, extensionStatuses: ["x".repeat(200)] },
-			DEFAULT_CONFIG,
-			plainTheme,
-			160,
-		);
-		expect(oversized).toContain("● READY");
-		expect(oversized).toContain("ctx 27.0%");
-		expect(oversized).not.toContain("xxxxxxxxxx");
 	});
 
 	it("generates each item at most once for duplicate configured categories", () => {

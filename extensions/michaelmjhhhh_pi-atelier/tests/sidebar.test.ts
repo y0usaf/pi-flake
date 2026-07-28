@@ -58,7 +58,7 @@ function snapshot() {
 		branchEntryCount: 38,
 		activeToolCount: 8,
 		availableToolCount: 12,
-		extensionStatuses: ["tests passing"],
+		extensionStatuses: [{ key: "vitest", text: "tests passing" }],
 		runActivity: EMPTY_RUN_ACTIVITY,
 	});
 }
@@ -670,7 +670,7 @@ describe("sidebar snapshot and layout", () => {
 		expect(fg).toHaveBeenCalledWith("error", "failed 1s");
 	});
 
-	it("drops tools, then usage, then workspace as height contracts", () => {
+	it("drops tools, usage, workspace, then extensions as height contracts", () => {
 		const ranked = withActivity({
 			phase: "running",
 			turnNumber: 2,
@@ -713,6 +713,7 @@ describe("sidebar snapshot and layout", () => {
 		expect(fullRows).toContain("TOOLS");
 		expect(fullRows).toContain("USAGE");
 		expect(fullRows).toContain("WORKSPACE");
+		expect(fullRows).toContain("EXTENSIONS");
 		expect(fullRows.findIndex((row) => /^read\s+active-a/.test(row))).toBeLessThan(
 			fullRows.indexOf("CONTEXT"),
 		);
@@ -721,20 +722,23 @@ describe("sidebar snapshot and layout", () => {
 			renderSidebarLines(ranked, DEFAULT_CONFIG, theme, 44, 36, false, 20_000),
 		);
 		expect(withoutTools).not.toContain("TOOLS");
-		expect(withoutTools).toContain("USAGE");
+		expect(withoutTools).not.toContain("USAGE");
 		expect(withoutTools).toContain("WORKSPACE");
+		expect(withoutTools).toContain("EXTENSIONS");
 
-		const withoutUsage = contentRows(
-			renderSidebarLines(ranked, DEFAULT_CONFIG, theme, 44, 32, false, 20_000),
+		const withoutWorkspace = contentRows(
+			renderSidebarLines(ranked, DEFAULT_CONFIG, theme, 44, 26, false, 20_000),
 		);
-		expect(withoutUsage).not.toContain("TOOLS");
-		expect(withoutUsage).not.toContain("USAGE");
-		expect(withoutUsage).toContain("WORKSPACE");
+		expect(withoutWorkspace).not.toContain("TOOLS");
+		expect(withoutWorkspace).not.toContain("USAGE");
+		expect(withoutWorkspace).not.toContain("WORKSPACE");
+		expect(withoutWorkspace).toContain("EXTENSIONS");
 
-		const coreOnly = contentRows(renderSidebarLines(ranked, DEFAULT_CONFIG, theme, 44, 26, false, 20_000));
+		const coreOnly = contentRows(renderSidebarLines(ranked, DEFAULT_CONFIG, theme, 44, 20, false, 20_000));
 		expect(coreOnly).not.toContain("TOOLS");
 		expect(coreOnly).not.toContain("USAGE");
 		expect(coreOnly).not.toContain("WORKSPACE");
+		expect(coreOnly).not.toContain("EXTENSIONS");
 		expect(coreOnly).toContain("AGENT");
 		expect(coreOnly).toContain("CONTEXT");
 	});
@@ -835,28 +839,37 @@ describe("sidebar snapshot and layout", () => {
 		expect(rows).toEqual(expect.not.arrayContaining([expect.stringMatching(/^STATUS /)]));
 	});
 
-	it("shows only sanitized warning and error extension statuses", () => {
+	it("shows every extension status in EXTENSIONS and only alerts in ALERTS", () => {
 		const statusSnapshot = buildSidebarSnapshot({
 			state: { ...state, extensionStatuses: [] },
 			cwd: "/tmp/project",
 			branchEntryCount: 6,
 			activeToolCount: 8,
 			availableToolCount: 12,
-			extensionStatuses: ["tests \u001b[31mpassing", "api\nready", "sync warning", "index failed", "   "],
+			extensionStatuses: [
+				{ key: "vitest", text: "tests \u001b[31mpassing" },
+				{ key: "api", text: "api\nready" },
+				{ key: "sync", text: "sync warning" },
+				{ key: "index", text: "index failed" },
+				{ key: "blank", text: "   " },
+			],
 		});
 		const rows = contentRows(renderSidebarLines(statusSnapshot, DEFAULT_CONFIG, theme, 44, 36, false));
+		expect(rows).toContain("EXTENSIONS");
+		expect(rows).toContain("vitest · tests passing");
+		expect(rows).toContain("api · api ready");
+		expect(rows).toContain("sync · sync warning");
+		expect(rows).toContain("index · index failed");
 		expect(rows).toContain("ALERTS");
 		expect(rows).toContain("▲ sync warning");
 		expect(rows).toContain("✕ index failed");
-		expect(rows).not.toContain("tests passing");
-		expect(rows).not.toContain("api ready");
 		expect(rows.join("\n")).not.toContain("[31m");
 	});
 
-	it("suppresses routine healthy extension statuses", () => {
-		const rows = contentRows(renderSidebarLines(snapshot(), DEFAULT_CONFIG, theme, 44, 28, false));
+	it("lists routine statuses in EXTENSIONS without raising ALERTS", () => {
+		const rows = contentRows(renderSidebarLines(snapshot(), DEFAULT_CONFIG, theme, 44, 36, false));
 		expect(rows).toContainEqual(expect.stringMatching(/^8 \/ 12 active\s+▸$/));
-		expect(rows).not.toContain("tests passing");
+		expect(rows).toContain("vitest · tests passing");
 		expect(rows).not.toContain("ALERTS");
 	});
 
@@ -902,7 +915,7 @@ describe("sidebar snapshot and layout", () => {
 			modelId: `model\u001b[31m${"界".repeat(60)}`,
 			branch: `feature/${"x".repeat(100)}`,
 			sessionName: `release\n${"y".repeat(100)}`,
-			extensionStatuses: [`status\t${"z".repeat(100)}`],
+		extensionStatuses: [{ key: "status", text: `status\t${"z".repeat(100)}` }],
 		};
 		const lines = renderSidebarLines(long, DEFAULT_CONFIG, theme, 34, 36, false);
 		expect(lines.join("")).not.toContain("[31m");

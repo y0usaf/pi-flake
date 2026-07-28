@@ -18,7 +18,6 @@ const WORKING_ANIMATION_INTERVAL_MS = 400;
 type FooterZone = "left" | "right";
 type FooterItemId =
 	| "brand"
-	| "status"
 	| "activity"
 	| "model"
 	| "thinking"
@@ -41,7 +40,6 @@ interface FooterItem {
 
 const DROP = {
 	brand: 0,
-	status: 0,
 	git: 10,
 	thinking: 10,
 	cost: 20,
@@ -220,25 +218,7 @@ function buildItems(
 			continue;
 		}
 
-		if (segment === "statuses") {
-			if (config.showExtensionStatuses) {
-				const statuses = state.extensionStatuses.map(sanitize).filter(Boolean).join(" ");
-				if (statuses) {
-					const rendered = palette.paint("muted", statuses);
-					add({
-						id: "status",
-						zone: "left",
-						full: rendered,
-						compact: rendered,
-						dropRank: DROP.status,
-						required: false,
-					});
-				}
-			}
-			continue;
-		}
-
-		if (segment === "metrics") {
+	if (segment === "metrics") {
 			const metrics = state.metrics;
 			const inputFull = metric("in", availableValue(metrics.usageAvailable, metrics.input), palette, "input");
 			const outputFull = metric(
