@@ -155,38 +155,43 @@ and it never persists.
 
 ## Roadmap
 
-- [ ] **P0 — fork + ref reset.** Copy vendored source to `extensions/pi-loom/`,
+Phases and their acceptance criteria. **Progress is not tracked here** —
+the root `PLAN.md` owns the checkbox state and is what `/loop-next` reads.
+Deliberately no checkboxes below: two checklists for the same work drift
+apart within one loop iteration.
+
+- **P0 — fork + ref reset.** Copy vendored source to `extensions/pi-loom/`,
       replay the four local commits there, hard-reset the vendored tree to
       pristine upstream 3.4.2. *Accept: `nix build .#pi-loom` succeeds;
       `git diff` of the vendored tree against upstream 3.4.2 is empty;
       `/ideate` and `/loop-next` still run on the fork.*
-- [ ] **P1 — alias package.** `packages.pi-loom-cli`. *Accept: `loom`
+- **P1 — alias package.** `packages.pi-loom-cli`. *Accept: `loom`
       launches Pi with only the loom stack, `/workflow` is present, a
       workflow child process spawns (proves `PI_WORKFLOW_NODE_PATH`), and
       `pi` is byte-identical to before.*
-- [ ] **P2 — human primitives.** `human.ask/edit/review` in the DSL, backed
+- **P2 — human primitives.** `human.ask/edit/review` in the DSL, backed
       by `pi-interview` and `$EDITOR`. *Accept: a workflow calling
       `human.ask` renders the choice UI in the main session and resumes
       with the selected value.*
-- [ ] **P3 — declaration mechanism.** JSON-Schema args in `command.json`,
+- **P3 — declaration mechanism.** JSON-Schema args in `command.json`,
       generated usage, `/workflows` listing, project-local `.pi/workflows/`
       scan root. *Accept: bad args are rejected with generated usage text; a
       workflow dropped into a repo's `.pi/workflows/` appears as a slash
       command without restart-time editing of any global file.*
-- [ ] **P4 — stage library + `/build` + `/quick`.** *Accept: `/build "<task>"`
+- **P4 — stage library + `/build` + `/quick`.** *Accept: `/build "<task>"`
       emits a plan artifact, an exec diff, and a review verdict keyed per
       plan item; `/quick "<task>"` completes a one-line change with a single
       agent and no review stage.*
-- [ ] **P5 — router + picker.** *Accept: in `loom`, the main agent has no
+- **P5 — router + picker.** *Accept: in `loom`, the main agent has no
       edit/write/mutating-bash tool; startup shows the workflow picker; Esc
       drops to chat; `pi` sessions are unaffected.*
-- [ ] **P6 — `/wf-new` meta-workflow.** *Accept: `/wf-new` interviews, writes
+- **P6 — `/wf-new` meta-workflow.** *Accept: `/wf-new` interviews, writes
       a runnable `command.json` + script + README into the repo, dry-runs
       it, and commits.*
-- [ ] **P7 — ecosystem fill.** `/explore`, `/debug`, `/review`; migrate the
+- **P7 — ecosystem fill.** `/explore`, `/debug`, `/review`; migrate the
       `ship` and `next` skills to workflows. *Accept: each shipped skill has
       a workflow equivalent whose stages are enforced rather than described
       in prose.*
-- [ ] **P8 — bare-core CI.** *Accept: `checks.pi-loom-bare` builds Pi with
+- **P8 — bare-core CI.** *Accept: `checks.pi-loom-bare` builds Pi with
       the engine only and asserts `/workflow` registers while zero builtin
       commands do.*
