@@ -12,7 +12,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -24,8 +24,21 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Build root pi
-        run: nix build .#pi -L
+      - name: Flake check (builds pi, extension tests, lint, patch assertions)
+        run: nix flake check -L
 
-      - name: Build extension packages
-        run: nix build .#pi-hive .#pi-codex-fast .#pi-gecko-websearch .#pi-rtk .#pi-compact .#pi-tool-management .#pi-webfetch -L
+      # Package names are enumerated from the flake so this step cannot go
+      # stale when an extension is added, renamed, or retired.
+      - name: Build every exposed package
+        run: |
+          set -euo pipefail
+          system="$(nix eval --raw --impure --expr 'builtins.currentSystem')"
+          mapfile -t packages < <(
+            nix eval --json ".#packages.${system}" --apply builtins.attrNames | jq -r '.[]'
+          )
+          echo "Building: ${packages[*]}"
+          for pkg in "${packages[@]}"; do
+            echo "::group::nix build .#${pkg}"
+            nix build ".#${pkg}" -L --no-link
+            echo "::endgroup::"
+          done

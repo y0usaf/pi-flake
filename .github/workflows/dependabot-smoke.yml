@@ -33,21 +33,35 @@ jobs:
       - name: Build root pi against temp lock
         run: nix build .#pi --reference-lock-file "$RUNNER_TEMP/flake.lock" -L
 
+  # Subflake list is discovered from the tree so it cannot go stale when an
+  # extension is added, renamed, or retired.
+  discover-extensions:
+    name: smoke/discover
+    runs-on: ubuntu-latest
+    outputs:
+      dirs: ${{ steps.list.outputs.dirs }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: List extension subflakes
+        id: list
+        run: |
+          set -euo pipefail
+          dirs="$(find extensions -mindepth 2 -maxdepth 2 -name flake.nix -printf '%h\n' | sort | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+          echo "dirs=${dirs}" >> "$GITHUB_OUTPUT"
+          echo "Discovered: ${dirs}"
+
   extension-lock-refresh:
     name: smoke/${{ matrix.dir }}
+    needs: discover-extensions
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        dir:
-          - extensions/pi-hive
-          - extensions/pi-codex-fast
-          - extensions/pi-gecko-websearch
-          - extensions/pi-rtk
-          - extensions/pi-compact
-          - extensions/pi-tool-management
-          - extensions/pi-webfetch
+        dir: ${{ fromJSON(needs.discover-extensions.outputs.dirs) }}
 
     steps:
       - name: Checkout
