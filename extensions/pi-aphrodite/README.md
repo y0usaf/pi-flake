@@ -12,7 +12,7 @@ Full output (8.4KB) stored by pi-aphrodite. Use the aphrodite_retrieve tool with
 
 The model recovers the original text on demand with the `aphrodite_retrieve` tool (proxied to `POST /retrieve`), which supports case-insensitive line filtering (`query`) and pagination (`offset`/`limit`).
 
-If the proxy is unreachable, CCR is disabled, or a request fails for any reason, `pi-aphrodite` falls back silently and the original output is kept. User-issued `!`/`!!<cmd>` shell output is deliberately not intercepted: `BashOperations.exec` streams via `onData` and returns only an exit code, so compressing that path would mean buffering the stream and hiding live output — a bad trade for an explicitly user-run command.
+If the proxy is unreachable, CCR is disabled, or a request fails for any reason, `pi-aphrodite` falls back silently and the original output is kept. User `!<cmd>` shell output also lands in model context, so it is compressed too — **on by default**. Because `BashOperations.exec` streams via `onData`, output is buffered and shown once when the command finishes; use `!!<cmd>` (never intercepted, excluded from context) for a live raw stream, or `/aphrodite bash off` to disable.
 
 Aphrodite's compression pipeline is fully programmatic (regex classifier + type-aware previews + BLAKE3/SQLite store). No model call happens inside the compress step; the only agent decision is whether to retrieve.
 
@@ -35,10 +35,11 @@ If the proxy is unavailable, compression attempts are skipped for the rest of th
 
 ```text
 /aphrodite          toggle compression on/off
+/aphrodite bash     toggle !<cmd> output compression (default on)
 /aphrodite status   probe the proxy and show counters
 ```
 
-A footer indicator (`aphrodite:on` / `aphrodite:off`) shows the current state.
+A footer indicator shows the current state: `aphrodite:on·up` / `aphrodite:on·down` / `aphrodite:on·…` (probing) / `aphrodite:off`. It is published through `ctx.ui.setStatus("pi-aphrodite", …)`, so sidebar extensions that list footer statuses (e.g. pi-atelier's Extensions panel) show proxy health live.
 
 ## Install
 

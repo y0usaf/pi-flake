@@ -2,14 +2,19 @@ import { describe, expect, mock, test } from "bun:test";
 
 const BASH_OUTPUT = "line one of output\n" + "x".repeat(2048);
 
+// Tests can swap what the fake local shell emits.
+let localExecOutput = BASH_OUTPUT;
+
 mock.module("@earendil-works/pi-coding-agent", () => ({
   createLocalBashOperations: () => ({
-    exec: async () => ({
-      output: BASH_OUTPUT,
-      exitCode: 0,
-      cancelled: false,
-      truncated: false,
-    }),
+    exec: async (
+      _command: string,
+      _cwd: string,
+      options: { onData: (data: Buffer) => void },
+    ) => {
+      options.onData(Buffer.from(localExecOutput));
+      return { exitCode: 0 };
+    },
   }),
 }));
 
@@ -86,16 +91,23 @@ function failingFetch(): typeof fetch {
   return impl as unknown as typeof fetch;
 }
 
-function makeCtx(): TestContext & { notifications: string[] } {
+function makeCtx(hasUI = false): TestContext & {
+  notifications: string[];
+  statuses: Array<[string, string | undefined]>;
+} {
   const notifications: string[] = [];
+  const statuses: Array<[string, string | undefined]> = [];
   return {
-    hasUI: false,
+    hasUI,
     notifications,
+    statuses,
     ui: {
       notify(message: string) {
         notifications.push(message);
       },
-      setStatus() {},
+      setStatus(key: string, value: string | undefined) {
+        statuses.push([key, value]);
+      },
       theme: { fg: (_color, value) => value },
     },
   };
@@ -309,5 +321,133 @@ describe("registerPiAphrodite", () => {
 
     await command!.handler("status", ctx);
     expect(ctx.notifications.at(-1)).toContain("aphrodite — state: off");
+  });
+
+  test("publishes availability transitions to the footer status", async () => {
+    const { pi, handlers } = createFakePi();
+    const client = createAphroditeClient({ fetchImpl: storeFetch() });
+    registerPiAphrodite(pi as never, client, 1024);
+
+    const ctx = makeCtx(true);
+    await handlers.get("session_start")!({}, ctx);
+    // session_start fires an async probe; let it settle.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const handler = handlers.get("tool_result");
+    await handler!(
+      { toolName: "bash", content: [{ type: "text", text: BASH_OUTPUT }] },
+      ctx,
+    );
+
+    const values = ctx.statuses.filter(([key]) => key === "pi-aphrodite").map(([, value]) => value);
+    expect(values.length).toBeGreaterThan(0);
+    expect(values.at(-1)).toBe("aphrodite:on·up");
+  });
+
+  test("publishes down state when the proxy fails", async () => {
+    const { pi, handlers } = createFakePi();
+    const client = createAphroditeClient({ fetchImpl: failingFetch() });
+    registerPiAphrodite(pi as never, client, 1024);
+
+    const ctx = makeCtx(true);
+    const handler = handlers.get("tool_result");
+    await handler!(
+      { toolName: "bash", content: [{ type: "text", text: BASH_OUTPUT }] },
+      ctx,
+    );
+
+    const values = ctx.statuses.filter(([key]) => key === "pi-aphrodite").map(([, value]) => value);
+    expect(values.at(-1)).toBe("aphrodite:on·down");
+  });
+
+  test("compresses user_bash output (default on), buffering then emitting once", async () => {
+    localExecOutput = BASH_OUTPUT;
+    const { pi, handlers } = createFakePi();
+    const client = createAphroditeClient({ fetchImpl: storeFetch() });
+    registerPiAphrodite(pi as never, client, 1024);
+
+    const handler = handlers.get("user_bash");
+    const wrapped = (await handler!(
+      { command: "make build", excludeFromContext: false },
+      makeCtx(),
+    )) as {
+      operations: {
+        exec: (
+          command: string,
+          cwd: string,
+          options: { onData: (data: Buffer) => void },
+        ) => Promise<{ exitCode: number | null }>;
+      };
+    };
+
+    const received: string[] = [];
+    const result = await wrapped.operations.exec("make build", "/tmp", {
+      onData: (data: Buffer) => received.push(data.toString()),
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(received).toHaveLength(1);
+    expect(received[0]).toContain(`<<<CCR:${HASH}|terminal|`);
+    expect(received[0]).not.toContain(BASH_OUTPUT);
+  });
+
+  test("passes small user_bash output through raw", async () => {
+    localExecOutput = "tiny output";
+    const { pi, handlers } = createFakePi();
+    const client = createAphroditeClient({ fetchImpl: storeFetch() });
+    registerPiAphrodite(pi as never, client, 1024);
+
+    const handler = handlers.get("user_bash");
+    const wrapped = (await handler!(
+      { command: "ls", excludeFromContext: false },
+      makeCtx(),
+    )) as {
+      operations: {
+        exec: (
+          command: string,
+          cwd: string,
+          options: { onData: (data: Buffer) => void },
+        ) => Promise<{ exitCode: number | null }>;
+      };
+    };
+
+    const received: string[] = [];
+    await wrapped.operations.exec("ls", "/tmp", {
+      onData: (data: Buffer) => received.push(data.toString()),
+    });
+
+    expect(received.join("")).toBe("tiny output");
+    expect(client.getStatus().attempts).toBe(0);
+    localExecOutput = BASH_OUTPUT;
+  });
+
+  test("skips !! commands and respects /aphrodite bash off", async () => {
+    localExecOutput = BASH_OUTPUT;
+    const { pi, handlers, commands } = createFakePi();
+    const client = createAphroditeClient({ fetchImpl: storeFetch() });
+    registerPiAphrodite(pi as never, client, 1024);
+
+    const handler = handlers.get("user_bash");
+
+    // !! never intercepted
+    const skipped = await handler!(
+      { command: "make build", excludeFromContext: true },
+      makeCtx(),
+    );
+    expect(skipped).toBeUndefined();
+
+    // /aphrodite bash off disables interception
+    const ctx = makeCtx();
+    await commands.get("aphrodite")!.handler("bash off", ctx);
+    expect(ctx.notifications.at(-1)).toContain("user-bash compression off");
+    const disabled = await handler!(
+      { command: "make build", excludeFromContext: false },
+      ctx,
+    );
+    expect(disabled).toBeUndefined();
+
+    // /aphrodite bash re-enables (toggle)
+    await commands.get("aphrodite")!.handler("bash", ctx);
+    expect(ctx.notifications.at(-1)).toContain("user-bash compression on");
   });
 });

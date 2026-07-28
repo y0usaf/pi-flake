@@ -10,10 +10,11 @@
  * failure (proxy down, CCR disabled, timeout, abort) falls back silently
  * to the uncompressed output.
  *
- * User `!<cmd>` shell output is deliberately NOT intercepted:
- * `BashOperations.exec` streams via `onData` and only returns an exit code,
- * so compressing that path would mean buffering the stream and hiding live
- * output from the user — a bad trade for an explicitly user-run command.
+ * User `!<cmd>` shell output lands in model context, so it is compressed
+ * too — on by default. BashOperations.exec streams via onData, so this
+ * means buffering: no live output while the command runs. `!!<cmd>`
+ * (excluded from context) is never intercepted, and `/aphrodite bash off`
+ * restores raw streaming for `!<cmd>`.
  *
  * Aphrodite's compression pipeline is fully programmatic (regex classifier
  * + type-aware previews + BLAKE3/SQLite store); no model call happens
@@ -29,7 +30,7 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-
+import { createLocalBashOperations } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:9797";
@@ -414,9 +415,14 @@ function readMinBytes(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MIN_BYTES;
 }
 
-function formatStatus(enabled: boolean, status: AphroditeStatus): string {
+function formatStatus(
+  enabled: boolean,
+  bashEnabled: boolean,
+  status: AphroditeStatus,
+): string {
   return [
     `aphrodite — state: ${enabled ? "on" : "off"}`,
+    `user-bash: ${bashEnabled ? "on" : "off"}`,
     `proxy: ${status.availability}`,
     `stored: ${status.stored}/${status.attempts}`,
     `retrieves: ${status.retrieves}`,
@@ -426,18 +432,27 @@ function formatStatus(enabled: boolean, status: AphroditeStatus): string {
   ].join(" · ");
 }
 
-function updateFooter(ctx: ExtensionContext, enabled: boolean): void {
+function updateFooter(
+  ctx: ExtensionContext,
+  enabled: boolean,
+  availability: AphroditeAvailability,
+): void {
   if (!ctx.hasUI) {
     return;
   }
 
-  ctx.ui.setStatus(
-    "pi-aphrodite",
-    ctx.ui.theme.fg(
-      enabled ? "success" : "warning",
-      enabled ? "aphrodite:on" : "aphrodite:off",
-    ),
-  );
+  const text = !enabled
+    ? "aphrodite:off"
+    : `aphrodite:on·${availability === "available" ? "up" : availability === "unavailable" ? "down" : "…"}`;
+  const color = !enabled
+    ? "warning"
+    : availability === "available"
+      ? "success"
+      : availability === "unavailable"
+        ? "error"
+        : "accent";
+
+  ctx.ui.setStatus("pi-aphrodite", ctx.ui.theme.fg(color, text));
 }
 
 export function registerPiAphrodite(
@@ -446,7 +461,25 @@ export function registerPiAphrodite(
   minBytes: number = readMinBytes(),
 ): void {
 
+  const localBashOperations = createLocalBashOperations();
   let enabled = true;
+  let bashEnabled = true;
+  let lastPublished: string | undefined;
+
+  function publishFooter(ctx: ExtensionContext): void {
+    if (!ctx.hasUI) {
+      return;
+    }
+
+    const availability = client.getStatus().availability;
+    const key = `${enabled}:${availability}`;
+    if (key === lastPublished) {
+      return;
+    }
+
+    lastPublished = key;
+    updateFooter(ctx, enabled, availability);
+  }
 
   async function compressIfUseful(
     text: string,
@@ -474,7 +507,7 @@ export function registerPiAphrodite(
   pi.registerCommand("aphrodite", {
     description: "Toggle or inspect Aphrodite tool output compression",
     getArgumentCompletions(prefix) {
-      const items = ["on", "off", "status"].map((value) => ({
+      const items = ["on", "off", "status", "bash on", "bash off"].map((value) => ({
         value,
         label: value,
       }));
@@ -486,8 +519,9 @@ export function registerPiAphrodite(
 
       if (action === "status") {
         const availability = await client.probe(ctx.signal);
+        publishFooter(ctx);
         ctx.ui.notify(
-          formatStatus(enabled, { ...client.getStatus(), availability }),
+          formatStatus(enabled, bashEnabled, { ...client.getStatus(), availability }),
           "info",
         );
         return;
@@ -500,7 +534,7 @@ export function registerPiAphrodite(
           client.resetAvailability();
         }
 
-        updateFooter(ctx, enabled);
+        publishFooter(ctx);
         ctx.ui.notify(
           `aphrodite ${enabled ? "on" : "off"}`,
           enabled ? "info" : "warning",
@@ -508,7 +542,19 @@ export function registerPiAphrodite(
         return;
       }
 
-      ctx.ui.notify("Usage: /aphrodite [on|off|status]", "warning");
+      if (action === "bash" || action === "bash on" || action === "bash off") {
+        bashEnabled = action === "bash" ? !bashEnabled : action === "bash on";
+        ctx.ui.notify(
+          `aphrodite user-bash compression ${bashEnabled ? "on" : "off"}`,
+          bashEnabled ? "info" : "warning",
+        );
+        return;
+      }
+
+      ctx.ui.notify(
+        "Usage: /aphrodite [on|off|status|bash [on|off]]",
+        "warning",
+      );
     },
   });
 
@@ -564,7 +610,10 @@ export function registerPiAphrodite(
   });
 
   pi.on("session_start", (_event, ctx) => {
-    updateFooter(ctx, enabled);
+    publishFooter(ctx);
+    // Probe once per session so the footer reflects proxy health even
+    // before the first compressible tool result.
+    void client.probe(ctx.signal).then(() => publishFooter(ctx));
   });
 
   pi.on("tool_result", async (event, ctx) => {
@@ -574,6 +623,7 @@ export function registerPiAphrodite(
     }
 
     const compressed = await compressIfUseful(text, event.toolName, ctx.signal);
+    publishFooter(ctx);
     if (!compressed) {
       return;
     }
@@ -581,9 +631,40 @@ export function registerPiAphrodite(
     return { content: [{ type: "text", text: compressed }] };
   });
 
+  // User `!<cmd>` output lands in model context, so it gets the same
+  // compression path as tool results. BashOperations.exec streams via
+  // onData, which means buffering: no live output while the command runs.
+  // Users who want a live view use `!!<cmd>` (excluded from context,
+  // never intercepted) or `/aphrodite bash off`.
+  pi.on("user_bash", (event, ctx) => {
+    if (event.excludeFromContext || !enabled || !bashEnabled) {
+      return;
+    }
 
+    return {
+      operations: {
+        exec: async (command, cwd, options) => {
+          const chunks: Buffer[] = [];
+          const result = await localBashOperations.exec(command, cwd, {
+            ...options,
+            onData: (data: Buffer) => {
+              chunks.push(data);
+            },
+          });
 
+          const raw = Buffer.concat(chunks).toString("utf8");
+          const compressed = await compressIfUseful(raw, "bash", ctx.signal);
+          const finalText = compressed ?? raw;
+          if (finalText.length > 0) {
+            options.onData(Buffer.from(finalText));
+          }
 
+          publishFooter(ctx);
+          return result;
+        },
+      },
+    };
+  });
 }
 export default function (pi: ExtensionAPI) {
   registerPiAphrodite(pi);
