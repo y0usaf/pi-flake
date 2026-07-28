@@ -1,5 +1,6 @@
 {
   "name": "ideate",
-  "description": "Multi-model debate ideation workflow. Args as JSON: { \"topic\": \"...\", \"context\"?, \"maxRounds\"?, \"models\"?, \"judgeModel\"? }",
-  "script": "ideate.js"
+  "description": "Multi-model debate ideation workflow. Usage: /ideate <topic> or /ideate '{ \"topic\": \"...\", \"context\"?, \"maxRounds\"?, \"models\"?, \"judgeModel\"? }'",
+  "script": "ideate.js",
+  "argKey": "topic"
 }

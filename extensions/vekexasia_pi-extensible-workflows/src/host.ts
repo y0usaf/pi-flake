@@ -2668,7 +2668,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     },
   });
   if (exposeWorkflowTools) pi.registerTool(workflowTool);
-  type WorkflowCommandSpec = { name: string; description?: string; script?: string; args?: JsonValue };
+  type WorkflowCommandSpec = { name: string; description?: string; script?: string; args?: JsonValue; argKey?: string };
   const workflowCommandRoots = [join(dirname(fileURLToPath(import.meta.url)), "../workflows"), join(dirname(fileURLToPath(import.meta.url)), "../../workflows"), join(extensionAgentDir, "workflows")];
   const seenWorkflowCommands = new Set<string>();
   for (const root of workflowCommandRoots) {
@@ -2684,6 +2684,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
       if (!object(parsedSpec)) throw new WorkflowError("INVALID_METADATA", `Workflow command at ${specPath} must be an object`);
       const spec = parsedSpec as WorkflowCommandSpec;
       if (typeof spec.name !== "string" || !/^[a-zA-Z0-9][\w-]*$/.test(spec.name)) throw new WorkflowError("INVALID_METADATA", `Workflow command at ${specPath} requires a name matching /^[a-zA-Z0-9][\\w-]*$/`);
+      if (spec.argKey !== undefined && typeof spec.argKey !== "string") throw new WorkflowError("INVALID_METADATA", `Workflow command at ${specPath} argKey must be a string`);
       if (seenWorkflowCommands.has(spec.name)) continue;
       const scriptFile = spec.script ?? "workflow.js";
       const scriptPath = join(dir, scriptFile);
@@ -2694,7 +2695,13 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
         handler: async (args, ctx) => {
           let workflowArgs: JsonValue = spec.args ?? null;
           const trimmed = args.trim();
-          if (trimmed) { try { workflowArgs = JSON.parse(trimmed) as JsonValue; } catch { workflowArgs = trimmed; } }
+          if (trimmed) {
+            try { workflowArgs = JSON.parse(trimmed) as JsonValue; }
+            catch { workflowArgs = spec.argKey ? { [spec.argKey]: trimmed } : trimmed; }
+          } else if (spec.args === undefined && spec.argKey) {
+            ctx.ui.notify(`Usage: /${spec.name} <${spec.argKey}> or /${spec.name} '{ "${spec.argKey}": "..." }'`, "warning");
+            return;
+          }
           const result = await workflowTool.execute(`command-${spec.name}`, { name: spec.name, scriptPath, args: workflowArgs }, undefined, undefined, ctx);
           const details = result.details as { runId?: string } | undefined;
           ctx.ui.notify(`Started workflow ${spec.name}${details?.runId ? ` (${details.runId})` : ""}. Control it with /workflow.`, "info");
