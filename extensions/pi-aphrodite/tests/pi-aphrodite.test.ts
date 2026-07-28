@@ -237,6 +237,23 @@ describe("registerPiAphrodite", () => {
     client.close();
   });
 
+  test("never compresses aphrodite_retrieve output", async () => {
+    const { pi, handlers } = createFakePi();
+    const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
+    registerPiAphrodite(pi as never, client, 1024);
+
+    const handler = handlers.get("tool_result");
+    const big = "x".repeat(4096);
+    const result = await handler!(
+      { toolName: "aphrodite_retrieve", content: [{ type: "text", text: big }] },
+      makeCtx(),
+    );
+
+    expect(result).toBeUndefined();
+    expect(client.getStatus().attempts).toBe(0);
+    client.close();
+  });
+
   test("leaves small output untouched", async () => {
     const { pi, handlers } = createFakePi();
     const client = createLocalAphroditeClient({ dbPath: tempDbPath() });

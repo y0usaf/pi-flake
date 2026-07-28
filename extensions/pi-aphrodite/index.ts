@@ -451,6 +451,12 @@ export function registerPiAphrodite(
     text: string,
     toolName: string | undefined,
   ): Promise<string | undefined> {
+    // Never compress our own retrieve output — that would make stored
+    // content unreachable above minBytes.
+    if (toolName === "aphrodite_retrieve") {
+      return undefined;
+    }
+
     if (!enabled) {
       return undefined;
     }
