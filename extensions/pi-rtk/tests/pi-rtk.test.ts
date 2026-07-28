@@ -281,7 +281,7 @@ describe("pi-rtk extension wiring", () => {
     expect(userResult).toBeUndefined();
     expect(readLog(log)).toEqual([]);
     expect(notifications).toEqual([{ message: "rtk off", level: "warning" }]);
-    expect(statuses).toEqual([{ key: "pi-rtk", value: "<warning>rtk:off</warning>" }]);
+    expect(statuses).toEqual([{ key: "pi-rtk", value: "<muted>rtk</muted>" }]);
   });
 
   test("!<cmd> executes the rewritten command through Pi local bash operations", async () => {
@@ -358,8 +358,8 @@ describe("pi-rtk extension wiring", () => {
     expect(notifications[2]?.message).toContain("rewrites: 0/0");
     expect(notifications[2]?.message).not.toContain("echo");
     expect(statuses.map((status) => status.value)).toEqual([
-      "<warning>rtk:off</warning>",
-      "<success>rtk:on</success>",
+      "<muted>rtk</muted>",
+      "<success>rtk</success>",
     ]);
 
     expect(rtkCommand.getArgumentCompletions?.("s")).toEqual([
