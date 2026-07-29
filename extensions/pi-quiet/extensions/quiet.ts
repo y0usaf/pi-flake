@@ -24,6 +24,7 @@ import {
 	createWriteToolDefinition,
 	CustomEditor,
 	type ExtensionAPI,
+	type ExtensionUIContext,
 	type ThemeColor,
 } from "@earendil-works/pi-coding-agent";
 import { Text, visibleWidth } from "@earendil-works/pi-tui";
@@ -64,6 +65,10 @@ const defFor = (name: string, make: (cwd: string) => any, cwd: string) => {
 const ANSI = /\x1b\[[0-9;]*m/g;
 const isPlainBorder = (line: string) => /^─+$/.test(line.replace(ANSI, ""));
 
+// this.theme on Editor is the narrow EditorTheme (borderColor + selectList
+// only, no fg/bg); the full Theme lives on ctx.ui and is read lazily so a
+// mid-session theme switch is picked up.
+let uiCtx: ExtensionUIContext | undefined;
 let editor: QuietEditor | undefined;
 let agentActive = false;
 let pulseTimer: ReturnType<typeof setInterval> | undefined;
@@ -103,7 +108,7 @@ class QuietEditor extends CustomEditor {
 		// removed working indicator
 		if (lines.length > 0 && isPlainBorder(lines[0])) {
 			const paint = agentActive
-				? (s: string) => this.theme.fg(this.colors[pulseFrame % this.colors.length], s)
+				? (s: string) => uiCtx?.theme.fg(this.colors[pulseFrame % this.colors.length], s) ?? s
 				: this.borderColor;
 			const face = paint(EDITOR_FACE);
 			const rule = paint("─".repeat(Math.max(0, width - visibleWidth(EDITOR_FACE) - 1)));
@@ -135,6 +140,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 
+		uiCtx = ctx.ui;
 		ctx.ui.setHeader(() => ({
 			render: () => [],
 			invalidate() {},
