@@ -301,6 +301,35 @@
             };
           };
 
+        "pi-quiet" = let
+          quietPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-quiet/package.json);
+        in
+          pkgs.stdenvNoCC.mkDerivation {
+            pname = "pi-quiet";
+            version = quietPackageJson.version;
+            src = lib.cleanSource ./extensions/pi-quiet;
+
+            dontBuild = true;
+
+            installPhase = ''
+              runHook preInstall
+
+              mkdir -p "$out"
+              cp package.json README.md DESIGN.md "$out"/
+              cp -r extensions "$out"/
+
+              runHook postInstall
+            '';
+
+            passthru.packageName = quietPackageJson.name;
+
+            meta = with lib; {
+              description = quietPackageJson.description;
+              homepage = quietPackageJson.homepage;
+              license = licenses.mit;
+              platforms = platforms.all;
+            };
+          };
 
         # Vendored from @extensions/vekexasia_pi-extensible-workflows/ (MIT).
         # Pi loads ./src/index.ts directly; dist is shipped for the exports map;
@@ -381,6 +410,7 @@
         pi-aphrodite-build = self.packages.${system}."pi-aphrodite";
         pi-extension-management-build = self.packages.${system}."pi-extension-management";
         pi-extensible-workflows-build = self.packages.${system}."pi-extensible-workflows";
+        pi-quiet-build = self.packages.${system}."pi-quiet";
 
         # Runtime acceptance for the local `sessionContext` field on a workflow
         # command.json: a build only proves it compiles, not that a bare slash
@@ -532,6 +562,7 @@
         review = self.packages.${system}."pi-review";
         vcc = self.packages.${system}."pi-vcc";
         caveman = self.packages.${system}."pi-caveman";
+        quiet = self.packages.${system}."pi-quiet";
 
         "extensible-workflows" = self.packages.${system}."pi-extensible-workflows";
       };

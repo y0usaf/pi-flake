@@ -87,6 +87,13 @@
     note = "Model-callable context rewind. Evaluating since 2026-08-11; opt-in until it has been driven through real wrong-path sessions, because a misfired rewind removes work from the model's view.";
   };
 
+  quiet = {
+    stage = "testing";
+    source = "vendored";
+    dir = "pi-quiet";
+    note = "Emoticon chrome: no header, blink spinner, face tool rows, face-border editor. Evaluating since 2026-08-11.";
+  };
+
   kimi = {
     stage = "paused";
     source = "subflake";
