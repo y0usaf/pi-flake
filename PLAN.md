@@ -18,83 +18,103 @@ marker into prose here — the count would lie.
 
 ## Handoff
 
-Last touched: P4a landed and is ticked. P4 was split three ways first (P4a
-library, P4b `exec` stage + `/build`, P4c `/quick`); the next open item is P4b.
+Last touched: P4b-i landed and is ticked. P4b was split in two first (P4b-i the
+`exec` stage, P4b-ii the `/build` workflow); the next open item is P4b-ii.
 
-What landed. A stage library: `stage(name, input)` is callable from any workflow
-body with no import, because `runWorkflow` appends `src/stages.ts`'s source to
-every body before instrumentation. Two stages ship, `plan` (task to numbered
-plan items) and `review` (verdict plus note). A top-level `stage` or `__stage*`
-declaration in an author's script is now rejected at launch by
-`stageLibraryConflict` in `src/validation.ts`. The workflow slash-command handler
-in `host.ts` now catches launch failures and notifies them as errors instead of
-letting the rejection escape into Pi's command dispatcher.
+What landed. The `exec` stage: `stage("exec", { item, worktree?, context?, model?,
+role?, label? })` implements one plan item inside an isolated git worktree and
+returns `{ summary, notes, files, diff, diffTruncated, branch, path }`. The agent
+is asked only for `summary` and `notes`; `files` and `diff` come from git, so an
+unreported edit still shows up. `checks.pi-loom-exec-stage`
+(`nix/checks/loom-exec-stage.sh`) is the runtime gate. DESIGN.md now carries the
+P4b-i / P4b-ii acceptance criteria and a paragraph on why exec's artifact is
+git's word rather than the model's.
 
-Gates actually run: `nix build .#pi-loom-cli` (pass),
-`nix build .#checks.x86_64-linux.pi-loom-stages -L` (pass, prints `stages: the
-appended library reached the sandbox, an unknown stage named the available ones,
-missing and out-of-range input were rejected before any agent launch, and a
-colliding top-level declaration stopped the launch with a named error`),
-`nix flake check -L` (pass, all 14 checks, biome unchanged at 1 pre-existing
-warning + 5 infos).
+Gates actually run: `nix build .#pi-loom` (pass),
+`nix build .#checks.x86_64-linux.pi-loom-exec-stage -L` (pass),
+`nix build .#checks.x86_64-linux.pi-loom-stages -L` (pass, after updating its
+stage-list assertion), `nix flake check -L` (pass, every check including the new
+`pi-loom-exec-stage`; `biome lint .` unchanged at 1 pre-existing warning and 5
+infos).
 
 Design decisions worth not re-litigating:
 
-- **The library is appended, never prepended.** `instrumentWorkflow` turns each
-  `agent(...)` call's start/end byte offsets into that agent's call-site
-  identity, and retry/resume match on it. Prepending would renumber every user
-  call site whenever the library changed. Verified: the same script instrumented
-  with and without the library yields the identical call site.
-- **Function declarations only, inside the library.** They hoist, so `stage(...)`
-  works from line 1 even though the definitions sit after the author's `return`.
-  A `const` or `var` there is in its temporal dead zone (or `undefined`) for the
-  whole run. This is why the stage prompts are built inside each function rather
-  than in a shared top-level constant.
-- **The library is not preflighted against the caller's capabilities.** It is
-  engine code, reviewed here. That is exactly why no stage hardcodes a model or
-  role: those come from the caller, whose script *is* preflighted.
-- **`stage("review")` returns `human.review`'s shape** (`{verdict, note}`, same
-  approve/changes/reject vocabulary), so a workflow can switch on `.verdict`
-  without knowing whether a model or a person judged the work.
-- **Doctrine 01 is now `partial`, recorded in DESIGN.md.** Stage *content* is
-  policy living in the engine because the registry only accepts host-side
-  functions over RPC, with no surface for extension-supplied sandbox source. It
-  closes when `pi-loom-builtins` exists.
+- **exec takes its base commit before the agent exists.** `git rev-parse HEAD`
+  runs inside the worktree first; the diff is `git diff <base>` afterwards. That
+  is what lets several exec calls share one worktree and still each report only
+  their own item's diff, since the engine commits the worktree as every agent
+  returns.
+- **The model is never asked which files it touched.** git is asked. The output
+  schema is only `{summary, notes}` on purpose: asking for a `files` list you
+  then discard invites drift between what the model says and what is true.
+- **`git add -A` before diffing.** The engine's own snapshot does the same, so
+  this is not novel state mutation, and it is what makes new files appear in the
+  diff at all.
+- **Diff text is capped at 200000 characters** with `diffTruncated` reporting it.
+  Uncapped, one runaway item would either bury the review prompt or breach the
+  engine's 10 MB RPC boundary and kill the run.
+- **exec hardcodes no model, role or tool list.** Same reason as every other
+  stage: the library is not preflighted against the caller's capabilities, so
+  everything capability-shaped comes from the caller, whose script *is*
+  preflighted. With no `tools` option the agent inherits the workflow's full tool
+  set, which is what gives it edit and write.
 
 Traps for the next step:
 
+- **The offline gate stops at exec's agent call.** `loom-exec-stage.sh` proves
+  the worktree is open, populated, branch-owned and base-recorded *before* the
+  agent launches, and nothing after it: every post-agent line needs the agent to
+  have returned, and the sandbox has no network and no key. P4b-ii's `/build`
+  check faces the same wall; assert the wiring, never a model's output.
+- **How to reach an agent boundary offline:** pass a model that does not exist.
+  `WorkflowAgentExecutor.resolve()` throws `UNKNOWN_MODEL` at the top of
+  `execute()`, before the attempt loop, before any session or socket, so there is
+  no retry, no backoff and no network. The probe catches it and the run still
+  completes, which keeps the harness's completion parsing unchanged.
+- **Never put a backtick inside `STAGE_LIBRARY_SOURCE`.** That string is a TS
+  template literal, so a backtick in a sandbox-side comment ends it and the build
+  fails with unrelated-looking `TS2304: Cannot find name` errors. Use plain
+  quotes in the appended source; backticks are fine in the surrounding TS.
+- **The stage list is asserted as a literal string.** `loom-stages.sh` matches
+  `available stages: plan, exec, review`. Adding or reordering a stage means
+  updating that assertion in the same commit.
+- **Worktree-scoped shell operations are journal-visible.** Their keys start with
+  `shell/worktree/worktree%2Fnamed%2F<name>/`, and the recorded value is
+  `{exitCode, stdout, stderr}`. That is how the check proves the base commit was
+  read inside the worktree rather than in the repo.
+- **`git worktree list` in the probe repo sees the engine's worktree** even
+  though the worktree directory lives under the run store
+  (`~/.pi/workflows/projects/<slug>/sessions/<sid>/runs/<runid>/worktrees/`).
+  Worktree metadata is registered in the repo's `.git`, which is what makes the
+  count assertion possible.
 - **`extensions/pi-loom/skills/pi-extensible-workflows/SKILL.md` is still
   modified in the working tree and still deliberately uncommitted.** Same state
-  as the previous three handoffs: `HEAD` content is byte-identical to the
-  vendored upstream copy, the working-tree content is a rewrite by something
-  outside these steps. Left untouched again; commits here stage explicit paths,
-  never `-A`. Decide what it is before committing it. It also means the
-  agent-facing docs for `stage(...)` were *not* written — that file is where
-  they belong.
-- **Stages are invisible to the model right now.** `workflow_catalog` lists
-  registered functions, not stages, and nothing tells an agent that `stage(...)`
-  exists. P4b should either extend the catalog or document it in the skill file
-  above, once that file's ownership is settled.
-- **The flake only sees git-tracked files.** A new source or check script that
-  is not `git add`ed does not exist inside `nix build`. Stage before building.
+  as the previous four handoffs: `HEAD` content is byte-identical to the vendored
+  upstream copy, the working-tree content is a rewrite by something outside these
+  steps. Left untouched again; commits here stage explicit paths, never `-A`.
+  Decide what it is before committing it. It also means the agent-facing docs for
+  `stage(...)` and `exec` were *not* written — that file is where they belong.
+- **Stages are still invisible to the model.** `workflow_catalog` lists
+  registered functions, not stages. Nothing tells an agent that `stage(...)`
+  exists, and `STAGE_LIBRARY[].description/required/optional/output` are
+  documentation nothing consumes yet. Wiring them into a catalog is a natural
+  P5 item once the SKILL.md ownership question is settled.
+- **The flake only sees git-tracked files.** A new source or check script that is
+  not `git add`ed does not exist inside `nix build`. Stage before building.
 - **`result` is a relative symlink.** The check harnesses `cd` into a temp
   project, so running one by hand needs `"$(readlink -f result)/bin/loom"`, not
   `./result/bin/loom`.
-- **`PI_CODING_AGENT_DIR` leaks into hand-run harnesses.** Inside the nix
-  sandbox the agent dir defaults to `$HOME/.pi/agent`, but running a check
-  script from a Pi session inherits `PI_CODING_AGENT_DIR` and the user-scope
-  scan finds the real agent dir instead of the throwaway one.
-  `loom-workflow-args.sh`, `loom-project-workflows.sh` and `loom-stages.sh`
-  export it explicitly; the three older harnesses do not.
-- **Offline harnesses must never reach `agent()`.** There is no network and no
-  real key in the sandbox, so `loom-stages.sh` only exercises the paths that
-  fail *before* an agent launches. Any P4b check of `exec` needs the same
-  discipline: assert the wiring, not a model's output.
-- **Never `head -1` a presented message.** Usage text and the `/workflows`
-  listing are multi-line, so harnesses serialise with `jq -c` before decoding.
-- **`inputsSettled()` gates on four parking lots** (checkpoints, questions,
-  edits, reviews). Anything that parks a new kind of human input must add its
-  lot there or a pending item will look like a running run.
+- **`PI_CODING_AGENT_DIR` leaks into hand-run harnesses.** Inside the nix sandbox
+  the agent dir defaults to `$HOME/.pi/agent`, but running a check script from a
+  Pi session inherits `PI_CODING_AGENT_DIR` and the user-scope scan finds the real
+  agent dir instead of the throwaway one. `loom-workflow-args.sh`,
+  `loom-project-workflows.sh`, `loom-stages.sh` and `loom-exec-stage.sh` export it
+  explicitly; the three older harnesses do not.
+- **Never `head -1` a presented message.** Usage text and the `/workflows` listing
+  are multi-line, so harnesses serialise with `jq -c` before decoding.
+- **`inputsSettled()` gates on four parking lots** (checkpoints, questions, edits,
+  reviews). Anything that parks a new kind of human input must add its lot there
+  or a pending item will look like a running run.
 - **Downstream flag renamed.** `~/nixos/hosts/y0usaf-desktop/finix/materialized-packages.nix`
   sets `"extensible-workflows" = true;`. That key no longer exists; it is now
   `loom`. `lib.enabledExtensions` asserts on unknown flags, so the system flake
@@ -103,16 +123,15 @@ Traps for the next step:
 - **Fork identity is still upstream-named on purpose.** package.json is still
   `pi-extensible-workflows@3.4.2`, and the scan-root constants still resolve
   `<agentDir>/pi-extensible-workflows/{SYSTEM.md,roles}`. Renaming moves paths
-  inside the user's agent dir, so it must land with the system flake, not
-  before. Rationale is in DESIGN.md under Architecture.
-- The ref tree is no longer a package and is excluded from `biome.jsonc`;
-  keep it that way, it is only a diff base for upstream fixes.
-- **Two facts all six harnesses depend on.** Pi's agent dir defaults to
-  `$HOME/.pi/agent`, not the XDG data path the installed system uses; and an
-  RPC `prompt` is refused before command dispatch unless a model resolves
-  with a key, which is why the scripts pass throwaway
-  `--provider/--model/--api-key` flags. Reuse them for P8 rather than
-  rediscovering both.
+  inside the user's agent dir, so it must land with the system flake, not before.
+  Rationale is in DESIGN.md under Architecture.
+- The ref tree is no longer a package and is excluded from `biome.jsonc`; keep it
+  that way, it is only a diff base for upstream fixes.
+- **Two facts all seven harnesses depend on.** Pi's agent dir defaults to
+  `$HOME/.pi/agent`, not the XDG data path the installed system uses; and an RPC
+  `prompt` is refused before command dispatch unless a model resolves with a key,
+  which is why the scripts pass throwaway `--provider/--model/--api-key` flags.
+  Reuse them for P8 rather than rediscovering both.
 
 ## Current phase
 
@@ -148,7 +167,13 @@ Traps for the next step:
       body as hoisted function declarations (`src/stages.ts`), the `plan` and
       `review` stages, a launch-time guard on colliding top-level declarations,
       and `checks.pi-loom-stages` proving all three offline.
-- [ ] **P4b — `exec` stage + `/build`.**
+- [x] **P4b-i — `exec` stage.** `stage("exec", ...)` implements one plan item
+      inside an isolated git worktree (`__stageExec` in `src/stages.ts`) and
+      reports the diff git recorded, not the diff the model claims;
+      `checks.pi-loom-exec-stage` proves the worktree is open, populated and
+      base-recorded before the implementing agent launches.
+- [ ] **P4b-ii — `/build`.** plan → exec → review over one worktree, keyed per
+      plan item.
 - [ ] **P4c — `/quick`.**
 - [ ] **P5 — router + picker.**
 - [ ] **P6 — `/wf-new` meta-workflow.**

@@ -37,7 +37,7 @@ take upstream fixes.
 
 | Doctrine | Status | Notes |
 |---|---|---|
-| 01 extension-first core | partial | `pi-loom` = engine (mechanism). `pi-loom-builtins` (stages, roles, shipped workflows) and `pi-loom-router` (tool gate, picker) are policy and use only the public API. If a builtin needs a private hook, the API grows. **Known divergence since P4a:** the stage library's *content* (the `plan` and `review` prompts) ships inside the engine at `src/stages.ts`, because the registry accepts host-side functions over RPC and has no surface yet for extension-supplied sandbox source. The divergence closes when `pi-loom-builtins` exists and that surface is the thing it registers through.
+| 01 extension-first core | partial | `pi-loom` = engine (mechanism). `pi-loom-builtins` (stages, roles, shipped workflows) and `pi-loom-router` (tool gate, picker) are policy and use only the public API. If a builtin needs a private hook, the API grows. **Known divergence since P4a:** the stage library's *content* (the `plan`, `exec` and `review` prompts) ships inside the engine at `src/stages.ts`, because the registry accepts host-side functions over RPC and has no surface yet for extension-supplied sandbox source. The divergence closes when `pi-loom-builtins` exists and that surface is the thing it registers through.
 | 02 snapshot in, actions out | follows | Workflow scripts receive immutable `args` + prior artifacts and return values; they never touch host state. Every `agent(...)`/`human.*` dispatch runs under the existing budget + timeout watchdog. Named exception: `withWorktree(name, cb)` grants real filesystem writes inside an isolated worktree — the worktree *is* the guard. |
 | 03 daemon + thin client | diverges | Runs are session-scoped child processes, not a daemon. Accepted because a run that outlives its session has no viewer to report to today. Revisit if cross-session run supervision is wanted (see Deferred). |
 | 04 declarative front, idempotent executor | partial | Nix declares the *stack* (which extensions compose `loom`) and system-level workflow placement. Workflow control flow stays in JS. Nix-declared workflows deferred until the stage library is stable. |
@@ -265,6 +265,16 @@ That is not a coincidence: it lets a workflow switch on `.verdict` without
 knowing whether a model or a person judged the work, so swapping automated
 review for human review is a one-line change.
 
+`stage("exec", ...)` is the one stage whose artifact is not the agent's own
+words. It opens (or reuses) a named worktree with `withWorktree`, records that
+worktree's `HEAD` as a base commit *before* the agent exists, and after the
+agent returns asks git — not the model — which files changed and what the diff
+is. The agent is only asked for a `summary` and reviewer `notes`. An agent that
+forgets, or declines, to mention an edit therefore cannot hide it: the reviewer
+reads `git diff <base>`. Several exec calls sharing one worktree each report
+only their own item's diff, because each takes its base at its own start, and
+the engine commits the worktree as every agent returns.
+
 ## Extension surface contract
 
 **Read path.** A workflow script receives a frozen `args` object (validated
@@ -372,7 +382,19 @@ apart within one loop iteration.
   - **P4b — `exec` stage + `/build`.** The stage that writes code inside a
       worktree, and the workflow that chains plan → exec → review. *Accept:
       `/build "<task>"` emits a plan artifact, an exec diff, and a review
-      verdict keyed per plan item.*
+      verdict keyed per plan item.* Split in two: the stage is engine code with
+      an offline-provable contract, the workflow is policy whose acceptance
+      needs a real model, and bundling them would make the engine half
+      unverifiable in CI.
+    - **P4b-i — `exec` stage.** One plan item implemented inside an isolated
+      git worktree, returning the diff git recorded rather than the diff the
+      model claims. *Accept: exec is listed among the stages and enforces its
+      input contract inside the sandbox; the worktree exists, is populated and
+      is on its own engine-owned branch before the implementing agent is
+      launched; the diff base is the worktree's own HEAD, read from inside it.*
+    - **P4b-ii — `/build`.** The workflow chaining plan → exec → review over
+      one worktree. *Accept: `/build "<task>"` emits a plan artifact, an exec
+      diff, and a review verdict keyed per plan item.*
   - **P4c — `/quick`.** *Accept: `/quick "<task>"` completes a one-line
       change with a single agent, no plan stage and no review stage.*
 - **P5 — router + picker.** *Accept: in `loom`, the main agent has no

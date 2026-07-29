@@ -119,7 +119,7 @@ field() { jq -r ".$1 // \"\"" "$work/probe.json"; }
   fail_with "stage() is not defined in the sandbox (typeof stage = '$(field seen)')" "$work/probe.json"
 
 case "$(field unknown)" in
-  *"Unknown stage: nope"*"available stages: plan, review"*) ;;
+  *"Unknown stage: nope"*"available stages: plan, exec, review"*) ;;
   *) fail_with "an unknown stage name did not list the available stages (got: '$(field unknown)')" ;;
 esac
 
