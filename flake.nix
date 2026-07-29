@@ -497,6 +497,21 @@
           touch $out
         '';
 
+        # P4b-ii acceptance: the `/build` workflow. The shipped directory is
+        # copied into a throwaway agent dir's workflows root — the exact place
+        # the system flake installs it — so a broken command.json fails here
+        # rather than on the user's machine. The plan artifact, exec diff and
+        # review verdict need a real model, so what is provable offline is
+        # ordering: a task-less launch never becomes a run, and a launch with an
+        # unknown model dies in the `plan` phase with no item phase entered and
+        # no worktree opened, which a /build calling exec first could not do.
+        pi-loom-build-workflow = pkgs.runCommand "pi-loom-build-workflow" {
+          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.git pkgs.findutils pkgs.coreutils];
+        } ''
+          bash ${./nix/checks/loom-build-workflow.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom ${./workflows/build}
+          touch $out
+        '';
+
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;
