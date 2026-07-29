@@ -11,6 +11,7 @@ import { WorkflowError } from "./types.js";
 import type { AgentDefinition, AgentResourceExclusions, AgentResourcePolicy, CheckpointInput, HumanAskInput, HumanEditInput, HumanReviewInput, JsonSchema, JsonValue, LaunchSnapshot, PreflightCapabilities, PreflightResult, ShellOptions, StaticWorkflowCall, StaticWorkflowExecution, StaticWorkflowScope, ValidatedWorkflowLaunch, WorkflowCallKind, WorkflowErrorCode, WorkflowExtensionMetadata, WorkflowExtensionSettings, WorkflowMetadata, WorkflowRoleDirectoryRegistration, WorkflowSettings, WorkflowSettingsOverrides, WorkflowSettingsResolution, WorkflowSettingsSources, WorkflowValidationContext, WorkflowValidationParameters } from "./types.js";
 import type { WorkflowRegistryApi } from "./registry.js";
 import { registeredWorkflowRoleDirectoryRegistrations } from "./registry.js";
+import { STAGE_ENTRY_POINT, STAGE_INTERNAL_PREFIX, STAGE_NAMES } from "./stages.js";
 import { annotateModelAliasError, deepFreeze, errorText, fail, jsonValue, modelAliasName, modelCapability, object, parseThinking, positiveInteger, resolveModelReference, unknownModel, validateModelAliases, validateResourcePattern } from "./utils.js";
 import { WORKFLOW_CALL_KINDS } from "./types.js";
 
@@ -469,6 +470,26 @@ function hasIdentifier(node: acorn.AnyNode, name: string): boolean {
   return astChildren(node).some((child) => hasIdentifier(child, name));
 }
 
+// The stage library is appended to the workflow body as top-level function
+// declarations (src/stages.ts). A top-level `const stage = ...` in the author's
+// script would therefore make the concatenated source a SyntaxError, and a
+// top-level `function stage()` would be silently overridden by the library's.
+// Both are rejected at launch, where the message can name the cause, instead of
+// surfacing as a parse failure inside a child process. Nested declarations are
+// left alone: those only shadow within their own scope, which is legal.
+function stageLibraryConflict(program: acorn.Program): string | undefined {
+  const reserved = (name: string): boolean => name === STAGE_ENTRY_POINT || name.startsWith(STAGE_INTERNAL_PREFIX);
+  const patternNames = (node: acorn.AnyNode): string[] => (node.type === "Identifier" ? [node.name] : astChildren(node).flatMap(patternNames));
+  for (const statement of program.body) {
+    if (statement.type === "VariableDeclaration") {
+      const conflict = statement.declarations.flatMap((declarator) => patternNames(declarator.id)).find(reserved);
+      if (conflict) return conflict;
+    }
+    if ((statement.type === "FunctionDeclaration" || statement.type === "ClassDeclaration") && statement.id && reserved(statement.id.name)) return statement.id.name;
+  }
+  return undefined;
+}
+
 type StaticWorkflowContext = { execution: StaticWorkflowExecution; structure: readonly StaticWorkflowScope[] };
 
 const INTERNAL_AGENT_NAME = "__pi_extensible_workflows_agent";
@@ -723,6 +744,8 @@ export function preflight(script: string, capabilities: PreflightCapabilities, s
   if (hasIdentifier(program, INTERNAL_AGENT_NAME)) fail("INVALID_METADATA", `${INTERNAL_AGENT_NAME} is reserved for workflow agent instrumentation`);
   if (hasIdentifier(program, INTERNAL_WORKTREE_NAME)) fail("INVALID_METADATA", `${INTERNAL_WORKTREE_NAME} is reserved for workflow withWorktree instrumentation`);
   if (hasIdentifier(program, INTERNAL_SHELL_NAME)) fail("INVALID_METADATA", `${INTERNAL_SHELL_NAME} is reserved for workflow shell instrumentation`);
+  const stageConflict = stageLibraryConflict(program);
+  if (stageConflict) fail("INVALID_METADATA", `${stageConflict} is provided by the loom stage library; rename this top-level declaration. Stages are called as stage("${STAGE_NAMES[0] ?? "plan"}", { ... }); available stages: ${STAGE_NAMES.join(", ")}`);
   validateDirectPrimitiveReferences(program, "withWorktree");
   validateRemovedWorkflowPrimitives(program, compatibility ? "RESUME_INCOMPATIBLE" : "INVALID_METADATA");
   validateDirectPrimitiveReferences(program, "shell");

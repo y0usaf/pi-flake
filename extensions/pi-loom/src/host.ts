@@ -2986,7 +2986,18 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
         }
         const parsedArgs = parseWorkflowCommandArgs(spec, args);
         if (!parsedArgs.ok) { ctx.ui.notify(parsedArgs.message, "warning"); return; }
-        const result = await workflowTool.execute(`command-${spec.name}`, { name: spec.name, scriptPath, args: parsedArgs.args }, undefined, undefined, ctx);
+        // A rejected launch has to explain itself where the user typed the
+        // command. Without this catch the handler's rejection escapes into Pi's
+        // command dispatcher, and a script that violates a launch rule (an
+        // unknown model, a top-level declaration that collides with the stage
+        // library) looks like nothing happened at all.
+        let result: Awaited<ReturnType<typeof workflowTool.execute>>;
+        try {
+          result = await workflowTool.execute(`command-${spec.name}`, { name: spec.name, scriptPath, args: parsedArgs.args }, undefined, undefined, ctx);
+        } catch (error) {
+          ctx.ui.notify(`/${spec.name} could not start: ${errorText(error)}`, "error");
+          return;
+        }
         const details = result.details as { runId?: string } | undefined;
         ctx.ui.notify(`Started workflow ${spec.name}${details?.runId ? ` (${details.runId})` : ""}. Control it with /workflow.`, "info");
       },

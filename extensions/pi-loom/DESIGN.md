@@ -37,7 +37,7 @@ take upstream fixes.
 
 | Doctrine | Status | Notes |
 |---|---|---|
-| 01 extension-first core | follows | `pi-loom` = engine (mechanism). `pi-loom-builtins` (stages, roles, shipped workflows) and `pi-loom-router` (tool gate, picker) are policy and use only the public API. If a builtin needs a private hook, the API grows. |
+| 01 extension-first core | partial | `pi-loom` = engine (mechanism). `pi-loom-builtins` (stages, roles, shipped workflows) and `pi-loom-router` (tool gate, picker) are policy and use only the public API. If a builtin needs a private hook, the API grows. **Known divergence since P4a:** the stage library's *content* (the `plan` and `review` prompts) ships inside the engine at `src/stages.ts`, because the registry accepts host-side functions over RPC and has no surface yet for extension-supplied sandbox source. The divergence closes when `pi-loom-builtins` exists and that surface is the thing it registers through.
 | 02 snapshot in, actions out | follows | Workflow scripts receive immutable `args` + prior artifacts and return values; they never touch host state. Every `agent(...)`/`human.*` dispatch runs under the existing budget + timeout watchdog. Named exception: `withWorktree(name, cb)` grants real filesystem writes inside an isolated worktree — the worktree *is* the guard. |
 | 03 daemon + thin client | diverges | Runs are session-scoped child processes, not a daemon. Accepted because a run that outlives its session has no viewer to report to today. Revisit if cross-session run supervision is wanted (see Deferred). |
 | 04 declarative front, idempotent executor | partial | Nix declares the *stack* (which extensions compose `loom`) and system-level workflow placement. Workflow control flow stays in JS. Nix-declared workflows deferred until the stage library is stable. |
@@ -73,7 +73,8 @@ extensions/
                          human.ask, human.edit, human.review, workflow
       agent-execution.ts sub-agent sessions, outputSchema, model selection
       artifacts.ts       NEW — typed run artifacts (plan, diff, verdict)
-      schema.ts          NEW — JSON-Schema arg validation + generated usage
+      stages.ts          stage library source, appended to every workflow body
+      workflow-commands.ts  command.json meaning + discovery (was: schema.ts)
       registry.ts        extension-registered functions, stages, roles
       persistence.ts     run store, resume, retry
       budget.ts          watchdog: tokens, cost, duration, agent launches
@@ -230,6 +231,40 @@ workflows is auto-trusted. Registration is inert — discovery reads JSON and
 never executes the script — so the remaining requirement is that a human types
 the command.
 
+**The stage library is source, not a module.** A stage is a reviewed, reusable
+workflow step: it takes an input record, runs one agent under a fixed output
+contract, and returns a typed artifact, so `/build`, `/quick` and everything
+after them share one planning prompt and one review contract instead of each
+carrying a copy that drifts. The delivery mechanism is forced by the sandbox: a
+workflow body runs inside `vm.createContext` with no module loader — no
+`import`, no `require`, no filesystem — so shared code cannot be imported, only
+injected. `runWorkflow` therefore appends `src/stages.ts`'s source to every body
+before instrumentation, and everything in that source is a **function
+declaration**.
+
+Two consequences are load-bearing. Function declarations hoist, so
+`stage("plan", { ... })` is callable from the script's first line although the
+definitions sit after the author's `return`; a `const` there would spend the
+whole run in its temporal dead zone. And appending rather than prepending keeps
+the author's byte offsets unchanged — `instrumentWorkflow` turns each
+`agent(...)` call's start/end offsets into that agent's call-site identity, which
+retry and resume match on, so editing the library must not renumber user code.
+
+The library is engine code and is deliberately not preflighted against the
+caller's capabilities, which is why no stage hardcodes a model or a role: both
+come from the caller, whose script *is* preflighted. The one thing the author
+gives up is the name: a top-level `stage` (or `__stage*`) declaration is
+rejected at launch by `stageLibraryConflict` in `src/validation.ts`, because the
+concatenated source would otherwise be a `SyntaxError` raised inside a child
+process, or worse, a silent override of the author's own function. Nested
+declarations are untouched — those only shadow within their own scope.
+
+`stage("review", ...)` returns the same `{ verdict, note }` shape as
+`human.review`, with the same fixed `approve` / `changes` / `reject` vocabulary.
+That is not a coincidence: it lets a workflow switch on `.verdict` without
+knowing whether a model or a person judged the work, so swapping automated
+review for human review is a one-line change.
+
 ## Extension surface contract
 
 **Read path.** A workflow script receives a frozen `args` object (validated
@@ -324,7 +359,22 @@ apart within one loop iteration.
 - **P4 — stage library + `/build` + `/quick`.** *Accept: `/build "<task>"`
       emits a plan artifact, an exec diff, and a review verdict keyed per
       plan item; `/quick "<task>"` completes a one-line change with a single
-      agent and no review stage.*
+      agent and no review stage.* Split in three because the library is the
+      mechanism and the two commands are its first two consumers; landing the
+      commands first would bake their prompts into their own scripts, which is
+      the copy-paste drift the library exists to prevent.
+  - **P4a — stage library.** `stage(name, input)` reaching every workflow
+      body without an import, plus the `plan` and `review` stages. *Accept:
+      a workflow calls a stage with no import; an unknown stage name and
+      invalid stage input fail inside the sandbox before any agent launches;
+      a script whose own top-level declaration collides with the library is
+      refused at launch with a message naming the collision.*
+  - **P4b — `exec` stage + `/build`.** The stage that writes code inside a
+      worktree, and the workflow that chains plan → exec → review. *Accept:
+      `/build "<task>"` emits a plan artifact, an exec diff, and a review
+      verdict keyed per plan item.*
+  - **P4c — `/quick`.** *Accept: `/quick "<task>"` completes a one-line
+      change with a single agent, no plan stage and no review stage.*
 - **P5 — router + picker.** *Accept: in `loom`, the main agent has no
       edit/write/mutating-bash tool; startup shows the workflow picker; Esc
       drops to chat; `pi` sessions are unaffected.*

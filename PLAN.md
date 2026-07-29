@@ -18,55 +18,63 @@ marker into prose here — the count would lie.
 
 ## Handoff
 
-Last touched: P3b landed and is ticked. The next open item is P4 (stage library
-+ `/build` + `/quick`).
+Last touched: P4a landed and is ticked. P4 was split three ways first (P4a
+library, P4b `exec` stage + `/build`, P4c `/quick`); the next open item is P4b.
 
-What landed. A third workflow-command scan root: `<cwd>/.pi/workflows/<name>/`,
-so a repo carries its own slash commands. Discovery moved out of `host.ts` into
-`src/workflow-commands.ts` (`workflowCommandRoots`, `discoverWorkflowCommands`,
-`workflowCommandListing`), which now owns both what a spec means and which
-specs exist. New `/workflows` command (plural; `/workflow` singular still
-controls runs) prints every scope with its root path, the commands under it,
-any shadowed specs and any skipped ones, as a display-only session message
-(`present`, `triggerTurn: false`, customType `workflow-list`).
+What landed. A stage library: `stage(name, input)` is callable from any workflow
+body with no import, because `runWorkflow` appends `src/stages.ts`'s source to
+every body before instrumentation. Two stages ship, `plan` (task to numbered
+plan items) and `review` (verdict plus note). A top-level `stage` or `__stage*`
+declaration in an author's script is now rejected at launch by
+`stageLibraryConflict` in `src/validation.ts`. The workflow slash-command handler
+in `host.ts` now catches launch failures and notifies them as errors instead of
+letting the rejection escape into Pi's command dispatcher.
 
 Gates actually run: `nix build .#pi-loom-cli` (pass),
-`nix build .#checks.x86_64-linux.pi-loom-project-workflows -L` (pass, prints
-`project-workflows: a .pi/workflows command.json reached the palette and ran,
-/workflows named every scope, a project spec could not shadow user scope, and a
-malformed project spec was skipped without aborting load`), `nix flake check -L`
-(pass, all checks, biome unchanged at 1 pre-existing warning + 5 infos).
+`nix build .#checks.x86_64-linux.pi-loom-stages -L` (pass, prints `stages: the
+appended library reached the sandbox, an unknown stage named the available ones,
+missing and out-of-range input were rejected before any agent launch, and a
+colliding top-level declaration stopped the launch with a named error`),
+`nix flake check -L` (pass, all 14 checks, biome unchanged at 1 pre-existing
+warning + 5 infos).
 
 Design decisions worth not re-litigating:
 
-- **Precedence is first-root-wins, builtin then user then project.** A project
-  cannot shadow a name the user already has, so cloning a repo cannot redefine
-  `/ship`. Deliberate override stays deferred with installable packs. The
-  shadowed spec is reported by `/workflows`, not dropped silently.
-- **Project specs fail soft, operator specs fail loud.** A malformed
-  `command.json` in a builtin or user root still throws at load; one in the
-  project root is collected into `discovery.problems` and listed as skipped, so
-  a foreign repo cannot abort extension load.
-- **The project root is `process.cwd()`.** Command registration happens at
-  extension load, before any `ctx` with a `cwd` exists, and Pi resolves the
-  project from the directory it was started in.
-- **Project-scope commands refuse to run when `ctx.isProjectTrusted()` is
-  false**, but Pi core does not count `.pi/workflows` among the resources that
-  trigger a trust prompt (`TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES` is
-  settings.json, extensions, skills, prompts, themes, SYSTEM.md,
-  APPEND_SYSTEM.md), so a repo whose only `.pi` content is workflows is
-  auto-trusted. Discovery never executes a script, so the remaining gate is
-  that a human types the command. Recorded in DESIGN.md as residual exposure.
+- **The library is appended, never prepended.** `instrumentWorkflow` turns each
+  `agent(...)` call's start/end byte offsets into that agent's call-site
+  identity, and retry/resume match on it. Prepending would renumber every user
+  call site whenever the library changed. Verified: the same script instrumented
+  with and without the library yields the identical call site.
+- **Function declarations only, inside the library.** They hoist, so `stage(...)`
+  works from line 1 even though the definitions sit after the author's `return`.
+  A `const` or `var` there is in its temporal dead zone (or `undefined`) for the
+  whole run. This is why the stage prompts are built inside each function rather
+  than in a shared top-level constant.
+- **The library is not preflighted against the caller's capabilities.** It is
+  engine code, reviewed here. That is exactly why no stage hardcodes a model or
+  role: those come from the caller, whose script *is* preflighted.
+- **`stage("review")` returns `human.review`'s shape** (`{verdict, note}`, same
+  approve/changes/reject vocabulary), so a workflow can switch on `.verdict`
+  without knowing whether a model or a person judged the work.
+- **Doctrine 01 is now `partial`, recorded in DESIGN.md.** Stage *content* is
+  policy living in the engine because the registry only accepts host-side
+  functions over RPC, with no surface for extension-supplied sandbox source. It
+  closes when `pi-loom-builtins` exists.
 
 Traps for the next step:
 
 - **`extensions/pi-loom/skills/pi-extensible-workflows/SKILL.md` is still
   modified in the working tree and still deliberately uncommitted.** Same state
-  as the previous handoff described: `HEAD` content is byte-identical to the
+  as the previous three handoffs: `HEAD` content is byte-identical to the
   vendored upstream copy, the working-tree content is a rewrite by something
-  outside these steps (mtime is newer than every commit here). It was left
-  untouched again rather than reverted or swept into the commit. Decide what it
-  is before committing it.
+  outside these steps. Left untouched again; commits here stage explicit paths,
+  never `-A`. Decide what it is before committing it. It also means the
+  agent-facing docs for `stage(...)` were *not* written — that file is where
+  they belong.
+- **Stages are invisible to the model right now.** `workflow_catalog` lists
+  registered functions, not stages, and nothing tells an agent that `stage(...)`
+  exists. P4b should either extend the catalog or document it in the skill file
+  above, once that file's ownership is settled.
 - **The flake only sees git-tracked files.** A new source or check script that
   is not `git add`ed does not exist inside `nix build`. Stage before building.
 - **`result` is a relative symlink.** The check harnesses `cd` into a temp
@@ -76,8 +84,12 @@ Traps for the next step:
   sandbox the agent dir defaults to `$HOME/.pi/agent`, but running a check
   script from a Pi session inherits `PI_CODING_AGENT_DIR` and the user-scope
   scan finds the real agent dir instead of the throwaway one.
-  `loom-workflow-args.sh` and `loom-project-workflows.sh` export it explicitly;
-  the three older harnesses do not and will mislead if run by hand.
+  `loom-workflow-args.sh`, `loom-project-workflows.sh` and `loom-stages.sh`
+  export it explicitly; the three older harnesses do not.
+- **Offline harnesses must never reach `agent()`.** There is no network and no
+  real key in the sandbox, so `loom-stages.sh` only exercises the paths that
+  fail *before* an agent launches. Any P4b check of `exec` needs the same
+  discipline: assert the wiring, not a model's output.
 - **Never `head -1` a presented message.** Usage text and the `/workflows`
   listing are multi-line, so harnesses serialise with `jq -c` before decoding.
 - **`inputsSettled()` gates on four parking lots** (checkpoints, questions,
@@ -95,7 +107,7 @@ Traps for the next step:
   before. Rationale is in DESIGN.md under Architecture.
 - The ref tree is no longer a package and is excluded from `biome.jsonc`;
   keep it that way, it is only a diff base for upstream fixes.
-- **Two facts all five harnesses depend on.** Pi's agent dir defaults to
+- **Two facts all six harnesses depend on.** Pi's agent dir defaults to
   `$HOME/.pi/agent`, not the XDG data path the installed system uses; and an
   RPC `prompt` is refused before command dispatch unless a model resolves
   with a key, which is why the scripts pass throwaway
@@ -132,7 +144,12 @@ Traps for the next step:
       scoped discovery in `src/workflow-commands.ts`, a `/workflows` listing
       naming every scope and root, `checks.pi-loom-project-workflows` proving a
       project spec runs, cannot shadow user scope, and cannot abort load.
-- [ ] **P4 — stage library + `/build` + `/quick`.**
+- [x] **P4a — stage library.** `stage(name, input)` appended to every workflow
+      body as hoisted function declarations (`src/stages.ts`), the `plan` and
+      `review` stages, a launch-time guard on colliding top-level declarations,
+      and `checks.pi-loom-stages` proving all three offline.
+- [ ] **P4b — `exec` stage + `/build`.**
+- [ ] **P4c — `/quick`.**
 - [ ] **P5 — router + picker.**
 - [ ] **P6 — `/wf-new` meta-workflow.**
 - [ ] **P7 — ecosystem fill.** `/explore`, `/debug`, `/review`; migrate the

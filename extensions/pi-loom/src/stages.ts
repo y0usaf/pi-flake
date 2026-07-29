@@ -1,0 +1,206 @@
+// Stage library (pi-loom DESIGN.md, P4a).
+//
+// A stage is a reviewed, reusable step of a workflow: it takes an input record,
+// runs one agent under a fixed output contract, and returns a typed artifact.
+// The point is that `/build`, `/quick` and every later workflow share one
+// planning prompt and one review contract instead of each carrying a private
+// copy that drifts.
+//
+// Delivery is unusual and worth reading once. A workflow script runs inside a
+// `vm` sandbox with no module loader: no `import`, no `require`, no filesystem.
+// So a shared library cannot be something a script imports; it can only arrive
+// as source. The engine appends this source to every workflow body, and every
+// binding in it is a *function declaration*:
+//
+//   - Function declarations hoist to the top of the enclosing function scope,
+//     so `stage("plan", ...)` is callable from the script's first line even
+//     though the definition sits after the author's `return`. A `const` here
+//     would be in its temporal dead zone for the whole run and throw.
+//   - Appending (rather than prepending) keeps the author's byte offsets
+//     unchanged. `instrumentWorkflow` turns each `agent(...)` call's start/end
+//     offsets into that agent's call-site identity, which retry and resume
+//     match on, so a library edit must not renumber user code.
+//
+// The library is engine code, not user code: it is reviewed here and at build
+// time, and it is deliberately not re-validated against the caller's model and
+// role capabilities at launch. That is why no stage hardcodes a model or a
+// role — both are passed in by the caller, whose script *is* preflighted.
+import type { JsonSchema } from "./types.js";
+
+/** The single global a workflow script calls. Reserved: a script may not declare it. */
+export const STAGE_ENTRY_POINT = "stage";
+/** Internal helpers in the appended source share this prefix; also reserved. */
+export const STAGE_INTERNAL_PREFIX = "__stage";
+
+export interface StageDefinition {
+  name: string;
+  description: string;
+  required: readonly string[];
+  optional: readonly string[];
+  /** Shape the stage's agent must return, and therefore what callers can rely on. */
+  output: JsonSchema;
+}
+
+const PLAN_OUTPUT: JsonSchema = {
+  type: "object",
+  properties: {
+    summary: { type: "string", description: "One sentence naming the change as a whole" },
+    items: {
+      type: "array",
+      minItems: 1,
+      description: "Independently implementable, independently reviewable units of work",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "Short kebab-case slug, unique within the plan" },
+          title: { type: "string", description: "Imperative one-line summary" },
+          detail: { type: "string", description: "What to change, and how to tell it worked" },
+          files: { type: "array", items: { type: "string" }, description: "Paths the item is expected to touch" },
+        },
+        required: ["id", "title", "detail"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["summary", "items"],
+  additionalProperties: false,
+};
+
+// Same vocabulary as HUMAN_REVIEW_VERDICTS on purpose: a workflow can switch on
+// `.verdict` without knowing whether a model or a person produced it, which is
+// what lets /build fall back to human.review for the same decision.
+const REVIEW_OUTPUT: JsonSchema = {
+  type: "object",
+  properties: {
+    verdict: { type: "string", enum: ["approve", "changes", "reject"], description: "approve = done, changes = nearly done, reject = wrong or not done" },
+    note: { type: "string", description: "Why; for changes/reject this is the only channel that says what to fix" },
+  },
+  required: ["verdict", "note"],
+  additionalProperties: false,
+};
+
+/** Every stage the appended source defines. Order is the order `stage()` reports. */
+export const STAGE_LIBRARY: readonly StageDefinition[] = Object.freeze([
+  Object.freeze({
+    name: "plan",
+    description: "Turn a task into a numbered plan whose items can be implemented and reviewed one at a time.",
+    required: ["task"],
+    optional: ["context", "maxItems", "model", "role", "label"],
+    output: PLAN_OUTPUT,
+  }),
+  Object.freeze({
+    name: "review",
+    description: "Judge one plan item's result and return a fixed verdict plus a note.",
+    required: ["item", "result"],
+    optional: ["criteria", "model", "role", "label"],
+    output: REVIEW_OUTPUT,
+  }),
+]) as readonly StageDefinition[];
+
+export const STAGE_NAMES: readonly string[] = Object.freeze(STAGE_LIBRARY.map((stage) => stage.name));
+
+// Built once: the names appear in three error messages inside the sandbox, and
+// a stale hand-written list is exactly the drift this module exists to remove.
+const STAGE_NAME_LIST = STAGE_NAMES.join(", ");
+
+const STAGE_LIBRARY_SOURCE = `
+// ---------------------------------------------------------------------------
+// pi-loom stage library. Appended by the engine (src/stages.ts); not authored
+// by this workflow. Function declarations only: they hoist, so the script above
+// can call stage(...) before this point in the source.
+// ---------------------------------------------------------------------------
+async function stage(name, input) {
+  if (typeof name !== "string" || !name.trim()) throw new Error("stage(name, input) requires a stage name; available stages: ${STAGE_NAME_LIST}");
+  var given = input === undefined || input === null ? {} : input;
+  if (typeof given !== "object" || Array.isArray(given)) throw new Error("stage " + name + ": input must be an object");
+  if (name === "plan") return await __stagePlan(given);
+  if (name === "review") return await __stageReview(given);
+  throw new Error("Unknown stage: " + name + "; available stages: ${STAGE_NAME_LIST}");
+}
+function __stageText(input, stageName, key, required) {
+  var value = input[key];
+  if (value === undefined || value === null || value === "") {
+    if (required) throw new Error("stage " + stageName + ": " + key + " is required");
+    return "";
+  }
+  if (typeof value === "string") return value;
+  if (required || typeof value === "object") return JSON.stringify(value, null, 2);
+  throw new Error("stage " + stageName + ": " + key + " must be a string");
+}
+// Model and role are caller-supplied and omitted when absent: an option that is
+// present but empty would be validated as a real model name and fail the launch.
+function __stageAgentOptions(input, stageName, outputSchema) {
+  var options = { outputSchema: outputSchema };
+  var label = __stageText(input, stageName, "label", false);
+  options.label = label ? label : stageName;
+  var model = __stageText(input, stageName, "model", false);
+  if (model) options.model = model;
+  var role = __stageText(input, stageName, "role", false);
+  if (role) options.role = role;
+  return options;
+}
+async function __stagePlan(input) {
+  var task = __stageText(input, "plan", "task", true);
+  var context = __stageText(input, "plan", "context", false);
+  var maxItems = input.maxItems === undefined ? 8 : input.maxItems;
+  if (!Number.isInteger(maxItems) || maxItems < 1 || maxItems > 20) throw new Error("stage plan: maxItems must be an integer between 1 and 20");
+  var template = [
+    "You are planning a code change. Produce a plan; implement nothing.",
+    "",
+    "Task:",
+    "{task}",
+    "",
+    "Repository context (may be empty):",
+    "{context}",
+    "",
+    "Rules:",
+    "- At most {maxItems} items, ordered so each one can land on its own.",
+    "- Each item must be independently implementable and independently reviewable.",
+    "- id is a short kebab-case slug, unique within the plan.",
+    "- detail says what to change and how to tell it worked.",
+    "- Read whatever you need, but edit no files.",
+  ].join("\\n");
+  return await agent(prompt(template, { task: task, context: context, maxItems: maxItems }), __stageAgentOptions(input, "plan", ${JSON.stringify(PLAN_OUTPUT)}));
+}
+async function __stageReview(input) {
+  var item = __stageText(input, "review", "item", true);
+  var result = __stageText(input, "review", "result", true);
+  var criteria = __stageText(input, "review", "criteria", false);
+  var template = [
+    "You are reviewing one item of a plan that another agent implemented.",
+    "",
+    "Plan item:",
+    "{item}",
+    "",
+    "What the implementer produced:",
+    "{result}",
+    "",
+    "Acceptance criteria (may be empty; fall back to the plan item):",
+    "{criteria}",
+    "",
+    "Verify before judging: read the files the item claims to touch.",
+    "Return exactly one verdict:",
+    "- approve: the item is done and correct.",
+    "- changes: the item is nearly done; the note says precisely what to change.",
+    "- reject: the item was not done, or the approach is wrong.",
+    "The note is the only channel by which changes and reject explain themselves.",
+  ].join("\\n");
+  return await agent(prompt(template, { item: item, result: result, criteria: criteria }), __stageAgentOptions(input, "review", ${JSON.stringify(REVIEW_OUTPUT)}));
+}
+`;
+
+/** The JavaScript the engine appends to every workflow body. */
+export function stageLibrarySource(): string {
+  return STAGE_LIBRARY_SOURCE;
+}
+
+/**
+ * Append the stage library to an authored workflow body.
+ *
+ * After, never before: prepending would shift every `agent(...)` call-site
+ * offset in the author's code, and those offsets are the identities retry and
+ * resume match runs against.
+ */
+export function withStageLibrary(script: string): string {
+  return `${script}\n${STAGE_LIBRARY_SOURCE}`;
+}
