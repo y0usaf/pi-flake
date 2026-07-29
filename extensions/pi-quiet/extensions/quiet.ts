@@ -5,8 +5,10 @@
  * - Working indicator: a face that blinks while pi streams.
  * - Hidden-thinking label: random flavor per session.
  * - Footer: pi's default (model, tokens, cost — already minimal enough).
- * - Tool rows: each builtin tool call renders as `face name arg`; result
+ * - Tool rows: builtin tool calls render as `face name arg`; result
  *   rendering is inherited from the builtins (diffs, highlighting, ctrl+o).
+ *   read/edit are left alone: pi-hashline registers its own read/edit, and
+ *   two extensions claiming one tool name is a hard load error.
  * - Editor: face embedded in the top border, colored by the live editor
  *   border color (which pi drives from the thinking level); bottom border
  *   removed.
@@ -18,11 +20,9 @@
 
 import {
 	createBashTool,
-	createEditTool,
 	createFindTool,
 	createGrepTool,
 	createLsTool,
-	createReadTool,
 	createWriteTool,
 	CustomEditor,
 	type ExtensionAPI,
@@ -39,11 +39,10 @@ const tilde = (path?: string) => {
 	return p.startsWith(homedir()) ? `~${p.slice(homedir().length)}` : p;
 };
 
-// face + how to summarize the call args, per builtin tool
+// face + how to summarize the call args, per builtin tool.
+// read and edit are absent on purpose: pi-hashline owns those names.
 const TOOL_ROWS: Array<[name: string, face: string, arg: (a: Record<string, any>) => string]> = [
-	["read", "(o_o)", (a) => tilde(a.path)],
 	["bash", "(>_o)", (a) => `$ ${a.command ?? "..."}`],
-	["edit", "(._.)", (a) => tilde(a.path)],
 	["write", "(^-^)", (a) => tilde(a.path)],
 	["grep", "(o_O)", (a) => `/${a.pattern ?? ""}/ ${tilde(a.path)}`],
 	["find", "(@_@)", (a) => `${a.pattern ?? ""} ${tilde(a.path)}`],
@@ -52,9 +51,7 @@ const TOOL_ROWS: Array<[name: string, face: string, arg: (a: Record<string, any>
 
 function makeTools(cwd: string) {
 	return {
-		read: createReadTool(cwd),
 		bash: createBashTool(cwd),
-		edit: createEditTool(cwd),
 		write: createWriteTool(cwd),
 		grep: createGrepTool(cwd),
 		find: createFindTool(cwd),

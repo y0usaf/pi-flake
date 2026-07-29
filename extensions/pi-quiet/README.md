@@ -4,9 +4,10 @@ Minimalist chrome, emoticon soul. The logo header is gone; every surface
 that remains carries a small ASCII face:
 
 - **Streaming** → a blinking face: `(o_o)` … `(-_-)`
-- **Tool rows** → `(o_o) read ~/file.ts`, `(>_o) bash $ make`,
-  `(._.) edit`, `(^-^) write`, `(o_O) grep`, `(@_@) find`, `(-_-) ls`.
-  Results keep pi's builtin rendering: diffs, highlighting, ctrl+o.
+- **Tool rows** → `(>_o) bash $ make`, `(^-^) write`, `(o_O) grep`,
+  `(@_@) find`, `(-_-) ls`. Results keep pi's builtin rendering: diffs,
+  highlighting, ctrl+o. read/edit are untouched — pi-hashline owns those
+  tool names, and tool registration is exclusive per name.
 - **Editor** → `(^-^) ─────` as the top border, bottom border gone. The
   face wears the editor border color, which pi drives from the thinking
   level — the smiley doubles as your thinking indicator.
