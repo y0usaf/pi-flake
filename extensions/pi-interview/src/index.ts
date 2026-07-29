@@ -252,7 +252,9 @@ export default function piInterview(pi: ExtensionAPI): void {
 		if (questions.length === 0) return;
 
 		ctx.ui.notify("Interview was interrupted by a restart — finishing it now", "info");
-		const result = await runQuestionnaire(ctx, questions);
+		// Overlay only here: this runs from session_start, where pi's remaining
+		// startup work clears the editor container and would evict an inline one.
+		const result = await runQuestionnaire(ctx, questions, undefined, { overlay: true });
 		if (result.cancelled || result.answers.length === 0) return;
 		pi.sendMessage(
 			{
