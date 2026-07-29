@@ -8,6 +8,7 @@ import type { AgentAttempt } from "./agent-execution.js";
 import type { AgentIdentity, AgentAttemptSummary, JsonValue, ShellIdentity, ShellOptions, ShellResult, WorkflowAgentSessionReference, WorkflowBridge, WorkflowErrorCode, WorkflowExecution } from "./types.js";
 import { WorkflowError } from "./types.js";
 import { asWorkflowError, errorText, fail, isWorkflowAuthored, jsonValue, markWorkflowAuthored, object, positiveInteger } from "./utils.js";
+import { withStageLibrary } from "./stages.js";
 import { instrumentWorkflow, validateAgentOptions, validateShellCommand, validateShellOptions } from "./validation.js";
 
 export const RPC_LIMIT_BYTES = 10 * 1024 * 1024;
@@ -403,7 +404,11 @@ function workflowErrorFromWorker(error: WorkerErrorShape): WorkflowError {
 }
 export function runWorkflow(script: string, args: JsonValue = null, bridge: WorkflowBridge = {}, signal?: AbortSignal): WorkflowExecution {
   encoded(args);
-  const config = JSON.stringify({ script: instrumentWorkflow(script), args: structuredClone(args), functions: bridge.functions ?? {} });
+  // The stage library is appended to every body, authored or resumed, so a run
+  // that pauses inside stage("plan", ...) resumes with the same definitions.
+  // Appending (not prepending) leaves the author's agent() call-site offsets
+  // untouched, which is what retry and resume match on. See src/stages.ts.
+  const config = JSON.stringify({ script: instrumentWorkflow(withStageLibrary(script)), args: structuredClone(args), functions: bridge.functions ?? {} });
   const childDir = realpathSync(mkdtempSync(join(tmpdir(), "pi-wf-")));
   const childFile = join(childDir, "child.cjs");
   writeFileSync(childFile, childSource);

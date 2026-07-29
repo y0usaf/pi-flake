@@ -471,6 +471,19 @@
           touch $out
         '';
 
+        # P4a acceptance: the stage library. A workflow script runs in a vm
+        # sandbox with no module loader, so shared steps arrive as source the
+        # engine appends to every body. This proves `stage(name, input)` is
+        # callable without importing anything, that an unknown name and bad
+        # input are rejected in the sandbox before any agent launch, and that a
+        # script declaring its own top-level `stage` is refused at launch.
+        pi-loom-stages = pkgs.runCommand "pi-loom-stages" {
+          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.gnused pkgs.coreutils];
+        } ''
+          bash ${./nix/checks/loom-stages.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom
+          touch $out
+        '';
+
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;
