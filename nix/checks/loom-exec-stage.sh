@@ -138,7 +138,7 @@ run_probe execinput
 field() { jq -r ".$1 // \"\"" "$work/execinput.json"; }
 
 case "$(field unknown)" in
-  *"available stages: plan, exec, review, quick"*) ;;
+  *"available stages: plan, exec, review, quick, scaffold"*) ;;
   *) fail_with "exec is missing from the available-stage list (got: '$(field unknown)')" ;;
 esac
 
