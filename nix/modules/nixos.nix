@@ -76,6 +76,7 @@ in {
       minimal = mkEnableOption "pi-minimal compact rendering and borderless editor extension";
       interview = mkEnableOption "pi-interview ask-user questionnaire and auto-answer extension";
       "tool-management" = mkEnableOption "pi-tool-management persistent disabled-tools UI extension";
+      "extension-management" = mkEnableOption "pi-extension-management persistent disabled-extensions UI extension";
       webfetch = mkEnableOption "pi-webfetch extension";
       hashline = mkEnableOption "pi-hashline v3 read/edit tool override";
       advisor = mkEnableOption "pi-advisor strategic advisor-model extension";

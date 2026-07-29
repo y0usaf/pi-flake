@@ -34,6 +34,10 @@
     stage = "active";
     source = "subflake";
   };
+  extension-management = {
+    stage = "active";
+    source = "subflake";
+  };
   webfetch = {
     stage = "active";
     source = "subflake";
