@@ -287,20 +287,16 @@
             };
           };
 
-        # pi-loom — workflow engine. Fork of pi-extensible-workflows 3.4.2
-        # (MIT); the pristine upstream copy stays at
-        # @extensions/vekexasia_pi-extensible-workflows/ as a reference tree
-        # (diff base for cherry-picking upstream fixes), and is not packaged.
+        # Vendored from @extensions/vekexasia_pi-extensible-workflows/ (MIT).
         # Pi loads ./src/index.ts directly; dist is shipped for the exports map;
         # production node_modules provide the runtime deps (acorn, minimatch).
-        # Design: extensions/pi-loom/DESIGN.md
-        pi-loom = let
-          loomPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-loom/package.json);
+        "pi-extensible-workflows" = let
+          workflowsPackageJson = builtins.fromJSON (builtins.readFile ./extensions/vekexasia_pi-extensible-workflows/package.json);
         in
           pkgs.buildNpmPackage {
-            pname = "pi-loom";
-            version = loomPackageJson.version;
-            src = lib.cleanSource ./extensions/pi-loom;
+            pname = "pi-extensible-workflows";
+            version = workflowsPackageJson.version;
+            src = lib.cleanSource ./extensions/vekexasia_pi-extensible-workflows;
 
             npmBuildScript = "build";
             npmDepsFetcherVersion = 2;
@@ -323,50 +319,11 @@
               runHook postInstall
             '';
 
-            passthru.packageName = loomPackageJson.name;
+            passthru.packageName = workflowsPackageJson.name;
 
             meta = with lib; {
-              description = loomPackageJson.description;
-              homepage = loomPackageJson.homepage;
-              license = licenses.mit;
-              platforms = platforms.all;
-            };
-          };
-
-        # pi-loom-router — the policy gate of the loom stack. Removes edit and
-        # write from the chat agent's active tool set at session_start, in
-        # memory, never persisted, and classifies every bash invocation from a
-        # tool_call handler, so mutation happens inside workflow runs instead.
-        # Deliberately NOT in extensions/registry.nix: a registry entry
-        # would expose it as an extension flag and let it leak into anyone's
-        # plain `pi`. Pi loads ./src/index.ts directly; type-only imports mean
-        # there is nothing to build and no node_modules to ship.
-        # Design: extensions/pi-loom/DESIGN.md (Router gate)
-        pi-loom-router = let
-          routerPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-loom-router/package.json);
-        in
-          pkgs.stdenvNoCC.mkDerivation {
-            pname = "pi-loom-router";
-            version = routerPackageJson.version;
-            src = lib.cleanSource ./extensions/pi-loom-router;
-
-            dontBuild = true;
-
-            installPhase = ''
-              runHook preInstall
-
-              mkdir -p "$out"
-              cp package.json README.md "$out"/
-              cp -r src "$out"/
-
-              runHook postInstall
-            '';
-
-            passthru.packageName = routerPackageJson.name;
-
-            meta = with lib; {
-              description = routerPackageJson.description;
-              homepage = routerPackageJson.homepage;
+              description = workflowsPackageJson.description;
+              homepage = workflowsPackageJson.homepage;
               license = licenses.mit;
               platforms = platforms.all;
             };
@@ -378,37 +335,6 @@
           pi = self.packages.${system}.pi;
           extensions = self.lib.defaultExtensionPackagesFor system;
         };
-
-        # Workflow-first Pi ("loom"). Deliberately NOT a second pi binary:
-        # no extra piWithExtensions derivation, no renamed pi, no duplicate
-        # bundle — just argv plus one env var. `--no-extensions` discards the
-        # pi-full bundle so the loom stack is re-declared explicitly, which
-        # proves doctrine 06 (bare core must boot) at runtime.
-        # Design: extensions/pi-loom/DESIGN.md
-        pi-loom-cli = let
-          # P0 landed the engine fork, P5b-i the router. A pi-loom-builtins
-          # layer joins this stack later. See DESIGN.md roadmap.
-          loomStack = [
-            self.packages.${system}."pi-loom" # workflow engine
-            self.packages.${system}."pi-interview" # backs human.ask
-            self.packages.${system}."pi-aphrodite" # compression for long runs
-            self.packages.${system}."pi-hashline" # edit anchors for executor sub-agents
-            self.packages.${system}."pi-atelier" # status rail = live run progress
-            # Policy last on purpose: extensions load in argv order, so the
-            # router's session_start handler runs after every handler that could
-            # still be enabling tools.
-            self.packages.${system}."pi-loom-router" # chat agent cannot mutate
-          ];
-          # pi-tool-management is excluded on purpose: it persists a global
-          # disabled-tools list and would fight the router's in-memory gate.
-          extArgs = lib.concatMapStringsSep " " (ext: "-e ${ext}") loomStack;
-        in
-          pkgs.writeShellScriptBin "loom" ''
-            # Only pi-full's wrapper exports this; loom wraps plain pi, so it
-            # must export it itself or workflow child processes fail to spawn.
-            export PI_WORKFLOW_NODE_PATH="${pkgs.nodejs_22}/bin/node"
-            exec ${self.packages.${system}.pi}/bin/pi --no-extensions ${extArgs} "$@"
-          '';
 
         default = self.packages.${system}.pi;
       }
@@ -438,272 +364,7 @@
         pi-rtk-build = self.packages.${system}."pi-rtk";
         pi-rtk-test = piRtk.checks.${system}.test;
         pi-aphrodite-build = self.packages.${system}."pi-aphrodite";
-        pi-loom-build = self.packages.${system}."pi-loom";
-        pi-loom-cli-build = self.packages.${system}.pi-loom-cli;
-        pi-loom-router-build = self.packages.${system}.pi-loom-router;
-
-        # Build-only checks cannot see runtime wiring: pi-loom-cli-build proves
-        # the wrapper evaluates, this proves it boots. Runs `loom` headlessly in
-        # RPC mode with a throwaway HOME, asserts /workflow is registered, that
-        # only the wrapper's own -e extensions load, and that a probe workflow
-        # spawns a child process and returns (the PI_WORKFLOW_NODE_PATH path).
-        pi-loom-cli-smoke = pkgs.runCommand "pi-loom-cli-smoke" {
-          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.coreutils];
-        } ''
-          bash ${./nix/checks/loom-cli-smoke.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom
-          touch $out
-        '';
-
-        # P2a acceptance: human.ask is a DSL participant, so the only honest
-        # gate is a real round trip. Boots `loom` in RPC mode, where
-        # ctx.ui.select surfaces as an extension_ui_request line, answers it,
-        # and requires the suspended run to resume with the chosen value.
-        pi-loom-human-ask = pkgs.runCommand "pi-loom-human-ask" {
-          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.coreutils];
-        } ''
-          bash ${./nix/checks/loom-human-ask.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom
-          touch $out
-        '';
-
-        # P2b acceptance: same reasoning as P2a, one primitive along. RPC
-        # surfaces ctx.ui.editor as an extension_ui_request carrying the
-        # prefill, so the harness can answer three edits in one run -- saved
-        # with changes, saved byte-identical, and closed without saving -- and
-        # require the workflow to tell all three apart.
-        pi-loom-human-edit = pkgs.runCommand "pi-loom-human-edit" {
-          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.gnused pkgs.coreutils];
-        } ''
-          bash ${./nix/checks/loom-human-edit.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom
-          touch $out
-        '';
-
-        # P2c acceptance: the last human primitive, and the only one whose
-        # payload has to survive a stage boundary. The probe builds its second
-        # review's prompt out of the first review's note, so the harness reads
-        # the note back off the second picker -- proof the typed verdict's prose
-        # reached the next stage rather than just the run result.
-        pi-loom-human-review = pkgs.runCommand "pi-loom-human-review" {
-          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.gnused pkgs.coreutils];
-        } ''
-          bash ${./nix/checks/loom-human-review.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom
-          touch $out
-        '';
-
-        # P3a acceptance: workflow slash commands are declared by command.json
-        # alone, so the gate is a real dispatch. A probe command.json carrying an
-        # argsSchema proves the generated signature reaches the palette, that
-        # three different schema violations are each rejected with the generated
-        # usage and no run, and that defaults and text-scalar coercion reach the
-        # workflow child.
-        pi-loom-workflow-args = pkgs.runCommand "pi-loom-workflow-args" {
-          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.gnused pkgs.coreutils];
-        } ''
-          bash ${./nix/checks/loom-workflow-args.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom
-          touch $out
-        '';
-
-        # P3b acceptance: the other half of the declaration mechanism is where a
-        # command.json may live. A probe repo carrying `.pi/workflows/` proves a
-        # project-local spec reaches the palette and runs with nothing global
-        # edited, that `/workflows` names the scope and root of every command,
-        # that a project spec cannot shadow a user-scope command, and that a
-        # malformed project spec is skipped instead of aborting extension load.
-        pi-loom-project-workflows = pkgs.runCommand "pi-loom-project-workflows" {
-          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.gawk pkgs.coreutils];
-        } ''
-          bash ${./nix/checks/loom-project-workflows.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom
-          touch $out
-        '';
-
-        # P4a acceptance: the stage library. A workflow script runs in a vm
-        # sandbox with no module loader, so shared steps arrive as source the
-        # engine appends to every body. This proves `stage(name, input)` is
-        # callable without importing anything, that an unknown name and bad
-        # input are rejected in the sandbox before any agent launch, and that a
-        # script declaring its own top-level `stage` is refused at launch.
-        pi-loom-stages = pkgs.runCommand "pi-loom-stages" {
-          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.gnused pkgs.coreutils];
-        } ''
-          bash ${./nix/checks/loom-stages.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom
-          touch $out
-        '';
-
-        # P4b-i acceptance: the `exec` stage, which is the one that writes code.
-        # An offline sandbox cannot run the implementing agent, so this proves
-        # everything around it instead: exec is a stage with an enforced input
-        # contract, and it opens a populated git worktree on its own branch and
-        # reads that worktree's HEAD as the diff base *before* the agent is
-        # launched. Needs git: the probe repository and the worktree are real.
-        pi-loom-exec-stage = pkgs.runCommand "pi-loom-exec-stage" {
-          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.gnused pkgs.gawk pkgs.git pkgs.findutils pkgs.coreutils];
-        } ''
-          bash ${./nix/checks/loom-exec-stage.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom
-          touch $out
-        '';
-
-        # P4b-ii acceptance: the `/build` workflow. The shipped directory is
-        # copied into a throwaway agent dir's workflows root — the exact place
-        # the system flake installs it — so a broken command.json fails here
-        # rather than on the user's machine. The plan artifact, exec diff and
-        # review verdict need a real model, so what is provable offline is
-        # ordering: a task-less launch never becomes a run, and a launch with an
-        # unknown model dies in the `plan` phase with no item phase entered and
-        # no worktree opened, which a /build calling exec first could not do.
-        pi-loom-build-workflow = pkgs.runCommand "pi-loom-build-workflow" {
-          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.git pkgs.findutils pkgs.coreutils];
-        } ''
-          bash ${./nix/checks/loom-build-workflow.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom ${./workflows/build}
-          touch $out
-        '';
-
-        # P4c acceptance: the `/quick` workflow — one agent, no plan stage, no
-        # review stage, no worktree. The change itself needs a real model, so
-        # what is provable offline is everything around it: a task-less launch
-        # never becomes a run; a launch with an unknown model dies in the
-        # `quick` phase having entered no other, which a /quick that planned
-        # first could not do; no worktree is opened; and the pre-agent snapshot
-        # of the working tree wrote objects while leaving the probe repository's
-        # index and `git status` untouched. Needs git and diffutils: the probe
-        # repository is real and deliberately dirty.
-        pi-loom-quick-workflow = pkgs.runCommand "pi-loom-quick-workflow" {
-          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.git pkgs.findutils pkgs.coreutils pkgs.diffutils];
-        } ''
-          bash ${./nix/checks/loom-quick-workflow.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom ${./workflows/quick}
-          touch $out
-        '';
-
-        # P5a acceptance: the workflow launch boundary is not the main agent's
-        # live tool visibility. A probe extension narrows the session the way
-        # pi-loom-router does (edit/write/bash dropped at session_start); a
-        # workflow launched in that session must still record all three in its
-        # launch snapshot, and its sub-agent must reach model resolution rather
-        # than being refused as outside the launching session boundary.
-        pi-loom-tool-boundary = pkgs.runCommand "pi-loom-tool-boundary" {
-          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.findutils pkgs.coreutils];
-        } ''
-          bash ${./nix/checks/loom-tool-boundary.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom
-          touch $out
-        '';
-
-        # P5b-i acceptance: the router gate. Boots `loom` and plain `pi` headlessly
-        # with a witness extension appended through trailing argv and compares the
-        # two active tool sets: loom must hold neither edit nor write and must
-        # still hold read and bash, plain pi must hold all three. Also checks
-        # that pi-full bundles no copy of the router (the failure mode of adding it
-        # to extensions/registry.nix), and re-proves the P5a interlock with the
-        # real router in the stack rather than a stand-in.
-        pi-loom-router-gate = pkgs.runCommand "pi-loom-router-gate" {
-          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.findutils pkgs.coreutils];
-        } ''
-          bash ${./nix/checks/loom-router-gate.sh} \
-            ${self.packages.${system}.pi-loom-cli}/bin/loom \
-            ${self.packages.${system}.pi}/bin/pi \
-            ${self.packages.${system}.pi-full}
-          touch $out
-        '';
-
-        # P5b-ii acceptance: the read-only shell. `bash` is back on loom's chat
-        # agent, so the invocation is what gets judged now. Imports the real
-        # extension file out of the built package, hands it a stub ExtensionAPI,
-        # and drives the handlers it registered: the session_start swap must keep
-        # bash, read-only commands must run, and every mutating one must come
-        # back blocked with a reason naming /quick and /build. No pi and no model
-        # — a real tool_call needs an assistant message, so this proves the
-        # handler pi would call, while pi-loom-router-gate proves the extension
-        # loads in a real loom session.
-        pi-loom-router-shell = pkgs.runCommand "pi-loom-router-shell" {
-          nativeBuildInputs = [pkgs.bash pkgs.nodejs_22 pkgs.coreutils];
-        } ''
-          bash ${./nix/checks/loom-router-shell.sh} ${self.packages.${system}.pi-loom-router}
-          touch $out
-        '';
-
-        # P5c acceptance: the startup workflow picker. Same stub-ExtensionAPI
-        # shape as pi-loom-router-shell, because the assertion is again about
-        # the extension's own decisions: which commands out of pi.getCommands()
-        # are workflows, that Esc leaves the editor empty, that a choice lands as
-        # a prefilled `/name `, and that no dialog opens without workflows,
-        # outside tui mode, outside a startup, or over text the user already
-        # typed. The mode guard is the load-bearing one — ui.select blocks
-        # forever in RPC mode, so without it every other loom check here would
-        # hang instead of fail.
-        pi-loom-router-picker = pkgs.runCommand "pi-loom-router-picker" {
-          nativeBuildInputs = [pkgs.bash pkgs.nodejs_22 pkgs.coreutils];
-        } ''
-          bash ${./nix/checks/loom-router-picker.sh} ${self.packages.${system}.pi-loom-router}
-          touch $out
-        '';
-
-        # P6a acceptance: the `scaffold` stage, which writes a new workflow and
-        # then checks its own output. Two legs. The Node leg imports the built
-        # engine's src/stages.ts, concatenates the appended stage library the
-        # way the engine does and drives it with stub agent/shell/prompt
-        # globals: that is the only way to see what the stage does *after* the
-        # agent returns without paying for a model, and it is where the
-        # generated authoring contract is proved to carry one line per
-        # STAGE_LIBRARY entry rather than hand-written prose that rots. The loom
-        # leg re-makes the input-contract claim inside the real vm sandbox and
-        # proves a rejected call leaves no directory behind.
-        pi-loom-scaffold-stage = pkgs.runCommand "pi-loom-scaffold-stage" {
-          nativeBuildInputs = [pkgs.bash pkgs.nodejs_22 pkgs.jq pkgs.gnugrep pkgs.gnused pkgs.coreutils];
-        } ''
-          bash ${./nix/checks/loom-scaffold-stage.sh} \
-            ${self.packages.${system}.pi-loom-cli}/bin/loom \
-            ${self.packages.${system}.pi-loom}
-          touch $out
-        '';
-
-        # P6b acceptance: the `/wf-new` interview. The shipped directory is
-        # copied into a throwaway agent dir's workflows root, the exact place
-        # the system flake installs it. Two claims no build-only check can
-        # make: an unanswered launch parks in the `interview` phase with the
-        # question in its journal, `awaiting_input` read while pi is still
-        # alive because session_shutdown promotes it to `interrupted`; and
-        # answering all three questions resumes the run into
-        # stage("scaffold", ...), where the directory the stage creates before
-        # its agent — under the answered scope, not the stage's default — is
-        # filesystem proof that the answers became stage inputs. The scaffolded
-        # workflow itself needs a real model and is not in CI.
-        pi-loom-wf-new-workflow = pkgs.runCommand "pi-loom-wf-new-workflow" {
-          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.gnused pkgs.git pkgs.findutils pkgs.coreutils];
-        } ''
-          bash ${./nix/checks/loom-wf-new-workflow.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom ${./workflows/wf-new}
-          touch $out
-        '';
-
-        # P6c acceptance (first half): `dryRun({ directory })`, the sandbox
-        # capability that loads a workflow directory through the same
-        # discovery, spec validation, usage generation and argument parsing a
-        # slash command runs before a run exists. One leg, inside a real loom
-        # run: the dry-run path reaches src/validation.ts, which imports the
-        # pi-coding-agent peer dependency, so importing it into a bare node the
-        # way the stage checks do dies with ERR_MODULE_NOT_FOUND. Ten fixtures
-        # share the one run — a directory that registers, one that accepts any
-        # arguments, and six ways a scaffold would fail to register.
-        pi-loom-dry-run = pkgs.runCommand "pi-loom-dry-run" {
-          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.gnused pkgs.coreutils];
-        } ''
-          bash ${./nix/checks/loom-dry-run.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom
-          touch $out
-        '';
-
-        # P6c acceptance (second half): `/wf-new` dry-runs the directory it just
-        # scaffolded and only then commits it. Everything this phase adds
-        # happens after stage("scaffold", ...) returns, and that stage runs an
-        # agent, so the shipped wf-new.js is evaluated as the async function
-        # body it is, with stub host bridges and real git repositories: the
-        # claim under test is what git ends up containing. Four scenarios —
-        # verified then committed, a dry run that refuses (no git command runs
-        # at all), a directory that is not a repository, and a git-ignored
-        # path. Structural validity of the same script is already gated by
-        # pi-loom-wf-new-workflow, which launches it in a real loom.
-        pi-loom-wf-new-commit = pkgs.runCommand "pi-loom-wf-new-commit" {
-          nativeBuildInputs = [pkgs.bash pkgs.nodejs_22 pkgs.git pkgs.coreutils];
-        } ''
-          bash ${./nix/checks/loom-wf-new-commit.sh} ${./workflows/wf-new}
-          touch $out
-        '';
-
+        pi-extensible-workflows-build = self.packages.${system}."pi-extensible-workflows";
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;
@@ -836,7 +497,7 @@
         vcc = self.packages.${system}."pi-vcc";
         caveman = self.packages.${system}."pi-caveman";
         atelier = self.packages.${system}."pi-atelier";
-        loom = self.packages.${system}."pi-loom";
+        "extensible-workflows" = self.packages.${system}."pi-extensible-workflows";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.
@@ -922,8 +583,8 @@
           export PI_SKIP_VERSION_CHECK=1
           export PI_TELEMETRY=0
 
-          # Real node for pi-loom workflow child processes (bun binary cannot
-          # re-exec node flags; see extensions/pi-loom/src/agent-execution.ts).
+          # Real node for pi-extensible-workflows child processes (bun binary
+          # cannot re-exec node flags; see patches in extensions/vekexasia_pi-extensible-workflows).
           export PI_WORKFLOW_NODE_PATH="${pkgs.nodejs_22}/bin/node"
 
           if [ -n "''${PI_DEFAULT_PACKAGES:-}" ]; then

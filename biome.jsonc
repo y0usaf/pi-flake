@@ -17,10 +17,7 @@
       "extensions/**/*.cjs",
       "extensions/**/*.json",
       "extensions/**/*.jsonc",
-      "!extensions/**/node_modules",
-      // Pinned pristine upstream reference tree: follows its own upstream
-      // conventions and is never edited here, so our lint rules do not apply.
-      "!extensions/vekexasia_pi-extensible-workflows"
+      "!extensions/**/node_modules"
     ]
   },
   // Formatting is intentionally left to existing tooling; this setup only enables linting.
