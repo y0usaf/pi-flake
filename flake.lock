@@ -128,22 +128,6 @@
       },
       "parent": []
     },
-    "piMinimal": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-minimal",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-minimal",
-        "type": "path"
-      },
-      "parent": []
-    },
     "piRtk": {
       "inputs": {
         "nixpkgs": [
@@ -219,7 +203,6 @@
         "piHashline": "piHashline",
         "piInterview": "piInterview",
         "piKimi": "piKimi",
-        "piMinimal": "piMinimal",
         "piRtk": "piRtk",
         "piSrc": "piSrc",
         "piToolManagement": "piToolManagement",

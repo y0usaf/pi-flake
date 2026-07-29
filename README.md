@@ -145,7 +145,6 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 |------|-------------|
 | `pi-gecko-websearch` | Web search using Firefox's engine |
 | `pi-rtk` | `rtk rewrite` shell-command optimization to cut token usage |
-| `pi-minimal` | Minimal TUI: compact tools/thinking, full user prompts, borderless editor, per-feature `/minimal` toggles |
 | `pi-interview` | Main-session ask-user questionnaire + optional separate-context auto-answers (`/interview`) |
 | `pi-tool-management` | Persistent disabled-tools menu/UI via `/tools` |
 | `pi-webfetch` | HTTP fetching utilities |
@@ -218,7 +217,6 @@ If you want full control:
 ```nix
 inputs.pi-flake.packages.<system>."pi-gecko-websearch"
 inputs.pi-flake.packages.<system>."pi-rtk"
-inputs.pi-flake.packages.<system>."pi-minimal"
 inputs.pi-flake.packages.<system>."pi-interview"
 inputs.pi-flake.packages.<system>."pi-tool-management"
 inputs.pi-flake.packages.<system>."pi-webfetch"
