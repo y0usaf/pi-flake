@@ -1,0 +1,78 @@
+{
+  "name": "pi-workflows",
+  "version": "0.1.0",
+  "description": "Workflow engine for Pi, with runs rendered into the transcript",
+  "homepage": "https://github.com/y0usaf/pi-flake",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/y0usaf/pi-flake.git",
+    "directory": "extensions/pi-workflows"
+  },
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "workflow",
+    "multi-agent",
+    "orchestration",
+    "automation"
+  ],
+  "exports": {
+    ".": "./dist/src/index.js",
+    "./persistence": "./dist/src/persistence.js",
+    "./types": "./dist/src/types.js",
+    "./utils": "./dist/src/utils.js",
+    "./budget": "./dist/src/budget.js",
+    "./validation": "./dist/src/validation.js",
+    "./registry": "./dist/src/registry.js"
+  },
+  "files": [
+    "dist/src",
+    "src",
+    "skills",
+    "evals",
+    "examples",
+    "test/fixtures"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "lint": "eslint .",
+    "test": "npm run test:layout && npm run build && npm run test:run && npm run test:herdr",
+    "test:layout": "node --test --test-timeout=10000 --test-force-exit test/workspace-layout.test.mjs",
+    "test:run": "files=${TEST_FILES:-$(find dist/test -name '*.test.js' ! -name 'navigator.test.js')}; printf '%s\\n' $files | xargs -n1 -P20 sh -c 'tmp=$(mktemp -d); TMPDIR=\"$tmp\" node --expose-gc --test --test-concurrency=1 --test-timeout=120000 --test-force-exit --test-reporter=dot \"$1\"; status=$?; rm -rf \"$tmp\"; exit $status' sh",
+    "test:herdr": "tmp=$(mktemp -d); trap 'rm -rf \"$tmp\"' EXIT; TMPDIR=\"$tmp\" node --expose-gc --test --test-concurrency=1 --test-timeout=120000 --test-force-exit --test-reporter=dot dist/test/navigator.test.js",
+    "acceptance": "npm run build && TEST_FILES='dist/test/runtime-acceptance.test.js' npm run test:run",
+    "evals": "npm run build && node dist/src/workflow-evals.js",
+    "evals:ambient": "node -e \"if (process.env.PI_WORKFLOW_EVAL_AMBIENT !== '1') { console.error('Ambient Tier D evals are opt-in. Set PI_WORKFLOW_EVAL_AMBIENT=1 to run them.'); process.exit(1); }\" && npm run build && node dist/src/ambient-workflow-evals.js",
+    "prepack": "npm run build"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts",
+      "./src/transcript.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.80.9",
+    "@earendil-works/pi-coding-agent": "0.80.9",
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.12.4",
+    "eslint": "10.0.3",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.63.0"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "acorn": "^8.17.0",
+    "minimatch": "^10.2.5"
+  },
+  "private": true
+}

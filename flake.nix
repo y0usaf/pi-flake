@@ -146,6 +146,45 @@
         "pi-webfetch" = piWebfetch.packages.${system}.default;
         "pi-hashline" = piHashline.packages.${system}.default;
         "pi-chrono-break" = piChronoBreak.packages.${system}.default;
+        # Forked from the pristine reference tree at
+        # @extensions/vekexasia_pi-extensible-workflows/ (MIT). Ships the engine
+        # and the transcript renderer as two entry points of one extension.
+        "pi-workflows" = let
+          workflowsForkPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-workflows/package.json);
+        in
+          pkgs.buildNpmPackage {
+            pname = "pi-workflows";
+            version = workflowsForkPackageJson.version;
+            src = lib.cleanSource ./extensions/pi-workflows;
+
+            npmBuildScript = "build";
+            npmDepsFetcherVersion = 2;
+            npmDepsHash = "sha256-3i3nSXTx1JpV6WmNSenJFE69KU46irXA5M0wFENLpMY=";
+
+            nodejs = pkgs.nodejs_22;
+
+            installPhase = ''
+              runHook preInstall
+
+              npm prune --omit=dev
+
+              mkdir -p "$out"
+              cp package.json README.md CHANGELOG.md DESIGN.md "$out"/
+              cp -r src skills examples dist "$out"/
+              cp -r node_modules "$out"/
+
+              runHook postInstall
+            '';
+
+            passthru.packageName = workflowsForkPackageJson.name;
+
+            meta = with lib; {
+              description = workflowsForkPackageJson.description;
+              homepage = workflowsForkPackageJson.homepage;
+              license = licenses.mit;
+              platforms = platforms.all;
+            };
+          };
         "pi-advisor" = let
           advisorPackageJson = builtins.fromJSON (builtins.readFile ./extensions/RimuruW_pi-advisor/package.json);
         in
@@ -348,16 +387,17 @@
         # command reaches its workflow child carrying the session it was typed
         # in. Runs against pi wrapped with just the workflows extension, so no
         # other extension can answer for it.
-        pi-workflow-session-context = pkgs.runCommand "pi-workflow-session-context" {
-          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.coreutils];
-        } ''
-          bash ${./nix/checks/workflow-session-context.sh} ${self.lib.piWithExtensions {
-            inherit pkgs;
-            pi = self.packages.${system}.pi;
-            extensions = {workflows = self.packages.${system}."pi-extensible-workflows";};
-          }}/bin/pi
-          touch $out
-        '';
+        pi-workflow-session-context =
+          pkgs.runCommand "pi-workflow-session-context" {
+            nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.coreutils];
+          } ''
+            bash ${./nix/checks/workflow-session-context.sh} ${self.lib.piWithExtensions {
+              inherit pkgs;
+              pi = self.packages.${system}.pi;
+              extensions = {workflows = self.packages.${system}."pi-extensible-workflows";};
+            }}/bin/pi
+            touch $out
+          '';
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;
@@ -487,6 +527,7 @@
         webfetch = self.packages.${system}."pi-webfetch";
         hashline = self.packages.${system}."pi-hashline";
         "chrono-break" = self.packages.${system}."pi-chrono-break";
+        workflows = self.packages.${system}."pi-workflows";
         advisor = self.packages.${system}."pi-advisor";
         review = self.packages.${system}."pi-review";
         vcc = self.packages.${system}."pi-vcc";
