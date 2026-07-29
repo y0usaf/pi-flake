@@ -68,10 +68,29 @@ async function runRpcQuestionnaire(
 	return { questions, answers, cancelled: false };
 }
 
+export interface QuestionnaireOptions {
+	/**
+	 * Render in the overlay layer instead of the editor slot.
+	 *
+	 * Only the restart-resume path needs this. It runs from `session_start`,
+	 * and pi continues its own startup after extension handlers return —
+	 * autocomplete setup, loaded-resource notices, startup dialogs — several of
+	 * which call `editorContainer.clear()`. An inline component installed during
+	 * `session_start` is evicted by that without a word, leaving this promise
+	 * pending forever. The overlay stack is a separate layer and survives it.
+	 *
+	 * A questionnaire opened mid-turn has no such race, so it stays inline like
+	 * every other pi selector: it takes the editor slot and leaves the
+	 * transcript visible above it.
+	 */
+	overlay?: boolean;
+}
+
 export async function runQuestionnaire(
 	ctx: ExtensionContext,
 	questions: InterviewQuestion[],
 	signal?: AbortSignal,
+	options: QuestionnaireOptions = {},
 ): Promise<QuestionnaireResult> {
 	if (questions.length === 0) return { questions, answers: [], cancelled: false };
 	if (signal?.aborted) return { questions, answers: [], cancelled: true };
@@ -355,10 +374,7 @@ export async function runQuestionnaire(
 			dispose: cleanupSignal,
 		};
 		},
-		// Overlays live in their own layer. An inline component is installed into
-		// the editor container, which any extension that swaps the editor clears —
-		// silently evicting the questionnaire and leaving this promise pending.
-		{ overlay: true },
+		options.overlay ? { overlay: true } : undefined,
 	);
 
 	return result ?? { questions, answers: [], cancelled: true };
