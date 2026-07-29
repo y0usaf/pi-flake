@@ -528,6 +528,19 @@
           touch $out
         '';
 
+        # P5a acceptance: the workflow launch boundary is not the main agent's
+        # live tool visibility. A probe extension narrows the session the way
+        # the P5b router will (edit/write/bash dropped at session_start); a
+        # workflow launched in that session must still record all three in its
+        # launch snapshot, and its sub-agent must reach model resolution rather
+        # than being refused as outside the launching session boundary.
+        pi-loom-tool-boundary = pkgs.runCommand "pi-loom-tool-boundary" {
+          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.findutils pkgs.coreutils];
+        } ''
+          bash ${./nix/checks/loom-tool-boundary.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom
+          touch $out
+        '';
+
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;

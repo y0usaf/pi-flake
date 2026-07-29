@@ -347,6 +347,19 @@ isolation, not by the API. (2) The router's `setActiveTools` mutates
 session tool visibility; it is the one policy extension permitted to do so,
 and it never persists.
 
+**Launch boundary.** A run may never grant a sub-agent a tool the launching
+session did not have. Since P5a that ceiling is read from `pi.getAllTools()`,
+the session's *configured* tool set, not `pi.getActiveTools()`, the set the
+model may call right now. The two differ exactly where it matters: `pi --tools
+read` reports `["read"]` from both, so the user's own restriction still bounds
+a run, while the router's `setActiveTools` moves only the second, so hiding
+`edit` from the chat agent does not stop an executor sub-agent from writing
+code. Collapsing the two failed every exec stage with `UNKNOWN_TOOL: Tool is
+outside the launching session boundary: edit`. The cost, stated plainly: an
+extension that narrows tools mid-session no longer narrows what a workflow may
+grant, and `--tools` is the way to do that. Gated by
+`checks.pi-loom-tool-boundary`.
+
 ## Deferred (and why)
 
 - **Nix-declared workflows** (doctrine 04). Nix expresses stacks and
@@ -445,7 +458,23 @@ apart within one loop iteration.
       change with a single agent, no plan stage and no review stage.*
 - **P5 — router + picker.** *Accept: in `loom`, the main agent has no
       edit/write/mutating-bash tool; startup shows the workflow picker; Esc
-      drops to chat; `pi` sessions are unaffected.*
+      drops to chat; `pi` sessions are unaffected.* Split in three: hiding the
+      mutating tools from the main agent is only safe once the engine stops
+      treating live tool visibility as a run's tool boundary, so the engine
+      change lands first and is provable on its own.
+    - **P5a — launch boundary vs. model visibility.** The tool set a run may
+      grant its sub-agents comes from `pi.getAllTools()` (what the session was
+      configured with) rather than `pi.getActiveTools()` (what the model may
+      call right now). *Accept: with `edit`, `write` and `bash` removed from
+      the active set at `session_start`, a workflow launched in that session
+      still records all three in its launch snapshot, and a sub-agent asking
+      for them passes preflight's tool check.*
+    - **P5b — router gate.** `pi-loom-router`, a policy extension that calls
+      `setActiveTools` at `session_start`, in memory, never persisted, shipped
+      only in the `loom` stack. *Accept: in `loom`, the main agent has no
+      edit/write/mutating-bash tool, and `pi` sessions are unaffected.*
+    - **P5c — picker.** *Accept: startup shows the workflow picker and Esc
+      drops to chat.*
 - **P6 — `/wf-new` meta-workflow.** *Accept: `/wf-new` interviews, writes
       a runnable `command.json` + script + README into the repo, dry-runs
       it, and commits.*
