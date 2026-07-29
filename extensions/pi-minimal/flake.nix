@@ -35,8 +35,8 @@
           runHook preInstall
 
           mkdir -p "$out"
-          cp package.json README.md "$out"/
-          cp -r src "$out"/
+          cp package.json README.md DESIGN.md "$out"/
+          cp -r src themes "$out"/
 
           runHook postInstall
         '';
@@ -46,7 +46,7 @@
         };
 
         meta = with lib; {
-          description = "Minimal Pi TUI: compact tools/thinking, full user messages, borderless editor";
+          description = "Quieter pi TUI: denser tool rows plus the low-contrast 'quiet' theme";
           license = licenses.mit;
           platforms = platforms.all;
         };
