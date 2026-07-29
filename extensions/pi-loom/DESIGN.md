@@ -123,6 +123,14 @@ Load-bearing detail: `PI_WORKFLOW_NODE_PATH` is exported only by the
 `pi-full` wrapper (`flake.nix`, `lib.piWithExtensions`). The `loom` alias
 wraps plain `packages.pi`, so it must export that variable itself or
 workflow child processes fail to spawn.
+That claim is now enforced, not asserted: `checks.pi-loom-cli-smoke`
+(`nix/checks/loom-cli-smoke.sh`) boots the real `loom` in `--mode rpc`
+with a throwaway `HOME`, drops a probe workflow into `<agentDir>/workflows`,
+and requires the child to log from inside its vm sandbox and return a
+value. Strip the `export` line from the wrapper and the same script fails
+with `Workflow child exited with code 1`. The harness needs no network and
+no real API key because the probe never calls `agent()`; P8's bare-core
+check reuses it.
 
 ## Extension surface contract
 

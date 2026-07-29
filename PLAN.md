@@ -18,25 +18,36 @@ marker into prose here — the count would lie.
 
 ## Handoff
 
-Last touched: P0 (fork + ref reset) landed and is ticked.
+Last touched: P1 (alias package) landed and is ticked.
 
-What landed. `extensions/pi-loom/` now holds the engine source (the four
-local commits, unchanged) and `extensions/vekexasia_pi-extensible-workflows/`
-is back at its vendor-import state `a94500e`: `git diff a94500e -- <ref tree>`
-is empty, and only the four files those commits touched differ between the two
-trees (`execution.ts`, `host.ts`, `types.ts`, `validation.ts`).
-`packages.pi-extensible-workflows` is gone, replaced by `packages.pi-loom`;
-`loomStack`, `checks.pi-loom-build`, `lib.extensionPackagesFor`, the NixOS
-option, and both workflow READMEs point at it.
+What landed. `checks.pi-loom-cli-smoke` in `flake.nix`, driven by the new
+`nix/checks/loom-cli-smoke.sh`. It boots the real `loom` wrapper in
+`--mode rpc` under a throwaway `HOME` and asserts the three runtime halves
+of P1 that a build-only check cannot see: `/workflow` is registered; every
+CLI-loaded extension resolves to a store path that appears in the wrapper's
+own `-e` flags, with nothing user- or project-scoped (that is the "only the
+loom stack" criterion); and a probe workflow dropped into
+`<agentDir>/workflows` logs from inside the forked child's vm sandbox and
+returns its value. About 4 s in the Nix sandbox, no network, no real API
+key — the probe never calls `agent()`.
 
-Gates actually run: `nix build .#pi-loom` (pass), `biome lint .` (pass, 1
-pre-existing warning), `nix flake check -L` (pass, "all checks passed!").
-Extra evidence for the "`/ideate` and `/loop-next` still run" criterion, which
-needs an interactive session that CI cannot give: `diff -r` between the old
-`pi-extensible-workflows` store output built from commit `2b43eef` and the new
-`pi-loom` output is empty, so the fork ships byte-identical bytes to the engine
-that is running this loop. A real interactive run is still owed; it is folded
-into the P1 runtime-acceptance sub-item below.
+Gates actually run: `nix build .#checks.x86_64-linux.pi-loom-cli-smoke`
+(pass, prints `smoke: /workflow present, stack clean, workflow child
+spawned and returned`), `biome lint .` (pass, 1 pre-existing warning),
+`nix flake check -L` (pass, all 14 checks).
+
+Evidence for the two P1 criteria that are not expressible as assertions in
+that script:
+
+- **`pi` byte-identical.** `nix eval --raw .#pi.drvPath` returns
+  `/nix/store/pwzphnn83nnf3c7qb1419fidypp59jmy-pi-0.82.1.drv` both on this
+  tree and at `470c359`, the commit before the alias package existed. Same
+  derivation, therefore same output.
+- **The check actually bites.** Run against a copy of the `loom` script
+  with the `PI_WORKFLOW_NODE_PATH` export deleted, it fails with `smoke: no
+  log line from inside the workflow child`. That negative control is
+  deliberately not in CI: a check asserting that an unsupported
+  configuration stays broken becomes a maintenance hazard.
 
 Traps for the next step:
 
@@ -52,19 +63,21 @@ Traps for the next step:
   before. Rationale is in DESIGN.md under Architecture.
 - The ref tree is no longer a package and is excluded from `biome.jsonc`;
   keep it that way, it is only a diff base for upstream fixes.
+- **Two facts the smoke harness depends on.** Pi's agent dir defaults to
+  `$HOME/.pi/agent`, not the XDG data path the installed system uses; and an
+  RPC `prompt` is refused before command dispatch unless a model resolves
+  with a key, which is why the script passes throwaway
+  `--provider/--model/--api-key` flags. Reuse the script for P8 rather than
+  rediscovering both.
 
 ## Current phase
 
 - [x] **P0 — fork + ref reset.** Engine forked to `extensions/pi-loom/`, ref
       tree reset to the `a94500e` vendor import, `packages.pi-loom` builds.
-- [ ] **P1 — alias package.** Partially landed; do not redo the Nix work.
-  - Landed: `packages.pi-loom-cli` (`writeShellScriptBin "loom"` wrapping
-    `pi --no-extensions` with five `-e` flags plus `PI_WORKFLOW_NODE_PATH`)
-    and `checks.pi-loom-cli-build`. Verified only that it evaluates and
-    builds.
-  - Remaining: runtime acceptance — `/workflow` present in `loom`, a
-    workflow child process actually spawns, and `pi` byte-identical to
-    before (compare store paths across the change).
+- [x] **P1 — alias package.** `packages.pi-loom-cli` builds the `loom`
+      wrapper; `checks.pi-loom-cli-smoke` boots it and proves `/workflow`
+      registers, only the wrapper's own extensions load, and a workflow
+      child process spawns.
 - [ ] **P2 — human primitives.** `human.ask/edit/review` in the DSL,
       backed by `pi-interview` and `$EDITOR`.
 - [ ] **P3 — declaration mechanism.** JSON-Schema args in `command.json`,

@@ -397,6 +397,19 @@
         pi-aphrodite-build = self.packages.${system}."pi-aphrodite";
         pi-loom-build = self.packages.${system}."pi-loom";
         pi-loom-cli-build = self.packages.${system}.pi-loom-cli;
+
+        # Build-only checks cannot see runtime wiring: pi-loom-cli-build proves
+        # the wrapper evaluates, this proves it boots. Runs `loom` headlessly in
+        # RPC mode with a throwaway HOME, asserts /workflow is registered, that
+        # only the wrapper's own -e extensions load, and that a probe workflow
+        # spawns a child process and returns (the PI_WORKFLOW_NODE_PATH path).
+        pi-loom-cli-smoke = pkgs.runCommand "pi-loom-cli-smoke" {
+          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.coreutils];
+        } ''
+          bash ${./nix/checks/loom-cli-smoke.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom
+          touch $out
+        '';
+
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;
