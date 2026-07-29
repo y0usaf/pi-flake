@@ -444,6 +444,46 @@ is enforced on the way in. Ten fixtures share that single run — one directory
 that registers, one that declares no schema, and every way a scaffold fails to
 become a command.
 
+**`/wf-new` spends that answer in one place: it dry-runs what it just wrote, and
+only then commits it.** Verification before commit is the whole ordering claim —
+a scaffold that would not register fails the run with the dry run's own reason
+and runs no git command at all, so nothing enters history that Pi could not have
+launched. The files are left exactly where the agent wrote them, because a run
+that deletes its own output on a failure sends the author looking for something
+that is no longer there.
+
+The commit itself is deliberately narrow. `git add -- <directory>` (a pathspec
+commit cannot name files git has never heard of, and every file in a fresh
+scaffold is untracked) then `git commit -- <directory>`, which is a *partial
+commit*: git takes those paths from the working tree and ignores the rest of the
+index. Someone who had unrelated work staged when they launched `/wf-new` still
+has exactly that work staged afterwards, which is the difference between a
+workflow that commits its result and a workflow that commits your desk. Nothing
+the scaffolding agent produced is interpolated into a command — the pathspec is
+re-validated against `^[A-Za-z0-9._/-]+$` and the name against the kebab-case
+slug pattern before either reaches the shell, which is why no quoting appears
+anywhere in that code and no quoting bug can exist in it.
+
+**Being unable to commit is reported, never thrown.** Not a git repository, the
+path is git-ignored, no `user.email` configured: the deliverable is a directory
+that is already on disk and already known to register, so a run marked failed
+over git configuration would state the opposite of what happened. The artifact
+carries `commit: { committed, sha, reason }` beside `registration`, and the
+journal gets the same line.
+
+`checks.pi-loom-wf-new-commit` is a Node leg, not a `loom` run, and for once
+that is not a cost argument: everything this phase adds happens *after*
+`stage("scaffold", ...)` returns, and that stage runs an agent. The shipped
+`wf-new.js` is a module body, so the check evaluates it as the async function
+body it is, with stub host bridges and real git repositories — the assertions are
+about what `git show` and `git status` say afterwards. Four scenarios: verified
+then committed (with the user's staged and unstaged work still theirs), a dry run
+that refuses (zero shell commands recorded, HEAD unmoved, the three files still
+on disk), a directory that is not a repository, and a git-ignored path. What a
+stub cannot fake is covered next door: `checks.pi-loom-wf-new-workflow` launches
+this same script in a real `loom`, so a parse error, a reserved instrumentation
+identifier or a top-level binding colliding with the stage library fails there.
+
 ## Extension surface contract
 
 **Read path.** A workflow script receives a frozen `args` object (validated
@@ -728,9 +768,12 @@ apart within one loop iteration.
           reported as a failure, and one that would register reports the usage
           a user would see.* Gated by `checks.pi-loom-dry-run`.
         - **P6c-ii — `/wf-new` dry-run and commit.** The freshly scaffolded
-          directory is dry-run and only then committed. *Accept: a scaffold
-          whose `command.json` does not register is reported as a failure
-          before anything is committed.*
+          directory is dry-run and only then committed, with `git commit --
+          <pathspec>` so unrelated staged work is left alone, and an
+          uncommittable repository reported in the artifact rather than
+          thrown. *Accept: a scaffold whose `command.json` does not register
+          is reported as a failure before anything is committed.* Gated by
+          `checks.pi-loom-wf-new-commit`.
 - **P7 — ecosystem fill.** `/explore`, `/debug`, `/review`; migrate the
       `ship` and `next` skills to workflows. *Accept: each shipped skill has
       a workflow equivalent whose stages are enforced rather than described
