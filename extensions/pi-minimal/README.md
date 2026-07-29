@@ -1,67 +1,98 @@
 # pi-minimal
 
-Minimal Pi TUI. Compact tool rows + thinking, fully visible user messages, borderless editor — every feature toggleable at runtime, everything on by default.
+Two halves that reach different things:
 
-## Display
+- **an extension** that removes rows from pi's tool blocks, and never emits a character
+- **a theme** (`quiet`) that removes colour weight, and never touches spacing
 
-```text
-✨ refactor the auth middleware
-keep API behavior unchanged
-add regression coverage
+pi forces this split. A theme is 51 colour tokens with no control over spacing;
+an extension can reshape lines but has no business inventing colours. Neither can
+do the other's job.
 
-✓ ◰ read src/auth.ts:1-20 · 20 lines
-✓ $ bash git status · 3 lines
-✓ ✎ edit src/auth.ts · +4 -2
-⠹ ⌕ grep TODO @ .
-∴ thought · 12s
+## The extension
 
-> ask pi to
-| refactor this
-~/Dev/pi-flake (main)
-```
+| Behaviour | Effect |
+|---|---|
+| layout invariant | every tool block is exactly one blank row plus its body |
+| collapsed dumps | `grep`, `ls`, `find`, `bash` show no result while collapsed |
 
-- Tool rows: single explicit line, status-first — `✓`/`✕` glyph (or braille spinner while running), icon + name + argument summary + outcome. Expand with Pi's native tool-expansion key for original output.
-- Edit outcomes: diff counts colored per theme (`+4` success, `-2` error).
-- Long paths middle-truncate (`packages/…/tools/read.ts`) so the basename stays visible; truncated text elsewhere is hard-cut, no `…` suffix.
-- User messages: full, unclipped input with original line breaks and terminal wrapping; bold terminal bright-yellow `✨` prefix + blank line.
-- Thinking: spinner + live elapsed time while streaming, `∴ thought · 12s` when done (`compact`); historic rows without timing fall back to char count. Full block (`normal`) or gone (`hidden`); Pi's native `Ctrl-T` hide still wins.
-- Editor: borderless `>` / `|` prompt, footer unchanged.
-
-Rows use active Pi theme for tool/thinking colors; user messages use terminal bright-yellow palette for Kimi-style emphasis.
-
-## Commands
+A collapsed `grep` before — about 19 rows:
 
 ```text
-/minimal                                   status of all features
-/minimal tools on|off|toggle               compact tool rows
-/minimal user on|off|toggle                unclipped user messages
-/minimal thinking normal|compact|hidden    thinking display
-/minimal thinking on|off|toggle            feature off = normal
-/minimal editor on|off|toggle              borderless editor
+                                  ← Spacer
+                                  ← Box padding, background painted
+ grep /TODO/ @ .                  ← call
+                                  ← result begins
+ src/a.ts:3: TODO
+ …fifteen lines…
+ ... (25 more lines, ctrl+o to expand)
+                                  ← Box padding
 ```
 
-`/compact-thinking` remains as an alias for `/minimal thinking …`.
+After — 2 rows:
 
-Command toggles last for the session. Persistent defaults via `~/.pi/agent/settings.json` or `.pi/settings.json`:
+```text
+
+ grep /TODO/ @ .
+```
+
+`ctrl+o` shows everything, unchanged. `edit` and `write` keep their collapsed
+previews, because a diff and highlighted file content are worth reading without
+expanding. `read` is untouched — core already hides its collapsed result.
+
+Stacked tool calls keep exactly one blank row between them.
+
+There is no command and no configuration. To stop hiding a tool's result, remove
+its name from `DUMP_TOOLS` in `src/index.ts`.
+
+## The theme
+
+Select it with `/settings`, or in `settings.json`:
+
+```json
+{ "theme": "quiet" }
+```
+
+Three moves:
+
+1. **Tool background slabs removed.** `toolPendingBg`, `toolSuccessBg`, and
+   `toolErrorBg` fall back to your terminal background, so tool rows become plain
+   text. The user-message background stays — it is what separates your turns from
+   the transcript.
+2. **Palette collapsed** to three neutral tones plus one accent. All nine syntax
+   colours and all ten markdown colours resolve into that set.
+3. **The thinking ramp is the one loud thing.** pi paints the editor's border
+   from the current thinking level. `quiet` makes `off` and `minimal` nearly
+   invisible and ramps up to a bright magenta at `max`, so the input frame is
+   silent at rest and shouts only when thinking is cranked. Bash mode stays green
+   so it is never mistaken for a thinking level.
+
+## Also worth setting
+
+These are pi's own settings and this package deliberately does not write them for
+you. In `~/.pi/agent/settings.json`:
 
 ```json
 {
-  "extensionSettings": {
-    "pi-minimal": {
-      "tools": true,
-      "user": true,
-      "thinking": { "mode": "compact" },
-      "editor": true
-    }
-  }
+  "quietStartup": true,
+  "hideThinkingBlock": true,
+  "outputPad": 0
 }
 ```
 
-Project settings override global settings. The legacy `pi-compact` key is still read for the thinking mode.
+| Setting | Removes |
+|---|---|
+| `quietStartup` | the startup header block |
+| `hideThinkingBlock` | thinking bodies, leaving one italic line per run |
+| `outputPad` | horizontal padding on user, assistant, and thinking messages |
 
-## Scope
+`ctrl+t` toggles thinking visibility live. `ctrl+o` toggles tool expansion.
 
-UI-only. Tool execution, messages, thinking, and conversation context remain unchanged; display modes affect rendering only.
+## Watch out
+
+Collapsed `grep`, `ls`, and `find` also hide their `[Truncated: 200 matches
+limit]` warning, since it lives inside the result block. A truncated search looks
+identical to a complete one until you press `ctrl+o`.
 
 ## Usage
 
@@ -69,8 +100,10 @@ UI-only. Tool execution, messages, thinking, and conversation context remain unc
 pi -e ./extensions/pi-minimal/src/index.ts
 ```
 
-Or install/load as a Pi package.
+Or install as a pi package, which registers the extension and the theme together.
 
-## Credit
+## Design
 
-Tool icon vocabulary extracted from `pi-harness/pi-extension/harness-sidechannel.js`.
+[DESIGN.md](DESIGN.md) has the reasoning, the conformance table, the one
+documented divergence with the condition that ends it, and the rejected
+alternatives — including why overriding built-in tools' renderers is a trap.

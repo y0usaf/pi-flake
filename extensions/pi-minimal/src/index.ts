@@ -1,134 +1,128 @@
-import { CONFIG_DIR_NAME, getAgentDir, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { join } from "node:path";
-import { type FeatureSetting, nextThinkingMode, parseOnOff, parseThinkingMode, resolveConfig } from "./config.js";
-import { applyEditorFeature, releaseEditor } from "./editor.js";
-import { state } from "./state.js";
-import { patchAssistantMessageComponent } from "./thinking-rendering.js";
-import { patchToolExecutionComponent } from "./tool-rendering.js";
-import { FEATURE_IDS, type FeatureId, type ThinkingMode } from "./types.js";
-import { patchUserMessageComponent } from "./user-rendering.js";
+/**
+ * pi-minimal — removes chrome from pi's tool rows.
+ *
+ * Every feature is an ablation on lines pi already rendered. The extension may
+ * delete rows and may emit blank rows; it may never emit a character. That rule
+ * is what keeps it immune to pi's internals — see DESIGN.md.
+ *
+ * Colour is not handled here. Themes own colour and cannot touch spacing;
+ * this owns spacing and never touches colour. See themes/quiet.json.
+ */
+import { type ExtensionAPI, type ExtensionContext, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 
-function patchComponents(): boolean {
-	const toolOk = patchToolExecutionComponent();
-	const userOk = patchUserMessageComponent();
-	const assistantOk = patchAssistantMessageComponent();
-	return toolOk && userOk && assistantOk;
+// ---------------------------------------------------------------- predicates
+
+/** CSI, OSC and APC escape sequences, stripped before inspecting a line's shape. */
+const ANSI = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|_[^\x07]*(?:\x07|\x1b\\))/g;
+
+const bare = (line: string): string => line.replace(ANSI, "").trim();
+
+/** True for pi's `Spacer` rows and for `Box` padding rows, which are blank but background-painted. */
+const isBlank = (line: string): boolean => bare(line) === "";
+
+/** Drop matching lines from both ends only. Interior lines are never touched. */
+function trimEdges(lines: string[], drop: (line: string) => boolean): string[] {
+	let start = 0;
+	let end = lines.length;
+	while (start < end && drop(lines[start] as string)) start++;
+	while (end > start && drop(lines[end - 1] as string)) end--;
+	return start === 0 && end === lines.length ? lines : lines.slice(start, end);
 }
 
-function patchErrors(): string {
-	const errors = [
-		state.lastToolPatchError,
-		state.lastUserPatchError,
-		state.lastAssistantPatchError,
-		state.lastConfigError,
-	].filter(Boolean);
-	return errors.length > 0 ? `\n${errors.join("\n")}` : "";
+/**
+ * Keep the first contiguous run of non-blank lines.
+ *
+ * Every built-in tool builds its result text starting with a newline, so a tool
+ * block is always `call lines`, blank, `result lines`. Cutting at the first
+ * blank keeps the whole call however many lines it grows to, and drops the
+ * entire result. Nothing is parsed and no line count is recomputed.
+ */
+function leadingRun(lines: string[]): string[] {
+	const end = lines.findIndex(isBlank);
+	return end === -1 ? lines : lines.slice(0, end);
 }
 
-// Prototype patches are process-global and idempotent (originals stashed on the
-// prototype). Feature flags gate behavior at render time, so disabling a
-// feature falls back to the original renderer without unpatching.
-void patchComponents();
+// ---------------------------------------------------------------- layout
 
-function parseArgs(args: string): { feature?: FeatureId; setting?: FeatureSetting } | undefined {
-	const parts = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
-	if (parts.length === 0) return { setting: "status" };
-	if (parts.length > 2) return undefined;
+/** What the layout rule is told about the tool row it is trimming. */
+type Row = { toolName: string; expanded: boolean };
 
-	const [first, second] = parts;
-	if ((FEATURE_IDS as readonly string[]).includes(first)) {
-		if (second === undefined || second === "status") return { feature: first as FeatureId, setting: "status" };
-		if (second === "toggle") return { feature: first as FeatureId, setting: "toggle" };
-		if (first === "thinking") {
-			const mode = parseThinkingMode(second);
-			return mode ? { feature: "thinking", setting: mode } : undefined;
-		}
-		const onOff = parseOnOff(second);
-		return onOff === undefined ? undefined : { feature: first as FeatureId, setting: onOff };
-	}
+/**
+ * Tools whose collapsed result is a text dump with nothing to skim. `read`
+ * already hides its own collapsed result upstream; `edit` and `write` are
+ * absent on purpose, because their previews are diffs and highlighted content
+ * that are worth reading without expanding.
+ */
+const DUMP_TOOLS = new Set(["grep", "ls", "find", "bash"]);
 
-	// Bare thinking mode or on/off word: treat as the thinking feature for
-	// backwards compatibility with /compact-thinking.
-	if (parts.length === 1) {
-		const mode = parseThinkingMode(first);
-		if (mode) return { feature: "thinking", setting: mode };
-		if (first === "toggle") return { feature: "thinking", setting: "toggle" };
-	}
-	return undefined;
+/**
+ * The layout invariant: every tool block renders as exactly one blank row
+ * followed by its body, and a collapsed dump tool has no body past its call.
+ *
+ * Order matters and is the reason this is one function rather than a pipeline.
+ * `leadingRun` cuts at the first blank line, so the padding rows pi wraps the
+ * block in must be gone before it runs, or it would cut at row zero and delete
+ * the whole block.
+ */
+function toolRows(lines: string[], row: Row): string[] {
+	const body = trimEdges(lines, isBlank);
+	const kept = !row.expanded && DUMP_TOOLS.has(row.toolName) ? leadingRun(body) : body;
+	return kept.length === 0 ? [] : ["", ...kept];
 }
 
-function applyFeature(feature: FeatureId, setting: FeatureSetting, ctx: ExtensionCommandContext): void {
-	if (feature === "thinking") {
-		if (setting === "toggle") {
-			const effective: ThinkingMode = state.features.thinking ? state.thinkingMode : "normal";
-			state.thinkingMode = nextThinkingMode(effective);
-			state.features.thinking = true;
-		} else if (setting === true) {
-			state.features.thinking = true;
-		} else if (setting === false) {
-			state.features.thinking = false;
-		} else if (typeof setting === "string") {
-			state.thinkingMode = setting;
-			state.features.thinking = true;
-		}
-		return;
-	}
+// ---------------------------------------------------------------- mechanism
 
-	if (setting === "toggle") state.features[feature] = !state.features[feature];
-	else if (typeof setting === "boolean") state.features[feature] = setting;
-	if (feature === "editor") applyEditorFeature(ctx);
+const ORIGINAL_TOOL_RENDER = "__piMinimalOriginalToolRender";
+
+/** Read the row's own expansion flag, falling back to pi's global toggle if that field ever moves. */
+function readRow(component: unknown, ctx: ExtensionContext): Row {
+	const self = component as { toolName?: unknown; expanded?: unknown };
+	return {
+		toolName: typeof self.toolName === "string" ? self.toolName.trim().toLowerCase() : "",
+		expanded: typeof self.expanded === "boolean" ? self.expanded : ctx.ui.getToolsExpanded(),
+	};
 }
 
-function statusLine(feature: FeatureId): string {
-	if (feature === "thinking") {
-		return `thinking=${state.features.thinking ? state.thinkingMode : "off"}`;
-	}
-	return `${feature}=${state.features[feature] ? "on" : "off"}`;
+/**
+ * Wrap `ToolExecutionComponent.render` so `toolRows` runs over the lines it
+ * returned. The wrapper writes no component state and reads only `toolName` and
+ * `expanded`. Idempotent: the original is stashed on the prototype.
+ */
+function filterToolRows(ctx: ExtensionContext): () => void {
+	const proto = (ToolExecutionComponent as unknown as { prototype: Record<string, unknown> }).prototype;
+	if (typeof proto?.render !== "function") throw new Error("ToolExecutionComponent.render is not a function");
+
+	const original = (
+		typeof proto[ORIGINAL_TOOL_RENDER] === "function" ? proto[ORIGINAL_TOOL_RENDER] : proto.render
+	) as (this: unknown, width: number) => string[];
+
+	proto[ORIGINAL_TOOL_RENDER] = original;
+	proto.render = function piMinimalToolRender(this: unknown, width: number): string[] {
+		return toolRows(original.call(this, width), readRow(this, ctx));
+	};
+
+	return () => {
+		proto.render = original;
+		delete proto[ORIGINAL_TOOL_RENDER];
+	};
 }
 
-function fullStatus(): string {
-	return `pi-minimal: ${FEATURE_IDS.map(statusLine).join(" ")}`;
-}
-
-async function minimalCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
-	const parsed = parseArgs(args);
-	if (!parsed) {
-		ctx.ui.notify("Usage: /minimal [tools|user|thinking|editor] [on|off|toggle|normal|compact|hidden|status]", "error");
-		return;
-	}
-	if (!parsed.feature || parsed.setting === "status") {
-		ctx.ui.notify(parsed.feature ? `pi-minimal: ${statusLine(parsed.feature)}` : fullStatus(), "info");
-		return;
-	}
-	applyFeature(parsed.feature, parsed.setting, ctx);
-	ctx.ui.notify(`pi-minimal: ${statusLine(parsed.feature)}`, "info");
-}
+// ---------------------------------------------------------------- extension
 
 export default function (pi: ExtensionAPI) {
-	pi.registerCommand("minimal", {
-		description: "Toggle minimal UI features: /minimal [tools|user|thinking|editor] [on|off|toggle|status]",
-		handler: minimalCommand,
-	});
-
-	// Backwards-compatible alias for /compact-thinking.
-	pi.registerCommand("compact-thinking", {
-		description: "Set thinking rendering (normal|compact|hidden|toggle|status)",
-		handler: async (args, ctx) => minimalCommand(`thinking ${args}`.trim(), ctx),
-	});
+	let undo: Array<() => void> = [];
 
 	pi.on("session_start", (_event, ctx) => {
-		state.theme = ctx.mode === "tui" ? ctx.ui.theme : undefined;
-		resolveConfig({
-			global: join(getAgentDir(), "settings.json"),
-			project: ctx.isProjectTrusted() ? join(ctx.cwd, CONFIG_DIR_NAME, "settings.json") : undefined,
-		});
-		applyEditorFeature(ctx);
-		if ((!patchComponents() || state.lastConfigError) && ctx.hasUI) {
-			ctx.ui.notify(`pi-minimal: renderer/config issue${patchErrors()}`, "error");
+		if (ctx.mode !== "tui") return;
+		try {
+			undo.push(filterToolRows(ctx));
+		} catch (error) {
+			ctx.ui.notify(`pi-minimal: tool rows unchanged — ${error instanceof Error ? error.message : error}`, "error");
 		}
 	});
 
-	pi.on("session_shutdown", (_event, ctx) => {
-		releaseEditor(ctx);
+	pi.on("session_shutdown", () => {
+		for (const revert of undo.reverse()) revert();
+		undo = [];
 	});
 }
