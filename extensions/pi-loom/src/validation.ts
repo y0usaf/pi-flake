@@ -8,13 +8,17 @@ import { Script } from "node:vm";
 import { Value } from "typebox/value";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { WorkflowError } from "./types.js";
-import type { AgentDefinition, AgentResourceExclusions, AgentResourcePolicy, CheckpointInput, HumanAskInput, JsonSchema, JsonValue, LaunchSnapshot, PreflightCapabilities, PreflightResult, ShellOptions, StaticWorkflowCall, StaticWorkflowExecution, StaticWorkflowScope, ValidatedWorkflowLaunch, WorkflowCallKind, WorkflowErrorCode, WorkflowExtensionMetadata, WorkflowExtensionSettings, WorkflowMetadata, WorkflowRoleDirectoryRegistration, WorkflowSettings, WorkflowSettingsOverrides, WorkflowSettingsResolution, WorkflowSettingsSources, WorkflowValidationContext, WorkflowValidationParameters } from "./types.js";
+import type { AgentDefinition, AgentResourceExclusions, AgentResourcePolicy, CheckpointInput, HumanAskInput, HumanEditInput, JsonSchema, JsonValue, LaunchSnapshot, PreflightCapabilities, PreflightResult, ShellOptions, StaticWorkflowCall, StaticWorkflowExecution, StaticWorkflowScope, ValidatedWorkflowLaunch, WorkflowCallKind, WorkflowErrorCode, WorkflowExtensionMetadata, WorkflowExtensionSettings, WorkflowMetadata, WorkflowRoleDirectoryRegistration, WorkflowSettings, WorkflowSettingsOverrides, WorkflowSettingsResolution, WorkflowSettingsSources, WorkflowValidationContext, WorkflowValidationParameters } from "./types.js";
 import type { WorkflowRegistryApi } from "./registry.js";
 import { registeredWorkflowRoleDirectoryRegistrations } from "./registry.js";
 import { annotateModelAliasError, deepFreeze, errorText, fail, jsonValue, modelAliasName, modelCapability, object, parseThinking, positiveInteger, resolveModelReference, unknownModel, validateModelAliases, validateResourcePattern } from "./utils.js";
 import { WORKFLOW_CALL_KINDS } from "./types.js";
 
 export const DEFAULT_SETTINGS: Readonly<WorkflowSettings> = Object.freeze({ concurrency: 8 });
+// 64 KiB is the largest buffer human.edit will hand to an editor: past that the
+// journal rewrite cost per edit dominates, and a workflow wanting a bigger
+// artifact should hand over a path, not the bytes.
+export const HUMAN_EDIT_TEXT_LIMIT = 65536;
 
 export function validateCheckpoint(value: unknown): CheckpointInput {
   if (!object(value) || Object.keys(value).some((key) => !["name", "prompt", "context"].includes(key)) || typeof value.name !== "string" || value.name.trim() === "" || typeof value.prompt !== "string" || !jsonValue(value.context)) fail("INVALID_METADATA", "checkpoint requires only name, prompt, and JSON context");
@@ -37,6 +41,20 @@ export function validateHumanAsk(value: unknown): HumanAskInput {
   if (Buffer.byteLength(value.prompt) > 1024) fail("INVALID_METADATA", "human.ask prompt exceeds 1024 UTF-8 bytes");
   if (Buffer.byteLength(JSON.stringify(context)) > 4096) fail("INVALID_METADATA", "human.ask context exceeds 4096 UTF-8 bytes");
   return { name: value.name, prompt: value.prompt, choices: choices as string[], context };
+}
+
+// Same dispatch-time enforcement as validateHumanAsk, for the same reason: a
+// MemberExpression callee is invisible to workflowCallKind(). The text cap is
+// deliberately tighter than a filesystem edit would allow, because the buffer
+// is persisted twice per edit (parked request plus completed result) in a
+// journal that is rewritten whole on every update.
+export function validateHumanEdit(value: unknown): HumanEditInput {
+  if (!object(value) || Object.keys(value).some((key) => !["name", "prompt", "text", "context"].includes(key)) || typeof value.name !== "string" || value.name.trim() === "" || typeof value.prompt !== "string" || value.prompt.trim() === "" || typeof value.text !== "string" || (value.context !== undefined && !jsonValue(value.context))) fail("INVALID_METADATA", "human.edit requires name, prompt, text, and optional JSON context");
+  const context = value.context === undefined ? null : value.context;
+  if (Buffer.byteLength(value.prompt) > 1024) fail("INVALID_METADATA", "human.edit prompt exceeds 1024 UTF-8 bytes");
+  if (Buffer.byteLength(value.text) > HUMAN_EDIT_TEXT_LIMIT) fail("INVALID_METADATA", `human.edit text exceeds ${String(HUMAN_EDIT_TEXT_LIMIT)} UTF-8 bytes`);
+  if (Buffer.byteLength(JSON.stringify(context)) > 4096) fail("INVALID_METADATA", "human.edit context exceeds 4096 UTF-8 bytes");
+  return { name: value.name, prompt: value.prompt, text: value.text, context };
 }
 
 export function workflowSettingsPath(agentDir = getAgentDir()): string { return join(agentDir, ROLE_DIRECTORY, "settings.json"); }

@@ -11,11 +11,11 @@ import { acquireSessionLease, listPersistedSessionIds, listRunIds, RunStore, Ses
 import type { AwaitingCheckpoint, PersistedRun, WorktreeReference } from "./persistence.js";
 import { budgetRelaxed, budgetUsage, mergeBudget, resumeBudgetAllowed, validateBudget, validateBudgetPatch, WorkflowBudgetRuntime } from "./budget.js";
 import { asWorkflowError, aliasDrift, createLaunchSnapshot, deepFreeze, errorCode, errorText, fail, isWorkflowAuthored, jsonValue, modelAliasErrorName, modelCapability, object, parseModelReference, parseThinking, positiveInteger, resolveModelReference, validateModelAliases } from "./utils.js";
-import { launchScriptForSnapshot, loadAgentDefinitions, loadSettings, preflight, resolveAgentResourcePolicy, resolveWorkflowSettings, saveExposeWorkflowTools, saveModelAliases, validateAgentOptions, validateCheckpoint, validateHumanAsk, validateModelAliasAvailability, validateShellOptions, validateWorkflowLaunchWithRegistry, workflowProjectSettingsPath, workflowPrompt, workflowSettingsPath } from "./validation.js";
+import { launchScriptForSnapshot, loadAgentDefinitions, loadSettings, preflight, resolveAgentResourcePolicy, resolveWorkflowSettings, saveExposeWorkflowTools, saveModelAliases, validateAgentOptions, validateCheckpoint, validateHumanAsk, validateHumanEdit, validateModelAliasAvailability, validateShellOptions, validateWorkflowLaunchWithRegistry, workflowProjectSettingsPath, workflowPrompt, workflowSettingsPath } from "./validation.js";
 import { beginWorkflowExtensionLoading, loadingRegistry, resetWorkflowRegistry, type WorkflowRegistryApi } from "./registry.js";
 import { agentIdentityPath, agentWorktree, encoded, executeShellCommand, persistActiveAgentAttempt, persistAgentAttempts, readShellResult, runWorkflow, shellIdentityPath } from "./execution.js";
 import { openWorkflowArtifact, workflowPromptArtifact, workflowResultArtifact, workflowScriptArtifact, type WorkflowArtifact } from "./workflow-artifacts.js";
-import { ERROR_CODES, LAUNCH_SNAPSHOT_IDENTITY_VERSION, WORKFLOW_AGENT_STALL_THRESHOLD_MS, WORKFLOW_AGENT_STATE_CHANGED_EVENT, WORKFLOW_BUDGET_EVENT, WORKFLOW_CHECKPOINT_STATE_CHANGED_EVENT, WORKFLOW_PHASE_CHANGED_EVENT, WORKFLOW_RUN_COMPLETED_EVENT, WORKFLOW_RUN_FAILED_EVENT, WORKFLOW_RUN_RESUMED_EVENT, WORKFLOW_RUN_STARTED_EVENT, WORKFLOW_RUN_STATE_CHANGED_EVENT, WORKFLOW_WORKTREE_CREATED_EVENT, WorkflowError, type AgentAttemptActionContext, type AgentAttemptSummary, type AgentOptions, type AgentRecord, type AgentResourcePolicy, type AgentTransport, type BudgetApprovalRequest, type BudgetEvent, type JsonValue, type LaunchSnapshot, type ModelSpec, type RunState, type ShellIdentity, type ShellOptions, type ShellResult, type WorkflowBridge, type WorkflowCatalogFunction, type WorkflowCatalogIndex, type WorkflowCheckpointState, type WorkflowErrorCode, type WorkflowErrorShape, type WorkflowEventBase, type WorkflowFailureAgent, type WorkflowFailureDiagnostics, type WorkflowFunctionContext, type WorkflowExecution, type WorkflowMetadata, type WorkflowModelAliasResolverContext, type WorkflowRetryProvenance, type WorkflowRunContext, type WorkflowSettings, type WorkflowSettingsResolution, type WorkflowSiblingAgent, type WorkflowWorktreeReference } from "./types.js";
+import { ERROR_CODES, LAUNCH_SNAPSHOT_IDENTITY_VERSION, WORKFLOW_AGENT_STALL_THRESHOLD_MS, WORKFLOW_AGENT_STATE_CHANGED_EVENT, WORKFLOW_BUDGET_EVENT, WORKFLOW_CHECKPOINT_STATE_CHANGED_EVENT, WORKFLOW_PHASE_CHANGED_EVENT, WORKFLOW_RUN_COMPLETED_EVENT, WORKFLOW_RUN_FAILED_EVENT, WORKFLOW_RUN_RESUMED_EVENT, WORKFLOW_RUN_STARTED_EVENT, WORKFLOW_RUN_STATE_CHANGED_EVENT, WORKFLOW_WORKTREE_CREATED_EVENT, WorkflowError, type AgentAttemptActionContext, type AgentAttemptSummary, type AgentOptions, type AgentRecord, type AgentResourcePolicy, type AgentTransport, type BudgetApprovalRequest, type BudgetEvent, type HumanEditResult, type JsonValue, type LaunchSnapshot, type ModelSpec, type RunState, type ShellIdentity, type ShellOptions, type ShellResult, type WorkflowBridge, type WorkflowCatalogFunction, type WorkflowCatalogIndex, type WorkflowCheckpointState, type WorkflowErrorCode, type WorkflowErrorShape, type WorkflowEventBase, type WorkflowFailureAgent, type WorkflowFailureDiagnostics, type WorkflowFunctionContext, type WorkflowExecution, type WorkflowMetadata, type WorkflowModelAliasResolverContext, type WorkflowRetryProvenance, type WorkflowRunContext, type WorkflowSettings, type WorkflowSettingsResolution, type WorkflowSiblingAgent, type WorkflowWorktreeReference } from "./types.js";
 const SETTLED_AGENT_STATES: ReadonlySet<import("./types.js").AgentState> = new Set(["completed", "failed", "cancelled"]);
 const INTERNAL_WORKFLOW_TOOLS: readonly string[] = ["workflow", "workflow_respond", "workflow_stop", "workflow_status", "workflow_resume", "workflow_retry", "workflow_catalog"];
 const HARD_TERMINAL_RUN_STATES: ReadonlySet<string> = new Set(["completed", "failed", "stopped"]);
@@ -1462,6 +1462,10 @@ function withWorkflowFunctions(bridge: WorkflowBridge, store: RunStore, runConte
           if (!bridge.humanAsk || !object(args[0]) || !jsonValue(args[0])) fail("INTERNAL_ERROR", "No human bridge is available");
           return bridge.humanAsk(args[0], signal);
         },
+        edit: async (...args: readonly unknown[]) => {
+          if (!bridge.humanEdit || !object(args[0]) || !jsonValue(args[0])) fail("INTERNAL_ERROR", "No human bridge is available");
+          return bridge.humanEdit(args[0], signal);
+        },
       }),
       phase: (name: string) => { sideEffects.push(Promise.resolve(bridge.phase?.(name))); },
       log: (message: string) => { sideEffects.push(Promise.resolve(bridge.log?.(message))); },
@@ -1596,7 +1600,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     return skillPath ? { skillPaths: [skillPath] } : undefined;
   });
   type BudgetDecisionResult = { state: "running" | "completed" | "budget_exhausted"; approved: boolean; value?: JsonValue; run?: PersistedRun };
-  const runs = new Map<string, { executor: WorkflowAgentExecutor; store: RunStore; metadata: WorkflowMetadata; model: ModelSpec; lifecycle: RunLifecycle; budget: WorkflowBudgetRuntime; abortController: AbortController; projectTrusted: () => boolean; providerErrorRecovery?: (failure: AgentProviderFailure) => Promise<AgentProviderRecovery>; execution?: WorkflowExecution; completion?: Promise<unknown>; checkpointResolvers: Map<string, (value: boolean) => void>; humanResolvers: Map<string, (value: string) => void>; update?: (result: WorkflowToolUpdate) => void }>();
+  const runs = new Map<string, { executor: WorkflowAgentExecutor; store: RunStore; metadata: WorkflowMetadata; model: ModelSpec; lifecycle: RunLifecycle; budget: WorkflowBudgetRuntime; abortController: AbortController; projectTrusted: () => boolean; providerErrorRecovery?: (failure: AgentProviderFailure) => Promise<AgentProviderRecovery>; execution?: WorkflowExecution; completion?: Promise<unknown>; checkpointResolvers: Map<string, (value: boolean) => void>; humanResolvers: Map<string, (value: string) => void>; editResolvers: Map<string, (value: HumanEditResult) => void>; update?: (result: WorkflowToolUpdate) => void }>();
   let providerRecoveryQueue = Promise.resolve();
   const enqueueProviderRecovery = <T>(task: () => Promise<T>): Promise<T> => { const next = providerRecoveryQueue.then(task, task); providerRecoveryQueue = next.then(() => undefined, () => undefined); return next; };
   const createProviderErrorRecovery = (host: unknown, fallbackModels: ReadonlySet<string>, abort: () => void) => {
@@ -1914,6 +1918,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     terminalRunStates.set(runId, run.lifecycle.state as "completed" | "failed" | "stopped");
     run.checkpointResolvers.clear();
     run.humanResolvers.clear();
+    run.editResolvers.clear();
     liveActivities.delete(runId);
     liveEventTimes.delete(runId);
     for (const key of liveAgentSessions.keys()) if (key.startsWith(`${runId}:`)) liveAgentSessions.delete(key);
@@ -1964,13 +1969,18 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     }
     throw new WorkflowError("RUN_NOT_FOUND", `Unknown workflow run ${runId} in the current project`);
   };
+  // One lifecycle state ("awaiting input") now covers three parking lots:
+  // checkpoints, human.ask questions, and human.edit buffers. It may only be
+  // resolved when all three are empty, otherwise answering a question reports
+  // the run as running again while an edit is still parked.
+  const inputsSettled = async (run: NonNullable<ReturnType<typeof runs.get>>) => (await run.store.awaitingCheckpoints()).length === 0 && (await run.store.awaitingHumanRequests()).length === 0 && (await run.store.awaitingHumanEdits()).length === 0;
   const answerCheckpoint = async (runId: string, name: string, approved: boolean, silent = false) => {
     const run = runs.get(runId);
     if (!run) return false;
     const checkpoint = await run.store.answerCheckpoint(name, approved);
     if (!checkpoint) return false;
     await eventPublisher.checkpoint(run.store, run.metadata, checkpoint.name, approved ? "approved" : "rejected");
-    if ((await run.store.awaitingCheckpoints()).length === 0) await run.lifecycle.resolveAwaitingInput();
+    if (await inputsSettled(run)) await run.lifecycle.resolveAwaitingInput();
     run.checkpointResolvers.get(checkpoint.path)?.(approved);
     run.checkpointResolvers.delete(checkpoint.path);
     if (!silent) deliver(pi, `Workflow ${run.metadata.name} checkpoint ${name}: ${approved ? "Approved" : "Rejected"}.`);
@@ -1984,10 +1994,25 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     if (!run) return false;
     const request = await run.store.answerHumanRequest(name, answer);
     if (!request) return false;
-    if ((await run.store.awaitingHumanRequests()).length === 0 && (await run.store.awaitingCheckpoints()).length === 0) await run.lifecycle.resolveAwaitingInput();
+    if (await inputsSettled(run)) await run.lifecycle.resolveAwaitingInput();
     run.humanResolvers.get(request.path)?.(answer);
     run.humanResolvers.delete(request.path);
     if (!silent) deliver(pi, `Workflow ${run.metadata.name} question ${name}: ${answer}.`);
+    return true;
+  };
+  // The edit twin of answerHumanRequest. `text` of undefined is an abandoned
+  // editor, which is a real outcome here rather than a refusal to answer: the
+  // store turns it into { changed: false, abandoned: true } over the prefill it
+  // parked, and the run resumes either way.
+  const answerHumanEdit = async (runId: string, name: string, text: string | undefined, silent = false) => {
+    const run = runs.get(runId);
+    if (!run) return false;
+    const answered = await run.store.answerHumanEdit(name, text);
+    if (!answered) return false;
+    if (await inputsSettled(run)) await run.lifecycle.resolveAwaitingInput();
+    run.editResolvers.get(answered.request.path)?.(answered.result);
+    run.editResolvers.delete(answered.request.path);
+    if (!silent) deliver(pi, `Workflow ${run.metadata.name} edit ${name}: ${answered.result.abandoned ? "abandoned" : answered.result.changed ? "saved with changes" : "saved unchanged"}.`);
     return true;
   };
   const budgetDecisionDelivery = (metadata: WorkflowMetadata, request: BudgetApprovalRequest) => `Workflow ${metadata.name} budget adjustment ${request.proposalId} for run ${request.runId} requires approval. Consumed usage: ${JSON.stringify(request.consumed)}. Previous limits: ${JSON.stringify(request.previous)}. Proposed limits: ${JSON.stringify(request.proposed)}. Respond with workflow_respond using proposalId ${request.proposalId}.`;
@@ -2005,7 +2030,11 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     if (!silent) deliver(pi, `Workflow ${run.metadata.name} budget adjustment ${proposalId}: ${approved ? "Approved" : "Rejected"}.`);
     return result;
   };
-  const checkpointBridge = (runId: string, store: RunStore, metadata: WorkflowMetadata, foreground: boolean, ui?: { select?: (prompt: string, options: string[]) => Promise<string | undefined> }, headless = false) => {
+  // The slice of pi's UI context the human primitives touch. One alias because
+  // a run can suspend on a checkpoint, a question, or an edit, and the resume
+  // path hands the same object to all three bridges.
+  type WorkflowHumanUi = { select?: (prompt: string, options: string[]) => Promise<string | undefined>; editor?: (title: string, prefill?: string) => Promise<string | undefined> };
+  const checkpointBridge = (runId: string, store: RunStore, metadata: WorkflowMetadata, foreground: boolean, ui?: WorkflowHumanUi, headless = false) => {
     const checkpointCounters = new Map<string, number>();
     return async (raw: Readonly<Record<string, JsonValue>>, signal: AbortSignal): Promise<boolean> => {
       const input = validateCheckpoint(raw);
@@ -2052,7 +2081,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
   // session whenever there is a UI at all. With no UI (or after the picker is
   // dismissed) the question is delivered to the main agent, which answers with
   // the workflow_answer tool; either path lands in the same journal entry.
-  const humanBridge = (runId: string, store: RunStore, metadata: WorkflowMetadata, ui?: { select?: (prompt: string, options: string[]) => Promise<string | undefined> }, headless = false) => {
+  const humanBridge = (runId: string, store: RunStore, metadata: WorkflowMetadata, ui?: WorkflowHumanUi, headless = false) => {
     const askCounters = new Map<string, number>();
     return async (raw: Readonly<Record<string, JsonValue>>, signal: AbortSignal): Promise<string> => {
       const input = validateHumanAsk(raw);
@@ -2087,6 +2116,51 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
         }
       })().catch(() => undefined);
       return answer;
+    };
+  };
+
+  // human.edit. Same parking and replay structure as humanBridge, with two
+  // differences that come from the primitive itself. First, the UI call is
+  // ctx.ui.editor(title, prefill), whose resolution to undefined means the human
+  // closed the editor without saving; that is an outcome the workflow can branch
+  // on, not a dismissal to route elsewhere, so it settles the run instead of
+  // handing off to the main agent. Second, the answer is a record, because
+  // "saved unchanged" and "abandoned" both return the prefill text verbatim and
+  // are only distinguishable by the flags.
+  const humanEditBridge = (runId: string, store: RunStore, metadata: WorkflowMetadata, ui?: WorkflowHumanUi, headless = false) => {
+    const editCounters = new Map<string, number>();
+    return async (raw: Readonly<Record<string, JsonValue>>, signal: AbortSignal): Promise<HumanEditResult> => {
+      const input = validateHumanEdit(raw);
+      const label = nextNamedOccurrence(editCounters, input.name);
+      const path = operationPath("human", "edit", label);
+      if (headless) fail("RESUME_INCOMPATIBLE", "Headless CLI runs cannot ask a human to edit");
+      const request = { path, name: label, prompt: input.prompt, text: input.text, context: input.context };
+      const alreadyAwaiting = (await store.awaitingHumanEdits()).some((pending) => pending.path === path);
+      const replayed = await store.awaitHumanEdit(request);
+      if (replayed !== undefined) return replayed;
+      const run = runs.get(runId);
+      await run?.lifecycle.enterAwaitingInput();
+      const delivery = `Workflow ${metadata.name} edit ${label}: ${input.prompt}\nContext: ${JSON.stringify(input.context)}\nCurrent text:\n${input.text}\nRespond with workflow_edit, omitting text to leave it unedited.`;
+      if (!alreadyAwaiting && !ui?.editor) deliver(pi, delivery);
+      const edited = new Promise<HumanEditResult>((resolve, reject) => {
+        run?.editResolvers.set(path, resolve);
+        if (signal.aborted) reject(new WorkflowError("CANCELLED", "Workflow cancelled"));
+        else signal.addEventListener("abort", () => { run?.editResolvers.delete(path); reject(new WorkflowError("CANCELLED", "Workflow cancelled")); }, { once: true });
+      });
+      const answered = await store.awaitHumanEdit(request);
+      if (answered !== undefined) {
+        run?.editResolvers.get(path)?.(answered);
+        run?.editResolvers.delete(path);
+      }
+      if (ui?.editor) void (async () => {
+        if (!signal.aborted && run?.editResolvers.has(path)) {
+          const saved = await ui.editor?.(input.prompt, input.text);
+          if (await answerHumanEdit(runId, label, saved, true)) return;
+          // Only reachable if something else settled this edit while the editor
+          // was open; the run has already resumed, so nothing is owed here.
+        }
+      })().catch(() => undefined);
+      return edited;
     };
   };
 
@@ -2129,6 +2203,25 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
         const choices = pending?.find((request) => request.name === params.name)?.choices;
         const text = choices ? `Answer rejected: ${params.name} accepts only ${choices.join(" | ")}.` : `No question named ${params.name} is awaiting an answer in run ${params.runId}.`;
         return { content: [{ type: "text" as const, text }], details: { accepted, state: choices ? "invalid_choice" : "not_pending", answer: params.answer, ...(choices ? { choices: [...choices] } : {}) } };
+      } catch (error) {
+        throw mainAgentError(error);
+      }
+    },
+  });
+  // The agent-facing half of human.edit, used when no UI is attached. Omitting
+  // `text` is how the agent says the buffer should stand as written; it maps to
+  // the same abandoned outcome an unsaved editor produces, so the workflow sees
+  // one vocabulary regardless of which half answered.
+  registerWorkflowTool({
+    name: "workflow_edit",
+    label: "Workflow Edit",
+    description: "Submit the edited text for one pending human.edit request in a workflow run; omit text to leave it unedited",
+    parameters: Type.Object({ runId: Type.String(), name: Type.String(), text: Type.Optional(Type.String()) }, { additionalProperties: false }),
+    async execute(_id, params) {
+      try {
+        const accepted = await answerHumanEdit(params.runId, params.name, params.text);
+        if (accepted) return { content: [{ type: "text" as const, text: params.text === undefined ? "Edit left unedited." : "Edited text accepted." }], details: { accepted, state: "edit_answered", edited: params.text !== undefined } };
+        return { content: [{ type: "text" as const, text: `No edit named ${params.name} is awaiting text in run ${params.runId}.` }], details: { accepted, state: "not_pending", edited: params.text !== undefined } };
       } catch (error) {
         throw mainAgentError(error);
       }
@@ -2271,13 +2364,13 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     const drift = aliasDrift(previousAliases, currentAliases);
     if (drift.length) await run.store.appendEvent({ type: "warning", message: `Model alias mappings changed on resume: ${drift.join("; ")}` });
   };
-  const recoveryUi = (context: unknown): { hasUI: boolean; ui: { select?: (prompt: string, options: string[]) => Promise<string | undefined> } } => {
+  const recoveryUi = (context: unknown): { hasUI: boolean; ui: WorkflowHumanUi } => {
     const host = object(context) ? context : undefined;
-    const ui = host && object(host.ui) ? host.ui as { select?: (prompt: string, options: string[]) => Promise<string | undefined> } : {};
+    const ui = host && object(host.ui) ? host.ui as WorkflowHumanUi : {};
     return { hasUI: host?.hasUI === true, ui };
   };
   type ColdResumeResult = { value: JsonValue; resultPath: string };
-  const coldResumeRun = async (run: NonNullable<ReturnType<typeof runs.get>>, hasUI: boolean, ui: { select?: (prompt: string, options: string[]) => Promise<string | undefined> }, trustedProject: boolean, context?: { model: { provider: string; id: string } | undefined; modelRegistry: ModelRegistryCapability | undefined; signal?: AbortSignal | undefined; resolvedAliases?: Readonly<Record<string, string>>; blockedAliases?: ReadonlySet<string>; blockedAliasTargets?: Readonly<Record<string, string>> }, modeOverride?: boolean, waitForCompletion = true): Promise<ColdResumeResult | undefined> => {
+  const coldResumeRun = async (run: NonNullable<ReturnType<typeof runs.get>>, hasUI: boolean, ui: WorkflowHumanUi, trustedProject: boolean, context?: { model: { provider: string; id: string } | undefined; modelRegistry: ModelRegistryCapability | undefined; signal?: AbortSignal | undefined; resolvedAliases?: Readonly<Record<string, string>>; blockedAliases?: ReadonlySet<string>; blockedAliasTargets?: Readonly<Record<string, string>> }, modeOverride?: boolean, waitForCompletion = true): Promise<ColdResumeResult | undefined> => {
     const loaded = await run.store.load();
     const foreground = modeOverride ?? loaded.snapshot.launchMode === "foreground";
     if (loaded.run.activeShells !== undefined) {
@@ -2310,7 +2403,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     run.executor.setRunContext(runContext);
     await scheduler.cancelRun(run.store.runId);
     await run.lifecycle.resume();
-    const execution = runWorkflow(script, loaded.snapshot.args, withWorkflowFunctions({ shell: (command, options, signal, identity) => shellForRun(run.store, run.metadata, run.lifecycle, command, options, signal, identity), agent: workflowAgentHandler(run.store, run.metadata, run.lifecycle, run.executor, run.store.cwd, run.store.runId), worktree: async (owner) => resolveWorktree(run.store, run.metadata, owner), checkpoint: checkpointBridge(run.store.runId, run.store, run.metadata, foreground, hasUI ? ui : undefined), humanAsk: humanBridge(run.store.runId, run.store, run.metadata, hasUI ? ui : undefined), phase: phaseBridge(run.store, run.metadata, run.lifecycle), log: logBridge(run.lifecycle, run.metadata.name) }, run.store, runContext, registry), controller.signal);
+    const execution = runWorkflow(script, loaded.snapshot.args, withWorkflowFunctions({ shell: (command, options, signal, identity) => shellForRun(run.store, run.metadata, run.lifecycle, command, options, signal, identity), agent: workflowAgentHandler(run.store, run.metadata, run.lifecycle, run.executor, run.store.cwd, run.store.runId), worktree: async (owner) => resolveWorktree(run.store, run.metadata, owner), checkpoint: checkpointBridge(run.store.runId, run.store, run.metadata, foreground, hasUI ? ui : undefined), humanAsk: humanBridge(run.store.runId, run.store, run.metadata, hasUI ? ui : undefined), humanEdit: humanEditBridge(run.store.runId, run.store, run.metadata, hasUI ? ui : undefined), phase: phaseBridge(run.store, run.metadata, run.lifecycle), log: logBridge(run.lifecycle, run.metadata.name) }, run.store, runContext, registry), controller.signal);
     run.execution = execution;
     const completion = execution.result.then(async (value) => {
       await scheduler.flush();
@@ -2465,7 +2558,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
       const abortController = new AbortController();
       const providerErrorRecovery = createProviderErrorRecovery(context, availableModels, () => { abortController.abort(); });
       const providerPause = async () => { deliver(pi, `Workflow ${loaded.snapshot.metadata.name} paused: provider limit.`); await lifecycle.providerPause(); };
-      const childRun = { executor: createAgentExecutor({ cwd, model, tools: activeSnapshotTools(loaded.snapshot.tools, active), availableModels, knownModels, modelAliases: currentAliases, blockedAliases, blockedAliasTargets, settingsPath, agentDefinitions: loaded.snapshot.roles ?? {}, runStore: childStore, providerPause, agentResourcePolicy: frozenResourcePolicy(currentPolicy) }), store: childStore, metadata: loaded.snapshot.metadata, model, lifecycle, budget: childBudget, abortController, projectTrusted: () => projectTrusted(context), checkpointResolvers: new Map(), humanResolvers: new Map(), ...(providerErrorRecovery ? { providerErrorRecovery } : {}) };
+      const childRun = { executor: createAgentExecutor({ cwd, model, tools: activeSnapshotTools(loaded.snapshot.tools, active), availableModels, knownModels, modelAliases: currentAliases, blockedAliases, blockedAliasTargets, settingsPath, agentDefinitions: loaded.snapshot.roles ?? {}, runStore: childStore, providerPause, agentResourcePolicy: frozenResourcePolicy(currentPolicy) }), store: childStore, metadata: loaded.snapshot.metadata, model, lifecycle, budget: childBudget, abortController, projectTrusted: () => projectTrusted(context), checkpointResolvers: new Map(), humanResolvers: new Map(), editResolvers: new Map(), ...(providerErrorRecovery ? { providerErrorRecovery } : {}) };
       runs.set(childRunId, childRun);
       scheduler.addRun(childRunId, loaded.snapshot.settings.concurrency, () => { childBudget.checkAgentLaunch(); });
       await eventPublisher.runStarted(childStore, loaded.snapshot.metadata);
@@ -2551,9 +2644,10 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
       const roleDefinitions = loaded.snapshot.roles ?? {};
       const abortController = new AbortController();
       const providerErrorRecovery = createProviderErrorRecovery(ctx, new Set(loaded.snapshot.models), () => { abortController.abort(); });
-      runs.set(runId, { executor: createAgentExecutor({ cwd: ctx.cwd, model, tools: activeSnapshotTools(loaded.snapshot.tools, "session"), availableModels: new Set(loaded.snapshot.models), knownModels: new Set(loaded.snapshot.models), ...(loaded.snapshot.modelAliases ?? loaded.snapshot.settings.modelAliases ? { modelAliases: loaded.snapshot.modelAliases ?? loaded.snapshot.settings.modelAliases } : {}), ...(loaded.snapshot.settingsSources?.modelAliases ? { settingsPath: loaded.snapshot.settingsSources.modelAliases } : loaded.snapshot.settingsPath ? { settingsPath: loaded.snapshot.settingsPath } : {}), agentDefinitions: roleDefinitions, runStore: store, providerPause, agentResourcePolicy: frozenResourcePolicy(snapshotResourcePolicy(loaded.snapshot, store.cwd, projectTrusted(ctx), workflowSettingsPath(extensionAgentDir))) }), store, metadata: loaded.snapshot.metadata, model, lifecycle, budget: budgetRuntime, abortController, projectTrusted: () => projectTrusted(ctx), checkpointResolvers: new Map(), humanResolvers: new Map(), ...(providerErrorRecovery ? { providerErrorRecovery } : {}) });
+      runs.set(runId, { executor: createAgentExecutor({ cwd: ctx.cwd, model, tools: activeSnapshotTools(loaded.snapshot.tools, "session"), availableModels: new Set(loaded.snapshot.models), knownModels: new Set(loaded.snapshot.models), ...(loaded.snapshot.modelAliases ?? loaded.snapshot.settings.modelAliases ? { modelAliases: loaded.snapshot.modelAliases ?? loaded.snapshot.settings.modelAliases } : {}), ...(loaded.snapshot.settingsSources?.modelAliases ? { settingsPath: loaded.snapshot.settingsSources.modelAliases } : loaded.snapshot.settingsPath ? { settingsPath: loaded.snapshot.settingsPath } : {}), agentDefinitions: roleDefinitions, runStore: store, providerPause, agentResourcePolicy: frozenResourcePolicy(snapshotResourcePolicy(loaded.snapshot, store.cwd, projectTrusted(ctx), workflowSettingsPath(extensionAgentDir))) }), store, metadata: loaded.snapshot.metadata, model, lifecycle, budget: budgetRuntime, abortController, projectTrusted: () => projectTrusted(ctx), checkpointResolvers: new Map(), humanResolvers: new Map(), editResolvers: new Map(), ...(providerErrorRecovery ? { providerErrorRecovery } : {}) });
       for (const checkpoint of await store.awaitingCheckpoints()) deliver(pi, `Workflow ${loaded.snapshot.metadata.name} checkpoint ${checkpoint.name}: ${checkpoint.prompt}\nContext: ${JSON.stringify(checkpoint.context)}\nRespond with workflow_respond.`);
       for (const question of await store.awaitingHumanRequests()) deliver(pi, `Workflow ${loaded.snapshot.metadata.name} question ${question.name}: ${question.prompt}\nChoices: ${question.choices.join(" | ")}\nContext: ${JSON.stringify(question.context)}\nRespond with workflow_answer.`);
+      for (const edit of await store.awaitingHumanEdits()) deliver(pi, `Workflow ${loaded.snapshot.metadata.name} edit ${edit.name}: ${edit.prompt}\nContext: ${JSON.stringify(edit.context)}\nCurrent text:\n${edit.text}\nRespond with workflow_edit, omitting text to leave it unedited.`);
       for (const decision of await store.pendingWorkflowDecisions()) deliver(pi, budgetDecisionDelivery(loaded.snapshot.metadata, decision));
       scheduler.restoreRun(runId, loaded.snapshot.settings.concurrency, loaded.snapshot.identityVersion === LAUNCH_SNAPSHOT_IDENTITY_VERSION ? await store.loadOwnership() : [], () => runs.get(runId)?.budget.checkAgentLaunch());
     }
@@ -2646,10 +2740,10 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
       const providerPause = async () => { if (background) deliver(pi, `Workflow ${checked.metadata.name} paused: provider limit.`); await lifecycle.providerPause(); };
       const providerErrorRecovery = createProviderErrorRecovery(ctx, availableModels, () => { runController.abort(); });
       const executor = createAgentExecutor({ cwd: ctx.cwd, model: rootModel, tools: new Set(rootTools), availableModels, knownModels, modelAliases, settingsPath, agentDefinitions, runStore: store, providerPause, agentResourcePolicy: frozenResourcePolicy(launch.resourcePolicy), runContext });
-      runs.set(runId, { executor, store, metadata: checked.metadata, model: rootModel, lifecycle, budget: budgetRuntime, abortController: runController, projectTrusted: () => projectTrusted(ctx), checkpointResolvers: new Map(), humanResolvers: new Map(), ...(providerErrorRecovery ? { providerErrorRecovery } : {}), ...(params.foreground && onUpdate ? { update: onUpdate } : {}) });
+      runs.set(runId, { executor, store, metadata: checked.metadata, model: rootModel, lifecycle, budget: budgetRuntime, abortController: runController, projectTrusted: () => projectTrusted(ctx), checkpointResolvers: new Map(), humanResolvers: new Map(), editResolvers: new Map(), ...(providerErrorRecovery ? { providerErrorRecovery } : {}), ...(params.foreground && onUpdate ? { update: onUpdate } : {}) });
       if (params.foreground && onUpdate) onUpdate(workflowToolUpdate((await store.load()).run));
       scheduler.addRun(runId, settings.concurrency, () => runs.get(runId)?.budget.checkAgentLaunch());
-      const execution = runWorkflow(script, args, withWorkflowFunctions({ shell: (command, options, signal, identity) => shellForRun(store, checked.metadata, lifecycle, command, options, signal, identity), agent: workflowAgentHandler(store, checked.metadata, lifecycle, executor, ctx.cwd, runId, captureFunctionRole), worktree: async (owner) => resolveWorktree(store, checked.metadata, owner), checkpoint: checkpointBridge(runId, store, checked.metadata, Boolean(params.foreground), params.foreground && ctx.hasUI ? ctx.ui : undefined, headless), humanAsk: humanBridge(runId, store, checked.metadata, ctx.hasUI ? ctx.ui : undefined, headless), phase: phaseBridge(store, checked.metadata, lifecycle), log: logBridge(lifecycle, checked.metadata.name) }, store, runContext, registry), runController.signal);
+      const execution = runWorkflow(script, args, withWorkflowFunctions({ shell: (command, options, signal, identity) => shellForRun(store, checked.metadata, lifecycle, command, options, signal, identity), agent: workflowAgentHandler(store, checked.metadata, lifecycle, executor, ctx.cwd, runId, captureFunctionRole), worktree: async (owner) => resolveWorktree(store, checked.metadata, owner), checkpoint: checkpointBridge(runId, store, checked.metadata, Boolean(params.foreground), params.foreground && ctx.hasUI ? ctx.ui : undefined, headless), humanAsk: humanBridge(runId, store, checked.metadata, ctx.hasUI ? ctx.ui : undefined, headless), humanEdit: humanEditBridge(runId, store, checked.metadata, ctx.hasUI ? ctx.ui : undefined, headless), phase: phaseBridge(store, checked.metadata, lifecycle), log: logBridge(lifecycle, checked.metadata.name) }, store, runContext, registry), runController.signal);
       (runs.get(runId) as NonNullable<ReturnType<typeof runs.get>>).execution = execution;
       await eventPublisher.runStarted(store, checked.metadata);
       const finish = execution.result.then(async (value) => {

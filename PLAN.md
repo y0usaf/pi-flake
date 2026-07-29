@@ -18,55 +18,58 @@ marker into prose here — the count would lie.
 
 ## Handoff
 
-Last touched: P2a (`human.ask`) landed and is ticked. P2 was split into
-P2a/P2b/P2c first, because each of the three human primitives has a different
-backing mechanism and one step cannot land all three honestly.
+Last touched: P2b (`human.edit`) landed and is ticked. P2c (`human.review`) is
+the only human primitive left.
 
-What landed. `human.ask({ name, prompt, choices, context })` as a DSL
-primitive, plus `checks.pi-loom-human-ask` driven by the new
-`nix/checks/loom-human-ask.sh`. The call path, end to end: the vm sandbox in
-`execution.ts` exposes a frozen `human` object whose `ask` sends the RPC method
-`human.ask`; the host arm of `handleRpc` wraps the answer in the same branded
-work-result envelope `checkpoint` uses; `humanBridge` in `host.ts` parks the
-question in the run journal, calls `ctx.ui.select`, and resolves the parked
-promise when an answer arrives. `RunStore.awaitHumanRequest` /
-`answerHumanRequest` / `awaitingHumanRequests` are new, in their own
-`journal.awaitingHuman` map, so a checkpoint answer stays a boolean and an ask
-answer stays one of the question's own choice strings.
+What landed. `human.edit({ name, prompt, text, context })` as a DSL primitive,
+resolving to `{ text, changed, abandoned }`, plus `checks.pi-loom-human-edit`
+driven by the new `nix/checks/loom-human-edit.sh`. The call path mirrors
+`human.ask` exactly: frozen `human.edit` in the vm sandbox sends the RPC method
+`human.edit`, the host arm of `handleRpc` wraps the record in the same branded
+work-result envelope, and `humanEditBridge` in `host.ts` parks the buffer in the
+run journal, calls `ctx.ui.editor(title, prefill)`, and resolves the parked
+promise. `RunStore.awaitHumanEdit` / `answerHumanEdit` / `awaitingHumanEdits`
+are new, in their own `journal.awaitingEdit` map.
 
-Gates actually run: `nix build .#checks.x86_64-linux.pi-loom-human-ask` (pass,
-prints `human-ask: choice UI rendered with the workflow's own choices, run
-resumed with the selection`), `biome lint .` (pass, the same 1 pre-existing
-warning in the eval harness, nothing new), `nix flake check -L` (pass, all 15
-checks; the new one is #15).
+Gates actually run: `nix build .#checks.x86_64-linux.pi-loom-human-edit` (pass,
+prints `human-edit: editor opened prefilled, run resumed with the saved buffer,
+unchanged and abandoned edits stayed distinct`),
+`nix build .#checks.x86_64-linux.biome-lint` (pass, same 1 pre-existing warning
+in the eval harness), `nix flake check -L` (pass, all 16 checks; the new one is
+#16).
 
 Design decisions worth not re-litigating:
 
-- **`pi-interview` cannot back `human.ask`.** It exposes its questionnaire only
-  as the `interview_user` *tool*, and pi's extension API has no cross-extension
-  tool invocation (checked `dist/core/extensions/types.d.ts` in
-  `node_modules/@earendil-works/pi-coding-agent`). `human.ask` therefore uses
-  the core `ctx.ui.select`. DESIGN.md records this divergence under
-  Architecture; the DESIGN.md Roadmap line was corrected to match.
-- **Not gated on `foreground`.** `checkpointBridge` only renders UI for
-  foreground runs. An ask is the run addressing the human directly, so it
-  renders whenever `ctx.hasUI`. Dismissing the picker delivers the question to
-  the main agent for the new `workflow_answer` tool instead of cancelling.
+- **The result is a record, not a string.** A buffer saved byte-identical and an
+  abandoned editor both hand back the original text, so only
+  `changed`/`abandoned` separate them. `changed` is computed inside
+  `RunStore.answerHumanEdit` against the prefill it parked, never trusted from
+  the caller, so the UI path and the `workflow_edit` tool path agree.
+- **Abandonment settles the run; it does not re-route.** `human.ask` treats a
+  dismissed picker as "not answering now" and hands the question to the main
+  agent. A closed editor is a decision, so `humanEditBridge` resolves with
+  `abandoned: true` instead. `workflow_edit` exists only for runs with no UI,
+  and omitting its `text` argument means the same thing.
 
 Traps for the next step:
 
-- **`human.ask` has no static analysis.** `workflowCallKind()` in
-  `validation.ts` only recognises bare `Identifier` callees, and `human.ask` is
-  a `MemberExpression`. Nothing statically enforces the stable-name rule that
-  `checkpoint` gets; `validateHumanAsk` enforces it at dispatch instead. P2b
-  and P2c inherit that gap. Adding member-callee support to `workflowCalls()`
-  is the real fix and is a separate piece of work.
-- **Reuse the P2a harness for P2b/P2c.** `nix/checks/loom-human-ask.sh` already
-  solves the awkward part: RPC mode needs stdin held open across two writes
-  (launch, then answer), which the script does with a FIFO on fd 3, and jq is
-  reading a file still being appended to, so parse errors on partial lines are
-  expected and suppressed. RPC exposes an `editor` UI method, which is what
-  P2b's `$EDITOR` round trip should ride on.
+- **P2c should reuse `nix/checks/loom-human-edit.sh`, not the ask harness.** It
+  already answers three UI requests in one run through the FIFO on fd 3, with an
+  `await_editor <n>` helper that picks the Nth request out of a file jq is still
+  reading while it grows. A verdict probe needs the same multi-round shape.
+  Note the harness must write the launch prompt line itself; forgetting it looks
+  exactly like "the UI never rendered".
+- **`human.edit` still has no static analysis**, same as `human.ask`:
+  `workflowCallKind()` in `validation.ts` only recognises bare `Identifier`
+  callees, and `human.edit` is a `MemberExpression`. `validateHumanEdit`
+  enforces the stable-name rule at dispatch. P2c inherits the gap; adding
+  member-callee support to `workflowCalls()` is separate work.
+- **`inputsSettled()` is now the single gate on leaving awaiting-input.** It
+  checks all three parking lots (checkpoints, questions, edits). P2c must add
+  its own lot there or a pending review will look like a running run.
+- **`WorkflowHumanUi` is the shared UI-slice type** for all three bridges, so
+  the cold-resume path can hand one object to each. Widen that alias rather than
+  adding a fourth ad-hoc structural type.
 - **Downstream flag renamed.** `~/nixos/hosts/y0usaf-desktop/finix/materialized-packages.nix`
   sets `"extensible-workflows" = true;`. That key no longer exists; it is now
   `loom`. `lib.enabledExtensions` asserts on unknown flags, so the system flake
@@ -98,7 +101,10 @@ Traps for the next step:
       `humanBridge` + `journal.awaitingHuman` in the host, `workflow_answer`
       tool as the agent-facing fallback, `checks.pi-loom-human-ask` proving the
       round trip.
-- [ ] **P2b — `human.edit`.** `$EDITOR` round trip on a text artifact.
+- [x] **P2b — `human.edit`.** `ctx.ui.editor` round trip on a text artifact,
+      `humanEditBridge` + `journal.awaitingEdit` in the host, `workflow_edit`
+      tool as the agent-facing fallback, `checks.pi-loom-human-edit` proving a
+      saved edit, an unchanged buffer, and an abandoned editor stay distinct.
 - [ ] **P2c — `human.review`.** Structured verdict over a diff or artifact.
 - [ ] **P3 — declaration mechanism.** JSON-Schema args in `command.json`,
       generated usage, `/workflows` listing, project-local `.pi/workflows/`
