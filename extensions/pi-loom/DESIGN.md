@@ -70,9 +70,9 @@ extensions/
     src/
       host.ts            command registration, run lifecycle, TUI blocks
       execution.ts       DSL: agent, parallel, pipeline, phase, checkpoint,
-                         human.ask, workflow
+                         human.ask, human.edit, workflow
       agent-execution.ts sub-agent sessions, outputSchema, model selection
-      human.edit/review  NEXT — the remaining human participants (P2b, P2c)
+      human.review       NEXT — the last human participant (P2c)
       artifacts.ts       NEW — typed run artifacts (plan, diff, verdict)
       schema.ts          NEW — JSON-Schema arg validation + generated usage
       registry.ts        extension-registered functions, stages, roles
@@ -151,6 +151,21 @@ the question in the run journal (`awaitingHuman`), so it survives a session
 restart, and hands it to the main agent as a `workflow_answer` tool call.
 Whichever side answers first settles the same journal entry, because
 `RunStore.answerHumanRequest` only resolves a question still parked there.
+
+**`human.edit` is `ctx.ui.editor(title, prefill)`, and returns a record, not a
+string.** The editor resolves to `undefined` when the human closes it without
+saving, and to the buffer otherwise — but a buffer saved byte-for-byte
+unchanged and an abandoned editor both yield the original text, so a bare
+string cannot express the difference the workflow has to branch on. The
+primitive therefore resolves to `{ text, changed, abandoned }`, with `changed`
+computed in `RunStore.answerHumanEdit` against the prefill it parked, so the
+flags mean the same thing no matter which side answered.
+
+Abandonment is where `human.edit` deliberately diverges from `human.ask`. A
+dismissed question is a refusal to answer *now*, so it re-routes to the main
+agent; a closed editor is a decision, so it settles the run. The agent-facing
+`workflow_edit` tool exists only for runs with no UI attached, and omitting its
+`text` argument produces the same abandoned outcome.
 
 ## Extension surface contract
 

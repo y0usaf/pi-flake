@@ -5,7 +5,7 @@ import { access, link, mkdir, open, readFile, readdir, rename, rm, stat, writeFi
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
-import type { BudgetApprovalRequest, JsonValue, LaunchSnapshot, RunRecord, WorkflowBudgetUsage, WorkflowRunEvent } from "./types.js";
+import type { BudgetApprovalRequest, HumanEditResult, JsonValue, LaunchSnapshot, RunRecord, WorkflowBudgetUsage, WorkflowRunEvent } from "./types.js";
 import type { OwnershipRecord } from "./agent-execution.js";
 import { WorkflowError } from "./types.js";
 import { loadLaunchSnapshot } from "./utils.js";
@@ -23,9 +23,14 @@ export interface AwaitingCheckpoint { path: string; name: string; prompt: string
 // of the question's own choice strings; sharing the map would force a union that
 // every checkpoint reader would have to re-narrow.
 export interface AwaitingHumanRequest { path: string; name: string; prompt: string; choices: readonly string[]; context: JsonValue }
+// An edit parked mid-flight. `text` is the prefill the human was handed, kept
+// so the answer side can compute `changed` by comparison instead of trusting
+// whoever submits the buffer, and so a session restart can re-open the editor
+// with the same starting text.
+export interface AwaitingHumanEdit { path: string; name: string; prompt: string; text: string; context: JsonValue }
 export type PendingWorkflowDecision = BudgetApprovalRequest
 export type PersistedOwnershipNode = OwnershipRecord
-type Journal = { completed: Record<string, CompletedOperation>; awaiting?: Record<string, AwaitingCheckpoint>; awaitingHuman?: Record<string, AwaitingHumanRequest>; decisions?: Record<string, PendingWorkflowDecision> };
+type Journal = { completed: Record<string, CompletedOperation>; awaiting?: Record<string, AwaitingCheckpoint>; awaitingHuman?: Record<string, AwaitingHumanRequest>; awaitingEdit?: Record<string, AwaitingHumanEdit>; decisions?: Record<string, PendingWorkflowDecision> };
 const TERMINAL_SUMMARY_STATES = new Set(["completed", "failed", "stopped"]);
 const EMPTY_USAGE: WorkflowBudgetUsage = { tokens: 0, costUsd: 0, durationMs: 0, agentLaunches: 0 };
 const SYSTEM_PROMPT_STORAGE = ".system-prompts";
@@ -531,6 +536,42 @@ export class RunStore {
       journal.completed[request.path] = { path: request.path, value: answer };
       journal.awaitingHuman = Object.fromEntries(Object.entries(journal.awaitingHuman ?? {}).filter(([path]) => path !== request.path));
       return request;
+    });
+  }
+
+  // The edit trio mirrors the ask trio but keeps its own journal map: an ask
+  // answer is one of a fixed choice list, an edit answer is arbitrary text plus
+  // two flags, and a shared map would make every reader re-narrow a union.
+  async awaitHumanEdit(request: AwaitingHumanEdit): Promise<HumanEditResult | undefined> {
+    const replayed = await this.replay(request.path);
+    if (replayed) return replayed.value as unknown as HumanEditResult;
+    return this.updateJournal((journal) => {
+      const completed = journal.completed[request.path];
+      if (completed) return completed.value as unknown as HumanEditResult;
+      journal.awaitingEdit ??= {};
+      journal.awaitingEdit[request.path] = request;
+      return undefined;
+    });
+  }
+
+  async awaitingHumanEdits(): Promise<readonly AwaitingHumanEdit[]> {
+    await this.journalWrite;
+    const journal = await json<Journal>(join(this.directory, "journal.json"));
+    return Object.values(journal.awaitingEdit ?? {});
+  }
+
+  // `text` of undefined means the human closed the editor without saving. The
+  // resulting `changed` flag is computed here against the parked prefill, so an
+  // abandoned edit and a saved-but-identical buffer stay distinguishable no
+  // matter which caller (UI pick or workflow_edit tool) submits the answer.
+  async answerHumanEdit(name: string, text: string | undefined): Promise<{ request: AwaitingHumanEdit; result: HumanEditResult } | undefined> {
+    return this.updateJournal((journal) => {
+      const request = Object.values(journal.awaitingEdit ?? {}).find((item) => item.name === name);
+      if (!request || journal.completed[request.path]) return undefined;
+      const result: HumanEditResult = text === undefined ? { text: request.text, changed: false, abandoned: true } : { text, changed: text !== request.text, abandoned: false };
+      journal.completed[request.path] = { path: request.path, value: result as unknown as JsonValue };
+      journal.awaitingEdit = Object.fromEntries(Object.entries(journal.awaitingEdit ?? {}).filter(([path]) => path !== request.path));
+      return { request, result };
     });
   }
   async requestWorkflowDecision(request: PendingWorkflowDecision): Promise<void> {

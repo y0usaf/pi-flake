@@ -421,6 +421,18 @@
           touch $out
         '';
 
+        # P2b acceptance: same reasoning as P2a, one primitive along. RPC
+        # surfaces ctx.ui.editor as an extension_ui_request carrying the
+        # prefill, so the harness can answer three edits in one run -- saved
+        # with changes, saved byte-identical, and closed without saving -- and
+        # require the workflow to tell all three apart.
+        pi-loom-human-edit = pkgs.runCommand "pi-loom-human-edit" {
+          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.gnused pkgs.coreutils];
+        } ''
+          bash ${./nix/checks/loom-human-edit.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom
+          touch $out
+        '';
+
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;
