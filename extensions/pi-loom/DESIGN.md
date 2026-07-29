@@ -69,9 +69,10 @@ extensions/
   pi-loom/                             ENGINE (mechanism)
     src/
       host.ts            command registration, run lifecycle, TUI blocks
-      execution.ts       DSL: agent, parallel, pipeline, phase, checkpoint, workflow
+      execution.ts       DSL: agent, parallel, pipeline, phase, checkpoint,
+                         human.ask, workflow
       agent-execution.ts sub-agent sessions, outputSchema, model selection
-      human.ts           NEW — human.ask/edit/review as first-class participants
+      human.edit/review  NEXT — the remaining human participants (P2b, P2c)
       artifacts.ts       NEW — typed run artifacts (plan, diff, verdict)
       schema.ts          NEW — JSON-Schema arg validation + generated usage
       registry.ts        extension-registered functions, stages, roles
@@ -131,6 +132,25 @@ value. Strip the `export` line from the wrapper and the same script fails
 with `Workflow child exited with code 1`. The harness needs no network and
 no real API key because the probe never calls `agent()`; P8's bare-core
 check reuses it.
+
+**`human.ask` is backed by `ctx.ui.select`, not by `pi-interview`.** The
+original intent was to reuse pi-interview's questionnaire UI. That is not
+reachable: pi-interview exposes its questionnaire only as the `interview_user`
+*tool*, and pi's extension API (`dist/core/extensions/types.d.ts`) has no
+cross-extension tool invocation — an extension can register tools and read
+`ctx.ui`, but cannot call another extension's tool. So `human.ask` renders
+through the core `ExtensionUIContext.select`, which every run mode implements
+(interactive dialog, RPC `extension_ui_request`, no-op when headless).
+pi-interview stays in the loom stack for the *agent's* own clarifying questions;
+the two paths are complementary, not layered. If pi upstream ever grows a
+programmatic tool-invocation hook, revisit — the bridge is one function
+(`humanBridge` in `host.ts`).
+
+A question that the human dismisses is not a cancelled run. `human.ask` parks
+the question in the run journal (`awaitingHuman`), so it survives a session
+restart, and hands it to the main agent as a `workflow_answer` tool call.
+Whichever side answers first settles the same journal entry, because
+`RunStore.answerHumanRequest` only resolves a question still parked there.
 
 ## Extension surface contract
 
@@ -193,10 +213,23 @@ apart within one loop iteration.
       launches Pi with only the loom stack, `/workflow` is present, a
       workflow child process spawns (proves `PI_WORKFLOW_NODE_PATH`), and
       `pi` is byte-identical to before.*
-- **P2 — human primitives.** `human.ask/edit/review` in the DSL, backed
-      by `pi-interview` and `$EDITOR`. *Accept: a workflow calling
-      `human.ask` renders the choice UI in the main session and resumes
-      with the selected value.*
+- **P2 — human primitives.** The human as a callable DSL participant. Split
+      into three because each backing mechanism is different: a choice UI, an
+      editor round trip, and a structured verdict.
+  - **P2a — `human.ask`.** Choice question, backed by `ctx.ui.select` (not
+      `pi-interview`; see Architecture for why), with a `workflow_answer` tool
+      as the agent-facing fallback. *Accept: a workflow calling `human.ask`
+      renders the choice UI in the main session and resumes with the selected
+      value.*
+  - **P2b — `human.edit`.** Hand a text artifact to `$EDITOR` and take the
+      edited text back. RPC mode already carries an `editor` UI method.
+      *Accept: a workflow calling `human.edit` opens the editor prefilled and
+      resumes with the saved buffer, and an unchanged buffer is distinguishable
+      from an abandoned edit.*
+  - **P2c — `human.review`.** Verdict over a diff or artifact: approve,
+      request changes with a note, reject. *Accept: a workflow calling
+      `human.review` resumes with a typed verdict whose note text reaches the
+      next stage.*
 - **P3 — declaration mechanism.** JSON-Schema args in `command.json`,
       generated usage, `/workflows` listing, project-local `.pi/workflows/`
       scan root. *Accept: bad args are rejected with generated usage text; a

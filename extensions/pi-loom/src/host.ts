@@ -11,7 +11,7 @@ import { acquireSessionLease, listPersistedSessionIds, listRunIds, RunStore, Ses
 import type { AwaitingCheckpoint, PersistedRun, WorktreeReference } from "./persistence.js";
 import { budgetRelaxed, budgetUsage, mergeBudget, resumeBudgetAllowed, validateBudget, validateBudgetPatch, WorkflowBudgetRuntime } from "./budget.js";
 import { asWorkflowError, aliasDrift, createLaunchSnapshot, deepFreeze, errorCode, errorText, fail, isWorkflowAuthored, jsonValue, modelAliasErrorName, modelCapability, object, parseModelReference, parseThinking, positiveInteger, resolveModelReference, validateModelAliases } from "./utils.js";
-import { launchScriptForSnapshot, loadAgentDefinitions, loadSettings, preflight, resolveAgentResourcePolicy, resolveWorkflowSettings, saveExposeWorkflowTools, saveModelAliases, validateAgentOptions, validateCheckpoint, validateModelAliasAvailability, validateShellOptions, validateWorkflowLaunchWithRegistry, workflowProjectSettingsPath, workflowPrompt, workflowSettingsPath } from "./validation.js";
+import { launchScriptForSnapshot, loadAgentDefinitions, loadSettings, preflight, resolveAgentResourcePolicy, resolveWorkflowSettings, saveExposeWorkflowTools, saveModelAliases, validateAgentOptions, validateCheckpoint, validateHumanAsk, validateModelAliasAvailability, validateShellOptions, validateWorkflowLaunchWithRegistry, workflowProjectSettingsPath, workflowPrompt, workflowSettingsPath } from "./validation.js";
 import { beginWorkflowExtensionLoading, loadingRegistry, resetWorkflowRegistry, type WorkflowRegistryApi } from "./registry.js";
 import { agentIdentityPath, agentWorktree, encoded, executeShellCommand, persistActiveAgentAttempt, persistAgentAttempts, readShellResult, runWorkflow, shellIdentityPath } from "./execution.js";
 import { openWorkflowArtifact, workflowPromptArtifact, workflowResultArtifact, workflowScriptArtifact, type WorkflowArtifact } from "./workflow-artifacts.js";
@@ -1457,6 +1457,12 @@ function withWorkflowFunctions(bridge: WorkflowBridge, store: RunStore, runConte
         if (!bridge.checkpoint || !object(args[0]) || !jsonValue(args[0])) fail("INTERNAL_ERROR", "No checkpoint bridge is available");
         return bridge.checkpoint(args[0], signal);
       },
+      human: Object.freeze({
+        ask: async (...args: readonly unknown[]) => {
+          if (!bridge.humanAsk || !object(args[0]) || !jsonValue(args[0])) fail("INTERNAL_ERROR", "No human bridge is available");
+          return bridge.humanAsk(args[0], signal);
+        },
+      }),
       phase: (name: string) => { sideEffects.push(Promise.resolve(bridge.phase?.(name))); },
       log: (message: string) => { sideEffects.push(Promise.resolve(bridge.log?.(message))); },
     };
@@ -1590,7 +1596,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     return skillPath ? { skillPaths: [skillPath] } : undefined;
   });
   type BudgetDecisionResult = { state: "running" | "completed" | "budget_exhausted"; approved: boolean; value?: JsonValue; run?: PersistedRun };
-  const runs = new Map<string, { executor: WorkflowAgentExecutor; store: RunStore; metadata: WorkflowMetadata; model: ModelSpec; lifecycle: RunLifecycle; budget: WorkflowBudgetRuntime; abortController: AbortController; projectTrusted: () => boolean; providerErrorRecovery?: (failure: AgentProviderFailure) => Promise<AgentProviderRecovery>; execution?: WorkflowExecution; completion?: Promise<unknown>; checkpointResolvers: Map<string, (value: boolean) => void>; update?: (result: WorkflowToolUpdate) => void }>();
+  const runs = new Map<string, { executor: WorkflowAgentExecutor; store: RunStore; metadata: WorkflowMetadata; model: ModelSpec; lifecycle: RunLifecycle; budget: WorkflowBudgetRuntime; abortController: AbortController; projectTrusted: () => boolean; providerErrorRecovery?: (failure: AgentProviderFailure) => Promise<AgentProviderRecovery>; execution?: WorkflowExecution; completion?: Promise<unknown>; checkpointResolvers: Map<string, (value: boolean) => void>; humanResolvers: Map<string, (value: string) => void>; update?: (result: WorkflowToolUpdate) => void }>();
   let providerRecoveryQueue = Promise.resolve();
   const enqueueProviderRecovery = <T>(task: () => Promise<T>): Promise<T> => { const next = providerRecoveryQueue.then(task, task); providerRecoveryQueue = next.then(() => undefined, () => undefined); return next; };
   const createProviderErrorRecovery = (host: unknown, fallbackModels: ReadonlySet<string>, abort: () => void) => {
@@ -1907,6 +1913,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     scheduler.removeRun(runId);
     terminalRunStates.set(runId, run.lifecycle.state as "completed" | "failed" | "stopped");
     run.checkpointResolvers.clear();
+    run.humanResolvers.clear();
     liveActivities.delete(runId);
     liveEventTimes.delete(runId);
     for (const key of liveAgentSessions.keys()) if (key.startsWith(`${runId}:`)) liveAgentSessions.delete(key);
@@ -1969,6 +1976,20 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     if (!silent) deliver(pi, `Workflow ${run.metadata.name} checkpoint ${name}: ${approved ? "Approved" : "Rejected"}.`);
     return true;
   };
+  // Answering is idempotent by construction: answerHumanRequest() only settles a
+  // question that is still parked in the journal, so a UI pick racing a
+  // workflow_answer tool call cannot resolve the same question twice.
+  const answerHumanRequest = async (runId: string, name: string, answer: string, silent = false) => {
+    const run = runs.get(runId);
+    if (!run) return false;
+    const request = await run.store.answerHumanRequest(name, answer);
+    if (!request) return false;
+    if ((await run.store.awaitingHumanRequests()).length === 0 && (await run.store.awaitingCheckpoints()).length === 0) await run.lifecycle.resolveAwaitingInput();
+    run.humanResolvers.get(request.path)?.(answer);
+    run.humanResolvers.delete(request.path);
+    if (!silent) deliver(pi, `Workflow ${run.metadata.name} question ${name}: ${answer}.`);
+    return true;
+  };
   const budgetDecisionDelivery = (metadata: WorkflowMetadata, request: BudgetApprovalRequest) => `Workflow ${metadata.name} budget adjustment ${request.proposalId} for run ${request.runId} requires approval. Consumed usage: ${JSON.stringify(request.consumed)}. Previous limits: ${JSON.stringify(request.previous)}. Proposed limits: ${JSON.stringify(request.proposed)}. Respond with workflow_respond using proposalId ${request.proposalId}.`;
   const appendBudgetDecisionEvent = async (run: NonNullable<ReturnType<typeof runs.get>>, request: BudgetApprovalRequest, type: "adjustment_requested" | "adjustment_approved" | "adjustment_rejected") => {
     run.budget.recordEvent({ type, budgetVersion: request.budgetVersion, dimensions: [], usage: structuredClone(request.consumed), limits: structuredClone(request.proposed), at: Date.now(), proposalId: request.proposalId, previous: structuredClone(request.previous), proposed: structuredClone(request.proposed) });
@@ -2025,6 +2046,50 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     };
   };
 
+  // human.ask. Deliberately not gated on `foreground` the way checkpoints are:
+  // a checkpoint is an approval on work the caller is already waiting for, but
+  // an ask is the run addressing the human directly, so it renders in the main
+  // session whenever there is a UI at all. With no UI (or after the picker is
+  // dismissed) the question is delivered to the main agent, which answers with
+  // the workflow_answer tool; either path lands in the same journal entry.
+  const humanBridge = (runId: string, store: RunStore, metadata: WorkflowMetadata, ui?: { select?: (prompt: string, options: string[]) => Promise<string | undefined> }, headless = false) => {
+    const askCounters = new Map<string, number>();
+    return async (raw: Readonly<Record<string, JsonValue>>, signal: AbortSignal): Promise<string> => {
+      const input = validateHumanAsk(raw);
+      const label = nextNamedOccurrence(askCounters, input.name);
+      const path = operationPath("human", "ask", label);
+      if (headless) fail("RESUME_INCOMPATIBLE", "Headless CLI runs cannot ask a human");
+      const request = { path, name: label, prompt: input.prompt, choices: [...input.choices], context: input.context };
+      const alreadyAwaiting = (await store.awaitingHumanRequests()).some((pending) => pending.path === path);
+      const replayed = await store.awaitHumanRequest(request);
+      if (replayed !== undefined) return replayed;
+      const run = runs.get(runId);
+      await run?.lifecycle.enterAwaitingInput();
+      const delivery = `Workflow ${metadata.name} question ${label}: ${input.prompt}\nChoices: ${input.choices.join(" | ")}\nContext: ${JSON.stringify(input.context)}\nRespond with workflow_answer.`;
+      if (!alreadyAwaiting && !ui?.select) deliver(pi, delivery);
+      const answer = new Promise<string>((resolve, reject) => {
+        run?.humanResolvers.set(path, resolve);
+        if (signal.aborted) reject(new WorkflowError("CANCELLED", "Workflow cancelled"));
+        else signal.addEventListener("abort", () => { run?.humanResolvers.delete(path); reject(new WorkflowError("CANCELLED", "Workflow cancelled")); }, { once: true });
+      });
+      const answered = await store.awaitHumanRequest(request);
+      if (answered !== undefined) {
+        run?.humanResolvers.get(path)?.(answered);
+        run?.humanResolvers.delete(path);
+      }
+      if (ui?.select) void (async () => {
+        while (!signal.aborted && run?.humanResolvers.has(path)) {
+          const choice = await ui.select?.(input.prompt, [...input.choices]);
+          // Dismissing the picker hands the question to the main agent rather
+          // than cancelling the run: the human declined to answer now, not ever.
+          if (!choice) { deliver(pi, delivery); return; }
+          if (await answerHumanRequest(runId, label, choice, true)) return;
+        }
+      })().catch(() => undefined);
+      return answer;
+    };
+  };
+
   registerWorkflowTool({
     name: "workflow_respond",
     label: "Workflow Respond",
@@ -2046,6 +2111,28 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     },
     renderCall(args, theme) { return styledTextBlock(workflowControlCall("workflow_respond", args, theme)); },
     renderResult(result, options, theme, context) { return workflowCatalogBlock(workflowControlResult("workflow_respond", context.args, result, options.expanded, theme, context.isError), options.expanded); },
+  });
+  // The agent-facing half of human.ask, used when no UI is attached or when the
+  // human dismissed the picker. Rendering is the default tool rendering on
+  // purpose: workflowControlCall/Result are keyed to checkpoint and budget
+  // vocabulary, and a question is neither.
+  registerWorkflowTool({
+    name: "workflow_answer",
+    label: "Workflow Answer",
+    description: "Answer one pending human.ask question in a workflow run by choosing one of its listed choices",
+    parameters: Type.Object({ runId: Type.String(), name: Type.String(), answer: Type.String() }, { additionalProperties: false }),
+    async execute(_id, params) {
+      try {
+        const accepted = await answerHumanRequest(params.runId, params.name, params.answer);
+        if (accepted) return { content: [{ type: "text" as const, text: "Answer accepted." }], details: { accepted, state: "question_answered", answer: params.answer } };
+        const pending = await runs.get(params.runId)?.store.awaitingHumanRequests();
+        const choices = pending?.find((request) => request.name === params.name)?.choices;
+        const text = choices ? `Answer rejected: ${params.name} accepts only ${choices.join(" | ")}.` : `No question named ${params.name} is awaiting an answer in run ${params.runId}.`;
+        return { content: [{ type: "text" as const, text }], details: { accepted, state: choices ? "invalid_choice" : "not_pending", answer: params.answer, ...(choices ? { choices: [...choices] } : {}) } };
+      } catch (error) {
+        throw mainAgentError(error);
+      }
+    },
   });
   registerWorkflowTool({
     name: "workflow_stop",
@@ -2223,7 +2310,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     run.executor.setRunContext(runContext);
     await scheduler.cancelRun(run.store.runId);
     await run.lifecycle.resume();
-    const execution = runWorkflow(script, loaded.snapshot.args, withWorkflowFunctions({ shell: (command, options, signal, identity) => shellForRun(run.store, run.metadata, run.lifecycle, command, options, signal, identity), agent: workflowAgentHandler(run.store, run.metadata, run.lifecycle, run.executor, run.store.cwd, run.store.runId), worktree: async (owner) => resolveWorktree(run.store, run.metadata, owner), checkpoint: checkpointBridge(run.store.runId, run.store, run.metadata, foreground, hasUI ? ui : undefined), phase: phaseBridge(run.store, run.metadata, run.lifecycle), log: logBridge(run.lifecycle, run.metadata.name) }, run.store, runContext, registry), controller.signal);
+    const execution = runWorkflow(script, loaded.snapshot.args, withWorkflowFunctions({ shell: (command, options, signal, identity) => shellForRun(run.store, run.metadata, run.lifecycle, command, options, signal, identity), agent: workflowAgentHandler(run.store, run.metadata, run.lifecycle, run.executor, run.store.cwd, run.store.runId), worktree: async (owner) => resolveWorktree(run.store, run.metadata, owner), checkpoint: checkpointBridge(run.store.runId, run.store, run.metadata, foreground, hasUI ? ui : undefined), humanAsk: humanBridge(run.store.runId, run.store, run.metadata, hasUI ? ui : undefined), phase: phaseBridge(run.store, run.metadata, run.lifecycle), log: logBridge(run.lifecycle, run.metadata.name) }, run.store, runContext, registry), controller.signal);
     run.execution = execution;
     const completion = execution.result.then(async (value) => {
       await scheduler.flush();
@@ -2378,7 +2465,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
       const abortController = new AbortController();
       const providerErrorRecovery = createProviderErrorRecovery(context, availableModels, () => { abortController.abort(); });
       const providerPause = async () => { deliver(pi, `Workflow ${loaded.snapshot.metadata.name} paused: provider limit.`); await lifecycle.providerPause(); };
-      const childRun = { executor: createAgentExecutor({ cwd, model, tools: activeSnapshotTools(loaded.snapshot.tools, active), availableModels, knownModels, modelAliases: currentAliases, blockedAliases, blockedAliasTargets, settingsPath, agentDefinitions: loaded.snapshot.roles ?? {}, runStore: childStore, providerPause, agentResourcePolicy: frozenResourcePolicy(currentPolicy) }), store: childStore, metadata: loaded.snapshot.metadata, model, lifecycle, budget: childBudget, abortController, projectTrusted: () => projectTrusted(context), checkpointResolvers: new Map(), ...(providerErrorRecovery ? { providerErrorRecovery } : {}) };
+      const childRun = { executor: createAgentExecutor({ cwd, model, tools: activeSnapshotTools(loaded.snapshot.tools, active), availableModels, knownModels, modelAliases: currentAliases, blockedAliases, blockedAliasTargets, settingsPath, agentDefinitions: loaded.snapshot.roles ?? {}, runStore: childStore, providerPause, agentResourcePolicy: frozenResourcePolicy(currentPolicy) }), store: childStore, metadata: loaded.snapshot.metadata, model, lifecycle, budget: childBudget, abortController, projectTrusted: () => projectTrusted(context), checkpointResolvers: new Map(), humanResolvers: new Map(), ...(providerErrorRecovery ? { providerErrorRecovery } : {}) };
       runs.set(childRunId, childRun);
       scheduler.addRun(childRunId, loaded.snapshot.settings.concurrency, () => { childBudget.checkAgentLaunch(); });
       await eventPublisher.runStarted(childStore, loaded.snapshot.metadata);
@@ -2464,8 +2551,9 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
       const roleDefinitions = loaded.snapshot.roles ?? {};
       const abortController = new AbortController();
       const providerErrorRecovery = createProviderErrorRecovery(ctx, new Set(loaded.snapshot.models), () => { abortController.abort(); });
-      runs.set(runId, { executor: createAgentExecutor({ cwd: ctx.cwd, model, tools: activeSnapshotTools(loaded.snapshot.tools, "session"), availableModels: new Set(loaded.snapshot.models), knownModels: new Set(loaded.snapshot.models), ...(loaded.snapshot.modelAliases ?? loaded.snapshot.settings.modelAliases ? { modelAliases: loaded.snapshot.modelAliases ?? loaded.snapshot.settings.modelAliases } : {}), ...(loaded.snapshot.settingsSources?.modelAliases ? { settingsPath: loaded.snapshot.settingsSources.modelAliases } : loaded.snapshot.settingsPath ? { settingsPath: loaded.snapshot.settingsPath } : {}), agentDefinitions: roleDefinitions, runStore: store, providerPause, agentResourcePolicy: frozenResourcePolicy(snapshotResourcePolicy(loaded.snapshot, store.cwd, projectTrusted(ctx), workflowSettingsPath(extensionAgentDir))) }), store, metadata: loaded.snapshot.metadata, model, lifecycle, budget: budgetRuntime, abortController, projectTrusted: () => projectTrusted(ctx), checkpointResolvers: new Map(), ...(providerErrorRecovery ? { providerErrorRecovery } : {}) });
+      runs.set(runId, { executor: createAgentExecutor({ cwd: ctx.cwd, model, tools: activeSnapshotTools(loaded.snapshot.tools, "session"), availableModels: new Set(loaded.snapshot.models), knownModels: new Set(loaded.snapshot.models), ...(loaded.snapshot.modelAliases ?? loaded.snapshot.settings.modelAliases ? { modelAliases: loaded.snapshot.modelAliases ?? loaded.snapshot.settings.modelAliases } : {}), ...(loaded.snapshot.settingsSources?.modelAliases ? { settingsPath: loaded.snapshot.settingsSources.modelAliases } : loaded.snapshot.settingsPath ? { settingsPath: loaded.snapshot.settingsPath } : {}), agentDefinitions: roleDefinitions, runStore: store, providerPause, agentResourcePolicy: frozenResourcePolicy(snapshotResourcePolicy(loaded.snapshot, store.cwd, projectTrusted(ctx), workflowSettingsPath(extensionAgentDir))) }), store, metadata: loaded.snapshot.metadata, model, lifecycle, budget: budgetRuntime, abortController, projectTrusted: () => projectTrusted(ctx), checkpointResolvers: new Map(), humanResolvers: new Map(), ...(providerErrorRecovery ? { providerErrorRecovery } : {}) });
       for (const checkpoint of await store.awaitingCheckpoints()) deliver(pi, `Workflow ${loaded.snapshot.metadata.name} checkpoint ${checkpoint.name}: ${checkpoint.prompt}\nContext: ${JSON.stringify(checkpoint.context)}\nRespond with workflow_respond.`);
+      for (const question of await store.awaitingHumanRequests()) deliver(pi, `Workflow ${loaded.snapshot.metadata.name} question ${question.name}: ${question.prompt}\nChoices: ${question.choices.join(" | ")}\nContext: ${JSON.stringify(question.context)}\nRespond with workflow_answer.`);
       for (const decision of await store.pendingWorkflowDecisions()) deliver(pi, budgetDecisionDelivery(loaded.snapshot.metadata, decision));
       scheduler.restoreRun(runId, loaded.snapshot.settings.concurrency, loaded.snapshot.identityVersion === LAUNCH_SNAPSHOT_IDENTITY_VERSION ? await store.loadOwnership() : [], () => runs.get(runId)?.budget.checkAgentLaunch());
     }
@@ -2558,10 +2646,10 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
       const providerPause = async () => { if (background) deliver(pi, `Workflow ${checked.metadata.name} paused: provider limit.`); await lifecycle.providerPause(); };
       const providerErrorRecovery = createProviderErrorRecovery(ctx, availableModels, () => { runController.abort(); });
       const executor = createAgentExecutor({ cwd: ctx.cwd, model: rootModel, tools: new Set(rootTools), availableModels, knownModels, modelAliases, settingsPath, agentDefinitions, runStore: store, providerPause, agentResourcePolicy: frozenResourcePolicy(launch.resourcePolicy), runContext });
-      runs.set(runId, { executor, store, metadata: checked.metadata, model: rootModel, lifecycle, budget: budgetRuntime, abortController: runController, projectTrusted: () => projectTrusted(ctx), checkpointResolvers: new Map(), ...(providerErrorRecovery ? { providerErrorRecovery } : {}), ...(params.foreground && onUpdate ? { update: onUpdate } : {}) });
+      runs.set(runId, { executor, store, metadata: checked.metadata, model: rootModel, lifecycle, budget: budgetRuntime, abortController: runController, projectTrusted: () => projectTrusted(ctx), checkpointResolvers: new Map(), humanResolvers: new Map(), ...(providerErrorRecovery ? { providerErrorRecovery } : {}), ...(params.foreground && onUpdate ? { update: onUpdate } : {}) });
       if (params.foreground && onUpdate) onUpdate(workflowToolUpdate((await store.load()).run));
       scheduler.addRun(runId, settings.concurrency, () => runs.get(runId)?.budget.checkAgentLaunch());
-      const execution = runWorkflow(script, args, withWorkflowFunctions({ shell: (command, options, signal, identity) => shellForRun(store, checked.metadata, lifecycle, command, options, signal, identity), agent: workflowAgentHandler(store, checked.metadata, lifecycle, executor, ctx.cwd, runId, captureFunctionRole), worktree: async (owner) => resolveWorktree(store, checked.metadata, owner), checkpoint: checkpointBridge(runId, store, checked.metadata, Boolean(params.foreground), params.foreground && ctx.hasUI ? ctx.ui : undefined, headless), phase: phaseBridge(store, checked.metadata, lifecycle), log: logBridge(lifecycle, checked.metadata.name) }, store, runContext, registry), runController.signal);
+      const execution = runWorkflow(script, args, withWorkflowFunctions({ shell: (command, options, signal, identity) => shellForRun(store, checked.metadata, lifecycle, command, options, signal, identity), agent: workflowAgentHandler(store, checked.metadata, lifecycle, executor, ctx.cwd, runId, captureFunctionRole), worktree: async (owner) => resolveWorktree(store, checked.metadata, owner), checkpoint: checkpointBridge(runId, store, checked.metadata, Boolean(params.foreground), params.foreground && ctx.hasUI ? ctx.ui : undefined, headless), humanAsk: humanBridge(runId, store, checked.metadata, ctx.hasUI ? ctx.ui : undefined, headless), phase: phaseBridge(store, checked.metadata, lifecycle), log: logBridge(lifecycle, checked.metadata.name) }, store, runContext, registry), runController.signal);
       (runs.get(runId) as NonNullable<ReturnType<typeof runs.get>>).execution = execution;
       await eventPublisher.runStarted(store, checked.metadata);
       const finish = execution.result.then(async (value) => {

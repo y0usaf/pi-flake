@@ -8,7 +8,7 @@ import { Script } from "node:vm";
 import { Value } from "typebox/value";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { WorkflowError } from "./types.js";
-import type { AgentDefinition, AgentResourceExclusions, AgentResourcePolicy, CheckpointInput, JsonSchema, JsonValue, LaunchSnapshot, PreflightCapabilities, PreflightResult, ShellOptions, StaticWorkflowCall, StaticWorkflowExecution, StaticWorkflowScope, ValidatedWorkflowLaunch, WorkflowCallKind, WorkflowErrorCode, WorkflowExtensionMetadata, WorkflowExtensionSettings, WorkflowMetadata, WorkflowRoleDirectoryRegistration, WorkflowSettings, WorkflowSettingsOverrides, WorkflowSettingsResolution, WorkflowSettingsSources, WorkflowValidationContext, WorkflowValidationParameters } from "./types.js";
+import type { AgentDefinition, AgentResourceExclusions, AgentResourcePolicy, CheckpointInput, HumanAskInput, JsonSchema, JsonValue, LaunchSnapshot, PreflightCapabilities, PreflightResult, ShellOptions, StaticWorkflowCall, StaticWorkflowExecution, StaticWorkflowScope, ValidatedWorkflowLaunch, WorkflowCallKind, WorkflowErrorCode, WorkflowExtensionMetadata, WorkflowExtensionSettings, WorkflowMetadata, WorkflowRoleDirectoryRegistration, WorkflowSettings, WorkflowSettingsOverrides, WorkflowSettingsResolution, WorkflowSettingsSources, WorkflowValidationContext, WorkflowValidationParameters } from "./types.js";
 import type { WorkflowRegistryApi } from "./registry.js";
 import { registeredWorkflowRoleDirectoryRegistrations } from "./registry.js";
 import { annotateModelAliasError, deepFreeze, errorText, fail, jsonValue, modelAliasName, modelCapability, object, parseThinking, positiveInteger, resolveModelReference, unknownModel, validateModelAliases, validateResourcePattern } from "./utils.js";
@@ -21,6 +21,22 @@ export function validateCheckpoint(value: unknown): CheckpointInput {
   if (Buffer.byteLength(value.prompt) > 1024) fail("INVALID_METADATA", "checkpoint prompt exceeds 1024 UTF-8 bytes");
   if (Buffer.byteLength(JSON.stringify(value.context)) > 4096) fail("INVALID_METADATA", "checkpoint context exceeds 4096 UTF-8 bytes");
   return { name: value.name, prompt: value.prompt, context: value.context };
+}
+
+// human.ask has no static analysis pass: `human.ask(...)` is a MemberExpression
+// callee, and workflowCallKind() only recognises bare Identifier callees. The
+// stable-name rule checkpoint gets statically is therefore enforced here, at
+// dispatch, against the same journal-path requirement.
+export function validateHumanAsk(value: unknown): HumanAskInput {
+  if (!object(value) || Object.keys(value).some((key) => !["name", "prompt", "choices", "context"].includes(key)) || typeof value.name !== "string" || value.name.trim() === "" || typeof value.prompt !== "string" || value.prompt.trim() === "" || !Array.isArray(value.choices) || (value.context !== undefined && !jsonValue(value.context))) fail("INVALID_METADATA", "human.ask requires name, prompt, choices, and optional JSON context");
+  const choices = value.choices as unknown[];
+  if (choices.length < 2 || choices.length > 12) fail("INVALID_METADATA", "human.ask requires between 2 and 12 choices");
+  if (choices.some((choice) => typeof choice !== "string" || choice.trim() === "")) fail("INVALID_METADATA", "human.ask choices must be non-empty strings");
+  if (new Set(choices as string[]).size !== choices.length) fail("INVALID_METADATA", "human.ask choices must be unique");
+  const context = value.context === undefined ? null : value.context;
+  if (Buffer.byteLength(value.prompt) > 1024) fail("INVALID_METADATA", "human.ask prompt exceeds 1024 UTF-8 bytes");
+  if (Buffer.byteLength(JSON.stringify(context)) > 4096) fail("INVALID_METADATA", "human.ask context exceeds 4096 UTF-8 bytes");
+  return { name: value.name, prompt: value.prompt, choices: choices as string[], context };
 }
 
 export function workflowSettingsPath(agentDir = getAgentDir()): string { return join(agentDir, ROLE_DIRECTORY, "settings.json"); }

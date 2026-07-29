@@ -18,9 +18,14 @@ export interface RunSummaryArtifacts { runDirectory: string; statePath: string; 
 export interface RunSummary { schemaVersion: 1; runId: string; sessionId: string; workflowName: string; state: RunRecord["state"]; createdAt: string; updatedAt: string; terminalAt?: string; usage: WorkflowBudgetUsage; agents: readonly RunSummaryAgent[]; error?: RunRecord["error"]; failedAt?: string; replayablePaths: readonly string[]; incompletePaths: readonly string[]; artifacts: RunSummaryArtifacts }
 export interface CompletedOperation { path: string; value: JsonValue }
 export interface AwaitingCheckpoint { path: string; name: string; prompt: string; context: JsonValue }
+// A human.ask question that has been posed but not answered. Kept in its own
+// journal map because a checkpoint answer is a boolean and an ask answer is one
+// of the question's own choice strings; sharing the map would force a union that
+// every checkpoint reader would have to re-narrow.
+export interface AwaitingHumanRequest { path: string; name: string; prompt: string; choices: readonly string[]; context: JsonValue }
 export type PendingWorkflowDecision = BudgetApprovalRequest
 export type PersistedOwnershipNode = OwnershipRecord
-type Journal = { completed: Record<string, CompletedOperation>; awaiting?: Record<string, AwaitingCheckpoint>; decisions?: Record<string, PendingWorkflowDecision> };
+type Journal = { completed: Record<string, CompletedOperation>; awaiting?: Record<string, AwaitingCheckpoint>; awaitingHuman?: Record<string, AwaitingHumanRequest>; decisions?: Record<string, PendingWorkflowDecision> };
 const TERMINAL_SUMMARY_STATES = new Set(["completed", "failed", "stopped"]);
 const EMPTY_USAGE: WorkflowBudgetUsage = { tokens: 0, costUsd: 0, durationMs: 0, agentLaunches: 0 };
 const SYSTEM_PROMPT_STORAGE = ".system-prompts";
@@ -495,6 +500,38 @@ export class RunStore {
     await this.journalWrite;
     const journal = await json<Journal>(join(this.directory, "journal.json"));
     return Object.values(journal.awaiting ?? {});
+  }
+
+  // Mirrors awaitCheckpoint: replay a previously recorded answer if this run is
+  // a retry of one that already asked, otherwise park the question in the
+  // journal so it survives a session restart, and return undefined to mean
+  // "still waiting on the human".
+  async awaitHumanRequest(request: AwaitingHumanRequest): Promise<string | undefined> {
+    const replayed = await this.replay(request.path);
+    if (replayed) return replayed.value as string;
+    return this.updateJournal((journal) => {
+      const completed = journal.completed[request.path];
+      if (completed) return completed.value as string;
+      journal.awaitingHuman ??= {};
+      journal.awaitingHuman[request.path] = request;
+      return undefined;
+    });
+  }
+
+  async awaitingHumanRequests(): Promise<readonly AwaitingHumanRequest[]> {
+    await this.journalWrite;
+    const journal = await json<Journal>(join(this.directory, "journal.json"));
+    return Object.values(journal.awaitingHuman ?? {});
+  }
+
+  async answerHumanRequest(name: string, answer: string): Promise<AwaitingHumanRequest | undefined> {
+    return this.updateJournal((journal) => {
+      const request = Object.values(journal.awaitingHuman ?? {}).find((item) => item.name === name);
+      if (!request || journal.completed[request.path] || !request.choices.includes(answer)) return undefined;
+      journal.completed[request.path] = { path: request.path, value: answer };
+      journal.awaitingHuman = Object.fromEntries(Object.entries(journal.awaitingHuman ?? {}).filter(([path]) => path !== request.path));
+      return request;
+    });
   }
   async requestWorkflowDecision(request: PendingWorkflowDecision): Promise<void> {
     await this.updateJournal((journal) => { journal.decisions ??= {}; journal.decisions[request.proposalId] = request; });

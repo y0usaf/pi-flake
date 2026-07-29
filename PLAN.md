@@ -18,39 +18,55 @@ marker into prose here — the count would lie.
 
 ## Handoff
 
-Last touched: P1 (alias package) landed and is ticked.
+Last touched: P2a (`human.ask`) landed and is ticked. P2 was split into
+P2a/P2b/P2c first, because each of the three human primitives has a different
+backing mechanism and one step cannot land all three honestly.
 
-What landed. `checks.pi-loom-cli-smoke` in `flake.nix`, driven by the new
-`nix/checks/loom-cli-smoke.sh`. It boots the real `loom` wrapper in
-`--mode rpc` under a throwaway `HOME` and asserts the three runtime halves
-of P1 that a build-only check cannot see: `/workflow` is registered; every
-CLI-loaded extension resolves to a store path that appears in the wrapper's
-own `-e` flags, with nothing user- or project-scoped (that is the "only the
-loom stack" criterion); and a probe workflow dropped into
-`<agentDir>/workflows` logs from inside the forked child's vm sandbox and
-returns its value. About 4 s in the Nix sandbox, no network, no real API
-key — the probe never calls `agent()`.
+What landed. `human.ask({ name, prompt, choices, context })` as a DSL
+primitive, plus `checks.pi-loom-human-ask` driven by the new
+`nix/checks/loom-human-ask.sh`. The call path, end to end: the vm sandbox in
+`execution.ts` exposes a frozen `human` object whose `ask` sends the RPC method
+`human.ask`; the host arm of `handleRpc` wraps the answer in the same branded
+work-result envelope `checkpoint` uses; `humanBridge` in `host.ts` parks the
+question in the run journal, calls `ctx.ui.select`, and resolves the parked
+promise when an answer arrives. `RunStore.awaitHumanRequest` /
+`answerHumanRequest` / `awaitingHumanRequests` are new, in their own
+`journal.awaitingHuman` map, so a checkpoint answer stays a boolean and an ask
+answer stays one of the question's own choice strings.
 
-Gates actually run: `nix build .#checks.x86_64-linux.pi-loom-cli-smoke`
-(pass, prints `smoke: /workflow present, stack clean, workflow child
-spawned and returned`), `biome lint .` (pass, 1 pre-existing warning),
-`nix flake check -L` (pass, all 14 checks).
+Gates actually run: `nix build .#checks.x86_64-linux.pi-loom-human-ask` (pass,
+prints `human-ask: choice UI rendered with the workflow's own choices, run
+resumed with the selection`), `biome lint .` (pass, the same 1 pre-existing
+warning in the eval harness, nothing new), `nix flake check -L` (pass, all 15
+checks; the new one is #15).
 
-Evidence for the two P1 criteria that are not expressible as assertions in
-that script:
+Design decisions worth not re-litigating:
 
-- **`pi` byte-identical.** `nix eval --raw .#pi.drvPath` returns
-  `/nix/store/pwzphnn83nnf3c7qb1419fidypp59jmy-pi-0.82.1.drv` both on this
-  tree and at `470c359`, the commit before the alias package existed. Same
-  derivation, therefore same output.
-- **The check actually bites.** Run against a copy of the `loom` script
-  with the `PI_WORKFLOW_NODE_PATH` export deleted, it fails with `smoke: no
-  log line from inside the workflow child`. That negative control is
-  deliberately not in CI: a check asserting that an unsupported
-  configuration stays broken becomes a maintenance hazard.
+- **`pi-interview` cannot back `human.ask`.** It exposes its questionnaire only
+  as the `interview_user` *tool*, and pi's extension API has no cross-extension
+  tool invocation (checked `dist/core/extensions/types.d.ts` in
+  `node_modules/@earendil-works/pi-coding-agent`). `human.ask` therefore uses
+  the core `ctx.ui.select`. DESIGN.md records this divergence under
+  Architecture; the DESIGN.md Roadmap line was corrected to match.
+- **Not gated on `foreground`.** `checkpointBridge` only renders UI for
+  foreground runs. An ask is the run addressing the human directly, so it
+  renders whenever `ctx.hasUI`. Dismissing the picker delivers the question to
+  the main agent for the new `workflow_answer` tool instead of cancelling.
 
 Traps for the next step:
 
+- **`human.ask` has no static analysis.** `workflowCallKind()` in
+  `validation.ts` only recognises bare `Identifier` callees, and `human.ask` is
+  a `MemberExpression`. Nothing statically enforces the stable-name rule that
+  `checkpoint` gets; `validateHumanAsk` enforces it at dispatch instead. P2b
+  and P2c inherit that gap. Adding member-callee support to `workflowCalls()`
+  is the real fix and is a separate piece of work.
+- **Reuse the P2a harness for P2b/P2c.** `nix/checks/loom-human-ask.sh` already
+  solves the awkward part: RPC mode needs stdin held open across two writes
+  (launch, then answer), which the script does with a FIFO on fd 3, and jq is
+  reading a file still being appended to, so parse errors on partial lines are
+  expected and suppressed. RPC exposes an `editor` UI method, which is what
+  P2b's `$EDITOR` round trip should ride on.
 - **Downstream flag renamed.** `~/nixos/hosts/y0usaf-desktop/finix/materialized-packages.nix`
   sets `"extensible-workflows" = true;`. That key no longer exists; it is now
   `loom`. `lib.enabledExtensions` asserts on unknown flags, so the system flake
@@ -63,11 +79,11 @@ Traps for the next step:
   before. Rationale is in DESIGN.md under Architecture.
 - The ref tree is no longer a package and is excluded from `biome.jsonc`;
   keep it that way, it is only a diff base for upstream fixes.
-- **Two facts the smoke harness depends on.** Pi's agent dir defaults to
+- **Two facts both harnesses depend on.** Pi's agent dir defaults to
   `$HOME/.pi/agent`, not the XDG data path the installed system uses; and an
   RPC `prompt` is refused before command dispatch unless a model resolves
-  with a key, which is why the script passes throwaway
-  `--provider/--model/--api-key` flags. Reuse the script for P8 rather than
+  with a key, which is why the scripts pass throwaway
+  `--provider/--model/--api-key` flags. Reuse them for P8 rather than
   rediscovering both.
 
 ## Current phase
@@ -78,8 +94,12 @@ Traps for the next step:
       wrapper; `checks.pi-loom-cli-smoke` boots it and proves `/workflow`
       registers, only the wrapper's own extensions load, and a workflow
       child process spawns.
-- [ ] **P2 — human primitives.** `human.ask/edit/review` in the DSL,
-      backed by `pi-interview` and `$EDITOR`.
+- [x] **P2a — `human.ask`.** Frozen `human` object in the workflow sandbox,
+      `humanBridge` + `journal.awaitingHuman` in the host, `workflow_answer`
+      tool as the agent-facing fallback, `checks.pi-loom-human-ask` proving the
+      round trip.
+- [ ] **P2b — `human.edit`.** `$EDITOR` round trip on a text artifact.
+- [ ] **P2c — `human.review`.** Structured verdict over a diff or artifact.
 - [ ] **P3 — declaration mechanism.** JSON-Schema args in `command.json`,
       generated usage, `/workflows` listing, project-local `.pi/workflows/`
       scan root.
