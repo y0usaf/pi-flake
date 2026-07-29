@@ -12,6 +12,14 @@ Full output (8.4KB) stored by pi-aphrodite. Use the aphrodite_retrieve tool with
 
 The model recovers the original text on demand with the `aphrodite_retrieve` tool, which supports case-insensitive line filtering (`query`) and pagination (`offset`/`limit`).
 
+## Two compression points
+
+**At insertion** (`tool_result`): output above the threshold is compressed the moment the tool returns. Conservative by default, because the model is usually about to read what it just asked for — hence high thresholds and a `read` skip list.
+
+**When aged** (`context`, fired before each LLM call): once the conversation passes `APHRODITE_ENGINE_PERCENT` of the model's context window, tool results outside the protected window — the first `APHRODITE_ENGINE_PROTECT_FIRST` and last `APHRODITE_ENGINE_PROTECT_LAST` messages — are replaced by markers. This is upstream Aphrodite's context engine, and it needs no guess about future need: the model read those results many turns ago.
+
+The engine ignores the skip list on purpose. `read` is skipped at insertion because a freshly read file is about to be used; the same file five turns later has no such claim.
+
 If the store file cannot be opened or a write fails, `pi-aphrodite` falls back silently and the original output is kept; `/aphrodite on` retries opening the store. User `!<cmd>` shell output also lands in model context, so it is compressed too — **on by default**. Because `BashOperations.exec` streams via `onData`, output is buffered and shown once when the command finishes; use `!!<cmd>` (never intercepted, excluded from context) for a live raw stream, or `/aphrodite bash off` to disable.
 
 The compression pipeline is fully programmatic (regex classifier + type-aware previews + sha256/SQLite store). No model call happens inside the compress step; the only agent decision is whether to retrieve.
@@ -28,11 +36,45 @@ That's all. The store is a local file; nothing else needs to run.
 
 | Variable                     | Default                                            | Purpose                                 |
 | ---------------------------- | -------------------------------------------------- | --------------------------------------- |
-| `APHRODITE_TOOL_THRESHOLD`   | `4096`                                             | Minimum size (bytes) to compress generic tool output (matches upstream's `tool_threshold_token`) |
-| `APHRODITE_TERMINAL_THRESHOLD` | `1024`                                           | Minimum size (bytes) to compress shell output — bash tool and user `!<cmd>` alike (matches upstream's `terminal_threshold`) |
+| `APHRODITE_TOOL_THRESHOLD`   | `16384`                                            | Minimum size (bytes) to compress generic tool output |
+| `APHRODITE_TERMINAL_THRESHOLD` | `8192`                                           | Minimum size (bytes) to compress shell output — bash tool and user `!<cmd>` alike |
+| `APHRODITE_SKIP_TOOLS`       | `read`                                             | Comma-separated tool names never compressed; `APHRODITE_SKIP_TOOLS=` (empty) compresses every tool |
+| `APHRODITE_ENGINE_PERCENT`   | `45`                                               | Context-window fill (%) that activates the context engine; `0` disables it (upstream's `engine_threshold_pct`) |
+| `APHRODITE_ENGINE_PROTECT_FIRST` | `2`                                            | Messages at the start of the conversation the engine never touches |
+| `APHRODITE_ENGINE_PROTECT_LAST` | `5`                                             | Messages at the end the engine never touches — also what keeps the prompt cache stable |
+| `APHRODITE_ENGINE_MIN_MESSAGES` | `8`                                             | Conversation length below which the engine idles |
+| `APHRODITE_ENGINE_MIN_BYTES` | `1024`                                             | Minimum size (bytes) of an aged tool result before the engine compresses it |
 | `APHRODITE_MIN_BYTES`        | unset                                              | Legacy fallback applied to both thresholds when the specific knob is unset |
 | `APHRODITE_DB_PATH`   | `$XDG_STATE_HOME/pi/aphrodite-ccr.db` (or `~/.local/state/pi/aphrodite-ccr.db`) | SQLite file for the CCR store |
 | `APHRODITE_TTL_SECONDS` | `604800` (7 days)                                | Entry time-to-live; `0` = never expire    |
+
+### Why these defaults differ from upstream
+
+Upstream [Aphrodite](https://github.com/PlayForm/Aphrodite) measures in **bytes** too (`tool_threshold_token = 512 # token proxy threshold (bytes)` — `token` names the proxy on `:9798`, not the unit), so this port's original `4096` / `1024` were unit-correct. The problem is that upstream pairs those low thresholds with four mechanisms this port has not yet implemented, and without them a low threshold is a net loss.
+
+An audit of 141 local Pi sessions (2778 compressions, 2495 retrievals) measured what happens when the threshold fires alone:
+
+| store size | compressions | retrieved in full | net context |
+| ---------- | ------------ | ----------------- | ----------- |
+| 0–2 KB     | 976          | 90%               | −0.08 MB    |
+| 2–4 KB     | 741          | 90%               | +0.05 MB    |
+| 4–8 KB     | 662          | 88%               | +0.35 MB    |
+| 8–16 KB    | 293          | 83%               | +0.60 MB    |
+| 16–32 KB   | 90           | 73%               | +0.75 MB    |
+| 32–64 KB   | 40           | 55%               | +1.16 MB    |
+
+Below roughly 16 KB the model answers a marker with an immediate `aphrodite_retrieve` of the same bytes, so the compression costs one extra request and returns the content anyway. `read` behaved that way at every size (97% retrieval), which is why it ships on the skip list.
+
+### Upstream mechanisms: ported and not
+
+| Upstream | What it does | Here |
+| -------- | ------------ | ---- |
+| Context engine | At 45% context fill, compresses **middle** turns to CCR markers, protecting the first 2 and last 5 messages | **ported** — `APHRODITE_ENGINE_*` on pi's `context` event |
+| `code_multiplier = 3.0` | Triples the threshold for `code_*` content types | not ported — largely covered by the `read` skip list |
+| Enriched previews | Per-type shapes: `[grep:4 hits in 3 files …]`, `[test:220 pass 0 fail]`, `[git:2M 1A 1D 3??]`, plus code structure maps | not ported — one shape: first meaningful line, capped at 120 chars |
+| `classifier_poll` | Skips CCR entirely for outputs the classifier calls clean | not ported |
+
+The context engine was the load-bearing gap, and it is now closed. The two compression points are independent safeties: insertion-time compression stays conservative (high thresholds, `read` skipped) so a fresh result is never hidden from a model about to read it, while the engine reclaims the same content once it has aged out. Set the environment variables above to restore upstream-parity numbers at the insertion point.
 
 ## Commands
 

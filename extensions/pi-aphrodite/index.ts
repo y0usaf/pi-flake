@@ -20,25 +20,28 @@
  * the compress step.
  *
  * Configuration:
- * - APHRODITE_MIN_BYTES    minimum output size to compress (default 1024)
- * - APHRODITE_DB_PATH      SQLite file for the CCR store (default
- *                          $XDG_STATE_HOME/pi/aphrodite-ccr.db or
- *                          ~/.local/state/pi/aphrodite-ccr.db)
- * Configuration:
  * - APHRODITE_TOOL_THRESHOLD       minimum byte size to compress generic
- *                                  tool output (default 4096, matching
- *                                  upstream's tool_threshold_token)
+ *                                  tool output (default 16384)
  * - APHRODITE_TERMINAL_THRESHOLD   minimum byte size to compress shell
- *                                  output (default 1024, matching upstream's
- *                                  terminal_threshold); applies to the bash
- *                                  tool and user `!<cmd>` output alike
+ *                                  output (default 8192); applies to the
+ *                                  bash tool and user `!<cmd>` output alike
+ * - APHRODITE_SKIP_TOOLS           comma-separated tool names whose output
+ *                                  is never compressed (default "read");
+ *                                  set to an empty string to compress all
  * - APHRODITE_MIN_BYTES            legacy fallback for both thresholds when
  *                                  the specific knob is unset
- * - APHRODITE_DB_PATH      SQLite file for the CCR store (default
- *                          $XDG_STATE_HOME/pi/aphrodite-ccr.db or
- *                          ~/.local/state/pi/aphrodite-ccr.db)
- * - APHRODITE_TTL_SECONDS  entry time-to-live (default 604800 = 7d;
- *                          0 = never expire)
+ * - APHRODITE_DB_PATH              SQLite file for the CCR store (default
+ *                                  $XDG_STATE_HOME/pi/aphrodite-ccr.db or
+ *                                  ~/.local/state/pi/aphrodite-ccr.db)
+ * - APHRODITE_TTL_SECONDS          entry time-to-live (default 604800 = 7d;
+ *                                  0 = never expire)
+ *
+ * Threshold and skip-list defaults are tuned from session telemetry rather
+ * than copied from upstream Aphrodite: below roughly 16KB a compressed
+ * result is retrieved in full about 90% of the time, so the extra request
+ * needed to retrieve it costs more than the marker saves. `read` is skipped
+ * for the same reason at any size — the model asks for a file because it
+ * needs the file.
  *
  * Retention mirrors upstream Aphrodite's SqliteCcrStore: lazy TTL purge on
  * store/retrieve, debounced to one sweep per minute, no background thread.
@@ -82,13 +85,25 @@ import type {
 import { createLocalBashOperations } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-const DEFAULT_TOOL_THRESHOLD_BYTES = 4096;
-const DEFAULT_TERMINAL_THRESHOLD_BYTES = 1024;
+const DEFAULT_TOOL_THRESHOLD_BYTES = 16_384;
+const DEFAULT_TERMINAL_THRESHOLD_BYTES = 8_192;
+const DEFAULT_SKIP_TOOLS = "read";
 const PREVIEW_FIRST_LINE_MAX = 120;
 const RETRIEVE_LINE_CAP = 2000;
 const HASH_HEX_LENGTH = 16;
 const DEFAULT_TTL_SECONDS = 604_800;
 const PURGE_DEBOUNCE_MS = 60_000;
+
+// Context engine, ported from upstream Aphrodite's `[compression] engine_*`
+// keys. Compression at insertion time forces a guess about future need and
+// the model's cheapest safe guess is always "retrieve"; compressing turns
+// that have already aged out needs no guess at all.
+const DEFAULT_ENGINE_PERCENT = 45;
+const DEFAULT_ENGINE_PROTECT_FIRST = 2;
+const DEFAULT_ENGINE_PROTECT_LAST = 5;
+const DEFAULT_ENGINE_MIN_MESSAGES = 8;
+const DEFAULT_ENGINE_MIN_BYTES = 1024;
+const CCR_MARKER_PATTERN = /<<<CCR:[0-9a-f]{16}\|/;
 
 export type AphroditeAvailability = "unknown" | "available" | "unavailable";
 export type AphroditeFailureKind = "failed" | "unavailable";
@@ -484,6 +499,93 @@ function readThresholds(): AphroditeThresholds {
   };
 }
 
+/**
+ * Tool names whose output is never compressed, parsed from a comma-separated
+ * list. Empty entries are dropped, so `""` means "compress every tool".
+ */
+export function parseSkipTools(raw: string): ReadonlySet<string> {
+  return new Set(
+    raw
+      .split(",")
+      .map((name) => name.trim())
+      .filter((name) => name.length > 0),
+  );
+}
+
+function readSkipTools(): ReadonlySet<string> {
+  const raw = process.env.APHRODITE_SKIP_TOOLS;
+  return parseSkipTools(raw === undefined ? DEFAULT_SKIP_TOOLS : raw);
+}
+
+/**
+ * Minimal shape the engine needs from a pi `AgentMessage`. Only tool results
+ * are ever rewritten, and only their text content.
+ */
+type EngineMessage = {
+  role: string;
+  toolName?: string;
+  content?: unknown;
+};
+
+export type AphroditeEngineConfig = {
+  /** Context-window fill percentage that activates the engine; `0` disables it. */
+  percent: number;
+  /** Messages at the start of the conversation left untouched. */
+  protectFirst: number;
+  /** Messages at the end of the conversation left untouched. */
+  protectLast: number;
+  /** Minimum conversation length before the engine activates at all. */
+  minMessages: number;
+  /** Minimum byte size of an aged tool result before it is worth compressing. */
+  minBytes: number;
+};
+
+function readCountEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function readEngineConfig(): AphroditeEngineConfig {
+  return {
+    percent: readCountEnv("APHRODITE_ENGINE_PERCENT", DEFAULT_ENGINE_PERCENT),
+    protectFirst: readCountEnv(
+      "APHRODITE_ENGINE_PROTECT_FIRST",
+      DEFAULT_ENGINE_PROTECT_FIRST,
+    ),
+    protectLast: readCountEnv(
+      "APHRODITE_ENGINE_PROTECT_LAST",
+      DEFAULT_ENGINE_PROTECT_LAST,
+    ),
+    minMessages: readCountEnv(
+      "APHRODITE_ENGINE_MIN_MESSAGES",
+      DEFAULT_ENGINE_MIN_MESSAGES,
+    ),
+    minBytes: readByteEnv(
+      "APHRODITE_ENGINE_MIN_BYTES",
+      DEFAULT_ENGINE_MIN_BYTES,
+    ),
+  };
+}
+
+/**
+ * Half-open index range `[start, end)` of messages the engine may compress:
+ * everything except the protected head and tail. Returns an empty range when
+ * the conversation is too short or the protected windows overlap.
+ */
+export function engineCandidateRange(
+  messageCount: number,
+  config: AphroditeEngineConfig,
+): { start: number; end: number } {
+  if (messageCount < config.minMessages) {
+    return { start: 0, end: 0 };
+  }
+
+  const start = config.protectFirst;
+  const end = messageCount - config.protectLast;
+  return end > start ? { start, end } : { start: 0, end: 0 };
+}
+
 function readTtlSeconds(): number {
   const raw = process.env.APHRODITE_TTL_SECONDS;
   const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
@@ -504,12 +606,18 @@ function formatStatus(
   enabled: boolean,
   bashEnabled: boolean,
   status: AphroditeStatus,
+  skipTools: ReadonlySet<string>,
+  engine: AphroditeEngineConfig,
+  engineCompressed: number,
 ): string {
   return [
     `aphrodite — state: ${enabled ? "on" : "off"}`,
     `user-bash: ${bashEnabled ? "on" : "off"}`,
     `store: ${status.availability}`,
     `ttl: ${status.ttlSeconds === 0 ? "off" : formatTtl(status.ttlSeconds)}`,
+    `skip: ${skipTools.size > 0 ? [...skipTools].join(",") : "none"}`,
+    `engine: ${engine.percent > 0 ? `${engine.percent}%` : "off"}`,
+    `engine compressed: ${engineCompressed}`,
     `stored: ${status.stored}/${status.attempts}`,
     `retrieves: ${status.retrieves}`,
     `purged: ${status.purged}`,
@@ -543,11 +651,14 @@ export function registerPiAphrodite(
   pi: ExtensionAPI,
   client: AphroditeClient = createLocalAphroditeClient(),
   thresholds: AphroditeThresholds = readThresholds(),
+  skipTools: ReadonlySet<string> = readSkipTools(),
+  engine: AphroditeEngineConfig = readEngineConfig(),
 ): void {
 
   const localBashOperations = createLocalBashOperations();
   let enabled = true;
   let bashEnabled = true;
+  let engineCompressed = 0;
   let lastPublished: string | undefined;
 
   function publishFooter(ctx: ExtensionContext): void {
@@ -575,13 +686,20 @@ export function registerPiAphrodite(
       return undefined;
     }
 
+    // Tools on the skip list are always passed through. `read` is skipped by
+    // default: session telemetry shows its markers are retrieved in full ~97%
+    // of the time, so compressing it buys a wasted round trip.
+    if (toolName !== undefined && skipTools.has(toolName)) {
+      return undefined;
+    }
+
     if (!enabled) {
       return undefined;
     }
 
-    // Route by output kind, matching upstream: shell output (the bash tool
-    // and user `!<cmd>` alike) compresses aggressively; other tools get the
-    // higher bar since their full output is more often needed.
+    // Route by output kind: shell output (the bash tool and user `!<cmd>`
+    // alike) compresses at the lower bar; other tools get the higher one
+    // since their full output is more often needed.
     const minBytes = toolName === "bash" ? thresholds.terminal : thresholds.tool;
     if (Buffer.byteLength(text, "utf8") < minBytes) {
       return undefined;
@@ -613,7 +731,14 @@ export function registerPiAphrodite(
         const availability = await client.probe();
         publishFooter(ctx);
         ctx.ui.notify(
-          formatStatus(enabled, bashEnabled, { ...client.getStatus(), availability }),
+          formatStatus(
+            enabled,
+            bashEnabled,
+            { ...client.getStatus(), availability },
+            skipTools,
+            engine,
+            engineCompressed,
+          ),
           "info",
         );
         return;
@@ -706,6 +831,69 @@ export function registerPiAphrodite(
     // Open the store once per session so the footer reflects store health
     // even before the first compressible tool result.
     void client.probe().then(() => publishFooter(ctx));
+  });
+
+  // Context engine. Fires before each LLM call and compresses tool results
+  // that have aged out of the protected window, which is the compression that
+  // needs no guess: the model already read them, several turns ago.
+  //
+  // Deliberately ignores `skipTools`. That list exists to stop *fresh* output
+  // being hidden from a model that is about to read it; an aged `read` result
+  // has no such claim.
+  //
+  // Prompt-cache note: replacing a message body invalidates the provider's
+  // cached prefix from that point on. The pass is idempotent — a message that
+  // already carries a CCR marker is skipped — so the prefix re-stabilises on
+  // the following turn instead of churning every call.
+  pi.on("context", async (event, ctx) => {
+    if (!enabled || engine.percent <= 0) {
+      return;
+    }
+
+    const messages = event.messages as EngineMessage[];
+    const { start, end } = engineCandidateRange(messages.length, engine);
+    if (start >= end) {
+      return;
+    }
+
+    // `percent` is null when the token count is unknown (e.g. immediately
+    // after a compaction). Compressing on a guess is worse than idling.
+    const usage = ctx.getContextUsage?.();
+    if (!usage || usage.percent === null || usage.percent < engine.percent) {
+      return;
+    }
+
+    let changed = false;
+    for (let index = start; index < end; index += 1) {
+      const message = messages[index];
+      if (!message || message.role !== "toolResult") {
+        continue;
+      }
+
+      const text = extractText(message.content);
+      if (text === undefined || CCR_MARKER_PATTERN.test(text)) {
+        continue;
+      }
+
+      if (Buffer.byteLength(text, "utf8") < engine.minBytes) {
+        continue;
+      }
+
+      const type = detectType(text, message.toolName);
+      const stored = await client.store(text, type);
+      if (!stored) {
+        continue;
+      }
+
+      const preview = buildPreview(text, message.toolName, type);
+      message.content = [
+        { type: "text", text: renderCompressedResult(preview, type, stored) },
+      ];
+      engineCompressed += 1;
+      changed = true;
+    }
+
+    return changed ? { messages: event.messages } : undefined;
   });
 
   pi.on("tool_result", async (event, ctx) => {
