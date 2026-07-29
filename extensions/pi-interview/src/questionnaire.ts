@@ -354,7 +354,12 @@ export async function runQuestionnaire(
 			handleInput,
 			dispose: cleanupSignal,
 		};
-	});
+		},
+		// Overlays live in their own layer. An inline component is installed into
+		// the editor container, which any extension that swaps the editor clears —
+		// silently evicting the questionnaire and leaving this promise pending.
+		{ overlay: true },
+	);
 
 	return result ?? { questions, answers: [], cancelled: true };
 }

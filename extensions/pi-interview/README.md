@@ -54,6 +54,8 @@ A questionnaire can stay open for minutes, so it is the tool most likely to be a
 
 **How answers survive.** On session start, if the branch ends in an unanswered questionnaire, it is presented again. The questions are not stored by this extension — pi already persisted them inside the tool call arguments, so they are read back out of the session. Submitting sends the answers as a pi custom message, which pi persists, which is what carries them through a second restart. Cancelling with Escape falls back to "interrupted, no answers recorded".
 
+**Why it renders as an overlay.** `ctx.ui.custom` defaults to installing the component into pi's editor container. Any extension that live-swaps the editor — `ctx.ui.setEditorComponent`, called from a `session_start` handler — clears that container and silently evicts the questionnaire, leaving the awaited promise pending forever. That is invisible: the notification is printed, no questions appear, and the tool call stays dangling. The overlay stack is a separate layer, so `{ overlay: true }` makes the questionnaire immune to editor swaps.
+
 **Typed text.** Free text is kept per question in a draft map. Escape returns to the option list without discarding what was typed, and re-opening a question restores it. An option with saved text is marked `✎`.
 
 ## Reliability
