@@ -1,5 +1,9 @@
 // Workflow runs rendered into the Pi transcript.
 //
+// Consumes the workflow:* events that pi-extensible-workflows publishes on
+// Pi's shared EventBus. Writes nothing back; the engine does not know this
+// extension exists, and its vendored tree is never patched. See DESIGN.md.
+//
 // Two surfaces, because Pi's two durable primitives have opposite capabilities:
 //
 //   - Finished phases become custom session entries (pi.appendEntry). Durable,
@@ -13,9 +17,9 @@
 //
 // Grouping comes from phaseHistory, not structuralPath: across every run on
 // disk, phaseHistory is populated and structuralPath is empty in all but one.
-// phaseBridge() writes both the history entry and the workflow:phase-changed
-// event synchronously, after scheduler.flush(), so phases are hard barriers and
-// no agent ever straddles one.
+// The engine's phaseBridge() writes the history entry and emits
+// workflow:phase-changed after scheduler.flush(), so phases are hard barriers
+// and no agent ever straddles one.
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
@@ -39,6 +43,33 @@ import {
   type WorkflowRunStateChangedEvent,
   type WorkflowWorktreeCreatedEvent,
 } from "./types.js";
+
+/** Every event name this renderer subscribes to, for the diagnostic command. */
+const SUBSCRIBED_EVENTS = [
+  WORKFLOW_RUN_STARTED_EVENT,
+  WORKFLOW_RUN_RESUMED_EVENT,
+  WORKFLOW_RUN_STATE_CHANGED_EVENT,
+  WORKFLOW_RUN_COMPLETED_EVENT,
+  WORKFLOW_RUN_FAILED_EVENT,
+  WORKFLOW_AGENT_STATE_CHANGED_EVENT,
+  WORKFLOW_PHASE_CHANGED_EVENT,
+  WORKFLOW_CHECKPOINT_STATE_CHANGED_EVENT,
+  WORKFLOW_BUDGET_EVENT,
+  WORKFLOW_WORKTREE_CREATED_EVENT,
+] as const;
+
+/**
+ * Runtime shape guard.
+ *
+ * Payloads cross the EventBus as `unknown`. The publisher is now in this same
+ * package, so the types agree by construction, but the bus itself is untyped and
+ * any extension may emit on any channel.
+ */
+function isWorkflowEvent(value: unknown): value is WorkflowEventBase {
+  if (typeof value !== "object" || value === null) return false;
+  const event = value as Partial<WorkflowEventBase>;
+  return typeof event.runId === "string" && typeof event.workflowName === "string";
+}
 
 export const WORKFLOW_PHASE_ENTRY = "workflow-phase";
 export const WORKFLOW_RUN_ENTRY = "workflow-run";
@@ -219,6 +250,7 @@ export default function registerWorkflowTranscript(pi: ExtensionAPI): void {
   let context: ExtensionContext | undefined;
   let spinnerTimer: NodeJS.Timeout | undefined;
   let spinnerFrame = 0;
+  let entriesWritten = 0;
 
   // -- widget ---------------------------------------------------------------
 
@@ -269,6 +301,7 @@ export default function registerWorkflowTranscript(pi: ExtensionAPI): void {
     if (run.current.isEmpty) return;
     run.phaseCount += 1;
     pi.appendEntry<PhaseEntryData>(WORKFLOW_PHASE_ENTRY, run.current.freeze(run.runId, run.workflowName));
+    entriesWritten += 1;
   };
 
   const finishRun = (
@@ -290,6 +323,7 @@ export default function registerWorkflowTranscript(pi: ExtensionAPI): void {
       phaseCount: run.phaseCount,
       durationMs: Date.now() - run.startedAt,
     });
+    entriesWritten += 1;
     if (runs.size === 0) clearWidget();
     else paintWidget();
   };
@@ -298,9 +332,10 @@ export default function registerWorkflowTranscript(pi: ExtensionAPI): void {
 
   const on = <T extends WorkflowEventBase>(name: string, handler: (event: T) => void): void => {
     pi.events.on(name, (payload) => {
-      const event = payload as T;
-      if (!event || typeof event.runId !== "string") return;
-      handler(event);
+      // The wire contract is declared, not imported, so a changed payload shape
+      // is rejected here rather than becoming a TypeError inside a renderer.
+      if (!isWorkflowEvent(payload)) return;
+      handler(payload as T);
     });
   };
 
@@ -421,6 +456,7 @@ export default function registerWorkflowTranscript(pi: ExtensionAPI): void {
     return linesBlock(lines);
   });
 
+
   // -- session lifecycle ----------------------------------------------------
 
   pi.on("session_start", (_event, ctx) => {
@@ -435,5 +471,34 @@ export default function registerWorkflowTranscript(pi: ExtensionAPI): void {
     clearWidget();
     runs.clear();
     context = undefined;
+  });
+
+  // -- diagnostics ----------------------------------------------------------
+
+  // A renderer that has received nothing looks exactly like one that was never
+  // loaded: both show an empty transcript. This reports its own wiring so the
+  // two are distinguishable without a debugger. [[canon:unix]].
+  //
+  // It does not probe for the engine. The engine is the other entry point of
+  // this same package, so if this command exists, the engine is loaded.
+  pi.registerCommand("workflow-transcript", {
+    description: "Report what the workflow transcript renderer is subscribed to and tracking",
+    handler: async (_args, ctx) => {
+      const workflowCommands = pi
+        .getCommands()
+        .map((command) => command.name)
+        .filter((name) => name === "workflow" || name.startsWith("workflow:"));
+      const lines = [
+        `subscribed: ${SUBSCRIBED_EVENTS.length} events (${SUBSCRIBED_EVENTS.join(", ")})`,
+        `engine commands registered: ${workflowCommands.length ? workflowCommands.join(", ") : "none"}`,
+        `active runs: ${String(runs.size)}`,
+        `entries written this session: ${String(entriesWritten)}`,
+        `ui: ${ctx.hasUI ? "yes" : "no (widget disabled)"}`,
+      ];
+      for (const run of runs.values()) {
+        lines.push(`  ${run.workflowName} ${run.runId} · phase ${run.current.phase} · ${String(run.current.agents.size)} agents`);
+      }
+      ctx.ui.notify(lines.join("\n"), "info");
+    },
   });
 }

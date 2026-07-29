@@ -64,11 +64,21 @@
     dir = "jonjonrankin_pi-caveman";
   };
 
+  # Reference tree. Kept pristine at upstream 3.4.2 so `git diff` against it is
+  # how pi-workflows takes upstream fixes. Still built so the reference is known
+  # to compile; enabling it alongside `workflows` would register /workflow twice.
   extensible-workflows = {
     stage = "testing";
     source = "vendored";
     dir = "vekexasia_pi-extensible-workflows";
-    note = "Evaluating since 2026-07-28; opt-in via flags until promoted.";
+    note = "Reference/diff base for pi-workflows since 2026-07-29. Do not edit; do not enable together with `workflows`.";
+  };
+
+  workflows = {
+    stage = "testing";
+    source = "vendored";
+    dir = "pi-workflows";
+    note = "Fork of extensible-workflows 3.4.2 that ships the engine and the transcript renderer as one extension. Evaluating since 2026-07-29.";
   };
 
   chrono-break = {
