@@ -287,16 +287,20 @@
             };
           };
 
-        # Vendored from @extensions/vekexasia_pi-extensible-workflows/ (MIT).
+        # pi-loom — workflow engine. Fork of pi-extensible-workflows 3.4.2
+        # (MIT); the pristine upstream copy stays at
+        # @extensions/vekexasia_pi-extensible-workflows/ as a reference tree
+        # (diff base for cherry-picking upstream fixes), and is not packaged.
         # Pi loads ./src/index.ts directly; dist is shipped for the exports map;
         # production node_modules provide the runtime deps (acorn, minimatch).
-        "pi-extensible-workflows" = let
-          workflowsPackageJson = builtins.fromJSON (builtins.readFile ./extensions/vekexasia_pi-extensible-workflows/package.json);
+        # Design: extensions/pi-loom/DESIGN.md
+        pi-loom = let
+          loomPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-loom/package.json);
         in
           pkgs.buildNpmPackage {
-            pname = "pi-extensible-workflows";
-            version = workflowsPackageJson.version;
-            src = lib.cleanSource ./extensions/vekexasia_pi-extensible-workflows;
+            pname = "pi-loom";
+            version = loomPackageJson.version;
+            src = lib.cleanSource ./extensions/pi-loom;
 
             npmBuildScript = "build";
             npmDepsFetcherVersion = 2;
@@ -319,11 +323,11 @@
               runHook postInstall
             '';
 
-            passthru.packageName = workflowsPackageJson.name;
+            passthru.packageName = loomPackageJson.name;
 
             meta = with lib; {
-              description = workflowsPackageJson.description;
-              homepage = workflowsPackageJson.homepage;
+              description = loomPackageJson.description;
+              homepage = loomPackageJson.homepage;
               license = licenses.mit;
               platforms = platforms.all;
             };
@@ -343,10 +347,10 @@
         # proves doctrine 06 (bare core must boot) at runtime.
         # Design: extensions/pi-loom/DESIGN.md
         pi-loom-cli = let
-          # P0 swaps pi-extensible-workflows -> pi-loom (engine) and adds
-          # pi-loom-builtins + pi-loom-router. See DESIGN.md roadmap.
+          # P0 landed the engine fork. P1+ adds pi-loom-builtins and
+          # pi-loom-router to this stack. See DESIGN.md roadmap.
           loomStack = [
-            self.packages.${system}."pi-extensible-workflows"
+            self.packages.${system}."pi-loom" # workflow engine
             self.packages.${system}."pi-interview" # backs human.ask
             self.packages.${system}."pi-aphrodite" # compression for long runs
             self.packages.${system}."pi-hashline" # edit anchors for executor sub-agents
@@ -391,7 +395,7 @@
         pi-rtk-build = self.packages.${system}."pi-rtk";
         pi-rtk-test = piRtk.checks.${system}.test;
         pi-aphrodite-build = self.packages.${system}."pi-aphrodite";
-        pi-extensible-workflows-build = self.packages.${system}."pi-extensible-workflows";
+        pi-loom-build = self.packages.${system}."pi-loom";
         pi-loom-cli-build = self.packages.${system}.pi-loom-cli;
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
@@ -525,7 +529,7 @@
         vcc = self.packages.${system}."pi-vcc";
         caveman = self.packages.${system}."pi-caveman";
         atelier = self.packages.${system}."pi-atelier";
-        "extensible-workflows" = self.packages.${system}."pi-extensible-workflows";
+        loom = self.packages.${system}."pi-loom";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.
@@ -611,8 +615,8 @@
           export PI_SKIP_VERSION_CHECK=1
           export PI_TELEMETRY=0
 
-          # Real node for pi-extensible-workflows child processes (bun binary
-          # cannot re-exec node flags; see patches in extensions/vekexasia_pi-extensible-workflows).
+          # Real node for pi-loom workflow child processes (bun binary cannot
+          # re-exec node flags; see extensions/pi-loom/src/agent-execution.ts).
           export PI_WORKFLOW_NODE_PATH="${pkgs.nodejs_22}/bin/node"
 
           if [ -n "''${PI_DEFAULT_PACKAGES:-}" ]; then

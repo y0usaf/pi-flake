@@ -9,6 +9,10 @@
 #
 # source: "subflake" (own flake input under extensions/) or
 #         "vendored" (third-party tree built inline in flake.nix).
+#
+# Trees under extensions/ with no entry here are not packages. Today that is
+# extensions/vekexasia_pi-extensible-workflows/: a pinned pristine reference
+# tree, kept as the diff base for taking upstream fixes into the pi-loom fork.
 {
   gecko-websearch = {
     stage = "active";
@@ -68,11 +72,11 @@
     dir = "michaelmjhhhh_pi-atelier";
   };
 
-  extensible-workflows = {
+  loom = {
     stage = "testing";
     source = "vendored";
-    dir = "vekexasia_pi-extensible-workflows";
-    note = "Evaluating since 2026-07-28; opt-in via flags until promoted.";
+    dir = "pi-loom";
+    note = "Fork of pi-extensible-workflows 3.4.2; workflow engine for the loom stack. Evaluating since 2026-07-28; opt-in via flags until promoted.";
   };
 
   kimi = {
