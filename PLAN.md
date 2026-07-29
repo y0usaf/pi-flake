@@ -18,58 +18,73 @@ marker into prose here — the count would lie.
 
 ## Handoff
 
-Last touched: P4b-ii landed and is ticked. P4b is now complete; the next open
-item is P4c (`/quick`).
+Last touched: P4c landed and is ticked. P4 is complete end to end (stage library,
+`exec`, `/build`, `/quick`); the next open item is P5 (router + picker).
 
-What landed. `workflows/build/` — `command.json`, `build.js`, `README.md` — the
-`/build` workflow: plan once, then per plan item exec followed by review, all
-exec calls sharing one worktree named `build`. It owns no prompt of its own;
-every prompt comes from the stage library. A `changes` verdict feeds the review
-note back into a repair exec, up to `maxFixes` (default 1); a `reject` ends that
-item. The return value is keyed per item (`items[]`, plus a `verdicts` map and
-`counts`). `checks.pi-loom-build-workflow` (`nix/checks/loom-build-workflow.sh`)
-is the gate. DESIGN.md gained a paragraph on /build's verdict policy and on
-exactly what its gate can and cannot prove.
+What landed. A fourth stage, `quick`, in `extensions/pi-loom/src/stages.ts`, and
+`workflows/quick/` — `command.json`, `quick.js`, `README.md` — as its only
+consumer. One agent, no plan stage, no review stage, and **no worktree**: the
+agent edits the user's own checkout and the change is left unstaged in their
+tree. `checks.pi-loom-quick-workflow` (`nix/checks/loom-quick-workflow.sh`) is
+the gate. DESIGN.md gained the paragraph on why `quick` is `exec`'s opposite and
+on exactly what its gate can and cannot prove.
 
-Gates actually run: `nix build .#pi-loom-cli` (pass), the check by hand against
-`"$(readlink -f result)/bin/loom"` (pass),
-`nix build .#checks.x86_64-linux.pi-loom-build-workflow -L` (pass),
-`nix flake check -L` (pass, all checks; `biome lint .` unchanged at 1
-pre-existing warning and 5 infos).
+Gates actually run: `nix build .#pi-loom-cli` (pass); the three affected harnesses
+by hand against `"$(readlink -f result)/bin/loom"` — quick-workflow, stages,
+exec-stage (all pass); `nix flake check -L` (pass, all 14 checks, including
+`biome-lint`).
 
-**Acceptance honesty.** DESIGN.md's P4b-ii criterion is that `/build "<task>"`
-emits a plan artifact, an exec diff and a review verdict keyed per plan item.
-Those three artifacts were **not** observed: every one needs an agent to have
-returned, and neither the nix sandbox nor this step had a model key. What was
-proven is the wiring around them — discovery from the installed path, argument
-rejection with generated usage, and plan-before-exec ordering. DESIGN.md's own
-P4b split rationale says this half's acceptance needs a real model, so the box
-is ticked on that reading. A real-model `/build` run is still worth doing once
-by hand before trusting it.
+**Acceptance honesty.** DESIGN.md's P4c criterion is that `/quick "<task>"`
+completes a one-line change with a single agent, no plan stage and no review
+stage. The completed change was **not** observed: it needs an agent to return,
+and the nix sandbox has no model key. What was proven is everything around it —
+discovery from the installed path, usage rejection before a run exists, exactly
+one phase entered (`quick`, never `plan`), zero worktrees opened, and a real
+pre-agent working-tree snapshot that left the probe repo's index byte-identical.
+A real-model `/quick` run is still worth doing once by hand.
 
 Design decisions worth not re-litigating:
 
-- **One worktree for the whole run.** Every exec call passes `worktree: "build"`,
-  and the engine keys worktrees by name, so item 2 builds on item 1. Each item
-  still reports only its own diff because exec takes its base commit at its own
-  start and the engine commits the worktree as each agent returns.
-- **`changes` retries, `reject` does not.** A `changes` note says what to fix, so
-  it is actionable context for another exec pass. `reject` means the approach is
-  wrong; another blind pass entrenches it. Rejected items stay in the report with
-  their verdict.
-- **Report diffs are clipped twice.** exec caps its diff at 200000 characters;
-  /build clips again at 20000 per item for the returned report, keeping
-  `diffChars` and `diffTruncated`. Full diffs live on the engine-owned branch
-  named in `worktree.branch`.
-- **The reviewer is shown the diff, not the summary.** `reviewSubject()` passes
-  exec's full (exec-capped) diff into the review stage. Reviewing a summary is
-  reviewing a claim.
-- **Empty string means "not given" for `model`.** The stage library omits an
-  empty model rather than validating it, so `reviewModel` defaulting to `model`
-  defaulting to `""` leaves the session default intact.
+- **No worktree is the feature, not an omission.** DESIGN.md's decision table
+  says so directly: plan → exec → review on a typo is ceremony that kills
+  adoption. `/quick` stays inside the engine (budgeted, checkpointed, auditable)
+  while costing one agent and landing where the user is already looking.
+- **The diff still comes from git.** `quick` snapshots the whole working tree
+  with `git add -A` + `git write-tree` through a throwaway `GIT_INDEX_FILE`,
+  before the agent and again after. The user's index, tree and refs are never
+  touched; the only trace is unreferenced objects that `git gc` prunes.
+- **Both sides snapshotted the same way.** That is what makes pre-existing dirt
+  cancel out of the diff instead of being blamed on the agent. A `git stash
+  create` base would have been asymmetric — it excludes untracked files, so every
+  file the user had left untracked would have looked like the agent created it.
+- **`quick` reuses `EXEC_OUTPUT`.** Both stages ask the agent for `{ summary,
+  notes }` only and let git supply `files`/`diff`, so a caller can swap one for
+  the other without changing how it reads the artifact.
 
 Traps for the next step:
 
+- **The available-stage assertions are substring matches.** `loom-stages.sh` and
+  `loom-exec-stage.sh` matched `*"available stages: plan, exec, review"*`, which
+  still passes after a stage is appended — the check silently stops proving the
+  list. Both now name all four; a fifth stage must extend them again.
+- **Never put a backtick or a `$` followed by `{` inside `STAGE_LIBRARY_SOURCE`.**
+  That string is a TS template literal: a backtick ends it (unrelated-looking
+  `TS2304: Cannot find name` errors) and a dollar-brace interpolates. Shell inside
+  it must use `$(...)` and bare `$var`, which is why the snapshot command reads
+  `dir="$(mktemp -d)"` and `"$dir/index"`.
+- **`git status` rewrites the index stat cache.** A harness that copies
+  `.git/index` and then runs `git status` will see its own bookkeeping as a diff.
+  Capture status first, copy the index second, compare in that order.
+- **A clean probe repo cannot prove a snapshot happened.** `git write-tree` on an
+  unmodified tree reproduces HEAD's existing tree object and writes nothing, so
+  the loose-object count assertion needs the probe repo dirtied first (one
+  modified tracked file, one untracked file).
+- **`workflows/` is not in the `pi-loom` package.** The install path is the
+  system flake placing `workflows/*/` into `<agentDir>/workflows/`. A new shipped
+  workflow needs a nix check that copies the directory in itself —
+  `loom-quick-workflow.sh` takes it as its second argument — and a matching entry
+  in `~/nixos/.../modules/dev/pi/workflows.nix`. **`/quick` is not in that file
+  yet**; until it is, the user sees `/build` but not `/quick`.
 - **The `/workflows` listing has its own customType.** Runs deliver under
   `"customType":"workflow"`, the listing under `"customType":"workflow-list"`. A
   harness waiting on the wrong one burns its whole timeout and then reports an
@@ -86,35 +101,24 @@ Traps for the next step:
   `WorkflowAgentExecutor.resolve()` throws `UNKNOWN_MODEL` at the top of
   `execute()`, before the attempt loop, before any session or socket, so there is
   no retry, no backoff and no network.
-- **`workflows/` is not in the `pi-loom` package.** The install path is the
-  system flake placing `workflows/*/` into `<agentDir>/workflows/`. A new shipped
-  workflow therefore needs a nix check that copies the directory in itself —
-  `loom-build-workflow.sh` takes it as its second argument — and a matching
-  entry in `~/nixos/.../modules/dev/pi/workflows.nix` before a user sees it.
-- **A nix store copy is read-only.** `cp -r ${./workflows/build} …` then
+- **A nix store copy is read-only.** `cp -r ${./workflows/quick} …` then
   `chmod -R u+w` in the harness, or the run store cannot treat it as an install.
 - **`local a="$1" b="$work/$a"` in one statement fails under `set -u`.** Bash
   does not expose `a` to the rest of its own `local` statement; the error reads
   `name: unbound variable`. Split the declarations.
-- **Never put a backtick inside `STAGE_LIBRARY_SOURCE`.** That string is a TS
-  template literal, so a backtick in a sandbox-side comment ends it and the build
-  fails with unrelated-looking `TS2304: Cannot find name` errors.
-- **The stage list is asserted as a literal string.** `loom-stages.sh` matches
-  `available stages: plan, exec, review`. Adding or reordering a stage means
-  updating that assertion in the same commit.
 - **`extensions/pi-loom/skills/pi-extensible-workflows/SKILL.md` is still
   modified in the working tree and still deliberately uncommitted.** Same state
-  as the previous five handoffs: `HEAD` content is byte-identical to the vendored
+  as the previous six handoffs: `HEAD` content is byte-identical to the vendored
   upstream copy, the working-tree content is a rewrite by something outside these
   steps. Left untouched again; commits here stage explicit paths, never `-A`.
   Decide what it is before committing it. It also means the agent-facing docs for
-  `stage(...)`, `exec` and now `/build` were *not* written — that file is where
-  they belong.
+  `stage(...)`, `exec`, `/build` and now `quick`/`/quick` were *not* written —
+  that file is where they belong.
 - **Stages are still invisible to the model.** `workflow_catalog` lists
   registered functions, not stages. Nothing tells an agent that `stage(...)`
   exists, and `STAGE_LIBRARY[].description/required/optional/output` are
-  documentation nothing consumes yet. Wiring them into a catalog is a natural
-  P5 item once the SKILL.md ownership question is settled.
+  documentation nothing consumes yet. Wiring them into a catalog is a natural P5
+  item once the SKILL.md ownership question is settled.
 - **The flake only sees git-tracked files.** A new source or check script that is
   not `git add`ed does not exist inside `nix build`. Stage before building.
 - **`result` is a relative symlink.** The check harnesses `cd` into a temp
@@ -124,8 +128,9 @@ Traps for the next step:
   the agent dir defaults to `$HOME/.pi/agent`, but running a check script from a
   Pi session inherits `PI_CODING_AGENT_DIR` and the user-scope scan finds the real
   agent dir instead of the throwaway one. `loom-workflow-args.sh`,
-  `loom-project-workflows.sh`, `loom-stages.sh`, `loom-exec-stage.sh` and
-  `loom-build-workflow.sh` export it explicitly; the three older harnesses do not.
+  `loom-project-workflows.sh`, `loom-stages.sh`, `loom-exec-stage.sh`,
+  `loom-build-workflow.sh` and `loom-quick-workflow.sh` export it explicitly; the
+  three older harnesses do not.
 - **Never `head -1` a presented message.** Usage text and the `/workflows` listing
   are multi-line, so harnesses serialise with `jq -c` before decoding.
 - **`inputsSettled()` gates on four parking lots** (checkpoints, questions, edits,
@@ -143,7 +148,7 @@ Traps for the next step:
   Rationale is in DESIGN.md under Architecture.
 - The ref tree is no longer a package and is excluded from `biome.jsonc`; keep it
   that way, it is only a diff base for upstream fixes.
-- **Two facts all eight harnesses depend on.** Pi's agent dir defaults to
+- **Two facts all nine harnesses depend on.** Pi's agent dir defaults to
   `$HOME/.pi/agent`, not the XDG data path the installed system uses; and an RPC
   `prompt` is refused before command dispatch unless a model resolves with a key,
   which is why the scripts pass throwaway `--provider/--model/--api-key` flags.
@@ -194,7 +199,13 @@ Traps for the next step:
       from the installed path, usage rejection before a run exists, and
       plan-before-exec ordering. The three artifacts themselves need a real
       model — see the acceptance-honesty note in the handoff.
-- [ ] **P4c — `/quick`.**
+- [x] **P4c — `/quick`.** `stage("quick", ...)` makes a one-line change with a
+      single agent in the user's own checkout — no plan, no review, no worktree —
+      and still reports git's diff, taken from working-tree snapshots written to
+      a throwaway index before and after the agent; `workflows/quick/` is its
+      only consumer and `checks.pi-loom-quick-workflow` proves one phase, no
+      worktree and a non-destructive snapshot. The completed change itself needs
+      a real model — see the acceptance-honesty note in the handoff.
 - [ ] **P5 — router + picker.**
 - [ ] **P6 — `/wf-new` meta-workflow.**
 - [ ] **P7 — ecosystem fill.** `/explore`, `/debug`, `/review`; migrate the

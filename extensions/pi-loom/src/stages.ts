@@ -31,6 +31,11 @@
 // it made. An agent that forgets to mention an edit cannot hide it, because the
 // artifact is assembled from `git diff` against the commit the worktree sat on
 // before the agent started.
+//
+// Its sibling `quick` makes the opposite trade deliberately: one agent, no plan,
+// no review and **no worktree**, so a one-line change lands where the user is
+// already looking. It still assembles its artifact from git, by snapshotting the
+// working tree into a throwaway index before and after the agent.
 import type { JsonSchema } from "./types.js";
 
 /** The single global a workflow script calls. Reserved: a script may not declare it. */
@@ -76,9 +81,11 @@ const PLAN_OUTPUT: JsonSchema = {
   additionalProperties: false,
 };
 
-// What the exec agent itself must return, and deliberately all of it: the stage
-// never asks the model which files it touched, because git already knows and
-// cannot be argued with. files/diff/branch/path are added by the stage.
+// What an implementing agent must return, and deliberately all of it: neither
+// `exec` nor `quick` asks the model which files it touched, because git already
+// knows and cannot be argued with. files/diff and the tree or branch identifiers
+// are added by the stage. Both stages share this contract on purpose, so a caller
+// can swap one for the other without changing how it reads the artifact.
 const EXEC_OUTPUT: JsonSchema = {
   type: "object",
   properties: {
@@ -125,6 +132,13 @@ export const STAGE_LIBRARY: readonly StageDefinition[] = Object.freeze([
     optional: ["criteria", "model", "role", "label"],
     output: REVIEW_OUTPUT,
   }),
+  Object.freeze({
+    name: "quick",
+    description: "Make one small, self-contained change directly in the project working tree with a single agent -- no plan, no review, no worktree.",
+    required: ["task"],
+    optional: ["context", "model", "role", "label"],
+    output: EXEC_OUTPUT,
+  }),
 ]) as readonly StageDefinition[];
 
 export const STAGE_NAMES: readonly string[] = Object.freeze(STAGE_LIBRARY.map((stage) => stage.name));
@@ -146,6 +160,7 @@ async function stage(name, input) {
   if (name === "plan") return await __stagePlan(given);
   if (name === "exec") return await __stageExec(given);
   if (name === "review") return await __stageReview(given);
+  if (name === "quick") return await __stageQuick(given);
   throw new Error("Unknown stage: " + name + "; available stages: ${STAGE_NAME_LIST}");
 }
 function __stageText(input, stageName, key, required) {
@@ -275,6 +290,59 @@ async function __stageReview(input) {
     "The note is the only channel by which changes and reject explain themselves.",
   ].join("\\n");
   return await agent(prompt(template, { item: item, result: result, criteria: criteria }), __stageAgentOptions(input, "review", ${JSON.stringify(REVIEW_OUTPUT)}));
+}
+// Snapshots the whole working tree -- tracked edits and new untracked files --
+// as a git tree object, through a throwaway index file. The user's own index,
+// working tree and refs are never touched; the only trace left behind is
+// unreferenced objects in the object database, which git gc prunes.
+//
+// Two snapshots taken this way are directly diffable, and because both sides are
+// captured the same way, whatever was already dirty when /quick launched cancels
+// out instead of being attributed to the agent.
+function __stageTreeSnapshotCommand() {
+  return 'dir="$(mktemp -d)"; GIT_INDEX_FILE="$dir/index" git add -A && GIT_INDEX_FILE="$dir/index" git write-tree; status=$?; rm -rf "$dir"; exit $status';
+}
+async function __stageQuick(input) {
+  var task = __stageText(input, "quick", "task", true);
+  var context = __stageText(input, "quick", "context", false);
+  var options = __stageAgentOptions(input, "quick", ${JSON.stringify(EXEC_OUTPUT)});
+  var template = [
+    "You are making one small, self-contained change in this repository.",
+    "",
+    "Task:",
+    "{task}",
+    "",
+    "Repository context (may be empty):",
+    "{context}",
+    "",
+    "Rules:",
+    "- Your working directory is the user's own checkout, not a scratch copy. Change only what the task names.",
+    "- No planner precedes you and no reviewer follows you. If the task is too large to finish in one pass, change nothing and say so in notes.",
+    "- Verify the way this repository verifies; if you cannot, say so in notes.",
+    "- Never run git commit, git push, git checkout or git stash: the change is left in the working tree for the user to inspect.",
+    "- summary says what you changed; notes says what the user must know, including anything you skipped.",
+    "- The diff the user reads is taken from git, not from your summary, so an unreported edit still shows up.",
+  ].join("\\n");
+  // Base snapshot first, before the agent exists: everything the agent does lands
+  // after it.
+  var base = (await __stageGit("quick", __stageTreeSnapshotCommand())).trim();
+  if (!/^[0-9a-f]{7,64}$/.test(base)) throw new Error("stage quick: could not snapshot the working tree; is this a git repository?");
+  var result = await agent(prompt(template, { task: task, context: context }), options);
+  var after = (await __stageGit("quick", __stageTreeSnapshotCommand())).trim();
+  var names = (await __stageGit("quick", "git diff --name-only " + base + " " + after + " --")).split("\\n");
+  var files = [];
+  for (var index = 0; index < names.length; index += 1) if (names[index]) files.push(names[index]);
+  var full = await __stageGit("quick", "git diff --no-color " + base + " " + after + " --");
+  var truncated = full.length > __stageDiffLimit();
+  return {
+    summary: result.summary,
+    notes: result.notes,
+    files: files,
+    diff: truncated ? full.slice(0, __stageDiffLimit()) + "\\n... diff truncated by the quick stage ..." : full,
+    diffTruncated: truncated,
+    baseTree: base,
+    resultTree: after,
+  };
 }
 `;
 
