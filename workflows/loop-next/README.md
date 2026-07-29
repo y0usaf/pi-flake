@@ -1,9 +1,9 @@
 # loop-next workflow
 
 Loop a project's `/next` skill via
-[pi-loom](../../extensions/pi-loom/DESIGN.md), the workflow engine at
-`@extensions/pi-loom/` (forked from pi-extensible-workflows 3.4.2), until
-`PLAN.md` has no unchecked boxes.
+[pi-extensible-workflows](https://github.com/vekexasia/pi-extensible-workflows)
+(vendored at `@extensions/vekexasia_pi-extensible-workflows/`) until `PLAN.md`
+has no unchecked boxes.
 
 Each iteration is one `agent()` call = one **fresh sub-agent context**, which
 is exactly what the `next` skill assumes ("the previous session's context is
@@ -20,7 +20,7 @@ The loop stops at:
 
 ## Prerequisites
 
-- Extension enabled in the system flake: `programs.pi.extensions.loom = true;`
+- Extension enabled in the system flake: `programs.pi.extensions.extensible-workflows = true;`
 - Project has `PLAN.md` in its root with `- [ ]` checkbox items.
 - A `next` skill exists for the project (`.pi/skills/next` or user skills) —
   sub-agents inherit session skills and are told to load it by name.

@@ -1,4 +1,4 @@
-// Ideation workflow for pi-loom.
+// Ideation workflow for pi-extensible-workflows.
 // Multi-model debate: every participant is a plain "ideator" — no personas.
 // Diversity comes from different model weights/corpora, not role prompts.
 //

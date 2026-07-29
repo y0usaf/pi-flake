@@ -1,4 +1,4 @@
-// loop-next workflow for pi-loom.
+// loop-next workflow for pi-extensible-workflows.
 // Runs the project's `next` skill repeatedly — each iteration is a fresh
 // sub-agent context — until PLAN.md has no unchecked boxes.
 //
