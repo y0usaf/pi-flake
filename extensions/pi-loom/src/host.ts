@@ -16,6 +16,7 @@ import { beginWorkflowExtensionLoading, loadingRegistry, resetWorkflowRegistry, 
 import { agentIdentityPath, agentWorktree, encoded, executeShellCommand, persistActiveAgentAttempt, persistAgentAttempts, readShellResult, runWorkflow, shellIdentityPath } from "./execution.js";
 import { openWorkflowArtifact, workflowPromptArtifact, workflowResultArtifact, workflowScriptArtifact, type WorkflowArtifact } from "./workflow-artifacts.js";
 import { discoverWorkflowCommands, dryRunWorkflowCommand, parseWorkflowCommandArgs, workflowCommandListing, workflowCommandRoots, workflowCommandSignature } from "./workflow-commands.js";
+import { createWorkflowSidebar, type SidebarCustomUi } from "./sidebar.js";
 import { ERROR_CODES, HUMAN_REVIEW_VERDICTS, LAUNCH_SNAPSHOT_IDENTITY_VERSION, WORKFLOW_AGENT_STALL_THRESHOLD_MS, WORKFLOW_AGENT_STATE_CHANGED_EVENT, WORKFLOW_BUDGET_EVENT, WORKFLOW_CHECKPOINT_STATE_CHANGED_EVENT, WORKFLOW_PHASE_CHANGED_EVENT, WORKFLOW_RUN_COMPLETED_EVENT, WORKFLOW_RUN_FAILED_EVENT, WORKFLOW_RUN_RESUMED_EVENT, WORKFLOW_RUN_STARTED_EVENT, WORKFLOW_RUN_STATE_CHANGED_EVENT, WORKFLOW_WORKTREE_CREATED_EVENT, WorkflowError, type AgentAttemptActionContext, type AgentAttemptSummary, type AgentOptions, type AgentRecord, type AgentResourcePolicy, type AgentTransport, type BudgetApprovalRequest, type BudgetEvent, type HumanEditResult, type HumanReviewResult, type HumanReviewVerdict, type JsonValue, type LaunchSnapshot, type ModelSpec, type RunState, type ShellIdentity, type ShellOptions, type ShellResult, type WorkflowBridge, type WorkflowCatalogFunction, type WorkflowCatalogIndex, type WorkflowCheckpointState, type WorkflowErrorCode, type WorkflowErrorShape, type WorkflowEventBase, type WorkflowFailureAgent, type WorkflowFailureDiagnostics, type WorkflowFunctionContext, type WorkflowExecution, type WorkflowMetadata, type WorkflowModelAliasResolverContext, type WorkflowRetryProvenance, type WorkflowRunContext, type WorkflowSettings, type WorkflowSettingsResolution, type WorkflowSiblingAgent, type WorkflowWorktreeReference } from "./types.js";
 const SETTLED_AGENT_STATES: ReadonlySet<import("./types.js").AgentState> = new Set(["completed", "failed", "cancelled"]);
 const INTERNAL_WORKFLOW_TOOLS: readonly string[] = ["workflow", "workflow_respond", "workflow_stop", "workflow_status", "workflow_resume", "workflow_retry", "workflow_catalog"];
@@ -1646,7 +1647,72 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     const roots = workflowCommandRoots(dirname(fileURLToPath(import.meta.url)), extensionAgentDir, cwd);
     return await Promise.resolve(dryRunWorkflowCommand(resolve(cwd, directory), roots) as unknown as JsonValue);
   };
-  const eventPublisher = new WorkflowEventPublisher(piHostCapabilities(pi).events);
+  // Always-on run rail (split-pane technique adapted from pi-atelier; see
+  // sidebar.ts). The publisher's event sink is teed so every workflow event
+  // also schedules a sidebar reload; when pi exposes no event sink (headless
+  // hosts), the publisher keeps its original undefined sink and the rail,
+  // which only mounts in TUI mode, simply never receives pokes.
+  let sidebarPoke: () => void = () => undefined;
+  const baseEventSink = piHostCapabilities(pi).events;
+  const eventPublisher = new WorkflowEventPublisher(baseEventSink === undefined ? undefined : {
+    emit: (name: string, payload: unknown) => {
+      sidebarPoke();
+      return baseEventSink.emit(name, payload);
+    },
+  });
+  type SidebarLoadedRun = { run: PersistedRun; snapshot: Readonly<LaunchSnapshot> };
+  let sidebarRuns: SidebarLoadedRun[] = [];
+  let sidebarReloadTimer: ReturnType<typeof setTimeout> | undefined;
+  let sidebarReloading = false;
+  const renderSidebarBody = (width: number, height: number): string[] => {
+    const cap = (text: string) => (text.length > width ? `${text.slice(0, Math.max(1, width - 1))}…` : text);
+    const lines: string[] = [];
+    lines.push(cap(sidebarRuns.length === 0 ? "loom · no active runs" : `loom · ${String(sidebarRuns.length)} run${sidebarRuns.length === 1 ? "" : "s"}`));
+    for (const entry of sidebarRuns) {
+      if (lines.length >= height) break;
+      lines.push(cap("─".repeat(Math.max(1, width))));
+      lines.push(...formatWorkflowPhaseDashboard(entry.run, entry.snapshot, width).map(cap));
+    }
+    return lines.slice(0, Math.max(1, height - 1));
+  };
+  const sidebar = createWorkflowSidebar({ renderBody: renderSidebarBody, onError: () => undefined });
+  const reloadSidebarRuns = async (): Promise<void> => {
+    if (sidebarReloading) return;
+    sidebarReloading = true;
+    try {
+      const loadedRuns: SidebarLoadedRun[] = [];
+      for (const run of runs.values()) {
+        try {
+          const loaded = await run.store.load();
+          loadedRuns.push({ run: loaded.run, snapshot: loaded.snapshot });
+        } catch {
+          // A run mid-teardown has no readable journal; skip it this pass.
+        }
+      }
+      sidebarRuns = loadedRuns;
+    } finally {
+      sidebarReloading = false;
+    }
+    sidebar.refresh();
+  };
+  const scheduleSidebarReload = (): void => {
+    if (sidebarReloadTimer !== undefined) return;
+    sidebarReloadTimer = setTimeout(() => {
+      sidebarReloadTimer = undefined;
+      void reloadSidebarRuns();
+    }, 120);
+  };
+  sidebarPoke = scheduleSidebarReload;
+  pi.on("session_start", (_event, ctx) => {
+    if (ctx.mode !== "tui" || sidebar.mounted()) return;
+    const capabilities = uiHostCapabilities(ctx.ui);
+    if (!capabilities?.custom) return;
+    sidebar.mount(capabilities.custom as unknown as SidebarCustomUi);
+    scheduleSidebarReload();
+  });
+  pi.on("session_shutdown", () => {
+    sidebar.dispose();
+  });
   pi.on("resources_discover", () => {
     if (!pi.getActiveTools().includes("workflow")) return;
     const extensionDir = dirname(fileURLToPath(import.meta.url));
