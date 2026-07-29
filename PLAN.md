@@ -18,25 +18,45 @@ marker into prose here — the count would lie.
 
 ## Handoff
 
-Last touched: scaffolding commit. `/loop-next` had stopped early because
-this file did not exist and no `next` skill was installed; the roadmap
-lived in DESIGN.md where the driver could not see it.
+Last touched: P0 (fork + ref reset) landed and is ticked.
 
-Tree state: clean. Two commits landed the prior WIP —
-`refactor(workflows): source workflows from agentDir, not the package`
-and `feat(pi-loom): design doc and pi-loom-cli alias package`.
+What landed. `extensions/pi-loom/` now holds the engine source (the four
+local commits, unchanged) and `extensions/vekexasia_pi-extensible-workflows/`
+is back at its vendor-import state `a94500e`: `git diff a94500e -- <ref tree>`
+is empty, and only the four files those commits touched differ between the two
+trees (`execution.ts`, `host.ts`, `types.ts`, `validation.ts`).
+`packages.pi-extensible-workflows` is gone, replaced by `packages.pi-loom`;
+`loomStack`, `checks.pi-loom-build`, `lib.extensionPackagesFor`, the NixOS
+option, and both workflow READMEs point at it.
 
-Ordering note that will bite: **P1 landed before P0.** `packages.pi-loom-cli`
-composes the unforked `pi-extensible-workflows` package. P0 must swap that
-entry for the `pi-loom` fork and add `pi-loom-builtins` + `pi-loom-router`;
-the placeholder is marked in `flake.nix` next to `loomStack`.
+Gates actually run: `nix build .#pi-loom` (pass), `biome lint .` (pass, 1
+pre-existing warning), `nix flake check -L` (pass, "all checks passed!").
+Extra evidence for the "`/ideate` and `/loop-next` still run" criterion, which
+needs an interactive session that CI cannot give: `diff -r` between the old
+`pi-extensible-workflows` store output built from commit `2b43eef` and the new
+`pi-loom` output is empty, so the fork ships byte-identical bytes to the engine
+that is running this loop. A real interactive run is still owed; it is folded
+into the P1 runtime-acceptance sub-item below.
+
+Traps for the next step:
+
+- **Downstream flag renamed.** `~/nixos/hosts/y0usaf-desktop/finix/materialized-packages.nix`
+  sets `"extensible-workflows" = true;`. That key no longer exists; it is now
+  `loom`. `lib.enabledExtensions` asserts on unknown flags, so the system flake
+  fails to evaluate the moment it bumps this input. Flip the flag in the same
+  change that bumps the input (the `ship` skill does both).
+- **Fork identity is still upstream-named on purpose.** package.json is still
+  `pi-extensible-workflows@3.4.2`, and the scan-root constants still resolve
+  `<agentDir>/pi-extensible-workflows/{SYSTEM.md,roles}`. Renaming moves paths
+  inside the user's agent dir, so it must land with the system flake, not
+  before. Rationale is in DESIGN.md under Architecture.
+- The ref tree is no longer a package and is excluded from `biome.jsonc`;
+  keep it that way, it is only a diff base for upstream fixes.
 
 ## Current phase
 
-- [ ] **P0 — fork + ref reset.** Copy vendored source to
-      `extensions/pi-loom/` (currently DESIGN.md only), replay the four
-      local commits there, hard-reset the vendored tree to pristine
-      upstream 3.4.2.
+- [x] **P0 — fork + ref reset.** Engine forked to `extensions/pi-loom/`, ref
+      tree reset to the `a94500e` vendor import, `packages.pi-loom` builds.
 - [ ] **P1 — alias package.** Partially landed; do not redo the Nix work.
   - Landed: `packages.pi-loom-cli` (`writeShellScriptBin "loom"` wrapping
     `pi --no-extensions` with five `-e` flags plus `PI_WORKFLOW_NODE_PATH`)

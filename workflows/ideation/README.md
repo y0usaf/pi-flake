@@ -1,7 +1,8 @@
 # Ideation workflow
 
-Multi-model debate for [pi-extensible-workflows](https://github.com/vekexasia/pi-extensible-workflows)
-(vendored at `@extensions/vekexasia_pi-extensible-workflows/`).
+Multi-model debate for [pi-loom](../../extensions/pi-loom/DESIGN.md), the
+workflow engine at `@extensions/pi-loom/` (forked from
+pi-extensible-workflows 3.4.2).
 
 Every participant is a plain **ideator** — no personas. Diversity comes from
 different model weights/corpora, not role prompts. Default ideators are cheap
@@ -35,7 +36,7 @@ With the default cheap models a converging 1-round run costs ~$0.10.
 Enable the extension in your system flake and rebuild:
 
 ```nix
-programs.pi.extensions.extensible-workflows = true;
+programs.pi.extensions.loom = true;
 ```
 
 The system flake (`modules/dev/pi/workflows.nix`) places this directory into

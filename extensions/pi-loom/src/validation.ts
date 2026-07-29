@@ -88,7 +88,7 @@ function parseSettings(path: string, partial: boolean): Readonly<WorkflowSetting
     fail("CONFIG_ERROR", `Invalid workflow settings JSON at ${path}: ${errorText(error)}`);
   }
   if (!object(parsed)) fail("INVALID_SETTINGS", `Workflow settings at ${path} must be an object`);
-  const allowed = new Set(["concurrency", "modelAliases", "disabledAgentResources", "extensions"]);
+  const allowed = new Set(["concurrency", "modelAliases", "disabledAgentResources", "extensions", "exposeWorkflowTools"]);
   const unknown = Object.keys(parsed).find((key) => !allowed.has(key));
   if (unknown) fail("INVALID_SETTINGS", `Unknown workflow setting at ${path}: ${unknown}`);
   const concurrency = parsed.concurrency === undefined ? (partial ? undefined : DEFAULT_SETTINGS.concurrency) : parsed.concurrency;
@@ -96,7 +96,9 @@ function parseSettings(path: string, partial: boolean): Readonly<WorkflowSetting
   const modelAliases = parsed.modelAliases === undefined ? undefined : validateModelAliases(parsed.modelAliases, path);
   const disabledAgentResources = validateAgentResourceExclusions(parsed.disabledAgentResources, path);
   const extensions = validateWorkflowExtensions(parsed.extensions, path);
-  return Object.freeze({ ...(concurrency === undefined ? {} : { concurrency }), ...(modelAliases === undefined ? {} : { modelAliases }), ...(disabledAgentResources === undefined ? {} : { disabledAgentResources }), ...(extensions === undefined ? {} : { extensions }) });
+  const exposeWorkflowTools = parsed.exposeWorkflowTools;
+  if (exposeWorkflowTools !== undefined && typeof exposeWorkflowTools !== "boolean") fail("INVALID_SETTINGS", `${path}.exposeWorkflowTools must be a boolean`);
+  return Object.freeze({ ...(concurrency === undefined ? {} : { concurrency }), ...(modelAliases === undefined ? {} : { modelAliases }), ...(disabledAgentResources === undefined ? {} : { disabledAgentResources }), ...(extensions === undefined ? {} : { extensions }), ...(exposeWorkflowTools === undefined ? {} : { exposeWorkflowTools }) });
 }
 export function loadSettings(path = workflowSettingsPath()): Readonly<WorkflowSettings> { return parseSettings(path, false); }
 export function loadSettingsOverrides(path: string): Readonly<WorkflowSettingsOverrides> { return parseSettings(path, true); }
@@ -109,12 +111,14 @@ export function resolveWorkflowSettings(cwd: string, projectTrusted: boolean, gl
     concurrency: projectHas("concurrency") ? projectSettingsPath : globalSettingsPath,
     modelAliases: projectHas("modelAliases") ? projectSettingsPath : globalSettingsPath,
     disabledAgentResources: projectHas("disabledAgentResources") ? projectSettingsPath : globalSettingsPath,
+    exposeWorkflowTools: globalSettingsPath,
   };
   const effective = Object.freeze({
     concurrency: project.concurrency ?? global.concurrency,
     ...(projectHas("modelAliases") ? { modelAliases: project.modelAliases } : global.modelAliases === undefined ? {} : { modelAliases: global.modelAliases }),
     ...(projectHas("disabledAgentResources") ? { disabledAgentResources: project.disabledAgentResources } : global.disabledAgentResources === undefined ? {} : { disabledAgentResources: global.disabledAgentResources }),
     ...(global.extensions === undefined ? {} : { extensions: global.extensions }),
+    ...(global.exposeWorkflowTools === undefined ? {} : { exposeWorkflowTools: global.exposeWorkflowTools }),
   });
   return { globalSettingsPath, projectSettingsPath, projectTrusted, global, project, effective, sources };
 }
@@ -133,6 +137,17 @@ export function resolveAgentResourcePolicy(cwd: string, projectTrusted: boolean,
   const project = resolved.project.disabledAgentResources ?? empty;
   const effective = resolved.effective.disabledAgentResources ?? empty;
   return { globalSettingsPath: resolved.globalSettingsPath, projectSettingsPath: resolved.projectSettingsPath, projectTrusted, global, project, effective, unmatchedSkills: [], unmatchedExtensions: [] };
+}
+export function saveExposeWorkflowTools(path: string, exposeWorkflowTools: boolean): void {
+  let parsed: Record<string, unknown> = {};
+  try {
+    loadSettings(path);
+    parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  atomicWriteFile(path, `${JSON.stringify({ ...parsed, exposeWorkflowTools }, null, 2)}\n`, true);
 }
 export function saveModelAliases(path = workflowSettingsPath(), aliases: Readonly<Record<string, string>> = {}): void {
   const normalized = validateModelAliases(aliases, path);

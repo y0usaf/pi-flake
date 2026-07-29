@@ -83,7 +83,7 @@ in {
       vcc = mkEnableOption "pi-vcc algorithmic conversation compactor and vcc_recall history search";
       caveman = mkEnableOption "pi-caveman terse-response mode extension";
       atelier = mkEnableOption "pi-atelier status rail and live-activity sidebar extension";
-      "extensible-workflows" = mkEnableOption "pi-extensible-workflows workflow engine extension (lifecycle: testing)";
+      loom = mkEnableOption "pi-loom workflow engine extension, forked from pi-extensible-workflows 3.4.2 (lifecycle: testing)";
     };
 
     extraExtensions = mkOption {

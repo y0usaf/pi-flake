@@ -95,6 +95,22 @@ packages.pi-loom-router     gate + picker
 packages.pi-loom-cli        writeShellScriptBin "loom" → pi --no-extensions -e <stack>
 ```
 
+The vendored ref tree is **not** a package: nothing under
+`extensions/vekexasia_pi-extensible-workflows/` is built or shipped, it has no
+`extensions/registry.nix` entry, and `biome.jsonc` excludes it so upstream
+conventions never fight our lint gate. Its baseline is the vendor import
+commit `a94500e` (upstream 3.4.2 core package, plus the workspace-free
+`package-lock.json` that import had to regenerate) — that commit, not the npm
+tarball, is what "pristine" means when diffing.
+
+Identity strings inside the fork stay upstream-named on purpose: the npm
+package is still `pi-extensible-workflows@3.4.2`, and `WORKFLOW_DIRECTORY`
+(`src/agent-execution.ts`) plus `ROLE_DIRECTORY` (`src/validation.ts`) still
+resolve `<agentDir>/pi-extensible-workflows/{SYSTEM.md,roles}`. Renaming them
+moves on-disk scan roots that live in the user's agent dir, so it has to land
+in lockstep with the system flake that populates those paths; it is deferred
+until the router and builtins settle, not forgotten.
+
 The loom stack re-declares its extensions explicitly, because
 `--no-extensions` discards the `pi-full` bundle. That is the point: it
 proves doctrine 06 at runtime. Stack = loom trio + `pi-interview`
