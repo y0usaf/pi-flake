@@ -18,52 +18,55 @@ marker into prose here — the count would lie.
 
 ## Handoff
 
-Last touched: P6 was split in three and P6a landed and is ticked. The next open
-item is P6b (the `/wf-new` interview).
+Last touched: P6b landed and is ticked. The next open item is P6c (`/wf-new`
+dry-run and commit).
 
-What landed. `stage("scaffold", ...)` — the fifth stage, and the one `/wf-new`
-will be built on. One agent writes `command.json`, the script it names and a
-README into `.pi/workflows/<name>/`; the engine then reads the manifest back off
-disk and throws unless it parses, declares the name that was asked for, and
-names a script that exists beside it. All of it is in
-`extensions/pi-loom/src/stages.ts`. New check
-`checks.pi-loom-scaffold-stage` (`nix/checks/loom-scaffold-stage.sh`) and the
-matching `flake.nix` entry. DESIGN.md gained a `stage("scaffold", ...)` section
-and a three-way P6 roadmap split.
+What landed. `workflows/wf-new/` — `command.json`, `wf-new.js`, `README.md` —
+and `nix/checks/loom-wf-new-workflow.sh` with its `flake.nix` entry
+(`checks.pi-loom-wf-new-workflow`). DESIGN.md gained a `/wf-new` section after
+the scaffold-stage section and a gate line on the P6b roadmap entry. No engine
+source changed: P6b is entirely a shipped workflow plus its check.
 
-**The authoring contract in the scaffold prompt is generated, not written.**
-`WORKFLOW_AUTHORING_CONTRACT` is one line per sandbox global plus one line per
-`STAGE_LIBRARY` entry, each carrying that stage's own description, required and
-optional inputs and output keys. Writing it as prose would have passed on the
-day it was written and described a stage library that no longer exists one phase
-later — the exact drift the stage library exists to remove, reappearing in the
-prompt that teaches it. The check asserts the generated line count equals
-`STAGE_LIBRARY.length`, so prose fails the build.
+**The interview is structured by the stage, not by conversation: one question
+per scaffold input.** `name` answer → the stage's `name`; `scope` answer → its
+`directory`; `shape` answer → its `context`. Nothing is inferred from the task
+sentence, which is what makes "parks rather than guesses" true by construction
+rather than by discipline.
 
-**Nothing the model produced reaches a shell command.** `name` must match a
-kebab-case slug and `directory` a relative allowlisted path, both validated
-before the first command string is built, so the stage needs no shell quoting
-and cannot contain a quoting bug. That was a deliberate substitute for writing a
-`__stageQuote` helper: escaping a single quote inside `STAGE_LIBRARY_SOURCE`
-needs four backslashes to survive the TS template literal, and getting it wrong
-is silent.
+**`human.ask` offers choices and never a text field, so the name candidates are
+derived from the task's own words.** Filler is dropped, a leading digit gets a
+`wf-` prefix, duplicates collapse, and two constant fallbacks are a floor
+because `human.ask` refuses fewer than two choices. `audit the flake inputs for
+staleness` offers `audit-flake`, `audit-flake-inputs`, `wf-audit`. Derivation is
+deterministic so the check can assert the exact list. Escape hatch for a task
+whose words make bad names: pass `name` in the launch arguments and the naming
+question is skipped — documented, and **not covered by any check**.
 
-Gates actually run: `nix build .#pi-loom` (pass);
-`nix build .#checks.x86_64-linux.pi-loom-scaffold-stage -L` (pass, both legs);
-`biome lint .` via `nix run nixpkgs#biome` (exit 0, one pre-existing warning in
-`pi-loom/src/workflow-evals.ts`, none in the new files); `nix flake check -L`
-(pass, all 29 checks).
+Gates actually run: `nix build .#checks.x86_64-linux.pi-loom-wf-new-workflow -L`
+(pass); `nix build .#pi-loom-cli` (pass); `biome lint .` via
+`nix run nixpkgs#biome` (exit 0, one pre-existing warning in
+`pi-loom/src/workflow-evals.ts`); `nix flake check -L` (pass, all 30 checks).
 
-**Three negative controls, each against a mutated copy of the built package in
-`/tmp`, never the real tree.** Generated contract lines replaced with a
-hand-written four-stage list → `the authoring contract is not generated from
-STAGE_LIBRARY: 4 contract lines for 5 stages`. `mkdir` moved above input
-validation → `a rejected scaffold still ran a command`. The
-`manifest.name !== name` guard removed → `an unloadable scaffold was returned as
-a success`. Each mutant exits 1; the clean package exits 0.
+**Three negative controls, each a mutated copy of `workflows/wf-new/` in `/tmp`,
+driven through the real check script, never the real tree.** The name question
+replaced by `slugCandidates(task)[0]` → `/wf-new asked something other than the
+naming question first (got: 'Where should /audit-flake be written?')`. The scope
+answer replaced by the stage's default `.pi/workflows` → `the chosen name and
+scope never reached stage("scaffold")`. Filler filtering removed from the
+derivation → `did not offer the candidate names derived from the task`. Each
+mutant exits 1; the clean directory exits 0.
 
 Design decisions worth not re-litigating:
 
+- **The interview is the acceptance surface, not decoration.** Every question
+  maps to exactly one `stage("scaffold", ...)` input. Adding a question that
+  maps to nothing puts the run one park away from an answer that changes
+  nothing, which is how interviews become ceremony people route around.
+- **The scope choices are relative paths on purpose.** `__stagePathArg` rejects
+  absolute paths and `..`, so the user-scope agent dir is unreachable from the
+  scaffold stage; the two choices are `.pi/workflows` (project) and `workflows`
+  (this repo's shipped set). A user-scope scaffold would need a different
+  mechanism, not a third choice.
 - **The engine checks the model's homework, and that is the whole point.** The
   agent returns `{ summary, notes }` and nothing else; every fact in the
   artifact that can be established from disk is read from disk. Same principle
@@ -72,9 +75,6 @@ Design decisions worth not re-litigating:
 - **The scaffold writes into the user's own checkout, like `quick` and unlike
   `exec`.** The new workflow directory *is* the artifact; hiding it in a scratch
   worktree would mean the user cannot run the thing that was just written.
-- **`.pi/workflows/<name>/` is the default, not the agent dir.** Project scope
-  (P3b) keeps a scaffold reviewable in the repo it was written for. `directory`
-  overrides it and is validated, not trusted.
 - **P6 is split by failure mode, not by file.** Writing the files (P6a), asking
   the questions (P6b) and proving the result loads (P6c) fail differently, and
   only P6a is reusable by anything other than `/wf-new`.
@@ -84,6 +84,18 @@ Design decisions worth not re-litigating:
 
 Traps for the next step:
 
+- **A parked run is only `awaiting_input` while pi is alive.** `session_shutdown`
+  promotes every non-terminal run to `interrupted`
+  (`SHUTDOWN_TERMINAL_RUN_STATES`, `src/host.ts:23`), so a harness that reads
+  `state.json` after the process exits sees `interrupted` and cannot tell a park
+  from a crash. `loom-wf-new-workflow.sh` makes every parked-run assertion
+  before closing fd 3. The question and the state are both written before the
+  choice UI is emitted, so the request line arriving is proof they are on disk.
+- **A stage that creates a directory before its agent is offline evidence.**
+  `stage("scaffold", ...)` runs `mkdir -p` before `agent(...)`, so a run killed
+  at model resolution still leaves the directory behind. Answering the
+  *non-default* scope makes that directory a fact only an answered question
+  could produce — cheaper and less forgeable than any log assertion.
 - **`ctx.ui.select` blocks forever in RPC mode.** It emits an
   `extension_ui_request` and waits for a client response, with no timeout unless
   one is passed (`src/modes/rpc/rpc-mode.ts:136`). Every pi-driving check here
@@ -184,9 +196,9 @@ Traps for the next step:
 - **`workflows/` is not in the `pi-loom` package.** The install path is the
   system flake placing `workflows/*/` into `<agentDir>/workflows/`. A new
   shipped workflow needs a nix check that copies the directory in itself and an
-  entry in `~/nixos/.../modules/dev/pi/workflows.nix`. **`/quick` is not in that
-  file yet**; until it is, the picker on the user's real machine shows `/build`
-  and not `/quick`.
+  entry in `~/nixos/.../modules/dev/pi/workflows.nix`. **Neither `/quick` nor
+  `/wf-new` is in that file yet**; until they are, the picker on the user's real
+  machine shows `/build` and neither of them.
 - **The `/workflows` listing has its own customType.** Runs deliver under
   `"customType":"workflow"`, the listing under `"customType":"workflow-list"`.
 - **A failed run is still delivered as a workflow message**, formatted
@@ -206,14 +218,14 @@ Traps for the next step:
   `scaffold` prompt. `workflow_catalog` still lists registered functions and
   model aliases, not stages, so nothing tells the chat agent in `loom` that
   `stage(...)` exists. Folding stages into that tool is still an open idea; it
-  is not needed by P6b or P6c.
+  is not needed by P6c.
 - **`extensions/pi-loom/skills/pi-extensible-workflows/SKILL.md` is a live,
   owned document** (committed by the user as `9b022f4`). It is where the
   agent-facing docs for `stage(...)`, `exec`, `scaffold`, `/build`, `/quick`,
-  the router gate, the shell policy and the picker belong. As of this step it
-  still describes none of them — check before assuming.
+  `/wf-new`, the router gate, the shell policy and the picker belong. As of this
+  step it still describes none of them — check before assuming.
 - **The `next` skill's own doc says `nix flake check` runs 13 checks.** It runs
-  29. Left unedited on purpose (out of scope), but worth a one-word fix next
+  30. Left unedited on purpose (out of scope), but worth a one-word fix next
   time `.pi/skills/next/SKILL.md` is touched for its own sake.
 - **The flake only sees git-tracked files.** A new source or check script that
   is not `git add`ed does not exist inside `nix build`. Stage before building.
@@ -339,8 +351,13 @@ Traps for the next step:
       unloadable scaffolds, in Node against the built package; a second leg
       re-proves the input contract inside the real vm sandbox. The generated
       workflow's quality needs a real model — see the handoff.
-- [ ] **P6b — `/wf-new` interview.** `human.ask` turns questions into the
-      scaffold stage's input.
+- [x] **P6b — `/wf-new` interview.** `human.ask` turns questions into the
+      scaffold stage's input, one question per input: the `name` answer becomes
+      the stage's `name`, `scope` its `directory`, `shape` its `context`.
+      Nothing is inferred from the task, so an unanswered run parks in the
+      `interview` phase; `workflows/wf-new/` is the shipped directory and
+      `checks.pi-loom-wf-new-workflow` proves the park and the answered path.
+      The scaffolded workflow's quality needs a real model — see the handoff.
 - [ ] **P6c — `/wf-new` dry-run and commit.** Launch the new command with
       invalid arguments to prove discovery and usage without a model, then
       commit the directory.
