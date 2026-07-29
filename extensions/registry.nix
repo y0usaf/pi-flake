@@ -62,11 +62,6 @@
     source = "vendored";
     dir = "jonjonrankin_pi-caveman";
   };
-  atelier = {
-    stage = "active";
-    source = "vendored";
-    dir = "michaelmjhhhh_pi-atelier";
-  };
 
   extensible-workflows = {
     stage = "testing";

@@ -155,7 +155,6 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-review` | `/review` and `/end-review` code review workflow |
 | `pi-vcc` | Algorithmic conversation compactor with `/pi-vcc`, `/pi-vcc-recall`, and `vcc_recall` |
 | `pi-caveman` | Terse-response mode with configurable compression levels |
-| `pi-atelier` | Status rail footer + docked live-activity sidebar with `/atelier` menu and display presets |
 
 ## Extension Lifecycle
 

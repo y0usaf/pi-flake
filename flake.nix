@@ -257,35 +257,6 @@
             };
           };
 
-        "pi-atelier" = let
-          atelierPackageJson = builtins.fromJSON (builtins.readFile ./extensions/michaelmjhhhh_pi-atelier/package.json);
-        in
-          pkgs.stdenvNoCC.mkDerivation {
-            pname = "pi-atelier";
-            version = atelierPackageJson.version;
-            src = lib.cleanSource ./extensions/michaelmjhhhh_pi-atelier;
-
-            dontBuild = true;
-
-            installPhase = ''
-              runHook preInstall
-
-              mkdir -p "$out"
-              cp package.json README.md CHANGELOG.md LICENSE "$out"/
-              cp -r extensions src assets "$out"/
-
-              runHook postInstall
-            '';
-
-            passthru.packageName = atelierPackageJson.name;
-
-            meta = with lib; {
-              description = atelierPackageJson.description;
-              homepage = atelierPackageJson.homepage;
-              license = licenses.mit;
-              platforms = platforms.all;
-            };
-          };
 
         # Vendored from @extensions/vekexasia_pi-extensible-workflows/ (MIT).
         # Pi loads ./src/index.ts directly; dist is shipped for the exports map;
@@ -496,7 +467,7 @@
         review = self.packages.${system}."pi-review";
         vcc = self.packages.${system}."pi-vcc";
         caveman = self.packages.${system}."pi-caveman";
-        atelier = self.packages.${system}."pi-atelier";
+
         "extensible-workflows" = self.packages.${system}."pi-extensible-workflows";
       };
 
