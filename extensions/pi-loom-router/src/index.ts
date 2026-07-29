@@ -5,8 +5,11 @@
  * mutates the working tree happens inside a workflow run, where a sub-agent
  * gets the tool, a worktree bounds the blast radius, and git records the diff.
  * This extension is what makes that a property of the stack rather than a
- * convention the model is asked to honour: it removes the mutating tools from
- * the chat agent's active set, so they are never offered to the model at all.
+ * convention the model is asked to honour. It works on two levels, because the
+ * tools differ in kind: `edit` and `write` are removed from the chat agent's
+ * active set, so they are never offered to the model at all, while `bash`
+ * stays offered and every invocation is classified before it runs (P5b-ii,
+ * ./shell-policy.ts).
  *
  * Shipped only in `loom` (packages.pi-loom-router, wired into the loom stack in
  * flake.nix). It is deliberately absent from extensions/registry.nix, so plain
@@ -30,20 +33,22 @@
  *      `UNKNOWN_TOOL: Tool is outside the launching session boundary: edit`.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { classifyShellCommand } from "./shell-policy.ts";
 
 /**
  * Tools the chat agent must not hold in `loom`.
  *
- * `bash` is here in full, not narrowed to its mutating invocations: one tool
- * name is all pi.setActiveTools can address, and a gate that leaves `bash`
- * reachable is not a gate at all (`bash` can write any file `edit` could).
- * Read-only shell is a real loss and is tracked as P5b-ii, which re-admits
- * `bash` behind a `tool_call` classifier.
+ * `bash` is deliberately *not* here since P5b-ii. Two mechanisms, two failure
+ * modes: pi.setActiveTools can only address a tool name, which is the right
+ * instrument for `edit` and `write` (tools that exist to mutate) and the wrong
+ * one for `bash` (a tool whose *invocation* decides). Hiding `bash` cost the
+ * router `git status` and `rg -n`, so it stays visible and every call is
+ * classified by ./shell-policy.ts from the `tool_call` handler below.
  *
  * Matching is by name, which is also how tool overrides work: pi-hashline
  * registers its own `edit` under the builtin's name, so one entry covers both.
  */
-const GATED_TOOLS: readonly string[] = ["edit", "write", "bash"];
+const GATED_TOOLS: readonly string[] = ["edit", "write"];
 
 /**
  * Read-only builtins the gate switches *on*, if the session was configured
@@ -113,4 +118,28 @@ export default function loomRouter(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", () => {
 		applyGate(pi);
 	});
+
+	// The second half of the gate, and the one that needs a different mechanism:
+	// `bash` stays in the active set, but every invocation is classified before
+	// it runs. Returning { block: true, reason } is pi's documented way to refuse
+	// a tool call; the reason is fed back to the model, which is why every
+	// refusal names /quick and /build instead of only saying no.
+	//
+	// Scope is the chat session alone. Workflow sub-agents are separate sessions
+	// built by createAgentSession() with explicit extensionFactories (see
+	// extensions/pi-loom/src/agent-execution.ts), so this handler is not in their
+	// stack and an exec stage keeps its full shell inside its worktree.
+	pi.on("tool_call", (event) => {
+		if (event.toolName !== "bash") return;
+		const input = event.input as BashToolInput | undefined;
+		const command = typeof input?.command === "string" ? input.command : "";
+		const verdict = classifyShellCommand(command);
+		if (verdict.allowed) return;
+		return { block: true, reason: verdict.reason };
+	});
+}
+
+/** The `bash` tool's input shape; only `command` matters to the policy. */
+interface BashToolInput {
+	readonly command?: unknown;
 }

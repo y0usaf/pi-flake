@@ -364,20 +364,36 @@ grant, and `--tools` is the way to do that. Gated by
 half of that separation and ships only in the `loom` stack — it has no entry in
 `extensions/registry.nix`, so no extension flag can pull it into a plain `pi`.
 At `session_start`, and again at `before_agent_start` for tools enabled later,
-it calls `setActiveTools` to drop `edit`, `write` and `bash` from the chat
-agent. `bash` goes whole because `setActiveTools` addresses names, not
-invocations, and a gate that leaves `bash` reachable is not a gate; read-only
-shell returns in P5b-ii behind a `tool_call` classifier.
+it calls `setActiveTools` to drop `edit` and `write` from the chat agent.
 
 The gate is a *swap*, not a subtraction, and the reason is measured rather than
 aesthetic: pi's default active set is `read`, `bash`, `edit`, `write`, while
-`grep`, `find` and `ls` are configured but inactive. Subtracting the mutating
-three leaves a router holding `read` alone, which is the "no file access at
-all" router this document rejects below. So the same call switches `grep`,
-`find` and `ls` on, intersected with `pi.getAllTools()` so `loom --tools read`
-stays narrower than the policy instead of being widened by it. Matching is by
-name, which is also how overrides are covered: pi-hashline registers its own
-`edit` under the builtin's name. Gated by `checks.pi-loom-router-gate`.
+`grep`, `find` and `ls` are configured but inactive. Subtracting alone leaves a
+router holding `read` (and, before P5b-ii, nothing else), which is the "no file
+access at all" router this document rejects below. So the same call switches
+`grep`, `find` and `ls` on, intersected with `pi.getAllTools()` so `loom
+--tools read` stays narrower than the policy instead of being widened by it.
+Matching is by name, which is also how overrides are covered: pi-hashline
+registers its own `edit` under the builtin's name. Gated by
+`checks.pi-loom-router-gate`.
+
+**Read-only shell.** `bash` is the tool the name-level mechanism cannot express:
+`ls -la` and `rm -rf src` are the same tool, so `setActiveTools` can only take
+all of it or none. P5b-i took all of it and the router lost `git status` with
+the mutation. P5b-ii re-admits `bash` and moves the decision to the invocation:
+a `tool_call` handler runs each command through `src/shell-policy.ts` and
+returns `{ block: true, reason }` for anything that could write, with a reason
+that names `/quick` and `/build` so the model reaches for the workflow instead
+of a sneakier command. The policy is default-deny — an allowlist of commands
+with no writing mode, argument rules for the few that grow one with a flag
+(`sed -i`, `find -delete`), subcommand narrowing for `git` and `nix`, and a
+flat refusal for constructs it cannot judge (command substitution, heredocs,
+output redirects to a real path). It is a guardrail, not a sandbox: a string
+classifier cannot stop an adversarial model, and the answer to that is the
+worktree an exec stage already runs in, not a better regex. Scope is the chat
+session only — workflow sub-agents are separate sessions built with explicit
+`extensionFactories`, so an exec stage keeps its full shell. Gated by
+`checks.pi-loom-router-shell`.
 
 ## Deferred (and why)
 
@@ -501,12 +517,17 @@ apart within one loop iteration.
         none of edit/write/bash and does hold read/grep/find/ls; plain `pi`
         holds all three mutating tools; `pi-full` bundles no copy of the
         router; and a workflow launched in a gated session still records
-        edit/write/bash in its launch snapshot.*
+        edit/write/bash in its launch snapshot.* The `bash` half of that
+        acceptance is superseded by P5b-ii, which re-admits the tool and gates
+        the invocation instead.
       - **P5b-ii — read-only shell.** `bash` re-admitted to the chat agent
         behind a `tool_call` handler that blocks anything that can mutate.
         *Accept: in `loom` the main agent can run a read-only command and is
         refused a mutating one with a reason naming the workflow to use
-        instead.*
+        instead.* Gated by `checks.pi-loom-router-shell`, which drives the
+        extension's own handlers with a stub `ExtensionAPI`; a real `tool_call`
+        needs an assistant message, so the invocation path itself is proved by
+        `checks.pi-loom-router-gate` loading the extension in a live session.
     - **P5c — picker.** *Accept: startup shows the workflow picker and Esc
       drops to chat.*
 - **P6 — `/wf-new` meta-workflow.** *Accept: `/wf-new` interviews, writes
