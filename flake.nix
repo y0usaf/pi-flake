@@ -653,6 +653,24 @@
           touch $out
         '';
 
+        # P6b acceptance: the `/wf-new` interview. The shipped directory is
+        # copied into a throwaway agent dir's workflows root, the exact place
+        # the system flake installs it. Two claims no build-only check can
+        # make: an unanswered launch parks in the `interview` phase with the
+        # question in its journal, `awaiting_input` read while pi is still
+        # alive because session_shutdown promotes it to `interrupted`; and
+        # answering all three questions resumes the run into
+        # stage("scaffold", ...), where the directory the stage creates before
+        # its agent — under the answered scope, not the stage's default — is
+        # filesystem proof that the answers became stage inputs. The scaffolded
+        # workflow itself needs a real model and is not in CI.
+        pi-loom-wf-new-workflow = pkgs.runCommand "pi-loom-wf-new-workflow" {
+          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.gnused pkgs.git pkgs.findutils pkgs.coreutils];
+        } ''
+          bash ${./nix/checks/loom-wf-new-workflow.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom ${./workflows/wf-new}
+          touch $out
+        '';
+
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;

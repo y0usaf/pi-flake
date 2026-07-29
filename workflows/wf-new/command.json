@@ -1,0 +1,31 @@
+{
+  "name": "wf-new",
+  "description": "Interview the author, then write a new workflow (command.json, script, README) into a workflows root.",
+  "script": "wf-new.js",
+  "argKey": "task",
+  "argsSchema": {
+    "type": "object",
+    "properties": {
+      "task": {
+        "type": "string",
+        "minLength": 1,
+        "description": "What the new workflow must do, in one sentence"
+      },
+      "name": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+        "description": "Command name for the new workflow, kebab-case; given here, the naming question is skipped"
+      },
+      "context": {
+        "type": "string",
+        "description": "Repository background handed to the scaffolding agent"
+      },
+      "model": {
+        "type": "string",
+        "description": "Model for the scaffolding agent; defaults to the session model"
+      }
+    },
+    "required": ["task"],
+    "additionalProperties": false
+  }
+}

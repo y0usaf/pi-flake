@@ -359,6 +359,37 @@ the model returned a plausible summary over an unloadable scaffold. The `loom`
 leg re-makes the input-contract claim inside the real vm sandbox and proves a
 rejected call leaves no directory behind on a real filesystem.
 
+`/wf-new` is that stage with an interview in front of it, and the interview is
+structured by what the stage needs rather than by what feels conversational:
+**one question per scaffold input.** The answer to `name` becomes the stage's
+`name`, the answer to `scope` its `directory`, and the answer to `shape` its
+`context`. Nothing is inferred from the task sentence, so a run nobody answers
+parks in the `interview` phase and stays parked — `awaiting_input`, question in
+the journal, not one directory created. That is the whole reason the interview
+exists: a scaffold written from a guessed name lands in a root the author did
+not choose, under a command they then have to rename, and they find out after
+the model has already been paid for.
+
+`human.ask` offers choices and never a text field, which would make naming
+impossible if the choices were fixed. They are derived instead: the task's own
+words, minus filler, give `audit the flake inputs for staleness` the candidates
+`audit-flake`, `audit-flake-inputs`, `wf-audit`. Derivation is deterministic, so
+the same task always offers the same list and a check can assert it exactly;
+the escape hatch for a task whose words make bad names is passing `name` in the
+launch arguments, which skips the question.
+
+`checks.pi-loom-wf-new-workflow` drives the shipped directory from a throwaway
+agent dir. Two things in it are worth knowing before editing it. The parked-run
+assertions are made **while pi is still running**, because `session_shutdown`
+promotes every non-terminal run to `interrupted`, so `awaiting_input` cannot be
+read from a dead process's `state.json`. And the proof that answers reach the
+stage is filesystem, not prose: the probe answers the non-default scope, so
+`workflows/<chosen name>/` existing in the project — a path neither the stage's
+default `.pi/workflows` nor any guess would produce — is evidence that the name
+answer and the scope answer both became stage inputs. The shape answer never
+touches disk (it is prompt text for an agent that the unknown model stops), so
+it is read from the run's own log line.
+
 ## Extension surface contract
 
 **Read path.** A workflow script receives a frozen `args` object (validated
@@ -625,9 +656,11 @@ apart within one loop iteration.
       `checks.pi-loom-scaffold-stage`. The generated workflow's *quality* needs
       a real model and is not in CI.
     - **P6b — the interview.** `/wf-new` asks its questions through
-      `human.ask` and turns the answers into the scaffold stage's input.
+      `human.ask` and turns the answers into the scaffold stage's input, one
+      question per input: name, scope, shape.
       *Accept: `/wf-new` with no answers parks the run rather than guessing,
-      and the recorded answers reach `stage("scaffold", ...)`.*
+      and the recorded answers reach `stage("scaffold", ...)`.* Gated by
+      `checks.pi-loom-wf-new-workflow`.
     - **P6c — dry-run and commit.** The freshly written workflow is launched
       once with deliberately invalid arguments, which proves discovery and
       usage generation without a model, and the directory is then committed.
