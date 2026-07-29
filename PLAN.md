@@ -18,67 +18,71 @@ marker into prose here — the count would lie.
 
 ## Handoff
 
-Last touched: P3 was split into P3a (schema-declared args) and P3b (project
-scope), and P3a landed and is ticked. The next open item is P3b.
+Last touched: P3b landed and is ticked. The next open item is P4 (stage library
++ `/build` + `/quick`).
 
-What landed. `argsSchema` in `command.json`: a JSON Schema object that declares
-a workflow command's arguments, validated per invocation before any run is
-launched. New `extensions/pi-loom/src/workflow-commands.ts` owns the whole
-input path — `validateWorkflowCommandSpec` (structural check of one spec file),
-`workflowCommandSignature` / `workflowCommandUsage` (generated usage), and
-`parseWorkflowCommandArgs` (text to launch args). `host.ts` now calls those
-three instead of parsing inline; the registered command description is the
-hand-written description plus the generated signature when a schema is present.
-Both shipped workflows (`workflows/ideation`, `workflows/loop-next`) now declare
-schemas and their descriptions no longer hand-write a usage tail.
+What landed. A third workflow-command scan root: `<cwd>/.pi/workflows/<name>/`,
+so a repo carries its own slash commands. Discovery moved out of `host.ts` into
+`src/workflow-commands.ts` (`workflowCommandRoots`, `discoverWorkflowCommands`,
+`workflowCommandListing`), which now owns both what a spec means and which
+specs exist. New `/workflows` command (plural; `/workflow` singular still
+controls runs) prints every scope with its root path, the commands under it,
+any shadowed specs and any skipped ones, as a display-only session message
+(`present`, `triggerTurn: false`, customType `workflow-list`).
 
 Gates actually run: `nix build .#pi-loom-cli` (pass),
-`nix build .#checks.x86_64-linux.pi-loom-workflow-args -L` (pass, prints
-`workflow-args: generated usage reached the palette, three bad-arg shapes were
-rejected without starting a run, defaults and coercion reached the child`),
-`nix build .#checks.x86_64-linux.biome-lint -L` (pass, same 1 pre-existing
-warning in the eval harness), `nix flake check -L` (pass, all checks).
+`nix build .#checks.x86_64-linux.pi-loom-project-workflows -L` (pass, prints
+`project-workflows: a .pi/workflows command.json reached the palette and ran,
+/workflows named every scope, a project spec could not shadow user scope, and a
+malformed project spec was skipped without aborting load`), `nix flake check -L`
+(pass, all checks, biome unchanged at 1 pre-existing warning + 5 infos).
 
 Design decisions worth not re-litigating:
 
-- **Schema-less specs are untouched.** `parseWorkflowCommandArgs` reproduces the
-  pre-P3 branch exactly when `argsSchema` is absent, so declaring a schema is
-  opt-in per workflow and no existing `command.json` needed migrating.
-- **Defaults and coercion are hand-written, validation is not.** TypeBox's
-  `Value.Default` and `Value.Convert` only act on TypeBox-constructed types (they
-  key off an internal `Kind` symbol) and are silent no-ops on the plain JSON
-  Schema a `command.json` carries — verified, not assumed. `Value.Check` and
-  `Value.Errors` do read plain JSON Schema, so validation stays real JSON Schema
-  semantics while defaults and string-to-number coercion are two small explicit
-  passes over the schema's top-level properties.
-- **Non-object JSON now goes under `argKey` when a schema exists.** `/loop-next 10`
-  previously reached the script as the bare number `10`, so its `maxSteps` lookup
-  missed and the cap silently stayed 30. With a schema the value is wrapped as
-  `{ maxSteps: 10 }`.
+- **Precedence is first-root-wins, builtin then user then project.** A project
+  cannot shadow a name the user already has, so cloning a repo cannot redefine
+  `/ship`. Deliberate override stays deferred with installable packs. The
+  shadowed spec is reported by `/workflows`, not dropped silently.
+- **Project specs fail soft, operator specs fail loud.** A malformed
+  `command.json` in a builtin or user root still throws at load; one in the
+  project root is collected into `discovery.problems` and listed as skipped, so
+  a foreign repo cannot abort extension load.
+- **The project root is `process.cwd()`.** Command registration happens at
+  extension load, before any `ctx` with a `cwd` exists, and Pi resolves the
+  project from the directory it was started in.
+- **Project-scope commands refuse to run when `ctx.isProjectTrusted()` is
+  false**, but Pi core does not count `.pi/workflows` among the resources that
+  trigger a trust prompt (`TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES` is
+  settings.json, extensions, skills, prompts, themes, SYSTEM.md,
+  APPEND_SYSTEM.md), so a repo whose only `.pi` content is workflows is
+  auto-trusted. Discovery never executes a script, so the remaining gate is
+  that a human types the command. Recorded in DESIGN.md as residual exposure.
 
 Traps for the next step:
 
-- **`extensions/pi-loom/skills/pi-extensible-workflows/SKILL.md` is modified in
-  the working tree and deliberately not committed.** The tree was clean at the
-  start of this step; that file was rewritten mid-step by something outside it
-  (its `HEAD` content is byte-identical to the vendored upstream copy, the
-  working-tree content is not). It was left alone rather than reverted or swept
-  into the commit. Decide what it is before committing it.
-- **The flake only sees git-tracked files.** A new source file that is not
-  `git add`ed does not exist inside `nix build`: the first build of this step
-  failed with `Cannot find module './workflow-commands.js'` while local `tsc`
-  was clean. Stage new files before building.
-- **`PI_CODING_AGENT_DIR` leaks into hand-run harnesses.** Inside the nix sandbox
-  the agent dir defaults to `$HOME/.pi/agent`, but running a check script from a
-  Pi session inherits `PI_CODING_AGENT_DIR` and the scan finds the real agent dir
-  instead of the throwaway one. `loom-workflow-args.sh` now exports it
-  explicitly; the three older harnesses do not and will mislead if run by hand.
-- **Never `head -1` a presented message.** Still true, and now also applies to
-  notifications: usage text is multi-line, so the harness serialises each
-  notification with `jq -c` before decoding it.
-- **`inputsSettled()` gates on four parking lots** (checkpoints, questions, edits,
-  reviews). Anything that parks a new kind of human input must add its lot there
-  or a pending item will look like a running run.
+- **`extensions/pi-loom/skills/pi-extensible-workflows/SKILL.md` is still
+  modified in the working tree and still deliberately uncommitted.** Same state
+  as the previous handoff described: `HEAD` content is byte-identical to the
+  vendored upstream copy, the working-tree content is a rewrite by something
+  outside these steps (mtime is newer than every commit here). It was left
+  untouched again rather than reverted or swept into the commit. Decide what it
+  is before committing it.
+- **The flake only sees git-tracked files.** A new source or check script that
+  is not `git add`ed does not exist inside `nix build`. Stage before building.
+- **`result` is a relative symlink.** The check harnesses `cd` into a temp
+  project, so running one by hand needs `"$(readlink -f result)/bin/loom"`, not
+  `./result/bin/loom`.
+- **`PI_CODING_AGENT_DIR` leaks into hand-run harnesses.** Inside the nix
+  sandbox the agent dir defaults to `$HOME/.pi/agent`, but running a check
+  script from a Pi session inherits `PI_CODING_AGENT_DIR` and the user-scope
+  scan finds the real agent dir instead of the throwaway one.
+  `loom-workflow-args.sh` and `loom-project-workflows.sh` export it explicitly;
+  the three older harnesses do not and will mislead if run by hand.
+- **Never `head -1` a presented message.** Usage text and the `/workflows`
+  listing are multi-line, so harnesses serialise with `jq -c` before decoding.
+- **`inputsSettled()` gates on four parking lots** (checkpoints, questions,
+  edits, reviews). Anything that parks a new kind of human input must add its
+  lot there or a pending item will look like a running run.
 - **Downstream flag renamed.** `~/nixos/hosts/y0usaf-desktop/finix/materialized-packages.nix`
   sets `"extensible-workflows" = true;`. That key no longer exists; it is now
   `loom`. `lib.enabledExtensions` asserts on unknown flags, so the system flake
@@ -91,7 +95,7 @@ Traps for the next step:
   before. Rationale is in DESIGN.md under Architecture.
 - The ref tree is no longer a package and is excluded from `biome.jsonc`;
   keep it that way, it is only a diff base for upstream fixes.
-- **Two facts all four harnesses depend on.** Pi's agent dir defaults to
+- **Two facts all five harnesses depend on.** Pi's agent dir defaults to
   `$HOME/.pi/agent`, not the XDG data path the installed system uses; and an
   RPC `prompt` is refused before command dispatch unless a model resolves
   with a key, which is why the scripts pass throwaway
@@ -124,8 +128,10 @@ Traps for the next step:
       invocation, both shipped workflows declaring schemas,
       `checks.pi-loom-workflow-args` proving rejection-with-usage, defaults and
       text-scalar coercion.
-- [ ] **P3b — project scope.** Project-local `.pi/workflows/` scan root and a
-      `/workflows` listing that names each command's scope.
+- [x] **P3b — project scope.** `<cwd>/.pi/workflows/` as a third scan root,
+      scoped discovery in `src/workflow-commands.ts`, a `/workflows` listing
+      naming every scope and root, `checks.pi-loom-project-workflows` proving a
+      project spec runs, cannot shadow user scope, and cannot abort load.
 - [ ] **P4 — stage library + `/build` + `/quick`.**
 - [ ] **P5 — router + picker.**
 - [ ] **P6 — `/wf-new` meta-workflow.**

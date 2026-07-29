@@ -203,6 +203,33 @@ off an internal `Kind` symbol and are silent no-ops on the plain JSON Schema a
 `command.json` carries, while `Value.Check` and `Value.Errors` do read plain
 JSON Schema, so validation itself stays real JSON Schema semantics.
 
+**Three scan roots, and a project may only add.** A `command.json` is found in
+the package (`builtin`), in the agent dir (`user`), or in the repo Pi was
+started in (`project`, at `<cwd>/.pi/workflows/<name>/`). The project root is
+the point of P3b: a repo carries the workflows that only make sense inside it,
+and nothing global is edited to install them. Precedence is first-root-wins in
+that order, so a project cannot shadow a name the user already has — cloning a
+repo must not silently redefine `/ship`. The shadowed spec is not dropped in
+silence either; `/workflows` lists it as shadowed, together with every scope's
+root path, which is the only way a user can tell an installed command from one
+that arrived with a checkout. Deliberate cross-scope override stays deferred
+with installable packs, where the precedence question has to be answered once
+for all three scopes.
+
+Two failure modes shape the discovery code in `src/workflow-commands.ts`. A
+malformed spec in a builtin or user root throws, because those are the
+operator's own files and a silent skip would hide a typo. A malformed spec in
+the project root is collected and reported by `/workflows` instead: extension
+load must not be abortable by a file that arrived with someone else's repo.
+And a project-scope command refuses to run when `ctx.isProjectTrusted()` is
+false, the same trust decision that gates project settings and roles; the
+command stays registered and explains itself rather than vanishing. Note the
+residual exposure honestly: Pi core does not count `.pi/workflows` among the
+resources that require a trust prompt, so a repo whose only `.pi` content is
+workflows is auto-trusted. Registration is inert — discovery reads JSON and
+never executes the script — so the remaining requirement is that a human types
+the command.
+
 ## Extension surface contract
 
 **Read path.** A workflow script receives a frozen `args` object (validated

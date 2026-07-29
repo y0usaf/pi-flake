@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,7 +15,7 @@ import { launchScriptForSnapshot, loadAgentDefinitions, loadSettings, normalizeR
 import { beginWorkflowExtensionLoading, loadingRegistry, resetWorkflowRegistry, type WorkflowRegistryApi } from "./registry.js";
 import { agentIdentityPath, agentWorktree, encoded, executeShellCommand, persistActiveAgentAttempt, persistAgentAttempts, readShellResult, runWorkflow, shellIdentityPath } from "./execution.js";
 import { openWorkflowArtifact, workflowPromptArtifact, workflowResultArtifact, workflowScriptArtifact, type WorkflowArtifact } from "./workflow-artifacts.js";
-import { parseWorkflowCommandArgs, validateWorkflowCommandSpec, workflowCommandSignature } from "./workflow-commands.js";
+import { discoverWorkflowCommands, parseWorkflowCommandArgs, workflowCommandListing, workflowCommandRoots, workflowCommandSignature } from "./workflow-commands.js";
 import { ERROR_CODES, HUMAN_REVIEW_VERDICTS, LAUNCH_SNAPSHOT_IDENTITY_VERSION, WORKFLOW_AGENT_STALL_THRESHOLD_MS, WORKFLOW_AGENT_STATE_CHANGED_EVENT, WORKFLOW_BUDGET_EVENT, WORKFLOW_CHECKPOINT_STATE_CHANGED_EVENT, WORKFLOW_PHASE_CHANGED_EVENT, WORKFLOW_RUN_COMPLETED_EVENT, WORKFLOW_RUN_FAILED_EVENT, WORKFLOW_RUN_RESUMED_EVENT, WORKFLOW_RUN_STARTED_EVENT, WORKFLOW_RUN_STATE_CHANGED_EVENT, WORKFLOW_WORKTREE_CREATED_EVENT, WorkflowError, type AgentAttemptActionContext, type AgentAttemptSummary, type AgentOptions, type AgentRecord, type AgentResourcePolicy, type AgentTransport, type BudgetApprovalRequest, type BudgetEvent, type HumanEditResult, type HumanReviewResult, type HumanReviewVerdict, type JsonValue, type LaunchSnapshot, type ModelSpec, type RunState, type ShellIdentity, type ShellOptions, type ShellResult, type WorkflowBridge, type WorkflowCatalogFunction, type WorkflowCatalogIndex, type WorkflowCheckpointState, type WorkflowErrorCode, type WorkflowErrorShape, type WorkflowEventBase, type WorkflowFailureAgent, type WorkflowFailureDiagnostics, type WorkflowFunctionContext, type WorkflowExecution, type WorkflowMetadata, type WorkflowModelAliasResolverContext, type WorkflowRetryProvenance, type WorkflowRunContext, type WorkflowSettings, type WorkflowSettingsResolution, type WorkflowSiblingAgent, type WorkflowWorktreeReference } from "./types.js";
 const SETTLED_AGENT_STATES: ReadonlySet<import("./types.js").AgentState> = new Set(["completed", "failed", "cancelled"]);
 const INTERNAL_WORKFLOW_TOOLS: readonly string[] = ["workflow", "workflow_respond", "workflow_stop", "workflow_status", "workflow_resume", "workflow_retry", "workflow_catalog"];
@@ -2958,41 +2958,53 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
   });
   if (exposeWorkflowTools) pi.registerTool(workflowTool);
   // Workflow slash commands are declared only by a command.json in one of the
-  // scan roots below; argument parsing, defaults and usage text live in
+  // three scan roots (builtin, user agent dir, project `.pi/workflows`);
+  // discovery, argument parsing, defaults and usage text all live in
   // workflow-commands.ts (pi-loom DESIGN.md, P3).
-  const workflowCommandRoots = [join(dirname(fileURLToPath(import.meta.url)), "../workflows"), join(dirname(fileURLToPath(import.meta.url)), "../../workflows"), join(extensionAgentDir, "workflows")];
-  const seenWorkflowCommands = new Set<string>();
-  for (const root of workflowCommandRoots) {
-    if (!existsSync(root)) continue;
-    for (const entry of readdirSync(root, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const dir = join(root, entry.name);
-      const specPath = join(dir, "command.json");
-      if (!existsSync(specPath)) continue;
-      let parsedSpec: unknown;
-      try { parsedSpec = JSON.parse(readFileSync(specPath, "utf8")); }
-      catch (error) { throw new WorkflowError("CONFIG_ERROR", `Invalid workflow command JSON at ${specPath}: ${errorText(error)}`); }
-      const spec = validateWorkflowCommandSpec(parsedSpec, specPath);
-      if (seenWorkflowCommands.has(spec.name)) continue;
-      const scriptFile = spec.script ?? "workflow.js";
-      const scriptPath = join(dir, scriptFile);
-      if (!existsSync(scriptPath)) throw new WorkflowError("INVALID_METADATA", `Workflow command ${spec.name} script not found: ${scriptPath}`);
-      seenWorkflowCommands.add(spec.name);
-      const described = spec.description ?? `Run the ${spec.name} workflow`;
-      pi.registerCommand(spec.name, {
-        // With a schema the palette hint is generated, so a command.json never
-        // hand-writes an argument list that can drift from what is validated.
-        description: spec.argsSchema ? `${described} ${workflowCommandSignature(spec)}` : described,
-        handler: async (args, ctx) => {
-          const parsedArgs = parseWorkflowCommandArgs(spec, args);
-          if (!parsedArgs.ok) { ctx.ui.notify(parsedArgs.message, "warning"); return; }
-          const result = await workflowTool.execute(`command-${spec.name}`, { name: spec.name, scriptPath, args: parsedArgs.args }, undefined, undefined, ctx);
-          const details = result.details as { runId?: string } | undefined;
-          ctx.ui.notify(`Started workflow ${spec.name}${details?.runId ? ` (${details.runId})` : ""}. Control it with /workflow.`, "info");
-        },
-      });
-    }
+  //
+  // The project root is `process.cwd()`: Pi resolves the project from the
+  // directory it was started in, and command registration happens at extension
+  // load, before any ctx with a cwd exists.
+  const workflowCommandDiscovery = discoverWorkflowCommands(workflowCommandRoots(dirname(fileURLToPath(import.meta.url)), extensionAgentDir, process.cwd()));
+  for (const command of workflowCommandDiscovery.commands) {
+    if (command.shadowedBy) continue;
+    const spec = command.spec;
+    const scriptPath = command.scriptPath;
+    const described = spec.description ?? `Run the ${spec.name} workflow`;
+    pi.registerCommand(spec.name, {
+      // With a schema the palette hint is generated, so a command.json never
+      // hand-writes an argument list that can drift from what is validated.
+      description: spec.argsSchema ? `${described} ${workflowCommandSignature(spec)}` : described,
+      handler: async (args, ctx) => {
+        // A project-scope command is code that arrived with a clone, so it runs
+        // under the same trust decision as project settings and roles. The
+        // command stays registered when trust is denied: a name that vanishes
+        // is a mystery, a name that explains itself is not.
+        if (command.scope === "project" && !projectTrusted(ctx)) {
+          ctx.ui.notify(`/${spec.name} is declared by this project (${command.specPath}) and the project is not trusted. Trust the project to run it.`, "warning");
+          return;
+        }
+        const parsedArgs = parseWorkflowCommandArgs(spec, args);
+        if (!parsedArgs.ok) { ctx.ui.notify(parsedArgs.message, "warning"); return; }
+        const result = await workflowTool.execute(`command-${spec.name}`, { name: spec.name, scriptPath, args: parsedArgs.args }, undefined, undefined, ctx);
+        const details = result.details as { runId?: string } | undefined;
+        ctx.ui.notify(`Started workflow ${spec.name}${details?.runId ? ` (${details.runId})` : ""}. Control it with /workflow.`, "info");
+      },
+    });
   }
+  // `/workflows` (plural) answers "what can I run and where did it come from";
+  // `/workflow` (singular) below controls runs. Presented as a display-only
+  // session message rather than a toast: a listing is read, not glanced at, and
+  // triggerTurn:false keeps it off the model's turn.
+  pi.registerCommand("workflows", {
+    description: "List workflow slash commands and the scope each was declared in",
+    handler: async (_args, ctx) => {
+      const listing = workflowCommandListing(workflowCommandDiscovery);
+      const trustNote = workflowCommandDiscovery.commands.some((command) => command.scope === "project" && !command.shadowedBy) && !projectTrusted(ctx) ? "\n\nProject-scope commands are registered but will not run: this project is not trusted." : "";
+      present(pi, "workflow-list", `Workflow commands\n${listing}${trustNote}`);
+      await Promise.resolve();
+    },
+  });
   pi.registerCommand("workflow", {
     description: "Inspect and control workflows for this Pi session",
     handler: async (args, ctx) => {
