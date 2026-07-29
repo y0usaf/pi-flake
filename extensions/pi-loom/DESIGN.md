@@ -321,6 +321,44 @@ failed in `plan` — that no worktree was opened, and that the pre-agent snapsho
 genuinely ran, by writing objects into a deliberately dirty probe repository
 while leaving its index byte-identical and its `git status` output unchanged.
 
+`stage("scaffold", ...)` writes a *workflow* rather than code, and it is the
+stage `/wf-new` is built on. It takes a `name` and a `task`, creates
+`.pi/workflows/<name>/` (the project scan root from P3b, overridable through
+`directory`), and asks one agent for `command.json`, the script it names, and a
+README.
+
+Two properties make it more than a prompt. First, **the model is asked only for
+prose**: `{ summary, notes }`, exactly like `exec` and `quick`. Everything the
+engine can establish itself it reads back from disk after the agent returns —
+`command.json` must parse, must declare the name that was asked for, and must
+name a script that exists beside it, or the stage throws. A scaffold that does
+not load is worse than no scaffold, because the user discovers it at the next
+launch instead of here. Second, **nothing the model produced ever reaches a
+shell command**: `name` must match a kebab-case slug and `directory` a relative
+allowlisted path, both checked before the first command is built, so the stage
+needs no shell quoting and can contain no quoting bug.
+
+**The authoring contract handed to that agent is generated, not written.**
+`WORKFLOW_AUTHORING_CONTRACT` in `src/stages.ts` is one line per sandbox global
+plus one line per `STAGE_LIBRARY` entry, each carrying that stage's own
+description, required and optional inputs, and output keys. A hand-written
+version would pass on the day it was written and describe a library that no
+longer exists a phase later — which is precisely the drift the stage library was
+introduced to remove, reappearing one level up in the prompt that teaches it.
+`checks.pi-loom-scaffold-stage` asserts the generated line count still equals
+`STAGE_LIBRARY.length`, so replacing the generator with prose fails the build.
+
+That check has two legs because the two claims cost very differently. The Node
+leg imports the built engine's `src/stages.ts`, concatenates the appended
+library the way the engine does, and drives `stage("scaffold", ...)` with stub
+`agent`/`shell`/`prompt` globals: no pi, no model, milliseconds, and it is the
+only way to observe what the stage does *after* the agent returns. It proves the
+ordering (validate, then `mkdir`, then agent, then verify) by asserting a
+rejected call ran no command at all, and it drives seven negative controls where
+the model returned a plausible summary over an unloadable scaffold. The `loom`
+leg re-makes the input-contract claim inside the real vm sandbox and proves a
+rejected call leaves no directory behind on a real filesystem.
+
 ## Extension surface contract
 
 **Read path.** A workflow script receives a frozen `args` object (validated
@@ -571,6 +609,30 @@ apart within one loop iteration.
 - **P6 — `/wf-new` meta-workflow.** *Accept: `/wf-new` interviews, writes
       a runnable `command.json` + script + README into the repo, dry-runs
       it, and commits.*
+  Split in three: writing the files, asking the questions and proving the
+  result loads are three different failure modes, and only the first one is
+  reusable by anything other than `/wf-new`.
+    - **P6a — `stage("scaffold", ...)`.** One agent writes `command.json`,
+      the script it names and a README into `.pi/workflows/<name>/`, under an
+      authoring contract generated from `STAGE_LIBRARY` so it cannot describe a
+      stage library that no longer exists; the engine then reads the manifest
+      back and refuses a scaffold that would not load. *Accept: the generated
+      contract carries one line per stage with that stage's required inputs;
+      bad input is rejected before any directory is created and before any
+      agent launches; and a manifest that does not parse, disagrees about the
+      name, or names a script that was never written fails the stage rather
+      than being returned as a success.* Gated by
+      `checks.pi-loom-scaffold-stage`. The generated workflow's *quality* needs
+      a real model and is not in CI.
+    - **P6b — the interview.** `/wf-new` asks its questions through
+      `human.ask` and turns the answers into the scaffold stage's input.
+      *Accept: `/wf-new` with no answers parks the run rather than guessing,
+      and the recorded answers reach `stage("scaffold", ...)`.*
+    - **P6c — dry-run and commit.** The freshly written workflow is launched
+      once with deliberately invalid arguments, which proves discovery and
+      usage generation without a model, and the directory is then committed.
+      *Accept: a scaffold whose `command.json` does not register is reported as
+      a failure before anything is committed.*
 - **P7 — ecosystem fill.** `/explore`, `/debug`, `/review`; migrate the
       `ship` and `next` skills to workflows. *Accept: each shipped skill has
       a workflow equivalent whose stages are enforced rather than described

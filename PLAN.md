@@ -18,79 +18,69 @@ marker into prose here — the count would lie.
 
 ## Handoff
 
-Last touched: P5c landed and is ticked, which closes P5 whole. The next open
-item is P6 (`/wf-new` meta-workflow).
+Last touched: P6 was split in three and P6a landed and is ticked. The next open
+item is P6b (the `/wf-new` interview).
 
-What landed. `loom` now opens on a picker listing the workflows it can run, and
-Esc drops to chat. New file `extensions/pi-loom-router/src/picker.ts`;
-`src/index.ts` registers a **second** `session_start` handler that calls
-`offerWorkflowPicker(pi.getCommands(), ctx)` when `event.reason === "startup"`.
-New check `checks.pi-loom-router-picker` (`nix/checks/loom-router-picker.sh`)
-and the matching `flake.nix` entry. DESIGN.md gained a **Startup picker**
-paragraph and a fuller P5c roadmap entry; the router README gained a picker
-section and package.json's description now mentions it.
+What landed. `stage("scaffold", ...)` — the fifth stage, and the one `/wf-new`
+will be built on. One agent writes `command.json`, the script it names and a
+README into `.pi/workflows/<name>/`; the engine then reads the manifest back off
+disk and throws unless it parses, declares the name that was asked for, and
+names a script that exists beside it. All of it is in
+`extensions/pi-loom/src/stages.ts`. New check
+`checks.pi-loom-scaffold-stage` (`nix/checks/loom-scaffold-stage.sh`) and the
+matching `flake.nix` entry. DESIGN.md gained a `stage("scaffold", ...)` section
+and a three-way P6 roadmap split.
 
-**Discovery reads back what the engine registered instead of rescanning.** The
-filter anchors on `/workflows`, which `pi-loom` registers unconditionally: its
-`sourceInfo.path` is the engine's identity for the session, and every other
-command from that same path is a workflow except `/workflow`. Measured in a
-real `loom`, not assumed — `/build`, `/quick`, `/workflows` and `/workflow` all
-report `<store>/pi-loom-3.4.2/src/index.ts` while `pi-interview`, `pi-atelier`
-and the inline llama command each report their own file.
+**The authoring contract in the scaffold prompt is generated, not written.**
+`WORKFLOW_AUTHORING_CONTRACT` is one line per sandbox global plus one line per
+`STAGE_LIBRARY` entry, each carrying that stage's own description, required and
+optional inputs and output keys. Writing it as prose would have passed on the
+day it was written and described a stage library that no longer exists one phase
+later — the exact drift the stage library exists to remove, reappearing in the
+prompt that teaches it. The check asserts the generated line count equals
+`STAGE_LIBRARY.length`, so prose fails the build.
 
-**A choice prefills `/build ` into the editor; it does not launch the run.**
-No extension API dispatches a slash command — `pi.sendUserMessage` calls the
-session's `prompt()` with command handling off, so `/build fix the parser`
-would reach the model as literal text. That constraint matches the requirement:
-since P3a every workflow's first argument is a task description the picker
-cannot know, so the user types it and presses Enter with pi's palette showing
-the generated usage.
+**Nothing the model produced reaches a shell command.** `name` must match a
+kebab-case slug and `directory` a relative allowlisted path, both validated
+before the first command string is built, so the stage needs no shell quoting
+and cannot contain a quoting bug. That was a deliberate substitute for writing a
+`__stageQuote` helper: escaping a single quote inside `STAGE_LIBRARY_SOURCE`
+needs four backslashes to survive the TS template literal, and getting it wrong
+is silent.
 
-Gates actually run: `nix build .#pi-loom-cli` (pass);
-`nix build .#checks.x86_64-linux.pi-loom-router-picker` (pass, seconds);
-`nix build .#checks.x86_64-linux.pi-loom-router-gate` (pass, 12s — the leg that
-proves the new handler does not wedge a live RPC session); `biome lint .` via
-`nix run nixpkgs#biome` (exit 0, one pre-existing warning in
+Gates actually run: `nix build .#pi-loom` (pass);
+`nix build .#checks.x86_64-linux.pi-loom-scaffold-stage -L` (pass, both legs);
+`biome lint .` via `nix run nixpkgs#biome` (exit 0, one pre-existing warning in
 `pi-loom/src/workflow-evals.ts`, none in the new files); `nix flake check -L`
-(pass, all 28 checks, 17s warm).
+(pass, all 29 checks).
 
-**The visual half was verified once by hand through a pty**, because no offline
-check can render a dialog. A `python3` `pty.fork()` harness ran `loom` in a real
-terminal with `/build` and `/quick` installed in a throwaway agent dir, and the
-captured screen showed the overlay (`Start a workflow — or Esc to chat`, three
-rows, the usage tails stripped); Esc left the editor empty and the session
-READY; Enter on the highlighted row left exactly `/build ` in the editor. That
-evidence is real but is not in CI.
-
-**Nine negative controls, each against a mutated copy in `/tmp`, never the real
-tree.** Picker handler removed → `startup offered 0 picker(s)`. Mode guard
-removed → `mode 'rpc' opened a dialog that nothing can answer`. Filter widened
-→ `the picker offers /workflows, which is not a workflow`. Reason guard removed
-→ `session_start reason 'reload' opened an uninvited picker`. Editor guard
-removed → `the picker interrupted a session that already had text`. Usage-tail
-trim disabled → caught. Chat row renamed to start with a slash *and* its
-identity guard removed → `the chat row left '/chat ' in the editor`. Picker
-registered before the gate → `'edit' was still active while the picker was
-open`. One control was **vacuous and is worth knowing why**: removing only the
-`option === CHAT_OPTION` guard changes nothing, because the label does not
-start with `/` and the regex rejects it anyway. Two independent properties
-protect that row; the check catches the loss of both, not of either.
+**Three negative controls, each against a mutated copy of the built package in
+`/tmp`, never the real tree.** Generated contract lines replaced with a
+hand-written four-stage list → `the authoring contract is not generated from
+STAGE_LIBRARY: 4 contract lines for 5 stages`. `mkdir` moved above input
+validation → `a rejected scaffold still ran a command`. The
+`manifest.name !== name` guard removed → `an unloadable scaffold was returned as
+a success`. Each mutant exits 1; the clean package exits 0.
 
 Design decisions worth not re-litigating:
 
-- **The picker lives in the router, not the engine.** `pi-loom` is installable
-  into a plain `pi` through `extensions/registry.nix`, so a startup overlay
-  there would violate P5's "`pi` sessions are unaffected". `pi-loom-router` is
-  already loom-only and already the thing that decides what the chat seat is
-  for, so routing the *user* belongs beside routing the model.
-- **Startup only.** `session_start` also fires for `reload`, `new`, `resume`
-  and `fork`. A modal on `/reload`, or when returning to existing work, is a
-  nuisance rather than an offer. Widening to `new` later is one condition.
-- **Prefill, not launch.** See above; also means `loom --tools read` and every
-  other narrowing still applies, because nothing bypasses command dispatch.
-- **Two mechanisms plus one affordance.** P5b-i addresses tool names, P5b-ii
-  addresses shell invocations, P5c addresses the user. Do not fold any of the
-  three into another.
+- **The engine checks the model's homework, and that is the whole point.** The
+  agent returns `{ summary, notes }` and nothing else; every fact in the
+  artifact that can be established from disk is read from disk. Same principle
+  as `exec` reporting git's diff rather than the model's summary of it. Do not
+  add fields to `SCAFFOLD_OUTPUT` that the engine could verify itself.
+- **The scaffold writes into the user's own checkout, like `quick` and unlike
+  `exec`.** The new workflow directory *is* the artifact; hiding it in a scratch
+  worktree would mean the user cannot run the thing that was just written.
+- **`.pi/workflows/<name>/` is the default, not the agent dir.** Project scope
+  (P3b) keeps a scaffold reviewable in the repo it was written for. `directory`
+  overrides it and is validated, not trusted.
+- **P6 is split by failure mode, not by file.** Writing the files (P6a), asking
+  the questions (P6b) and proving the result loads (P6c) fail differently, and
+  only P6a is reusable by anything other than `/wf-new`.
+- **The picker lives in the router, not the engine**, and offers a choice by
+  prefilling `/<name> ` into the editor rather than launching a run: no
+  extension API dispatches a slash command.
 
 Traps for the next step:
 
@@ -115,10 +105,17 @@ Traps for the next step:
 - **No extension API dispatches a slash command.** `pi.sendUserMessage` looks
   like one and is not. Anything that wants to *run* a command has to go through
   the editor or register its own handler.
-- **A pty harness is now a proven way to verify TUI behaviour by hand.**
+- **A pty harness is a proven way to verify TUI behaviour by hand.**
   `python3` `pty.fork()`, `os.execv` the binary, read the master fd, strip ANSI
   with `sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g'`. Use it for evidence when a claim is
   about rendering; do not try to make it a nix check.
+- **The appended stage library can be executed outside pi entirely.** Import the
+  built package's `src/stages.ts` in Node, call `stageLibrarySource()`, and
+  evaluate `new (async function(){}).constructor("agent", "shell", "prompt",
+  "withWorktree", source + "; return { stage: stage };")`. That hands you the
+  real `stage()` with stub globals in milliseconds, which is the only way to see
+  what a stage does *after* its agent returns without paying for a model.
+  `loom-scaffold-stage.sh` leg A is built on it.
 - **The router still cannot run `nix build` or `nix flake check`.** Policy
   working as designed, but it bites P7: migrating `next` and `ship` to
   workflows means validation runs inside a stage, not from the chat seat.
@@ -163,12 +160,21 @@ Traps for the next step:
 - **The `UNKNOWN_MODEL` notify keeps the raw detail inline**, reading `The
   workflow requested the unavailable model Unknown model <name> (settings:
   ...).` Match two substrings rather than one sentence.
-- **The available-stage assertions are substring matches.** `loom-stages.sh`
-  and `loom-exec-stage.sh` name all four stages; a fifth must extend them.
-- **Never put a backtick or a `$` followed by `{` inside `STAGE_LIBRARY_SOURCE`.**
-  That string is a TS template literal: a backtick ends it (unrelated-looking
-  `TS2304: Cannot find name` errors) and a dollar-brace interpolates. Shell
-  inside it must use `$(...)` and bare `$var`.
+- **The available-stage assertions are substring matches, in three files now.**
+  `loom-stages.sh`, `loom-exec-stage.sh` and `loom-scaffold-stage.sh` all spell
+  out `plan, exec, review, quick, scaffold`; a sixth stage must extend all
+  three.
+- **Never put a backtick, a `$` followed by `{`, or a regex literal inside
+  `STAGE_LIBRARY_SOURCE`.** That string is a TS template literal: a backtick
+  ends it (unrelated-looking `TS2304: Cannot find name` errors), a dollar-brace
+  interpolates, and a regex literal's slashes and backslashes have to survive
+  two levels of escaping. Shell inside it must use `$(...)` and bare `$var`;
+  patterns must use `new RegExp("...")` with no backslashes.
+- **`__stageGit` is now `__stageShell`.** It was never git-specific — it is the
+  one command runner every stage uses, and non-zero exit is a stage failure.
+  Renaming it shifted the `agent(...)` call-site offsets *inside the library*,
+  which is sanctioned (only the author's own offsets must stay put), but it does
+  mean a run in flight across this engine upgrade cannot resume.
 - **`git status` rewrites the index stat cache.** A harness that copies
   `.git/index` and then runs `git status` sees its own bookkeeping as a diff.
   Capture status first, copy the index second.
@@ -195,18 +201,20 @@ Traps for the next step:
 - **`local a="$1" b="$work/$a"` in one statement fails under `set -u`.** Bash
   does not expose `a` to the rest of its own `local` statement; the error reads
   `name: unbound variable`. Split the declarations.
-- **Stages are still invisible to the model.** `workflow_catalog` lists
-  registered functions, not stages. Nothing tells an agent that `stage(...)`
-  exists. Wiring them into a catalog is a natural P6 item, and it matters more
-  now that the chat agent is refused writes and has to know what to delegate.
-- **`extensions/pi-loom/skills/pi-extensible-workflows/SKILL.md` is now a live,
+- **Stages are visible to a scaffolding agent now, but still not to the chat
+  agent.** `WORKFLOW_AUTHORING_CONTRACT` reaches a model only through the
+  `scaffold` prompt. `workflow_catalog` still lists registered functions and
+  model aliases, not stages, so nothing tells the chat agent in `loom` that
+  `stage(...)` exists. Folding stages into that tool is still an open idea; it
+  is not needed by P6b or P6c.
+- **`extensions/pi-loom/skills/pi-extensible-workflows/SKILL.md` is a live,
   owned document** (committed by the user as `9b022f4`). It is where the
-  agent-facing docs for `stage(...)`, `exec`, `/build`, `/quick`, the router
-  gate, the shell policy and now the picker belong. As of this step it still
-  describes none of them — check before assuming.
+  agent-facing docs for `stage(...)`, `exec`, `scaffold`, `/build`, `/quick`,
+  the router gate, the shell policy and the picker belong. As of this step it
+  still describes none of them — check before assuming.
 - **The `next` skill's own doc says `nix flake check` runs 13 checks.** It runs
-  28. Left unedited on purpose (out of scope for P5c), but worth a one-word fix
-  next time `.pi/skills/next/SKILL.md` is touched for its own sake.
+  29. Left unedited on purpose (out of scope), but worth a one-word fix next
+  time `.pi/skills/next/SKILL.md` is touched for its own sake.
 - **The flake only sees git-tracked files.** A new source or check script that
   is not `git add`ed does not exist inside `nix build`. Stage before building.
 - **`result` is a relative symlink.** The check harnesses `cd` into a temp
@@ -321,7 +329,21 @@ Traps for the next step:
       `checks.pi-loom-router-picker` drives the extension's own handlers with a
       stub `ExtensionAPI` over nine scenarios; the overlay's rendering needs a
       terminal and was verified by hand through a pty — see the handoff.
-- [ ] **P6 — `/wf-new` meta-workflow.**
+- [x] **P6a — `stage("scaffold", ...)`.** One agent writes `command.json`, the
+      script it names and a README into `.pi/workflows/<name>/`, prompted with
+      an authoring contract generated from `STAGE_LIBRARY`
+      (`WORKFLOW_AUTHORING_CONTRACT`) rather than written as prose; the engine
+      then reads the manifest back off disk and refuses a scaffold that would
+      not load. `checks.pi-loom-scaffold-stage` proves the generated contract,
+      the validate-then-mkdir-then-agent-then-verify ordering, and seven
+      unloadable scaffolds, in Node against the built package; a second leg
+      re-proves the input contract inside the real vm sandbox. The generated
+      workflow's quality needs a real model — see the handoff.
+- [ ] **P6b — `/wf-new` interview.** `human.ask` turns questions into the
+      scaffold stage's input.
+- [ ] **P6c — `/wf-new` dry-run and commit.** Launch the new command with
+      invalid arguments to prove discovery and usage without a model, then
+      commit the directory.
 - [ ] **P7 — ecosystem fill.** `/explore`, `/debug`, `/review`; migrate the
       `ship` and `next` skills to workflows.
 - [ ] **P8 — bare-core CI.** `checks.pi-loom-bare`.

@@ -634,6 +634,25 @@
           touch $out
         '';
 
+        # P6a acceptance: the `scaffold` stage, which writes a new workflow and
+        # then checks its own output. Two legs. The Node leg imports the built
+        # engine's src/stages.ts, concatenates the appended stage library the
+        # way the engine does and drives it with stub agent/shell/prompt
+        # globals: that is the only way to see what the stage does *after* the
+        # agent returns without paying for a model, and it is where the
+        # generated authoring contract is proved to carry one line per
+        # STAGE_LIBRARY entry rather than hand-written prose that rots. The loom
+        # leg re-makes the input-contract claim inside the real vm sandbox and
+        # proves a rejected call leaves no directory behind.
+        pi-loom-scaffold-stage = pkgs.runCommand "pi-loom-scaffold-stage" {
+          nativeBuildInputs = [pkgs.bash pkgs.nodejs_22 pkgs.jq pkgs.gnugrep pkgs.gnused pkgs.coreutils];
+        } ''
+          bash ${./nix/checks/loom-scaffold-stage.sh} \
+            ${self.packages.${system}.pi-loom-cli}/bin/loom \
+            ${self.packages.${system}.pi-loom}
+          touch $out
+        '';
+
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;
