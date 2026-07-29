@@ -27,6 +27,9 @@
     piToolManagement.url = "path:./extensions/pi-tool-management";
     piToolManagement.inputs.nixpkgs.follows = "nixpkgs";
 
+    piExtensionManagement.url = "path:./extensions/pi-extension-management";
+    piExtensionManagement.inputs.nixpkgs.follows = "nixpkgs";
+
     piWebfetch.url = "path:./extensions/pi-webfetch";
     piWebfetch.inputs.nixpkgs.follows = "nixpkgs";
     piHashline.url = "path:./extensions/pi-hashline";
@@ -49,6 +52,7 @@
     piMinimal,
     piInterview,
     piToolManagement,
+    piExtensionManagement,
     piWebfetch,
     piHashline,
     piChronoBreak,
@@ -143,6 +147,7 @@
         "pi-minimal" = piMinimal.packages.${system}.default;
         "pi-interview" = piInterview.packages.${system}.default;
         "pi-tool-management" = piToolManagement.packages.${system}.default;
+        "pi-extension-management" = piExtensionManagement.packages.${system}.default;
         "pi-webfetch" = piWebfetch.packages.${system}.default;
         "pi-hashline" = piHashline.packages.${system}.default;
         "pi-chrono-break" = piChronoBreak.packages.${system}.default;
@@ -340,6 +345,7 @@
         pi-rtk-build = self.packages.${system}."pi-rtk";
         pi-rtk-test = piRtk.checks.${system}.test;
         pi-aphrodite-build = self.packages.${system}."pi-aphrodite";
+        pi-extension-management-build = self.packages.${system}."pi-extension-management";
         pi-extensible-workflows-build = self.packages.${system}."pi-extensible-workflows";
 
         # Runtime acceptance for the local `sessionContext` field on a workflow
@@ -483,6 +489,7 @@
         minimal = self.packages.${system}."pi-minimal";
         interview = self.packages.${system}."pi-interview";
         "tool-management" = self.packages.${system}."pi-tool-management";
+        "extension-management" = self.packages.${system}."pi-extension-management";
         webfetch = self.packages.${system}."pi-webfetch";
         hashline = self.packages.${system}."pi-hashline";
         "chrono-break" = self.packages.${system}."pi-chrono-break";
@@ -561,10 +568,51 @@
                   # Symlink the pi binary
                   ln -s ${pi}/bin/pi $out/bin/.pi-real
 
-                  # Create extension subdirectories and copy content
+                  # Create extension subdirectories, copy content, and prepend a
+                  # .pi-gate.ts shim per extension. The gate returns early when its
+                  # name appears in PI_EXT_DISABLED, so pi-extension-management can
+                  # switch a bundled extension off for the session (pi clears its
+                  # module cache on /reload, so the gate re-reads the env var).
                   ${pkgs.lib.concatStringsSep "\n" (pkgs.lib.mapAttrsToList (name: ext: ''
-              mkdir -p "$out/share/pi/extensions/${name}"
-              cp -R ${ext}/* "$out/share/pi/extensions/${name}/" 2>/dev/null || true
+              ext_dir="$out/share/pi/extensions/${name}"
+              mkdir -p "$ext_dir"
+              cp -R ${ext}/* "$ext_dir/" 2>/dev/null || true
+
+              entries=$(${pkgs.jq}/bin/jq -r '.pi.extensions // [] | .[]' "$ext_dir/package.json" 2>/dev/null || true)
+              if [ -z "$entries" ]; then
+                # No pi.extensions manifest: pi falls back to index.ts/index.js.
+                for idx in index.ts index.js; do
+                  if [ -f "$ext_dir/$idx" ]; then entries="./$idx"; break; fi
+                done
+              fi
+
+              if [ -n "$entries" ]; then
+                {
+                  i=0
+                  names=""
+                  for entry in $entries; do
+                    echo "import factory$i from \"$entry\";"
+                    names="$names''${names:+, }factory$i"
+                    i=$((i + 1))
+                  done
+                  echo ""
+                  echo "const GATE_NAME = \"${name}\";"
+                  echo "const factories = [$names];"
+                  echo ""
+                  echo "export default async function gate(pi) {"
+                  echo "  const disabled = (process.env.PI_EXT_DISABLED ?? \"\").split(\",\").map((s) => s.trim());"
+                  echo "  if (disabled.includes(GATE_NAME)) return;"
+                  echo "  for (const factory of factories) await factory(pi);"
+                  echo "}"
+                } > "$ext_dir/.pi-gate.ts"
+
+                if [ -f "$ext_dir/package.json" ]; then
+                  ${pkgs.jq}/bin/jq '.pi.extensions = ["./.pi-gate.ts"]' "$ext_dir/package.json" > "$ext_dir/.package.json.tmp" \
+                    && mv "$ext_dir/.package.json.tmp" "$ext_dir/package.json"
+                else
+                  printf '{"pi":{"extensions":["./.pi-gate.ts"]}}\n' > "$ext_dir/package.json"
+                fi
+              fi
             '')
             extensions)}
 

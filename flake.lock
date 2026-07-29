@@ -32,6 +32,38 @@
       },
       "parent": []
     },
+    "piChronoBreak": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-chrono-break",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-chrono-break",
+        "type": "path"
+      },
+      "parent": []
+    },
+    "piExtensionManagement": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-extension-management",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-extension-management",
+        "type": "path"
+      },
+      "parent": []
+    },
     "piGeckoWebsearch": {
       "inputs": {
         "nixpkgs": [
@@ -181,6 +213,8 @@
       "inputs": {
         "nixpkgs": "nixpkgs",
         "piAphrodite": "piAphrodite",
+        "piChronoBreak": "piChronoBreak",
+        "piExtensionManagement": "piExtensionManagement",
         "piGeckoWebsearch": "piGeckoWebsearch",
         "piHashline": "piHashline",
         "piInterview": "piInterview",
