@@ -206,6 +206,11 @@ const human = Object.freeze({
   edit: input => rpc("human.edit", [input]).then(unwrap),
   review: input => rpc("human.review", [input]).then(unwrap),
 });
+// dryRun asks the engine whether a workflow directory would register as a slash
+// command. No branded work-result envelope: there is no outcome to record and
+// nothing to retry, so a directory that would not load rejects this promise
+// with the reason and the workflow may catch it.
+const dryRun = input => rpc("dryRun", [input]);
 const phase = name => rpc("phase", [name]);
 const log = message => rpc("log", [message]);
 const functionOccurrences = new Map();
@@ -279,7 +284,7 @@ const pipeline = async (operationName, items, stages) => {
   return Object.fromEntries(results.map(result => [result.name, result.value]));
 };
 const safeMath = Object.fromEntries(Object.getOwnPropertyNames(Math).filter(name => name !== "random").map(name => [name, Math[name]]));
-const sandbox = { agent, shell, withWorktree: rejectWorktree, prompt, checkpoint, human, parallel, pipeline, phase, log, args: config.args, Promise, JSON, Math: Object.freeze(safeMath) };
+const sandbox = { agent, shell, withWorktree: rejectWorktree, prompt, checkpoint, human, dryRun, parallel, pipeline, phase, log, args: config.args, Promise, JSON, Math: Object.freeze(safeMath) };
 for (const [name, fn] of Object.entries(functions)) Object.defineProperty(sandbox, name, { value: fn, writable: false, configurable: false });
 for (const name of ["Date","eval","Function","WebAssembly","process","require","module","exports","console","fetch","XMLHttpRequest","WebSocket","performance","crypto","setTimeout","setInterval","setImmediate","queueMicrotask","Intl","SharedArrayBuffer","Atomics"]) sandbox[name] = undefined;
 const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
@@ -553,6 +558,13 @@ export function runWorkflow(script: string, args: JsonValue = null, bridge: Work
           if (!OUTCOME_ERRORS.has(typed.code)) throw typed;
           value = branded({ name, ok: false, failedAt: name, error: { code: typed.code, message: typed.message, ...(isWorkflowAuthored(typed) ? { authored: true } : {}) } });
         }
+      } else if (method === "dryRun") {
+        // The one host capability that neither runs a model nor mutates: it
+        // reads a workflow directory through the same discovery and argument
+        // parsing a slash command uses (workflow-commands.ts), so "would Pi
+        // register this?" is answered by the code that does the registering.
+        if (!bridge.dryRun || !object(values[0])) fail("INTERNAL_ERROR", "dryRun requires an available bridge and object input");
+        value = await bridge.dryRun(values[0], controller.signal);
       } else if (method === "function") {
         const worktreeOwner = values[3] === undefined || values[3] === null ? undefined : typeof values[3] === "string" && values[3] ? values[3] : fail("INTERNAL_ERROR", "function worktree scope is invalid");
         const structuralPath = values[4] === undefined ? [] : values[4];

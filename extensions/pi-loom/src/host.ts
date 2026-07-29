@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type, type Api, type Model } from "@earendil-works/pi-ai";
 import { copyToClipboard, defineTool, getAgentDir, ModelSelectorComponent, SettingsManager, truncateToVisualLines, type ExtensionAPI, type ExtensionUIContext, type ModelRuntime, type Theme } from "@earendil-works/pi-coding-agent";
@@ -11,11 +11,11 @@ import { acquireSessionLease, listPersistedSessionIds, listRunIds, RunStore, Ses
 import type { AwaitingCheckpoint, PersistedRun, WorktreeReference } from "./persistence.js";
 import { budgetRelaxed, budgetUsage, mergeBudget, resumeBudgetAllowed, validateBudget, validateBudgetPatch, WorkflowBudgetRuntime } from "./budget.js";
 import { asWorkflowError, aliasDrift, createLaunchSnapshot, deepFreeze, errorCode, errorText, fail, isWorkflowAuthored, jsonValue, modelAliasErrorName, modelCapability, object, parseModelReference, parseThinking, positiveInteger, resolveModelReference, validateModelAliases } from "./utils.js";
-import { launchScriptForSnapshot, loadAgentDefinitions, loadSettings, normalizeReviewNote, preflight, resolveAgentResourcePolicy, resolveWorkflowSettings, saveExposeWorkflowTools, saveModelAliases, validateAgentOptions, validateCheckpoint, validateHumanAsk, validateHumanEdit, validateHumanReview, validateModelAliasAvailability, validateShellOptions, validateWorkflowLaunchWithRegistry, workflowProjectSettingsPath, workflowPrompt, workflowSettingsPath } from "./validation.js";
+import { launchScriptForSnapshot, loadAgentDefinitions, loadSettings, normalizeReviewNote, preflight, resolveAgentResourcePolicy, resolveWorkflowSettings, saveExposeWorkflowTools, saveModelAliases, validateAgentOptions, validateCheckpoint, validateDryRun, validateHumanAsk, validateHumanEdit, validateHumanReview, validateModelAliasAvailability, validateShellOptions, validateWorkflowLaunchWithRegistry, workflowProjectSettingsPath, workflowPrompt, workflowSettingsPath } from "./validation.js";
 import { beginWorkflowExtensionLoading, loadingRegistry, resetWorkflowRegistry, type WorkflowRegistryApi } from "./registry.js";
 import { agentIdentityPath, agentWorktree, encoded, executeShellCommand, persistActiveAgentAttempt, persistAgentAttempts, readShellResult, runWorkflow, shellIdentityPath } from "./execution.js";
 import { openWorkflowArtifact, workflowPromptArtifact, workflowResultArtifact, workflowScriptArtifact, type WorkflowArtifact } from "./workflow-artifacts.js";
-import { discoverWorkflowCommands, parseWorkflowCommandArgs, workflowCommandListing, workflowCommandRoots, workflowCommandSignature } from "./workflow-commands.js";
+import { discoverWorkflowCommands, dryRunWorkflowCommand, parseWorkflowCommandArgs, workflowCommandListing, workflowCommandRoots, workflowCommandSignature } from "./workflow-commands.js";
 import { ERROR_CODES, HUMAN_REVIEW_VERDICTS, LAUNCH_SNAPSHOT_IDENTITY_VERSION, WORKFLOW_AGENT_STALL_THRESHOLD_MS, WORKFLOW_AGENT_STATE_CHANGED_EVENT, WORKFLOW_BUDGET_EVENT, WORKFLOW_CHECKPOINT_STATE_CHANGED_EVENT, WORKFLOW_PHASE_CHANGED_EVENT, WORKFLOW_RUN_COMPLETED_EVENT, WORKFLOW_RUN_FAILED_EVENT, WORKFLOW_RUN_RESUMED_EVENT, WORKFLOW_RUN_STARTED_EVENT, WORKFLOW_RUN_STATE_CHANGED_EVENT, WORKFLOW_WORKTREE_CREATED_EVENT, WorkflowError, type AgentAttemptActionContext, type AgentAttemptSummary, type AgentOptions, type AgentRecord, type AgentResourcePolicy, type AgentTransport, type BudgetApprovalRequest, type BudgetEvent, type HumanEditResult, type HumanReviewResult, type HumanReviewVerdict, type JsonValue, type LaunchSnapshot, type ModelSpec, type RunState, type ShellIdentity, type ShellOptions, type ShellResult, type WorkflowBridge, type WorkflowCatalogFunction, type WorkflowCatalogIndex, type WorkflowCheckpointState, type WorkflowErrorCode, type WorkflowErrorShape, type WorkflowEventBase, type WorkflowFailureAgent, type WorkflowFailureDiagnostics, type WorkflowFunctionContext, type WorkflowExecution, type WorkflowMetadata, type WorkflowModelAliasResolverContext, type WorkflowRetryProvenance, type WorkflowRunContext, type WorkflowSettings, type WorkflowSettingsResolution, type WorkflowSiblingAgent, type WorkflowWorktreeReference } from "./types.js";
 const SETTLED_AGENT_STATES: ReadonlySet<import("./types.js").AgentState> = new Set(["completed", "failed", "cancelled"]);
 const INTERNAL_WORKFLOW_TOOLS: readonly string[] = ["workflow", "workflow_respond", "workflow_stop", "workflow_status", "workflow_resume", "workflow_retry", "workflow_catalog"];
@@ -1635,6 +1635,17 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     try { pi.appendEntry<WorkflowLogEntry>(WORKFLOW_LOG_ENTRY, { workflowName, message: utf8Prefix(message, DELIVERY_LIMIT_BYTES) }); }
     finally { await lifecycle.leave(); }
   };
+  // The dry-run bridge (pi-loom DESIGN.md, P6c). It answers one question --
+  // "would Pi register this directory as a slash command?" -- by calling the
+  // module that does the registering, against the same scan roots this session
+  // registered from, so a scaffold that passes here cannot fail at its first
+  // real launch. Read-only and model-free: no run is started, nothing is
+  // written, and the only privilege it needs is the run's own cwd.
+  const dryRunBridge = (cwd: string) => async (input: Readonly<Record<string, JsonValue>>): Promise<JsonValue> => {
+    const { directory } = validateDryRun(input);
+    const roots = workflowCommandRoots(dirname(fileURLToPath(import.meta.url)), extensionAgentDir, cwd);
+    return await Promise.resolve(dryRunWorkflowCommand(resolve(cwd, directory), roots) as unknown as JsonValue);
+  };
   const eventPublisher = new WorkflowEventPublisher(piHostCapabilities(pi).events);
   pi.on("resources_discover", () => {
     if (!pi.getActiveTools().includes("workflow")) return;
@@ -2545,7 +2556,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     run.executor.setRunContext(runContext);
     await scheduler.cancelRun(run.store.runId);
     await run.lifecycle.resume();
-    const execution = runWorkflow(script, loaded.snapshot.args, withWorkflowFunctions({ shell: (command, options, signal, identity) => shellForRun(run.store, run.metadata, run.lifecycle, command, options, signal, identity), agent: workflowAgentHandler(run.store, run.metadata, run.lifecycle, run.executor, run.store.cwd, run.store.runId), worktree: async (owner) => resolveWorktree(run.store, run.metadata, owner), checkpoint: checkpointBridge(run.store.runId, run.store, run.metadata, foreground, hasUI ? ui : undefined), humanAsk: humanBridge(run.store.runId, run.store, run.metadata, hasUI ? ui : undefined), humanEdit: humanEditBridge(run.store.runId, run.store, run.metadata, hasUI ? ui : undefined), humanReview: humanReviewBridge(run.store.runId, run.store, run.metadata, hasUI ? ui : undefined), phase: phaseBridge(run.store, run.metadata, run.lifecycle), log: logBridge(run.lifecycle, run.metadata.name) }, run.store, runContext, registry), controller.signal);
+    const execution = runWorkflow(script, loaded.snapshot.args, withWorkflowFunctions({ shell: (command, options, signal, identity) => shellForRun(run.store, run.metadata, run.lifecycle, command, options, signal, identity), agent: workflowAgentHandler(run.store, run.metadata, run.lifecycle, run.executor, run.store.cwd, run.store.runId), worktree: async (owner) => resolveWorktree(run.store, run.metadata, owner), checkpoint: checkpointBridge(run.store.runId, run.store, run.metadata, foreground, hasUI ? ui : undefined), humanAsk: humanBridge(run.store.runId, run.store, run.metadata, hasUI ? ui : undefined), humanEdit: humanEditBridge(run.store.runId, run.store, run.metadata, hasUI ? ui : undefined), humanReview: humanReviewBridge(run.store.runId, run.store, run.metadata, hasUI ? ui : undefined), dryRun: dryRunBridge(run.store.cwd), phase: phaseBridge(run.store, run.metadata, run.lifecycle), log: logBridge(run.lifecycle, run.metadata.name) }, run.store, runContext, registry), controller.signal);
     run.execution = execution;
     const completion = execution.result.then(async (value) => {
       await scheduler.flush();
@@ -2891,7 +2902,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
       runs.set(runId, { executor, store, metadata: checked.metadata, model: rootModel, lifecycle, budget: budgetRuntime, abortController: runController, projectTrusted: () => projectTrusted(ctx), checkpointResolvers: new Map(), humanResolvers: new Map(), editResolvers: new Map(), reviewResolvers: new Map(), ...(providerErrorRecovery ? { providerErrorRecovery } : {}), ...(params.foreground && onUpdate ? { update: onUpdate } : {}) });
       if (params.foreground && onUpdate) onUpdate(workflowToolUpdate((await store.load()).run));
       scheduler.addRun(runId, settings.concurrency, () => runs.get(runId)?.budget.checkAgentLaunch());
-      const execution = runWorkflow(script, args, withWorkflowFunctions({ shell: (command, options, signal, identity) => shellForRun(store, checked.metadata, lifecycle, command, options, signal, identity), agent: workflowAgentHandler(store, checked.metadata, lifecycle, executor, ctx.cwd, runId, captureFunctionRole), worktree: async (owner) => resolveWorktree(store, checked.metadata, owner), checkpoint: checkpointBridge(runId, store, checked.metadata, Boolean(params.foreground), params.foreground && ctx.hasUI ? ctx.ui : undefined, headless), humanAsk: humanBridge(runId, store, checked.metadata, ctx.hasUI ? ctx.ui : undefined, headless), humanEdit: humanEditBridge(runId, store, checked.metadata, ctx.hasUI ? ctx.ui : undefined, headless), humanReview: humanReviewBridge(runId, store, checked.metadata, ctx.hasUI ? ctx.ui : undefined, headless), phase: phaseBridge(store, checked.metadata, lifecycle), log: logBridge(lifecycle, checked.metadata.name) }, store, runContext, registry), runController.signal);
+      const execution = runWorkflow(script, args, withWorkflowFunctions({ shell: (command, options, signal, identity) => shellForRun(store, checked.metadata, lifecycle, command, options, signal, identity), agent: workflowAgentHandler(store, checked.metadata, lifecycle, executor, ctx.cwd, runId, captureFunctionRole), worktree: async (owner) => resolveWorktree(store, checked.metadata, owner), checkpoint: checkpointBridge(runId, store, checked.metadata, Boolean(params.foreground), params.foreground && ctx.hasUI ? ctx.ui : undefined, headless), humanAsk: humanBridge(runId, store, checked.metadata, ctx.hasUI ? ctx.ui : undefined, headless), humanEdit: humanEditBridge(runId, store, checked.metadata, ctx.hasUI ? ctx.ui : undefined, headless), humanReview: humanReviewBridge(runId, store, checked.metadata, ctx.hasUI ? ctx.ui : undefined, headless), dryRun: dryRunBridge(store.cwd), phase: phaseBridge(store, checked.metadata, lifecycle), log: logBridge(lifecycle, checked.metadata.name) }, store, runContext, registry), runController.signal);
       (runs.get(runId) as NonNullable<ReturnType<typeof runs.get>>).execution = execution;
       await eventPublisher.runStarted(store, checked.metadata);
       const finish = execution.result.then(async (value) => {

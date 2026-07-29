@@ -671,6 +671,22 @@
           touch $out
         '';
 
+        # P6c acceptance (first half): `dryRun({ directory })`, the sandbox
+        # capability that loads a workflow directory through the same
+        # discovery, spec validation, usage generation and argument parsing a
+        # slash command runs before a run exists. One leg, inside a real loom
+        # run: the dry-run path reaches src/validation.ts, which imports the
+        # pi-coding-agent peer dependency, so importing it into a bare node the
+        # way the stage checks do dies with ERR_MODULE_NOT_FOUND. Ten fixtures
+        # share the one run — a directory that registers, one that accepts any
+        # arguments, and six ways a scaffold would fail to register.
+        pi-loom-dry-run = pkgs.runCommand "pi-loom-dry-run" {
+          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.gnused pkgs.coreutils];
+        } ''
+          bash ${./nix/checks/loom-dry-run.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom
+          touch $out
+        '';
+
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;

@@ -14,11 +14,11 @@
 // Kept out of host.ts on purpose: no session, no run store and no UI, so it is
 // readable and testable on its own.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Value } from "typebox/value";
 import type { JsonSchema, JsonValue } from "./types.js";
 import { errorText, fail, jsonValue, object } from "./utils.js";
-import { validateSchema } from "./validation.js";
+import { validateSchema, validateWorkflowScriptStructure } from "./validation.js";
 
 const COMMAND_NAME = /^[a-zA-Z0-9][\w-]*$/;
 // A slash command's text is untyped, so "7" has to be able to reach an
@@ -286,4 +286,99 @@ export function workflowCommandListing(discovery: WorkflowCommandDiscovery): str
   for (const command of shadowed) lines.push(`shadowed: ${command.specPath} declares /${command.spec.name}, already provided by ${command.shadowedBy ?? "another scope"} scope`);
   for (const problem of discovery.problems) lines.push(`skipped: ${problem.specPath} (${problem.message})`);
   return lines.join("\n");
+}
+
+// ------------------------------------------------------------------ dry run
+//
+// P6c of pi-loom DESIGN.md. A scaffolded workflow is only real if Pi would
+// register it, and the code that decides that is already in this module: the
+// same discovery, the same spec validation, the same usage generation and the
+// same argument parsing a slash command runs before a run exists. So a dry run
+// is not a second implementation of loading — it is the loading path, called
+// with a directory instead of a session.
+//
+// What it deliberately does not do: start a run. `parseWorkflowCommandArgs`
+// rejecting deliberately invalid arguments is the last gate before a run
+// exists (host.ts registers the command handler around exactly that call), so
+// stopping there proves registration and usage generation without a model, an
+// API key, or a child process.
+
+/**
+ * Arguments no sane workflow declares, used to force the rejection path.
+ *
+ * A JSON object, so it is parsed rather than swallowed by the bare-text branch:
+ * with `argKey` set, any unparseable text becomes a *valid* launch, which would
+ * prove nothing. A command whose schema genuinely accepts this reports
+ * `rejectedInvalidArguments: false` rather than failing — "accepts anything" is
+ * a fact about the scaffold, not an error in it.
+ */
+export const DRY_RUN_ARGUMENTS = '{"__loomDryRun":true}';
+
+export interface WorkflowCommandDryRun {
+  name: string;
+  directory: string;
+  specPath: string;
+  scriptPath: string;
+  description: string;
+  signature: string;
+  usage: string;
+  requiredArgs: readonly string[];
+  rejectedInvalidArguments: boolean;
+  rejection: string;
+}
+
+/**
+ * Load a workflow directory the way Pi's command registration would, and
+ * launch it once with deliberately invalid arguments.
+ *
+ * `directory` must be absolute — the caller owns cwd resolution, because the
+ * host bridge resolves against the run's cwd and a check resolves against its
+ * own temp tree. `installedRoots` are the roots that would be scanned in a real
+ * session; a name already claimed there is a failure, because a command that is
+ * shadowed can never be launched.
+ *
+ * Throws a WorkflowError naming the file for every way the directory would not
+ * become a runnable command. Returns what the user would see when it does.
+ */
+export function dryRunWorkflowCommand(directory: string, installedRoots: readonly WorkflowCommandRoot[] = []): WorkflowCommandDryRun {
+  const specPath = join(directory, "command.json");
+  if (!existsSync(specPath)) fail("INVALID_METADATA", `Dry run: ${specPath} does not exist, so the directory declares no command`);
+  // Scanned as project scope on purpose: project scope collects a broken spec
+  // as a problem instead of throwing, which turns a CONFIG_ERROR from a sibling
+  // directory into a message naming the offending file.
+  const discovery = discoverWorkflowCommands([{ scope: "project", path: dirname(directory) }]);
+  const problem = discovery.problems.find((candidate) => candidate.specPath === specPath);
+  if (problem) fail("INVALID_METADATA", `Dry run: ${problem.message}`);
+  const found = discovery.commands.find((candidate) => candidate.specPath === specPath);
+  if (!found) fail("INVALID_METADATA", `Dry run: ${specPath} declares no command Pi would register`);
+  const spec = found.spec;
+  if (found.shadowedBy) fail("INVALID_METADATA", `Dry run: /${spec.name} is already declared beside it in ${dirname(directory)}, so this copy would never run`);
+  const claimed = installedRoots.length
+    ? discoverWorkflowCommands(installedRoots).commands.find((candidate) => candidate.spec.name === spec.name && candidate.specPath !== specPath && !candidate.shadowedBy)
+    : undefined;
+  if (claimed) fail("INVALID_METADATA", `Dry run: /${spec.name} is already provided by ${claimed.scope} scope (${claimed.specPath}), so this copy would be shadowed and never run`);
+  const signature = workflowCommandSignature(spec);
+  const usage = workflowCommandUsage(spec);
+  const parsed = parseWorkflowCommandArgs(spec, DRY_RUN_ARGUMENTS);
+  if (!parsed.ok && !parsed.message.includes(signature)) fail("INVALID_METADATA", `Dry run: /${spec.name} refused ${DRY_RUN_ARGUMENTS} without its generated usage (got: ${parsed.message})`);
+  // The script is read but never run: this is the parse and the stage-library
+  // collision guard every launch performs, which is where a model-written
+  // script fails long before its first agent would.
+  try {
+    validateWorkflowScriptStructure(readFileSync(found.scriptPath, "utf8"));
+  } catch (error) {
+    fail("INVALID_METADATA", `Dry run: /${spec.name} would not load: ${errorText(error)}`);
+  }
+  return {
+    name: spec.name,
+    directory,
+    specPath,
+    scriptPath: found.scriptPath,
+    description: spec.description ?? "",
+    signature,
+    usage,
+    requiredArgs: spec.argsSchema ? [...requiredKeys(spec.argsSchema)] : [],
+    rejectedInvalidArguments: !parsed.ok,
+    rejection: parsed.ok ? "" : parsed.message,
+  };
 }

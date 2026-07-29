@@ -390,6 +390,60 @@ answer and the scope answer both became stage inputs. The shape answer never
 touches disk (it is prompt text for an agent that the unknown model stops), so
 it is read from the run's own log line.
 
+**A scaffold is only real if Pi would register it, so the engine asks the code
+that does the registering.** `dryRun({ directory })` is a sandbox global backed
+by a host bridge that calls `dryRunWorkflowCommand` in `src/workflow-commands.ts`
+— the same module that discovers `command.json` files, validates a spec,
+generates usage text and parses slash-command arguments in a real session. It is
+not a second implementation of loading; it is the loading path, called with a
+directory instead of a session. That matters more here than anywhere else in the
+engine: a hand-written "does this look like a workflow?" checker would pass on
+the day it was written and diverge from the loader the first time the loader
+changed, which is exactly how a scaffold that the dry run blessed fails at its
+first real launch.
+
+**"Launched with deliberately invalid arguments" means the last gate before a run
+exists, not a second Pi process.** A slash command's handler parses its arguments
+with `parseWorkflowCommandArgs` and, on failure, shows generated usage and starts
+nothing (`src/host.ts`, the registration loop). The dry run stops exactly there,
+with the sentinel `{"__loomDryRun":true}`. Spawning a real `loom` from inside a
+run would need a binary path the sandbox does not have, throwaway provider flags,
+and a nested extension stack — more moving parts to prove strictly less, since
+everything past the argument gate needs a model. A JSON object is used rather
+than malformed text because with `argKey` set, unparseable text is a *valid*
+launch: it becomes the bare-text argument. A command whose schema genuinely
+accepts the sentinel reports `rejectedInvalidArguments: false` rather than
+failing — "accepts anything" is a fact about the scaffold, not an error in it.
+
+**Registering is not enough: the copy must also be reachable.** A name already
+claimed by a higher-precedence scan root fails the dry run, because the first
+root to claim a name wins and a shadowed command can never be launched. And the
+script itself is parsed but never executed, through
+`validateWorkflowScriptStructure` — the half of `preflight` that needs nothing
+but the script text (parse, the reserved instrumentation identifiers, the
+stage-library collision guard), split out of `preflight` so a dry run can reuse
+it without a model list or settings path. A model-written script that redeclares
+`stage` at top level fails here, seconds after being written, instead of at the
+first launch that would have paid for an agent.
+
+**It is a global, not a stage.** Every stage runs exactly one agent under a fixed
+output contract; a dry run runs none and asks nothing of a model, so wrapping it
+in `stage("dryrun", ...)` would make the stage list mean two different things.
+It appears in the generated authoring contract beside `shell` and `stage`, so a
+scaffolding agent can see it.
+
+`checks.pi-loom-dry-run` has one leg, not the two the stage checks have, and the
+reason is a real constraint rather than a shortcut: `dryRunWorkflowCommand`
+reaches `src/validation.ts`, which imports `@earendil-works/pi-coding-agent` — a
+peer dependency that only exists inside a running Pi — so importing the module
+into a bare `node` dies with `ERR_MODULE_NOT_FOUND`. Everything therefore runs
+inside one real `loom` run whose probe workflow launches no agent, which is a
+stronger claim anyway: the global exists in the vm sandbox, the RPC round-trips,
+paths resolve against the run's own cwd, and the "stay inside the project" rule
+is enforced on the way in. Ten fixtures share that single run — one directory
+that registers, one that declares no schema, and every way a scaffold fails to
+become a command.
+
 ## Extension surface contract
 
 **Read path.** A workflow script receives a frozen `args` object (validated
@@ -661,11 +715,22 @@ apart within one loop iteration.
       *Accept: `/wf-new` with no answers parks the run rather than guessing,
       and the recorded answers reach `stage("scaffold", ...)`.* Gated by
       `checks.pi-loom-wf-new-workflow`.
-    - **P6c — dry-run and commit.** The freshly written workflow is launched
-      once with deliberately invalid arguments, which proves discovery and
-      usage generation without a model, and the directory is then committed.
-      *Accept: a scaffold whose `command.json` does not register is reported as
-      a failure before anything is committed.*
+    - **P6c — dry-run and commit.** Split in two, because "can this be
+      loaded?" is engine work reusable by anything that writes a workflow,
+      while "write the run's own result into git" is `/wf-new` policy.
+        - **P6c-i — `dryRun({ directory })`.** A sandbox global over a host
+          bridge that calls the command-registration path itself: discovery,
+          spec validation, usage generation, and one launch with deliberately
+          invalid arguments, stopped at the gate a real slash command stops
+          at. The script is parsed under the launch-time guards and never run.
+          *Accept: a directory that would not register — bad JSON, no name, a
+          missing script, a shadowed name, a script that would not load — is
+          reported as a failure, and one that would register reports the usage
+          a user would see.* Gated by `checks.pi-loom-dry-run`.
+        - **P6c-ii — `/wf-new` dry-run and commit.** The freshly scaffolded
+          directory is dry-run and only then committed. *Accept: a scaffold
+          whose `command.json` does not register is reported as a failure
+          before anything is committed.*
 - **P7 — ecosystem fill.** `/explore`, `/debug`, `/review`; migrate the
       `ship` and `next` skills to workflows. *Accept: each shipped skill has
       a workflow equivalent whose stages are enforced rather than described
