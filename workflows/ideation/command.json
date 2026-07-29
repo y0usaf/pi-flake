@@ -1,6 +1,39 @@
 {
   "name": "ideate",
-  "description": "Multi-model debate ideation workflow. Usage: /ideate <topic> or /ideate '{ \"topic\": \"...\", \"context\"?, \"maxRounds\"?, \"models\"?, \"judgeModel\"? }'",
+  "description": "Multi-model debate ideation workflow.",
   "script": "ideate.js",
-  "argKey": "topic"
+  "argKey": "topic",
+  "argsSchema": {
+    "type": "object",
+    "properties": {
+      "topic": {
+        "type": "string",
+        "minLength": 1,
+        "description": "What to debate"
+      },
+      "context": {
+        "type": "string",
+        "description": "Extra background handed to every debater"
+      },
+      "maxRounds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 10,
+        "default": 5,
+        "description": "Debate rounds before the judge decides"
+      },
+      "models": {
+        "type": "array",
+        "items": {"type": "string"},
+        "minItems": 1,
+        "description": "Debater models; defaults to the workflow's own roster"
+      },
+      "judgeModel": {
+        "type": "string",
+        "description": "Model that writes the verdict"
+      }
+    },
+    "required": ["topic"],
+    "additionalProperties": false
+  }
 }

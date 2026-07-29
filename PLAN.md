@@ -18,61 +18,67 @@ marker into prose here — the count would lie.
 
 ## Handoff
 
-Last touched: P2c (`human.review`) landed and is ticked. All three human
-primitives are done; the next open item is P3 (declaration mechanism).
+Last touched: P3 was split into P3a (schema-declared args) and P3b (project
+scope), and P3a landed and is ticked. The next open item is P3b.
 
-What landed. `human.review({ name, prompt, subject, context })` as a DSL
-primitive, resolving to `{ verdict, note }` where verdict is one of the fixed
-trio `approve` / `changes` / `reject` (`HUMAN_REVIEW_VERDICTS` in `types.ts`),
-plus `checks.pi-loom-human-review` driven by the new
-`nix/checks/loom-human-review.sh`. The call path mirrors `human.ask` and
-`human.edit`: frozen `human.review` in the vm sandbox sends the RPC method
-`human.review`, the host arm of `handleRpc` wraps the record in the same branded
-work-result envelope, and `humanReviewBridge` in `host.ts` parks the request in
-the run journal, presents the subject, opens the verdict picker, and resolves
-the parked promise. `RunStore.awaitHumanReview` / `answerHumanReview` /
-`awaitingHumanReviews` are new, in their own `journal.awaitingReview` map.
+What landed. `argsSchema` in `command.json`: a JSON Schema object that declares
+a workflow command's arguments, validated per invocation before any run is
+launched. New `extensions/pi-loom/src/workflow-commands.ts` owns the whole
+input path — `validateWorkflowCommandSpec` (structural check of one spec file),
+`workflowCommandSignature` / `workflowCommandUsage` (generated usage), and
+`parseWorkflowCommandArgs` (text to launch args). `host.ts` now calls those
+three instead of parsing inline; the registered command description is the
+hand-written description plus the generated signature when a schema is present.
+Both shipped workflows (`workflows/ideation`, `workflows/loop-next`) now declare
+schemas and their descriptions no longer hand-write a usage tail.
 
-Gates actually run: `nix build .#checks.x86_64-linux.pi-loom-human-review`
-(pass, prints `human-review: verdict picker offered the fixed trio, the note
-reached the next stage, the run resumed with the verdict`),
-`nix build .#checks.x86_64-linux.biome-lint` (pass, same 1 pre-existing warning
-in the eval harness), `nix flake check -L` (pass, all 17 checks).
+Gates actually run: `nix build .#pi-loom-cli` (pass),
+`nix build .#checks.x86_64-linux.pi-loom-workflow-args -L` (pass, prints
+`workflow-args: generated usage reached the palette, three bad-arg shapes were
+rejected without starting a run, defaults and coercion reached the child`),
+`nix build .#checks.x86_64-linux.biome-lint -L` (pass, same 1 pre-existing
+warning in the eval harness), `nix flake check -L` (pass, all checks).
 
 Design decisions worth not re-litigating:
 
-- **The verdict vocabulary is closed, the note is open.** Workflow-supplied
-  choices are what `human.ask` is for; a review is typed so a later stage can
-  branch on `verdict` without knowing which review produced it. Unknown verdicts
-  are rejected in `RunStore.answerHumanReview`, which leaves the review parked
-  and still answerable rather than resuming on a decision nobody made.
-- **The subject is presented, not titled.** A picker title is one line and a
-  diff is not, so with a UI attached the subject goes into the session as a
-  display-only custom message (`present()` in `host.ts`, `customType
-  "workflow-review"`, `triggerTurn: false`) and the picker asks only for the
-  verdict. `triggerTurn: false` is load-bearing: `deliver()` always costs a model
-  turn, this does not when the session is idle.
-- **Dismissal is asymmetric on purpose.** Dismissing the verdict picker re-routes
-  to the main agent (same as `human.ask`); dismissing the note prompt settles the
-  review with an empty note, because the verdict was already the decision.
+- **Schema-less specs are untouched.** `parseWorkflowCommandArgs` reproduces the
+  pre-P3 branch exactly when `argsSchema` is absent, so declaring a schema is
+  opt-in per workflow and no existing `command.json` needed migrating.
+- **Defaults and coercion are hand-written, validation is not.** TypeBox's
+  `Value.Default` and `Value.Convert` only act on TypeBox-constructed types (they
+  key off an internal `Kind` symbol) and are silent no-ops on the plain JSON
+  Schema a `command.json` carries — verified, not assumed. `Value.Check` and
+  `Value.Errors` do read plain JSON Schema, so validation stays real JSON Schema
+  semantics while defaults and string-to-number coercion are two small explicit
+  passes over the schema's top-level properties.
+- **Non-object JSON now goes under `argKey` when a schema exists.** `/loop-next 10`
+  previously reached the script as the bare number `10`, so its `maxSteps` lookup
+  missed and the cap silently stayed 30. With a schema the value is wrapped as
+  `{ maxSteps: 10 }`.
 
 Traps for the next step:
 
-- **`head -1` truncates presented content.** The first run of the review harness
-  failed on a false negative: `jq -r ... | head -1` cut the multi-line diff to
-  its first line. The check now uses `jq -c` so the JSON-encoded string stays on
-  one line. Any future assertion on multi-line message content needs the same.
-- **No static analysis for any human primitive.** `workflowCallKind()` in
-  `validation.ts` only recognises bare `Identifier` callees, and `human.review`
-  is a `MemberExpression` like its two siblings. `validateHumanReview` enforces
-  the stable-name rule at dispatch instead. Adding member-callee support to
-  `workflowCalls()` is separate work and would cover all three at once.
-- **`inputsSettled()` now gates on four parking lots** (checkpoints, questions,
-  edits, reviews). Anything that parks a new kind of human input must add its lot
-  there or a pending item will look like a running run.
-- **`WorkflowHumanUi` now carries `input` as well as `select` and `editor`.** It
-  is still the one shared UI-slice type for every bridge; widen it rather than
-  adding a fifth structural type.
+- **`extensions/pi-loom/skills/pi-extensible-workflows/SKILL.md` is modified in
+  the working tree and deliberately not committed.** The tree was clean at the
+  start of this step; that file was rewritten mid-step by something outside it
+  (its `HEAD` content is byte-identical to the vendored upstream copy, the
+  working-tree content is not). It was left alone rather than reverted or swept
+  into the commit. Decide what it is before committing it.
+- **The flake only sees git-tracked files.** A new source file that is not
+  `git add`ed does not exist inside `nix build`: the first build of this step
+  failed with `Cannot find module './workflow-commands.js'` while local `tsc`
+  was clean. Stage new files before building.
+- **`PI_CODING_AGENT_DIR` leaks into hand-run harnesses.** Inside the nix sandbox
+  the agent dir defaults to `$HOME/.pi/agent`, but running a check script from a
+  Pi session inherits `PI_CODING_AGENT_DIR` and the scan finds the real agent dir
+  instead of the throwaway one. `loom-workflow-args.sh` now exports it
+  explicitly; the three older harnesses do not and will mislead if run by hand.
+- **Never `head -1` a presented message.** Still true, and now also applies to
+  notifications: usage text is multi-line, so the harness serialises each
+  notification with `jq -c` before decoding it.
+- **`inputsSettled()` gates on four parking lots** (checkpoints, questions, edits,
+  reviews). Anything that parks a new kind of human input must add its lot there
+  or a pending item will look like a running run.
 - **Downstream flag renamed.** `~/nixos/hosts/y0usaf-desktop/finix/materialized-packages.nix`
   sets `"extensible-workflows" = true;`. That key no longer exists; it is now
   `loom`. `lib.enabledExtensions` asserts on unknown flags, so the system flake
@@ -85,7 +91,7 @@ Traps for the next step:
   before. Rationale is in DESIGN.md under Architecture.
 - The ref tree is no longer a package and is excluded from `biome.jsonc`;
   keep it that way, it is only a diff base for upstream fixes.
-- **Two facts all three harnesses depend on.** Pi's agent dir defaults to
+- **Two facts all four harnesses depend on.** Pi's agent dir defaults to
   `$HOME/.pi/agent`, not the XDG data path the installed system uses; and an
   RPC `prompt` is refused before command dispatch unless a model resolves
   with a key, which is why the scripts pass throwaway
@@ -113,9 +119,13 @@ Traps for the next step:
       host, `workflow_review` tool as the agent-facing fallback,
       `checks.pi-loom-human-review` proving the note crosses into the next
       stage.
-- [ ] **P3 — declaration mechanism.** JSON-Schema args in `command.json`,
-      generated usage, `/workflows` listing, project-local `.pi/workflows/`
-      scan root.
+- [x] **P3a — schema-declared args.** `argsSchema` in `command.json`,
+      `src/workflow-commands.ts` generating usage and validating every
+      invocation, both shipped workflows declaring schemas,
+      `checks.pi-loom-workflow-args` proving rejection-with-usage, defaults and
+      text-scalar coercion.
+- [ ] **P3b — project scope.** Project-local `.pi/workflows/` scan root and a
+      `/workflows` listing that names each command's scope.
 - [ ] **P4 — stage library + `/build` + `/quick`.**
 - [ ] **P5 — router + picker.**
 - [ ] **P6 — `/wf-new` meta-workflow.**

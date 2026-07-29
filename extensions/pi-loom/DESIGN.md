@@ -182,6 +182,27 @@ re-routes to the main agent exactly as `human.ask` does; dismissing the note
 prompt does not, because the verdict was already the decision and an empty note
 is a legal outcome the workflow can branch on.
 
+**One declaration mechanism for slash commands** (doctrine 05). A workflow
+becomes a slash command through exactly one artifact: a `command.json` beside
+its script, in one of three scan roots. `argsSchema` is a JSON Schema object
+declaring the arguments; `src/workflow-commands.ts` generates the usage text
+from it and validates every invocation before a run is launched. Nothing about
+arguments is hand-written twice: the palette hint is the generated signature,
+and the rejection message is the generated usage block, so a schema edit cannot
+leave stale prose behind. Specs without `argsSchema` keep the pre-P3 behaviour
+untouched, so the declaration is opt-in per workflow rather than a migration.
+
+Slash-command text is untyped, which is why parsing is more than `JSON.parse`.
+Bare text lands under `argKey`; non-object JSON is wrapped under `argKey` too
+(`/loop-next 10` used to reach the script as the bare number `10`, where the
+script's `maxSteps` lookup silently missed); declared `default` values are
+filled; and a string that a schema declares as `integer`, `number` or `boolean`
+is coerced when the literal converts exactly. The coercion and default passes
+are hand-written on purpose: TypeBox's `Value.Convert` and `Value.Default` key
+off an internal `Kind` symbol and are silent no-ops on the plain JSON Schema a
+`command.json` carries, while `Value.Check` and `Value.Errors` do read plain
+JSON Schema, so validation itself stays real JSON Schema semantics.
+
 ## Extension surface contract
 
 **Read path.** A workflow script receives a frozen `args` object (validated
@@ -260,11 +281,19 @@ apart within one loop iteration.
       request changes with a note, reject. *Accept: a workflow calling
       `human.review` resumes with a typed verdict whose note text reaches the
       next stage.*
-- **P3 — declaration mechanism.** JSON-Schema args in `command.json`,
-      generated usage, `/workflows` listing, project-local `.pi/workflows/`
-      scan root. *Accept: bad args are rejected with generated usage text; a
-      workflow dropped into a repo's `.pi/workflows/` appears as a slash
-      command without restart-time editing of any global file.*
+- **P3 — declaration mechanism.** One way to declare a workflow command, and
+      one place a repo can keep its own. Split in two because the halves are
+      independent: the argument contract is engine-side, the scan root is
+      discovery-side.
+  - **P3a — schema-declared args.** JSON-Schema `argsSchema` in
+      `command.json` plus generated usage. *Accept: bad args are rejected with
+      generated usage text and no run starts; the generated signature is what
+      the command palette shows.*
+  - **P3b — project scope.** Project-local `.pi/workflows/` scan root and a
+      `/workflows` listing that names each command's scope. *Accept: a workflow
+      dropped into a repo's `.pi/workflows/` appears as a slash command without
+      restart-time editing of any global file, and `/workflows` shows where each
+      command came from.*
 - **P4 — stage library + `/build` + `/quick`.** *Accept: `/build "<task>"`
       emits a plan artifact, an exec diff, and a review verdict keyed per
       plan item; `/quick "<task>"` completes a one-line change with a single

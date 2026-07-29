@@ -445,6 +445,19 @@
           touch $out
         '';
 
+        # P3a acceptance: workflow slash commands are declared by command.json
+        # alone, so the gate is a real dispatch. A probe command.json carrying an
+        # argsSchema proves the generated signature reaches the palette, that
+        # three different schema violations are each rejected with the generated
+        # usage and no run, and that defaults and text-scalar coercion reach the
+        # workflow child.
+        pi-loom-workflow-args = pkgs.runCommand "pi-loom-workflow-args" {
+          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.gnused pkgs.coreutils];
+        } ''
+          bash ${./nix/checks/loom-workflow-args.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom
+          touch $out
+        '';
+
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;
