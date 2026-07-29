@@ -15,6 +15,7 @@ import { launchScriptForSnapshot, loadAgentDefinitions, loadSettings, normalizeR
 import { beginWorkflowExtensionLoading, loadingRegistry, resetWorkflowRegistry, type WorkflowRegistryApi } from "./registry.js";
 import { agentIdentityPath, agentWorktree, encoded, executeShellCommand, persistActiveAgentAttempt, persistAgentAttempts, readShellResult, runWorkflow, shellIdentityPath } from "./execution.js";
 import { openWorkflowArtifact, workflowPromptArtifact, workflowResultArtifact, workflowScriptArtifact, type WorkflowArtifact } from "./workflow-artifacts.js";
+import { parseWorkflowCommandArgs, validateWorkflowCommandSpec, workflowCommandSignature } from "./workflow-commands.js";
 import { ERROR_CODES, HUMAN_REVIEW_VERDICTS, LAUNCH_SNAPSHOT_IDENTITY_VERSION, WORKFLOW_AGENT_STALL_THRESHOLD_MS, WORKFLOW_AGENT_STATE_CHANGED_EVENT, WORKFLOW_BUDGET_EVENT, WORKFLOW_CHECKPOINT_STATE_CHANGED_EVENT, WORKFLOW_PHASE_CHANGED_EVENT, WORKFLOW_RUN_COMPLETED_EVENT, WORKFLOW_RUN_FAILED_EVENT, WORKFLOW_RUN_RESUMED_EVENT, WORKFLOW_RUN_STARTED_EVENT, WORKFLOW_RUN_STATE_CHANGED_EVENT, WORKFLOW_WORKTREE_CREATED_EVENT, WorkflowError, type AgentAttemptActionContext, type AgentAttemptSummary, type AgentOptions, type AgentRecord, type AgentResourcePolicy, type AgentTransport, type BudgetApprovalRequest, type BudgetEvent, type HumanEditResult, type HumanReviewResult, type HumanReviewVerdict, type JsonValue, type LaunchSnapshot, type ModelSpec, type RunState, type ShellIdentity, type ShellOptions, type ShellResult, type WorkflowBridge, type WorkflowCatalogFunction, type WorkflowCatalogIndex, type WorkflowCheckpointState, type WorkflowErrorCode, type WorkflowErrorShape, type WorkflowEventBase, type WorkflowFailureAgent, type WorkflowFailureDiagnostics, type WorkflowFunctionContext, type WorkflowExecution, type WorkflowMetadata, type WorkflowModelAliasResolverContext, type WorkflowRetryProvenance, type WorkflowRunContext, type WorkflowSettings, type WorkflowSettingsResolution, type WorkflowSiblingAgent, type WorkflowWorktreeReference } from "./types.js";
 const SETTLED_AGENT_STATES: ReadonlySet<import("./types.js").AgentState> = new Set(["completed", "failed", "cancelled"]);
 const INTERNAL_WORKFLOW_TOOLS: readonly string[] = ["workflow", "workflow_respond", "workflow_stop", "workflow_status", "workflow_resume", "workflow_retry", "workflow_catalog"];
@@ -172,7 +173,7 @@ export function formatWorkflowPreview(args: { script?: unknown; workflow?: unkno
 }
 export const WORKFLOW_TOOL_LABEL = "Workflow";
 export const WORKFLOW_TOOL_DESCRIPTION = "Run a deterministic JavaScript workflow with a named inline or file-backed parallel-to-summary path by default"
-export const WORKFLOW_TOOL_PROMPT_SNIPPET = "Run a deterministic, resumable JavaScript workflow. Prefer a named inline script that fans out independent work with parallel(...), awaits the keyed results before interpolating them into one summarizing agent(...), and returns. Inline and file-backed launches require a non-empty name; registered function launches may use name as an optional run label and otherwise use workflow as the run name. Advanced controls include registered functions, outputSchema, budgets, checkpoints, worktrees, retry/resume, CLI export, and pipelines. Use workflow_retry with an explicit failed run ID; parentRunId only reuses named worktrees. Runs are in the background by default; completion arrives as a follow-up message. Set foreground: true when the caller must wait for the final value. If a foreground call detaches before its result is accepted, its terminal success or failure is promoted to one follow-up message. Foreground results include the completed run ID. Recovery inherits the source launch mode; legacy snapshots without launchMode recover in the background. Set foreground: true or false on workflow_resume/workflow_retry to override it; foreground recovery waits for terminal value and run details, while background recovery returns immediately and delivers completion or failure as a follow-up. After failure follow-ups, especially CANCELLED or interrupted runs, call workflow_status({ runId }) before recovery or replacement work, then pass its state as expectedState to workflow_retry/workflow_resume so recovery cannot act on a state that changed. Recovery map: agent(..., { retries }) reruns one agent call in the same run for transient failures; workflow_retry({ runId, expectedState?, foreground? }) replays a failed run into a child; workflow_resume({ runId, expectedState?, budget?, foreground? }) continues a budget_exhausted run; parentRunId on a new launch only borrows named worktrees and never replays or resumes."
+export const WORKFLOW_TOOL_PROMPT_SNIPPET = "Run a deterministic, resumable JavaScript workflow; the pi-extensible-workflows skill holds authoring guidance. Inline and file-backed launches require a non-empty name; registered function launches may use name as an optional run label and otherwise use workflow as the run name. Runs are in the background by default; completion arrives as a follow-up message. Set foreground: true when the caller must wait; foreground results include the completed run ID, and a foreground call that detaches has its terminal outcome promoted to one follow-up message. After failure follow-ups, especially CANCELLED or interrupted runs, call workflow_status({ runId }) before recovery or replacement work, then pass its state as expectedState so recovery cannot act on a state that changed. Recovery map: agent(..., { retries }) reruns one agent call in the same run for transient failures; workflow_retry({ runId, expectedState?, foreground? }) replays a persisted failed run into a child; workflow_resume({ runId, expectedState?, budget?, foreground? }) continues a budget_exhausted run; parentRunId on a new launch only borrows named worktrees and never replays or resumes. Recovery inherits the source launch mode; legacy snapshots without launchMode recover in the background; set foreground explicitly to override."
 function workflowRecoveryGuidance(action: "resume" | "retry", state: RunState): string {
   if (action === "resume") {
     if (state === "failed") return "Failed workflow runs must use workflow_retry({ runId })";
@@ -2956,7 +2957,9 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     },
   });
   if (exposeWorkflowTools) pi.registerTool(workflowTool);
-  type WorkflowCommandSpec = { name: string; description?: string; script?: string; args?: JsonValue; argKey?: string };
+  // Workflow slash commands are declared only by a command.json in one of the
+  // scan roots below; argument parsing, defaults and usage text live in
+  // workflow-commands.ts (pi-loom DESIGN.md, P3).
   const workflowCommandRoots = [join(dirname(fileURLToPath(import.meta.url)), "../workflows"), join(dirname(fileURLToPath(import.meta.url)), "../../workflows"), join(extensionAgentDir, "workflows")];
   const seenWorkflowCommands = new Set<string>();
   for (const root of workflowCommandRoots) {
@@ -2969,28 +2972,21 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
       let parsedSpec: unknown;
       try { parsedSpec = JSON.parse(readFileSync(specPath, "utf8")); }
       catch (error) { throw new WorkflowError("CONFIG_ERROR", `Invalid workflow command JSON at ${specPath}: ${errorText(error)}`); }
-      if (!object(parsedSpec)) throw new WorkflowError("INVALID_METADATA", `Workflow command at ${specPath} must be an object`);
-      const spec = parsedSpec as WorkflowCommandSpec;
-      if (typeof spec.name !== "string" || !/^[a-zA-Z0-9][\w-]*$/.test(spec.name)) throw new WorkflowError("INVALID_METADATA", `Workflow command at ${specPath} requires a name matching /^[a-zA-Z0-9][\\w-]*$/`);
-      if (spec.argKey !== undefined && typeof spec.argKey !== "string") throw new WorkflowError("INVALID_METADATA", `Workflow command at ${specPath} argKey must be a string`);
+      const spec = validateWorkflowCommandSpec(parsedSpec, specPath);
       if (seenWorkflowCommands.has(spec.name)) continue;
       const scriptFile = spec.script ?? "workflow.js";
       const scriptPath = join(dir, scriptFile);
       if (!existsSync(scriptPath)) throw new WorkflowError("INVALID_METADATA", `Workflow command ${spec.name} script not found: ${scriptPath}`);
       seenWorkflowCommands.add(spec.name);
+      const described = spec.description ?? `Run the ${spec.name} workflow`;
       pi.registerCommand(spec.name, {
-        description: spec.description ?? `Run the ${spec.name} workflow`,
+        // With a schema the palette hint is generated, so a command.json never
+        // hand-writes an argument list that can drift from what is validated.
+        description: spec.argsSchema ? `${described} ${workflowCommandSignature(spec)}` : described,
         handler: async (args, ctx) => {
-          let workflowArgs: JsonValue = spec.args ?? null;
-          const trimmed = args.trim();
-          if (trimmed) {
-            try { workflowArgs = JSON.parse(trimmed) as JsonValue; }
-            catch { workflowArgs = spec.argKey ? { [spec.argKey]: trimmed } : trimmed; }
-          } else if (spec.args === undefined && spec.argKey) {
-            ctx.ui.notify(`Usage: /${spec.name} <${spec.argKey}> or /${spec.name} '{ "${spec.argKey}": "..." }'`, "warning");
-            return;
-          }
-          const result = await workflowTool.execute(`command-${spec.name}`, { name: spec.name, scriptPath, args: workflowArgs }, undefined, undefined, ctx);
+          const parsedArgs = parseWorkflowCommandArgs(spec, args);
+          if (!parsedArgs.ok) { ctx.ui.notify(parsedArgs.message, "warning"); return; }
+          const result = await workflowTool.execute(`command-${spec.name}`, { name: spec.name, scriptPath, args: parsedArgs.args }, undefined, undefined, ctx);
           const details = result.details as { runId?: string } | undefined;
           ctx.ui.notify(`Started workflow ${spec.name}${details?.runId ? ` (${details.runId})` : ""}. Control it with /workflow.`, "info");
         },
