@@ -687,6 +687,23 @@
           touch $out
         '';
 
+        # P6c acceptance (second half): `/wf-new` dry-runs the directory it just
+        # scaffolded and only then commits it. Everything this phase adds
+        # happens after stage("scaffold", ...) returns, and that stage runs an
+        # agent, so the shipped wf-new.js is evaluated as the async function
+        # body it is, with stub host bridges and real git repositories: the
+        # claim under test is what git ends up containing. Four scenarios —
+        # verified then committed, a dry run that refuses (no git command runs
+        # at all), a directory that is not a repository, and a git-ignored
+        # path. Structural validity of the same script is already gated by
+        # pi-loom-wf-new-workflow, which launches it in a real loom.
+        pi-loom-wf-new-commit = pkgs.runCommand "pi-loom-wf-new-commit" {
+          nativeBuildInputs = [pkgs.bash pkgs.nodejs_22 pkgs.git pkgs.coreutils];
+        } ''
+          bash ${./nix/checks/loom-wf-new-commit.sh} ${./workflows/wf-new}
+          touch $out
+        '';
+
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;

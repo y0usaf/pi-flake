@@ -31,6 +31,38 @@ it was written for) and `workflows` (this repo's shipped set, installed by the
 flake). Shape choices are the four backbones the stage library supports: one
 agent, plan → exec → review, plan only, or no stages at all.
 
+## What happens after the files are written
+
+Two phases, in this order and only in this order.
+
+`verify` calls `dryRun({ directory })`, the engine capability that loads a
+workflow directory through the code that registers slash commands — discovery,
+spec validation, usage generation, argument parsing — and stops at the last gate
+before a run would exist. If the freshly scaffolded directory would not
+register, **the run fails with the reason and commits nothing**. The files stay
+on disk exactly as they were written, because that is where their author fixes
+them.
+
+`commit` writes the directory into git, and only the directory:
+
+```
+git rev-parse --show-toplevel      # not a repository? report it, do not fail
+git add -- <directory>             # a pathspec commit cannot name untracked files
+git status --porcelain -- <dir>    # nothing staged? report it, do not fail
+git commit -q -m "wf-new: add /<name> workflow" -- <directory>
+```
+
+`git commit -- <pathspec>` is a **partial commit**: it takes those paths from the
+working tree and ignores the rest of the index, so unrelated work you had staged
+when you launched `/wf-new` is still staged, and still uncommitted, afterwards.
+Nothing the scaffolding agent produced reaches the shell — the pathspec and the
+name are both validated against a regex first, which is why nothing is quoted.
+
+Being unable to commit (not a repository, the path is git-ignored, no git
+identity configured) is **reported in the artifact, not thrown**. The deliverable
+is a directory that is already on disk and already known to register; failing the
+run over a missing `user.email` would say the opposite of the truth.
+
 ## What it does not do
 
 **Nothing is guessed.** A run launched with no answers parks in the `interview`
@@ -49,11 +81,22 @@ or with `workflow_answer` — and the run resumes into the `scaffold` phase.
 
 ## What it returns
 
-The scaffold stage's artifact — `name`, `directory`, `script`, `files`,
-the parsed `command` manifest, plus the agent's `summary` and `notes` — with an
-`interview` record of the answers that produced it. The engine reads
-`command.json` back off disk before returning: a scaffold whose manifest does
-not parse, disagrees about the name, or names a script that was never written
-fails the run instead of being reported as a success.
+The scaffold stage's artifact — `name`, `directory`, `script`, `files`, the
+parsed `command` manifest, plus the agent's `summary` and `notes` — with three
+records added:
 
-Gated by `checks.pi-loom-wf-new-workflow`.
+| field | meaning |
+| --- | --- |
+| `registration` | what the dry run saw: `name`, `signature`, `usage`, `requiredArgs` — the usage a user would be shown |
+| `commit` | `committed` (boolean), `sha`, and `reason` when nothing was committed |
+| `interview` | which answers produced this scaffold |
+
+The engine reads `command.json` back off disk before the stage returns: a
+scaffold whose manifest does not parse, disagrees about the name, or names a
+script that was never written fails the run instead of being reported as a
+success.
+
+Gated by `checks.pi-loom-wf-new-workflow` (registration, usage rejection, the
+parked interview, answers reaching the stage) and
+`checks.pi-loom-wf-new-commit` (verify-then-commit ordering, the commit
+containing exactly the scaffold, and a failed dry run committing nothing).

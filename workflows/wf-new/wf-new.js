@@ -29,6 +29,12 @@
 // throws unless it parses, declares the name that was asked for, and names a
 // script that exists beside it.
 //
+// After that stage returns, the run does two more things, in this order and only
+// in this order: dryRun({ directory }) asks the engine whether Pi would register
+// what was just written, and only then is the directory committed. A scaffold
+// that would not register fails the run with the reason and commits nothing, so
+// the broken files stay on disk where their author can fix them in place.
+//
 // Launch args (a bare task string, or JSON):
 //   task: string (required)
 //   name?: string      kebab-case; skips the naming question
@@ -117,6 +123,49 @@ const answerFrom = (options, answer, kind) => {
   return match;
 };
 
+// --------------------------------------------------------------- committing
+// The commit is the only thing this workflow writes outside the new directory,
+// so every value that reaches the shell is validated before it gets there and
+// nothing is quoted: the pathspec must match SHELL_SAFE_PATH and the name must
+// match SLUG, so neither can contain a shell metacharacter. Nothing the
+// scaffolding agent produced is ever interpolated into a command.
+const SHELL_SAFE_PATH = /^[A-Za-z0-9._/-]+$/;
+const GIT_TIMEOUT_MS = 120000;
+
+const shellText = result => (result.stderr || result.stdout || "no output").trim();
+
+// Only the scaffold's own path is committed, and `git commit -- <pathspec>` is a
+// partial commit: it takes those paths from the working tree and ignores the
+// rest of the index. Someone who had unrelated work staged when they launched
+// /wf-new still has exactly that work staged when this returns.
+//
+// Being unable to commit is reported, never thrown. The deliverable is the
+// directory; it is already on disk and already known to register, so a run
+// marked failed over a missing git identity would say the opposite of the truth.
+const commitScaffold = async (directory, workflowName) => {
+  if (!SHELL_SAFE_PATH.test(directory) || directory.split("/").indexOf("..") !== -1) throw new Error("wf-new: refusing to commit an unexpected path: " + directory);
+  if (!SLUG.test(workflowName)) throw new Error("wf-new: refusing to commit under an unexpected name: " + workflowName);
+  const repository = await shell("git rev-parse --show-toplevel", { timeoutMs: GIT_TIMEOUT_MS });
+  if (repository.exitCode !== 0) return { committed: false, sha: "", reason: "not a git repository, so " + directory + " was left uncommitted" };
+  // A pathspec commit cannot name a file git has never heard of, and every file
+  // in a fresh scaffold is untracked.
+  const added = await shell("git add -- " + directory, { timeoutMs: GIT_TIMEOUT_MS });
+  const staged = await shell("git status --porcelain -- " + directory, { timeoutMs: GIT_TIMEOUT_MS });
+  if (!staged.stdout.trim()) {
+    return {
+      committed: false,
+      sha: "",
+      reason: added.exitCode === 0
+        ? "git sees nothing to commit under " + directory + "; it is already committed"
+        : "git add refused " + directory + ": " + shellText(added),
+    };
+  }
+  const committed = await shell('git commit -q -m "wf-new: add /' + workflowName + ' workflow" -- ' + directory, { timeoutMs: GIT_TIMEOUT_MS });
+  if (committed.exitCode !== 0) return { committed: false, sha: "", reason: "git commit failed: " + shellText(committed) };
+  const head = await shell("git rev-parse HEAD", { timeoutMs: GIT_TIMEOUT_MS });
+  return { committed: true, sha: head.stdout.trim(), reason: "" };
+};
+
 await phase("interview");
 
 // Parking, not guessing: each of these suspends the run until a person answers.
@@ -163,6 +212,27 @@ const result = await stage("scaffold", {
   label: "scaffold",
 });
 
+// Verify before commit, always. dryRun is the registration path itself, so this
+// is the engine answering "would Pi register this?" with the code that does the
+// registering; it rejects with the reason when the answer is no.
+await phase("verify");
+let registration;
+try {
+  registration = await dryRun({ directory: result.directory });
+} catch (error) {
+  // A failure *before* the commit rather than instead of it: nothing is
+  // committed and nothing is deleted, so the author fixes the files in place.
+  throw new Error(
+    "wf-new: " + result.directory + " was written but Pi would not register it, so nothing was committed. " +
+      (error && error.message ? error.message : String(error)),
+  );
+}
+log("verify: /" + registration.name + " registers as " + registration.signature);
+
+await phase("commit");
+const commit = await commitScaffold(result.directory, name);
+log(commit.committed ? "commit: " + commit.sha : "commit: nothing committed -- " + commit.reason);
+
 return {
   name: result.name,
   directory: result.directory,
@@ -171,6 +241,15 @@ return {
   command: result.command,
   summary: result.summary,
   notes: result.notes,
+  // What the dry run saw, so the artifact reports what the author will type
+  // rather than only what was written for them.
+  registration: {
+    name: registration.name,
+    signature: registration.signature,
+    usage: registration.usage,
+    requiredArgs: registration.requiredArgs,
+  },
+  commit: commit,
   // The interview, kept in the artifact: which answers produced this scaffold is
   // the first thing anyone asks when the result is wrong.
   interview: {

@@ -18,74 +18,41 @@ marker into prose here — the count would lie.
 
 ## Handoff
 
-Last touched: P6c-i landed and is ticked. The next open item is P6c-ii
-(`/wf-new` dry-run and commit), which is the consumer of what this step built.
+Last touched: P6c-ii landed and is ticked. The next open item is P7
+(ecosystem fill: `/explore`, `/debug`, `/review`, and migrating the `ship`
+and `next` skills to workflows).
 
-What landed. `dryRun({ directory })`: a sandbox global that loads a workflow
-directory the way Pi registers slash commands and launches it once with
-deliberately invalid arguments — no model, no API key, no run. Engine changes:
-`dryRunWorkflowCommand` + `DRY_RUN_ARGUMENTS` in `src/workflow-commands.ts`,
-`validateDryRun` and the extracted `validateWorkflowScriptStructure` in
-`src/validation.ts`, `DryRunInput` and `WorkflowBridge.dryRun` in `src/types.ts`,
-the `dryRun` RPC method and sandbox entry in `src/execution.ts`, `dryRunBridge`
-plus both launch-site wirings in `src/host.ts`, and one line in
-`SANDBOX_GLOBALS` (`src/stages.ts`) so it reaches the generated authoring
-contract. New: `nix/checks/loom-dry-run.sh` and `checks.pi-loom-dry-run`.
-DESIGN.md gained a `dryRun` section after the `/wf-new` section and a split P6c
-roadmap entry. **No workflow calls `dryRun` yet** — that is P6c-ii.
+Provenance, because this step was unusual: the implementation was authored by
+a /loop-next iteration that was interrupted before it could update this file
+or commit — its files hit disk seconds before an unrelated hand commit
+(e6b5df8, the sidebar rail). The following iteration found the finished
+work, refused to claim it under the next skill's dirty-tree rule, verified
+the targeted gate read-only, and stopped early. The work was then reviewed
+and committed by hand from the chat seat; the code is byte-for-byte the
+orphan author's.
 
-**The dry run is the registration path, not a copy of it.** It calls
-`discoverWorkflowCommands`, `validateWorkflowCommandSpec`,
-`workflowCommandUsage` and `parseWorkflowCommandArgs` — the same functions
-`src/host.ts` registers commands with. A hand-written "does this look like a
-workflow?" checker would diverge from the loader the first time the loader
-changed, and the scaffold it blessed would fail at its first real launch.
+What landed. `workflows/wf-new/wf-new.js` gained verify-then-commit:
+`dryRun({ directory })` immediately after `stage("scaffold", ...)`, and only
+then `commitScaffold(directory, name)`. A scaffold Pi would not register
+fails the run with the reason before any git command; the files stay on
+disk for their author to fix in place. The commit path validates everything
+that reaches the shell (`SHELL_SAFE_PATH`, `SLUG`, `..` refused), stages and
+commits with `-- <directory>` pathspecs only — a partial commit that leaves
+the launcher's own staged work exactly as it was — and reports
+`commit: { committed, sha, reason }` instead of throwing: a missing git
+identity is a reason, not a failed run whose deliverable is already on disk.
+New `nix/checks/loom-wf-new-commit.sh` plus `checks.pi-loom-wf-new-commit`
+(check count 31 -> 32): one Node leg that evaluates the shipped module body
+the way the engine's sandbox does, with stub `stage`/`dryRun` and a real
+`shell` against real git repositories. DESIGN.md gained the matching section
+and the P6c-ii acceptance line; the README documents the verify and commit
+phases. `.gitignore` now covers `extensions/pi-loom/dist/`, so a stray
+`npm run build` tree can no longer poison porcelain-based assertions.
 
-**"Launched with deliberately invalid arguments" stops at the argument gate.**
-`parseWorkflowCommandArgs` rejecting `{"__loomDryRun":true}` is the last thing
-that happens before a run exists, so reaching it proves discovery and usage
-generation. It is *not* a second `loom` process: the sandbox has no binary path,
-and everything past the gate needs a model. A JSON object rather than malformed
-text, because with `argKey` set unparseable text is a valid launch. A command
-whose schema accepts the sentinel reports `rejectedInvalidArguments: false`
-instead of failing.
-
-Gates actually run: `nix build .#pi-loom` (pass);
-`nix build .#checks.x86_64-linux.pi-loom-dry-run -L` (pass);
-`nix flake check -L` (pass, all 31 checks, `biome-lint` among them).
-
-**Two engine mutants, each reverted from a `/tmp` backup after the run.**
-Replacing `validateWorkflowScriptStructure(readFileSync(...))` with a bare
-`readFileSync` → `a script that redeclares stage was accepted`. Commenting out
-the shadow-clash `fail(...)` → `a name already claimed by an installed root was
-accepted`. Both exit 1; the restored tree exits 0.
-
-Design decisions worth not re-litigating:
-
-- **`dryRun` is a global, not a stage.** Every stage runs exactly one agent
-  under a fixed output contract; a dry run runs none. `stage("dryrun", ...)`
-  would make the stage list mean two things, and would have forced the
-  `plan, exec, review, quick, scaffold` substring assertion in three check
-  scripts to grow for a step that runs no model.
-- **Shadowing is a failure, not a warning.** The first scan root to claim a name
-  wins, so a scaffold whose name is already taken registers and can still never
-  be launched. Self-comparison is by `specPath`, which is why the bridge
-  resolves the directory to an absolute path before calling.
-- **The script is parsed, never run.** `validateWorkflowScriptStructure` is the
-  half of `preflight` needing only script text (parse, reserved instrumentation
-  identifiers, stage-library collision). Splitting it out means a dry run needs
-  no model list or settings path, and cannot drift from the launch guards.
-- **The path rule is `validateDryRun`, in `src/validation.ts`.** Relative only,
-  no `..`, resolved against the run's cwd by the host bridge — the same rule the
-  scaffold stage's `directory` gets, for the same reason: reading is a
-  capability too.
-- **P6 is split by failure mode, not by file.** Writing the files (P6a), asking
-  the questions (P6b), proving the result loads (P6c-i) and committing it
-  (P6c-ii) fail differently; only P6a and P6c-i are reusable by anything other
-  than `/wf-new`.
-- **The picker lives in the router, not the engine**, and offers a choice by
-  prefilling `/<name> ` into the editor rather than launching a run: no
-  extension API dispatches a slash command.
+Gates actually run and seen to pass:
+`nix build .#checks.x86_64-linux.pi-loom-wf-new-commit` — once on the found
+tree, once after staging; `nix flake check -L` — "all checks passed!", and
+`nix eval .#checks.x86_64-linux` counts 32 (`biome-lint` among them).
 
 Traps for the next step:
 
@@ -265,12 +232,13 @@ Traps for the next step:
 - **`inputsSettled()` gates on four parking lots** (checkpoints, questions,
   edits, reviews). Anything that parks a new kind of human input must add its
   lot there or a pending item will look like a running run.
-- **Downstream flag renamed.** `~/nixos/hosts/y0usaf-desktop/finix/materialized-packages.nix`
-  sets `"extensible-workflows" = true;`. That key no longer exists; it is now
-  `loom`. `lib.enabledExtensions` asserts on unknown flags, so the system flake
-  fails to evaluate the moment it bumps this input. Flip the flag in the same
-  change that bumps the input (the `ship` skill does both). Note `router` is
-  **not** a valid flag and must never become one.
+- **Downstream flag renamed; the flip exists but is uncommitted.**
+  `~/nixos/hosts/y0usaf-desktop/finix/materialized-packages.nix` now sets
+  `loom = true;` — flipped in the same working tree as the flake.lock bump
+  when 9b022f4 shipped, both left uncommitted per the ship contract. If that
+  tree is reset, the dead `"extensible-workflows"` key returns and
+  `lib.enabledExtensions` fails evaluation on the next input bump. Note
+  `router` is **not** a valid flag and must never become one.
 - **Fork identity is still upstream-named on purpose.** package.json is still
   `pi-extensible-workflows@3.4.2`, and the scan-root constants still resolve
   `<agentDir>/pi-extensible-workflows/{SYSTEM.md,roles}`. Renaming moves paths
@@ -393,9 +361,13 @@ Traps for the next step:
       `checks.pi-loom-dry-run` proves one directory that registers, one that
       declares no schema, and six ways a scaffold would not register, in a
       single model-free run.
-- [ ] **P6c-ii — `/wf-new` dry-run and commit.** Dry-run the freshly scaffolded
+- [x] **P6c-ii — `/wf-new` dry-run and commit.** Dry-run the freshly scaffolded
       directory, then commit it — and report a failure before committing
-      anything when it would not register.
+      anything when it would not register. `checks.pi-loom-wf-new-commit`
+      proves the commit holds exactly the three scaffold files, leaves the
+      launcher's own staged and unstaged work alone, runs no git command for
+      a scaffold that would not register, and reports rather than throws
+      when the repository cannot take the commit.
 - [ ] **P7 — ecosystem fill.** `/explore`, `/debug`, `/review`; migrate the
       `ship` and `next` skills to workflows.
 - [ ] **P8 — bare-core CI.** `checks.pi-loom-bare`.
