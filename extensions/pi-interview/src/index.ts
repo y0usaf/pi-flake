@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
-import { Container, Text } from "@earendil-works/pi-tui";
+import { Container, type OverlayHandle, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
 	CONFIG_FIELD_NAMES,
@@ -230,6 +230,44 @@ export default function piInterview(pi: ExtensionAPI): void {
 	}
 
 	/**
+	 * Ask a questionnaire from `session_start`, where the editor slot is not ours.
+	 *
+	 * Two separate hazards live in that window, both caused by other extensions
+	 * still installing their own UI while this runs. pi-quiet is the concrete
+	 * one today: its `session_start` handler calls `ui.setEditorComponent`, and
+	 * pi implements that as `editorContainer.clear()` followed by
+	 * `ui.setFocus(newEditor)`.
+	 *
+	 * The clear evicts an inline component, so the questionnaire is rendered in
+	 * the overlay layer, which is a separate stack. The focus call then hands
+	 * keyboard input to the new editor, and pi-tui records a non-overlay
+	 * component taking focus from an overlay as a deliberate handoff, which
+	 * disables the reclaim it would otherwise perform on the next keypress. The
+	 * overlay stays on screen and answers nothing — so hold focus explicitly
+	 * until the questionnaire closes.
+	 *
+	 * Which extension runs first is decided by directory read order, so this
+	 * cannot be fixed by ordering; the invariant has to be asserted.
+	 */
+	async function askOnStartup(ctx: ExtensionContext, questions: InterviewQuestion[]): Promise<QuestionnaireResult> {
+		let overlay: OverlayHandle | undefined;
+		const holdFocus = setInterval(() => {
+			if (overlay && !overlay.isFocused()) overlay.focus();
+		}, 150);
+		holdFocus.unref?.();
+		try {
+			return await runQuestionnaire(ctx, questions, undefined, {
+				overlay: true,
+				onHandle: (handle) => {
+					overlay = handle;
+				},
+			});
+		} finally {
+			clearInterval(holdFocus);
+		}
+	}
+
+	/**
 	 * Finish a questionnaire that was still open when the previous process died.
 	 *
 	 * The questions are not stored anywhere by this extension: pi already
@@ -252,9 +290,7 @@ export default function piInterview(pi: ExtensionAPI): void {
 		if (questions.length === 0) return;
 
 		ctx.ui.notify("Interview was interrupted by a restart — finishing it now", "info");
-		// Overlay only here: this runs from session_start, where pi's remaining
-		// startup work clears the editor container and would evict an inline one.
-		const result = await runQuestionnaire(ctx, questions, undefined, { overlay: true });
+		const result = await askOnStartup(ctx, questions);
 		if (result.cancelled || result.answers.length === 0) return;
 		pi.sendMessage(
 			{
