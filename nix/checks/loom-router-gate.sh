@@ -2,8 +2,8 @@
 # Runtime acceptance for phase P5b-i of extensions/pi-loom/DESIGN.md: the router
 # gate. In `loom` the agent you chat with routes, it does not edit.
 #
-# What is under test. pi-loom-router removes `edit`, `write` and `bash` from the
-# active tool set at session_start, in memory, never persisted, and is shipped
+# What is under test. pi-loom-router removes `edit` and `write` from the active
+# tool set at session_start, in memory, never persisted, and is shipped
 # only in the loom stack. Three things can go wrong and all three are silent:
 #
 #   * the gate does not fire (loom keeps its mutating tools and nobody notices
@@ -20,11 +20,12 @@
 # visibility fails here as `UNKNOWN_TOOL` instead of shipping.
 #
 # Proves, offline, with no model ever contacted:
-#   1. In `loom`, the chat agent's active tools contain none of edit, write or
-#      bash, and do contain read, grep, find and ls. The gate is a swap, not a
+#   1. In `loom`, the chat agent's active tools contain neither edit nor write,
+#      and do contain read, bash, grep, find and ls. The gate is a swap, not a
 #      subtraction: pi's default active set is read/bash/edit/write, so removing
-#      the mutating three without switching the read-only three on would leave a
-#      router that cannot list a directory.
+#      the mutating tools without switching the read-only three on would leave a
+#      router that cannot list a directory. `bash` stays active since P5b-ii and
+#      is narrowed per invocation instead — see checks.pi-loom-router-shell.
 #   2. In plain `pi`, all three are active. The gate is stack policy, not a
 #      change to pi.
 #   3. `pi-full` ships no copy of pi-loom-router, so no extension flag can pull
@@ -159,12 +160,14 @@ witness_tools() {
 witness_tools loom "$loom"
 loom_tools="$work/loom.tools.json"
 
-for tool in edit write bash; do
+for tool in edit write; do
   jq -e --arg tool "$tool" 'index($tool) == null' "$loom_tools" >/dev/null ||
     fail_with "the chat agent still holds '$tool' in loom, so the router gate did not fire" "$loom_tools"
 done
 
-for tool in read grep find ls; do
+# `bash` is in this list on purpose: P5b-ii re-admitted it, and a regression that
+# hides it again would silently take `git status` away from the router.
+for tool in read bash grep find ls; do
   jq -e --arg tool "$tool" 'index($tool) != null' "$loom_tools" >/dev/null ||
     fail_with "the gated chat agent has no '$tool', so it cannot read the repo it is supposed to route over" "$loom_tools"
 done
@@ -208,4 +211,4 @@ for tool in edit write bash; do
     fail_with "the launch snapshot lost '$tool' under the real router; the workflow boundary collapsed into the chat agent's visibility" "$snapshot"
 done
 
-echo "router-gate: in loom the chat agent holds no edit, write or bash and does hold read, grep, find and ls; plain pi holds all three mutating tools; pi-full bundles no copy of the router; and a workflow launched inside the gated session still records all three in its launch snapshot"
+echo "router-gate: in loom the chat agent holds no edit or write and does hold read, bash, grep, find and ls; plain pi holds all three mutating tools; pi-full bundles no copy of the router; and a workflow launched inside the gated session still records all three in its launch snapshot"

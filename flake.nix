@@ -333,10 +333,11 @@
             };
           };
 
-        # pi-loom-router — the policy gate of the loom stack. Removes edit,
-        # write and bash from the chat agent's active tool set at session_start,
-        # in memory, never persisted, so mutation happens inside workflow runs
-        # instead. Deliberately NOT in extensions/registry.nix: a registry entry
+        # pi-loom-router — the policy gate of the loom stack. Removes edit and
+        # write from the chat agent's active tool set at session_start, in
+        # memory, never persisted, and classifies every bash invocation from a
+        # tool_call handler, so mutation happens inside workflow runs instead.
+        # Deliberately NOT in extensions/registry.nix: a registry entry
         # would expose it as an extension flag and let it leak into anyone's
         # plain `pi`. Pi loads ./src/index.ts directly; type-only imports mean
         # there is nothing to build and no node_modules to ship.
@@ -586,8 +587,8 @@
 
         # P5b-i acceptance: the router gate. Boots `loom` and plain `pi` headlessly
         # with a witness extension appended through trailing argv and compares the
-        # two active tool sets: loom must hold none of edit/write/bash and must
-        # still hold read, plain pi must hold all three. Also checks structurally
+        # two active tool sets: loom must hold neither edit nor write and must
+        # still hold read and bash, plain pi must hold all three. Also checks
         # that pi-full bundles no copy of the router (the failure mode of adding it
         # to extensions/registry.nix), and re-proves the P5a interlock with the
         # real router in the stack rather than a stand-in.
@@ -598,6 +599,22 @@
             ${self.packages.${system}.pi-loom-cli}/bin/loom \
             ${self.packages.${system}.pi}/bin/pi \
             ${self.packages.${system}.pi-full}
+          touch $out
+        '';
+
+        # P5b-ii acceptance: the read-only shell. `bash` is back on loom's chat
+        # agent, so the invocation is what gets judged now. Imports the real
+        # extension file out of the built package, hands it a stub ExtensionAPI,
+        # and drives the handlers it registered: the session_start swap must keep
+        # bash, read-only commands must run, and every mutating one must come
+        # back blocked with a reason naming /quick and /build. No pi and no model
+        # — a real tool_call needs an assistant message, so this proves the
+        # handler pi would call, while pi-loom-router-gate proves the extension
+        # loads in a real loom session.
+        pi-loom-router-shell = pkgs.runCommand "pi-loom-router-shell" {
+          nativeBuildInputs = [pkgs.bash pkgs.nodejs_22 pkgs.coreutils];
+        } ''
+          bash ${./nix/checks/loom-router-shell.sh} ${self.packages.${system}.pi-loom-router}
           touch $out
         '';
 
