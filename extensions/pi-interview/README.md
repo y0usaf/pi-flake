@@ -1,129 +1,79 @@
 # pi-interview
 
-Standard ask-user-question workflow for [Pi](https://github.com/earendil-works/pi), with optional automatic answers from a separate model context.
+Standard ask-user-question workflow for [Pi](https://github.com/earendil-works/pi).
 
-Main-session model always composes complete questionnaire and, outside strict mode, decides when clarification matters. Extension never delegates question generation.
+The main-session model always composes the complete questionnaire and, outside strict mode, decides when clarification matters. The extension never delegates question generation and never calls a second model.
 
 ## Flow
 
 ```text
-manual
+manual / strict
 user request → main model investigates → interview_user({ questions })
              → questionnaire UI → user answers → same main-session tool call resumes
 
 auto
 user request → main model investigates → interview_user({ questions })
-             → separate model answers same questionnaire from bounded session context
-             → same main-session tool call resumes
-
-strict
-same as manual, but main model must call interview_user once for every request
+             → every question resolves to “Use your judgment”, returns immediately
+             → decision points are on the record; the main model decides them itself
 ```
 
-No Pi session, branch, or agent thread is created. Auto mode uses isolated provider inference only for selecting answers.
+No Pi session, branch, or agent thread is created, and no secondary inference happens in any mode.
 
 ## Modes
 
 | Mode | Behavior |
 |---|---|
 | `off` | Tool disabled. Default. |
-| `manual` | Main model may ask when material clarification is needed; user answers. |
-| `auto` | Main model asks same questions; configured separate inference answers them. |
-| `strict` | Main model must ask at least once every request; user answers. |
-
-Enable manual/strict without secondary model:
+| `manual` | Main model may ask when material clarification is needed; you answer. |
+| `auto` | Main model asks the same questions; every answer is “Use your judgment”, with no UI and no wait. |
+| `strict` | Main model must ask at least once every request; you answer. |
 
 ```text
 /interview manual
-/interview strict
-```
-
-Enable auto with answer model:
-
-```text
-/interview auto anthropic/claude-haiku-4-5
-/interview auto openai/gpt-5.4
-```
-
-Omit model to use saved model or open authenticated-model selector:
-
-```text
 /interview auto
-```
-
-Disable/status:
-
-```text
-/interview off
-/interview
-```
-
-## Commands
-
-```text
-/interview manual
-/interview auto [provider/model]
 /interview strict
 /interview off
-/interview model [provider/model]
 /interview config
-/interview config key=value
+/interview config maxQuestions=4
 ```
 
 Configuration persists to `~/.pi/agent/interview.json`.
 
-| Key | Default | Range / meaning |
+| Key | Default | Range |
 |---|---:|---|
-| `reasoning` | `low` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
-| `maxTokens` | `4096` | 256–16384 |
 | `maxQuestions` | `3` | 1–5 |
 | `maxOptions` | `5` | 2–7, including host-added “Use your judgment” |
-| `maxContextMessages` | `8` | 0–30 recent session messages for auto-answer |
-| `maxContextChars` | `24000` | 2000–100000 session-context chars; questionnaire excluded |
-| `includeContextFiles` | `false` | Share loaded AGENTS.md/context files with auto-answer model |
-| `timeoutMs` | `45000` | 5000–180000 |
 
-Example:
+## Durability
 
-```text
-/interview config reasoning=medium
-/interview config maxContextMessages=4
-/interview config includeContextFiles=true
-```
+A questionnaire can stay open for minutes, so it is the tool most likely to be alive when a terminal closes.
 
-## Context and privacy
+**The failure it avoids.** Pi persists the assistant message that *contains* a tool call before the tool runs, and persists the result only when the tool returns. A questionnaire that is open when pi exits therefore leaves a tool call with no result in the session file, and nothing repairs that pairing on load. The next provider request carries a `tool_use` block with no matching `tool_result`, and the API rejects the whole turn.
 
-Manual/strict modes make no secondary model call.
+**How it is repaired.** Extensions get a read-only SessionManager, so the session file cannot be edited. The `context` event is the one place a message list can be rewritten before it is sent, so `src/durability.ts` finds every unanswered `interview_user` call and splices a result in directly after the assistant message that made it. The repair is derived from the messages themselves, so there is no sidecar file that can rot.
 
-Auto-answer model receives:
+**How answers survive.** On session start, if the branch ends in an unanswered questionnaire, it is presented again. The questions are not stored by this extension — pi already persisted them inside the tool call arguments, so they are read back out of the session. Submitting sends the answers as a pi custom message, which pi persists, which is what carries them through a second restart. Cancelling with Escape falls back to "interrupted, no answers recorded".
 
-- Questionnaire composed by main-session model
-- Expanded current request, including invoked skill or prompt-template text
-- Bounded recent user/assistant/custom messages
-- Prior `interview_user` answers
-- Project context files only when explicitly enabled
-
-Not sent:
-
-- Primary system prompt
-- General tool outputs
-- Thinking blocks
-- Image bytes
-
-Choosing model on different provider sends request, questionnaire, and selected context to that provider. Use `includeContextFiles=false` and/or `maxContextMessages=0` to minimize additional sharing. `includeContextFiles=false` does not remove skill or prompt-template text expanded into current request.
-
-Auto-answers are explicitly marked model-generated; direct user answers are marked user-selected.
+**Typed text.** Free text is kept per question in a draft map. Escape returns to the option list without discarding what was typed, and re-opening a question restores it. An option with saved text is marked `✎`.
 
 ## Reliability
 
-- Main model supplies structured questions/options through validated tool schema.
-- Host caps and normalizes questionnaire, adds “Use your judgment”, and optionally allows free text.
+- Main model supplies structured questions/options through a validated tool schema.
+- Host caps and normalizes the questionnaire, adds “Use your judgment”, and optionally allows free text.
 - Free-text answers are normalized and capped at 500 characters.
-- Auto-answer output must match validated JSON answer schema.
-- One malformed-output retry, then every question falls back to “Use your judgment”.
-- Model/auth/timeouts fail open; primary agent continues.
-- TUI uses multi-question tab UI. RPC falls back to sequential `select`/`input` dialogs.
-- Manual/strict tool is unavailable without interactive UI; auto mode works without questionnaire UI.
+- TUI uses the multi-question tab UI. RPC falls back to sequential `select`/`input` dialogs.
+- Without an interactive UI, every question resolves to “Use your judgment” rather than blocking.
+- Answers are labelled by source: user-selected, judgment, or recovered after a restart.
+
+## Layout
+
+| File | Kind | Contents |
+|---|---|---|
+| `src/config.ts` | pure | field table, defaults, ranges, `key=value` validation |
+| `src/protocol.ts` | pure | question normalization, judgment answers |
+| `src/durability.ts` | pure | dangling-call detection, result synthesis, splicing |
+| `src/questionnaire.ts` | UI | tab questionnaire, drafts, RPC fallback |
+| `src/index.ts` | shell | pi hooks, tool, command, file I/O |
 
 ## Development
 

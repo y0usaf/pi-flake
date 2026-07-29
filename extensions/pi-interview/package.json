@@ -2,7 +2,7 @@
   "name": "pi-interview",
   "private": true,
   "version": "0.1.0",
-  "description": "Ask-user questionnaire tool with optional separate-context auto-answers for Pi.",
+  "description": "Ask-user questionnaire tool for Pi, durable across session restarts.",
   "type": "module",
   "keywords": [
     "pi-package",

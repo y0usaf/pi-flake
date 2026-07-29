@@ -7,9 +7,6 @@ export interface QuestionLimits {
 	maxOptions: number;
 }
 
-export type AnswerParseResult =
-	| { ok: true; answers: InterviewAnswer[] }
-	| { ok: false; error: string };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -35,23 +32,6 @@ function slug(value: string, fallback: string): string {
 	return normalized || fallback;
 }
 
-function parseJson(raw: string): unknown {
-	const trimmed = raw.trim();
-	const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim();
-	const firstBrace = trimmed.indexOf("{");
-	const lastBrace = trimmed.lastIndexOf("}");
-	const embedded = firstBrace >= 0 && lastBrace > firstBrace ? trimmed.slice(firstBrace, lastBrace + 1) : undefined;
-	const candidates = [trimmed, fenced, embedded].filter((candidate): candidate is string => Boolean(candidate));
-	let lastError: unknown;
-	for (const candidate of [...new Set(candidates)]) {
-		try {
-			return JSON.parse(candidate);
-		} catch (error) {
-			lastError = error;
-		}
-	}
-	throw lastError instanceof Error ? lastError : new Error("No JSON object found");
-}
 
 function isHostOption(value: string, label: string): boolean {
 	const normalizedValue = value.trim().toLowerCase();
@@ -157,57 +137,6 @@ export function normalizeQuestions(rawQuestions: readonly unknown[], limits: Que
 	return questions;
 }
 
-export function parseAutoAnswers(rawText: string, questions: readonly InterviewQuestion[]): AnswerParseResult {
-	let parsed: unknown;
-	try {
-		parsed = parseJson(rawText);
-	} catch (error) {
-		return { ok: false, error: error instanceof Error ? error.message : String(error) };
-	}
-	if (!isRecord(parsed) || !Array.isArray(parsed.answers)) {
-		return { ok: false, error: "Auto-answer output must be an object with an answers array" };
-	}
-
-	const candidates = new Map<string, Record<string, unknown>>();
-	for (const raw of parsed.answers) {
-		if (!isRecord(raw)) continue;
-		const id = cleanText(raw.id, 80);
-		if (!id) continue;
-		if (candidates.has(id)) return { ok: false, error: `Duplicate answer for question ${id}` };
-		candidates.set(id, raw);
-	}
-
-	const answers: InterviewAnswer[] = [];
-	for (const question of questions) {
-		const candidate = candidates.get(question.id);
-		if (!candidate) return { ok: false, error: `Missing answer for question ${question.id}` };
-
-		const custom = normalizeCustomAnswer(candidate.custom);
-		if (custom) {
-			if (!question.allowOther) return { ok: false, error: `Question ${question.id} does not allow a custom answer` };
-			answers.push({ id: question.id, value: custom, label: custom, wasCustom: true });
-			continue;
-		}
-
-		const selected = cleanText(candidate.value ?? candidate.answer, 120);
-		if (!selected) return { ok: false, error: `Answer for question ${question.id} needs value or custom` };
-		const selectedLower = selected.toLowerCase();
-		const optionIndex = question.options.findIndex(
-			(option) => option.value === selected || option.label.toLowerCase() === selectedLower,
-		);
-		const option = question.options[optionIndex];
-		if (!option) return { ok: false, error: `Unknown option ${selected} for question ${question.id}` };
-		answers.push({
-			id: question.id,
-			value: option.value,
-			label: option.label,
-			wasCustom: false,
-			index: optionIndex + 1,
-		});
-	}
-
-	return { ok: true, answers };
-}
 
 export function createJudgmentAnswers(questions: readonly InterviewQuestion[]): InterviewAnswer[] {
 	const answers: InterviewAnswer[] = [];

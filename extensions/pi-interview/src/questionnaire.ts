@@ -89,6 +89,8 @@ export async function runQuestionnaire(
 		let finished = false;
 		let signalAbortHandler: (() => void) | undefined;
 		const answers = new Map<string, InterviewAnswer>();
+		/** Free-text kept per question so leaving the editor never loses typing. */
+		const drafts = new Map<string, string>();
 
 		const editorTheme: EditorTheme = {
 			borderColor: (text) => theme.fg("accent", text),
@@ -162,6 +164,7 @@ export async function runQuestionnaire(
 				label: custom,
 				wasCustom: true,
 			});
+			drafts.set(inputQuestionId, custom);
 			inputMode = false;
 			inputQuestionId = null;
 			editor.setText("");
@@ -171,6 +174,9 @@ export async function runQuestionnaire(
 		function handleInput(data: string): void {
 			if (inputMode) {
 				if (matchesKey(data, Key.escape)) {
+					// Escape returns to the option list. Keep the text: destroying it
+					// here is what made answers disappear.
+					if (inputQuestionId) drafts.set(inputQuestionId, editor.getText());
 					inputMode = false;
 					inputQuestionId = null;
 					editor.setText("");
@@ -220,7 +226,7 @@ export async function runQuestionnaire(
 				if (option.isOther) {
 					inputMode = true;
 					inputQuestionId = question.id;
-					editor.setText("");
+					editor.setText(drafts.get(question.id) ?? "");
 					refresh();
 					return;
 				}
@@ -285,7 +291,8 @@ export async function runQuestionnaire(
 					if (!option) continue;
 					const selected = index === optionIndex;
 					const prefix = selected ? theme.fg("accent", "> ") : "  ";
-					const label = `${index + 1}. ${displayLabel(option)}${option.isOther && inputMode ? " ✎" : ""}`;
+					const draft = option.isOther && question ? drafts.get(question.id) : undefined;
+					const label = `${index + 1}. ${displayLabel(option)}${option.isOther && (inputMode || draft) ? " ✎" : ""}`;
 					addWrappedWithPrefix(prefix, theme.fg(selected ? "accent" : "text", label));
 					const description = displayDescription(option);
 					if (description) addWrappedWithPrefix("     ", theme.fg("muted", description));
