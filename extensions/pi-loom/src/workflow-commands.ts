@@ -7,11 +7,17 @@
 // declarative: `argsSchema` is a JSON Schema object, usage text is generated
 // from it, and arguments are validated against it before a run is launched.
 //
-// Kept out of host.ts on purpose: this is pure input handling with no session,
-// no run store and no UI, so it is readable and testable on its own.
+// P3b adds the other half of the mechanism: *where* a command.json may live.
+// Discovery is here too, so one module answers both "what does a spec mean"
+// and "which specs exist", and host.ts only registers what it is handed.
+//
+// Kept out of host.ts on purpose: no session, no run store and no UI, so it is
+// readable and testable on its own.
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Value } from "typebox/value";
 import type { JsonSchema, JsonValue } from "./types.js";
-import { fail, jsonValue, object } from "./utils.js";
+import { errorText, fail, jsonValue, object } from "./utils.js";
 import { validateSchema } from "./validation.js";
 
 const COMMAND_NAME = /^[a-zA-Z0-9][\w-]*$/;
@@ -169,4 +175,115 @@ export function parseWorkflowCommandArgs(spec: WorkflowCommandSpec, raw: string)
   const args = coerceDeclaredScalars(schema, applyDeclaredDefaults(schema, candidate));
   if (!Value.Check(schema, args)) return { ok: false, message: `/${spec.name}: ${firstSchemaError(schema, args)}\n${workflowCommandUsage(spec)}` };
   return { ok: true, args };
+}
+
+// ---------------------------------------------------------------- discovery
+//
+// Three scopes, in precedence order. `builtin` is what ships with the wrapper,
+// `user` is the agent dir, `project` is `<cwd>/.pi/workflows` — a repo keeping
+// its own commands beside its own code, which is the point of P3b.
+//
+// First root to claim a name wins, so a project cannot silently shadow a
+// builtin or user command: `/ship` must keep meaning what the user installed
+// even after cloning someone else's repo. Cross-scope collision *precedence*
+// (letting a project deliberately override) is deferred in DESIGN.md until
+// installable packs force the question; until then the shadowed spec is
+// reported by `/workflows` instead of being applied or silently dropped.
+export const WORKFLOW_COMMAND_SCOPES = ["builtin", "user", "project"] as const;
+export type WorkflowCommandScope = (typeof WORKFLOW_COMMAND_SCOPES)[number];
+
+export interface WorkflowCommandRoot {
+  scope: WorkflowCommandScope;
+  path: string;
+}
+
+export interface DiscoveredWorkflowCommand {
+  spec: WorkflowCommandSpec;
+  scope: WorkflowCommandScope;
+  specPath: string;
+  scriptPath: string;
+  /** Set when a higher-precedence scope already registered this name. */
+  shadowedBy?: WorkflowCommandScope;
+}
+
+export interface WorkflowCommandProblem {
+  scope: WorkflowCommandScope;
+  specPath: string;
+  message: string;
+}
+
+export interface WorkflowCommandDiscovery {
+  roots: readonly WorkflowCommandRoot[];
+  commands: readonly DiscoveredWorkflowCommand[];
+  problems: readonly WorkflowCommandProblem[];
+}
+
+/** Project-local scan root. One directory, no upward search: the project is the cwd Pi was started in. */
+export function projectWorkflowCommandRoot(cwd: string): string { return join(cwd, ".pi", "workflows"); }
+
+export function workflowCommandRoots(extensionDir: string, agentDir: string, cwd: string): WorkflowCommandRoot[] {
+  return [
+    { scope: "builtin", path: join(extensionDir, "../workflows") },
+    { scope: "builtin", path: join(extensionDir, "../../workflows") },
+    { scope: "user", path: join(agentDir, "workflows") },
+    { scope: "project", path: projectWorkflowCommandRoot(cwd) },
+  ];
+}
+
+/**
+ * Scan every root for `<dir>/command.json` and return what may be registered.
+ *
+ * A malformed spec in a builtin or user root throws: those are the operator's
+ * own files and a silent skip would hide a typo. A malformed spec in the
+ * project root is collected as a problem instead, because a cloned repo must
+ * not be able to abort extension load — `loom` has to still start in a repo
+ * whose `.pi/workflows` is broken or hostile.
+ */
+export function discoverWorkflowCommands(roots: readonly WorkflowCommandRoot[]): WorkflowCommandDiscovery {
+  const commands: DiscoveredWorkflowCommand[] = [];
+  const problems: WorkflowCommandProblem[] = [];
+  const claimed = new Map<string, WorkflowCommandScope>();
+  for (const root of roots) {
+    if (!existsSync(root.path)) continue;
+    // readdir order is filesystem-dependent; sort so shadowing is deterministic.
+    const entries = readdirSync(root.path, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+    for (const name of entries) {
+      const dir = join(root.path, name);
+      const specPath = join(dir, "command.json");
+      if (!existsSync(specPath)) continue;
+      const tolerate = root.scope === "project";
+      let spec: WorkflowCommandSpec;
+      try {
+        let parsed: unknown;
+        try { parsed = JSON.parse(readFileSync(specPath, "utf8")); }
+        catch (error) { fail("CONFIG_ERROR", `Invalid workflow command JSON at ${specPath}: ${errorText(error)}`); }
+        spec = validateWorkflowCommandSpec(parsed, specPath);
+        const scriptPath = join(dir, spec.script ?? "workflow.js");
+        if (!existsSync(scriptPath)) fail("INVALID_METADATA", `Workflow command ${spec.name} script not found: ${scriptPath}`);
+        const shadowedBy = claimed.get(spec.name);
+        if (shadowedBy === undefined) claimed.set(spec.name, root.scope);
+        commands.push({ spec, scope: root.scope, specPath, scriptPath, ...(shadowedBy ? { shadowedBy } : {}) });
+      } catch (error) {
+        if (!tolerate) throw error;
+        problems.push({ scope: root.scope, specPath, message: errorText(error) });
+      }
+    }
+  }
+  return { roots, commands, problems };
+}
+
+/** Body of `/workflows`: every command, the scope it came from, and why anything was skipped. */
+export function workflowCommandListing(discovery: WorkflowCommandDiscovery): string {
+  const lines: string[] = [];
+  for (const scope of WORKFLOW_COMMAND_SCOPES) {
+    const roots = discovery.roots.filter((root) => root.scope === scope);
+    const active = discovery.commands.filter((command) => command.scope === scope && !command.shadowedBy);
+    lines.push(`${scope} (${roots.map((root) => root.path).join(", ")})`);
+    if (!active.length) lines.push("  (none)");
+    for (const command of active) lines.push(`  /${command.spec.name}  ${workflowCommandSignature(command.spec).replace(/^Usage: /, "")}${command.spec.description ? ` - ${command.spec.description}` : ""}`);
+  }
+  const shadowed = discovery.commands.filter((command) => command.shadowedBy);
+  for (const command of shadowed) lines.push(`shadowed: ${command.specPath} declares /${command.spec.name}, already provided by ${command.shadowedBy ?? "another scope"} scope`);
+  for (const problem of discovery.problems) lines.push(`skipped: ${problem.specPath} (${problem.message})`);
+  return lines.join("\n");
 }

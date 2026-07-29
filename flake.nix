@@ -458,6 +458,19 @@
           touch $out
         '';
 
+        # P3b acceptance: the other half of the declaration mechanism is where a
+        # command.json may live. A probe repo carrying `.pi/workflows/` proves a
+        # project-local spec reaches the palette and runs with nothing global
+        # edited, that `/workflows` names the scope and root of every command,
+        # that a project spec cannot shadow a user-scope command, and that a
+        # malformed project spec is skipped instead of aborting extension load.
+        pi-loom-project-workflows = pkgs.runCommand "pi-loom-project-workflows" {
+          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.gawk pkgs.coreutils];
+        } ''
+          bash ${./nix/checks/loom-project-workflows.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom
+          touch $out
+        '';
+
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;
