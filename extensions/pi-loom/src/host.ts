@@ -1595,6 +1595,36 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
   const extensionAgentDir = agentDir ?? getAgentDir();
   const exposeWorkflowTools = loadSettings(workflowSettingsPath(extensionAgentDir)).exposeWorkflowTools === true;
   const registerWorkflowTool: typeof pi.registerTool = (tool) => { if (exposeWorkflowTools) pi.registerTool(tool); };
+  // The launch boundary: the set of tools a run is allowed to hand to its
+  // sub-agents. Deliberately NOT the live active-tool set. A policy extension
+  // (the P5 router) hides `edit`, `write` and `bash` from the *main* agent with
+  // setActiveTools, and the whole point of a workflow is that its executor
+  // sub-agents still write code. Reading pi.getActiveTools() at launch time
+  // collapsed those two ideas into one and failed every exec stage with
+  // UNKNOWN_TOOL: "Tool is outside the launching session boundary: edit".
+  //
+  // getAllTools() is the right primitive because it answers a different
+  // question: what this session was *configured* to be able to do. Measured
+  // against a real host: a default session reports all seven builtins from
+  // getAllTools() while getActiveTools() reports the four that start active,
+  // and `pi --tools read` reports exactly ["read"] from both. So the user's own
+  // --tools flag still bounds a run, while a policy extension's setActiveTools
+  // cannot -- which is exactly the split this phase needs, with no assumption
+  // about which extension's session_start handler runs first.
+  //
+  // Stated plainly: narrowing the active tools mid-session no longer narrows
+  // what a workflow may grant. Restrict workflows with pi's --tools flag.
+  // Observations union in and never remove, so a tool registered mid-session
+  // stays grantable for runs launched after it appeared.
+  const sessionToolBoundary = new Set<string>();
+  const observeSessionTools = (): ReadonlySet<string> => {
+    // Action methods are illegal during extension loading, so this is never
+    // called from the factory body -- only from session_start and from launch.
+    const configured = typeof pi.getAllTools === "function" ? pi.getAllTools().map(({ name }) => name)
+      : typeof pi.getActiveTools === "function" ? pi.getActiveTools() : [];
+    for (const name of configured) if (!INTERNAL_WORKFLOW_TOOLS.includes(name)) sessionToolBoundary.add(name);
+    return sessionToolBoundary;
+  };
   const registerEntryRenderer = piHostCapabilities(pi).registerEntryRenderer;
   registerEntryRenderer?.<WorkflowLogEntry>(WORKFLOW_LOG_ENTRY, (entry) => {
     const data = entry.data;
@@ -2390,8 +2420,11 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     catalogRegistered = true;
   };
   const createAgentExecutor = (root: Omit<import("./agent-execution.js").AgentExecutionRoot, "agentDir" | "agentSetupHooks">) => new WorkflowAgentExecutor({ ...root, agentDir: extensionAgentDir, ...(additionalSkillPaths.length ? { additionalSkillPaths } : {}), agentSetupHooks: registry.agentSetupHooks() }, transport);
+  // "session" means the launching session's boundary, not its live active-tool
+  // set: a resumed run keeps the tools it was launched with even if a policy
+  // extension has since hidden some of them from the main agent.
   const activeSnapshotTools = (tools: readonly string[], active: ReadonlySet<string> | "session") => active === "session"
-    ? new Set(tools.filter((tool) => pi.getActiveTools().includes(tool) && tool !== "workflow_catalog"))
+    ? new Set(tools.filter((tool) => observeSessionTools().has(tool) && tool !== "workflow_catalog"))
     : new Set(tools.filter((tool) => active.has(tool) || tool === "workflow_catalog"));
   const resumeLaunchPrologue = async (input: {
     snapshot: Readonly<LaunchSnapshot>;
@@ -2405,7 +2438,10 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     blockedAliasTargets?: Readonly<Record<string, string>>;
     withPreflight: boolean;
   }) => {
-    const active = new Set(pi.getActiveTools().filter((tool) => !INTERNAL_WORKFLOW_TOOLS.includes(tool)));
+    // Resume compatibility is a boundary question, not a visibility one: a run
+    // that needed `edit` must still resume in a session whose main agent has
+    // had `edit` hidden from it.
+    const active = observeSessionTools();
     const missing = input.snapshot.tools.filter((tool) => tool !== "workflow_catalog").find((tool) => !active.has(tool));
     if (missing) throw new WorkflowError("RESUME_INCOMPATIBLE", `Required tool is unavailable: ${missing}`);
     const settingsPath = workflowSettingsPath(extensionAgentDir);
@@ -2711,6 +2747,11 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
   pi.on("session_start", async (_event, ctx) => {
     if (sessionStarted) return;
     sessionStarted = true;
+    // Re-observe once every extension has loaded, so tools registered by an
+    // extension that loaded after this one join the boundary. Monotone: a
+    // policy extension that narrowed tools in its own session_start handler
+    // cannot shrink what was already observed at load time.
+    observeSessionTools();
     registry.freeze();
     registerCatalog(ctx.cwd, projectTrusted(ctx));
     await ensureSessionLease(ctx.cwd, ctx.sessionManager.getSessionId());
@@ -2801,7 +2842,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
       const inventory = modelInventory(rootModel, modelRegistry);
       const knownModels = inventory.knownModels;
       const availableModels = inventory.availableModels;
-      const rootTools = pi.getActiveTools().filter((name) => !INTERNAL_WORKFLOW_TOOLS.includes(name));
+      const rootTools = [...observeSessionTools()];
       const trustedProject = projectTrusted(ctx);
       const launchCwd = typeof ctx.cwd === "string" ? ctx.cwd : process.cwd();
       const launch = workflowLaunchSettings(launchCwd, trustedProject, settingsPath, params.concurrency);
