@@ -1,37 +1,38 @@
 /**
  * pi-quiet — minimalist chrome, emoticon soul.
  *
- * - Header (logo + keybinding hints): removed.
- * - Working indicator: a face that blinks while pi streams.
- * - Hidden-thinking label: random flavor per session.
- * - Footer: pi's default (model, tokens, cost — already minimal enough).
- * - Tool rows: builtin tool calls render as `face name arg`; result
- *   rendering is inherited from the builtins (diffs, highlighting, ctrl+o).
- *   read/edit are left alone: pi-hashline registers its own read/edit, and
- *   two extensions claiming one tool name is a hard load error.
- * - Editor: face embedded in the top border, colored by the live editor
- *   border color (which pi drives from the thinking level); bottom border
- *   removed.
+ * Header removed; working loader row removed; random hidden-thinking
+ * label; faces on builtin tool rows; face embedded in the editor's top
+ * border (colored by the live thinking-level border color). While an
+ * agent run is active the whole top border pulses through PULSE — the
+ * editor border IS the working indicator.
  *
- * All personality lives in the data tables below. Swap a row, change the
- * character. No timers, no subscriptions: the host animates spinner frames
- * and re-renders everything else on state changes.
+ * Tool rows re-register the builtin *definitions* (not the wrapped
+ * AgentTools) so promptSnippet/promptGuidelines survive the override, and
+ * builtin renderResult (diffs, highlighting, ctrl+o) is inherited.
+ * read/edit are absent on purpose: pi-hashline registers those names.
+ *
+ * All personality is in the tables below. One timer, started and stopped
+ * by agent_start/agent_end, same pattern as pi's rainbow-editor example.
  */
 
 import {
-	createBashTool,
-	createFindTool,
-	createGrepTool,
-	createLsTool,
-	createWriteTool,
+	createBashToolDefinition,
+	createFindToolDefinition,
+	createGrepToolDefinition,
+	createLsToolDefinition,
+	createWriteToolDefinition,
 	CustomEditor,
 	type ExtensionAPI,
+	type ThemeColor,
 } from "@earendil-works/pi-coding-agent";
 import { Text, visibleWidth } from "@earendil-works/pi-tui";
 import { homedir } from "node:os";
 
-const BLINK = ["(o_o)", "(o_o)", "(o_o)", "(o_o)", "(-_-)"];
+const PULSE_MS = 240;
+const PULSE: ThemeColor[] = ["dim", "muted", "accent", "muted"];
 const EDITOR_FACE = "(^-^)";
+const ERROR_FACE = "(x_x)";
 const LABELS = ["scheming...", "rummaging...", "conjuring...", "plotting...", "percolating..."];
 
 const tilde = (path?: string) => {
@@ -39,39 +40,54 @@ const tilde = (path?: string) => {
 	return p.startsWith(homedir()) ? `~${p.slice(homedir().length)}` : p;
 };
 
-// face + how to summarize the call args, per builtin tool.
-// read and edit are absent on purpose: pi-hashline owns those names.
-const TOOL_ROWS: Array<[name: string, face: string, arg: (a: Record<string, any>) => string]> = [
-	["bash", "(>_o)", (a) => `$ ${a.command ?? "..."}`],
-	["write", "(^-^)", (a) => tilde(a.path)],
-	["grep", "(o_O)", (a) => `/${a.pattern ?? ""}/ ${tilde(a.path)}`],
-	["find", "(@_@)", (a) => `${a.pattern ?? ""} ${tilde(a.path)}`],
-	["ls", "(-_-)", (a) => tilde(a.path)],
+// name, face, builtin definition factory, call-line summary.
+const TOOL_ROWS: Array<
+	[name: string, face: string, make: (cwd: string) => any, arg: (a: Record<string, any>) => string]
+> = [
+	["bash", "(>_o)", createBashToolDefinition, (a) => `$ ${a.command ?? "..."}`],
+	["write", "(^-^)", createWriteToolDefinition, (a) => tilde(a.path)],
+	["grep", "(o_O)", createGrepToolDefinition, (a) => `/${a.pattern ?? ""}/ ${tilde(a.path)}`],
+	["find", "(@_@)", createFindToolDefinition, (a) => `${a.pattern ?? ""} ${tilde(a.path)}`],
+	["ls", "(-_-)", createLsToolDefinition, (a) => tilde(a.path)],
 ];
 
-function makeTools(cwd: string) {
-	return {
-		bash: createBashTool(cwd),
-		write: createWriteTool(cwd),
-		grep: createGrepTool(cwd),
-		find: createFindTool(cwd),
-		ls: createLsTool(cwd),
-	} as Record<string, any>;
-}
-const toolCache = new Map<string, Record<string, any>>();
-const toolsFor = (cwd: string) => {
-	let tools = toolCache.get(cwd);
-	if (!tools) {
-		tools = makeTools(cwd);
-		toolCache.set(cwd, tools);
-	}
-	return tools;
+// builtin definitions are cwd-bound at construction; memoize per cwd so a
+// subagent running elsewhere still resolves paths against its own cwd.
+const defCache = new Map<string, any>();
+const defFor = (name: string, make: (cwd: string) => any, cwd: string) => {
+	const key = `${cwd}\0${name}`;
+	let def = defCache.get(key);
+	if (!def) defCache.set(key, (def = make(cwd)));
+	return def;
 };
 
 const ANSI = /\x1b\[[0-9;]*m/g;
 const isPlainBorder = (line: string) => /^─+$/.test(line.replace(ANSI, ""));
 
+let editor: QuietEditor | undefined;
+let agentActive = false;
+let pulseTimer: ReturnType<typeof setInterval> | undefined;
+let pulseFrame = 0;
+
+const startPulse = () => {
+	if (pulseTimer) return;
+	pulseFrame = 0;
+	const t = setInterval(() => {
+		pulseFrame++;
+		editor?.requestPulse();
+	}, PULSE_MS);
+	t.unref?.();
+	pulseTimer = t;
+};
+const stopPulse = () => {
+	agentActive = false;
+	if (pulseTimer) clearInterval(pulseTimer);
+	pulseTimer = undefined;
+	editor?.requestPulse(); // one last static-color render
+};
+
 class QuietEditor extends CustomEditor {
+	private colors: ThemeColor[] = PULSE;
 	render(width: number): string[] {
 		const lines = super.render(width);
 		// drop the bottom border (last plain-border line), keep scroll
@@ -82,30 +98,36 @@ class QuietEditor extends CustomEditor {
 				break;
 			}
 		}
-		// put a face in the top border; this.borderColor is live-updated by
-		// pi to the thinking-level (or bash-mode) color, so the face follows
+		// face in the top border; idle: borderColor (live thinking level);
+		// running: border+face pulse through the theme ramp, replacing the
+		// removed working indicator
 		if (lines.length > 0 && isPlainBorder(lines[0])) {
-			const face = this.borderColor(EDITOR_FACE);
-			const rule = this.borderColor("─".repeat(Math.max(0, width - visibleWidth(EDITOR_FACE) - 1)));
+			const paint = agentActive
+				? (s: string) => this.theme.fg(this.colors[pulseFrame % this.colors.length], s)
+				: this.borderColor;
+			const face = paint(EDITOR_FACE);
+			const rule = paint("─".repeat(Math.max(0, width - visibleWidth(EDITOR_FACE) - 1)));
 			lines[0] = `${face} ${rule}`;
 		}
 		return lines;
 	}
+	requestPulse() {
+		this.tui.requestRender();
+	}
 }
-
 export default function (pi: ExtensionAPI) {
-	// Tool rows: same execution, face on the call line, builtin result
-	// rendering inherited by spreading the builtin definition.
-	for (const [name, face, arg] of TOOL_ROWS) {
-		const base = toolsFor(process.cwd())[name];
+	// Same execution and result rendering as the builtins; face on the call
+	// line, swapped to ERROR_FACE once the row reports an error.
+	for (const [name, face, make, arg] of TOOL_ROWS) {
 		pi.registerTool({
-			...base,
-			async execute(toolCallId: string, params: any, signal: any, onUpdate: any, ctx: any) {
-				return toolsFor(ctx.cwd)[name].execute(toolCallId, params, signal, onUpdate);
-			},
-			renderCall(args: any, theme: any) {
+			...defFor(name, make, process.cwd()),
+			execute: (toolCallId: string, params: any, signal: any, onUpdate: any, ctx: any) =>
+				defFor(name, make, ctx.cwd).execute(toolCallId, params, signal, onUpdate, ctx),
+			renderCall(args: any, theme: any, ctx: any) {
+				const failed = ctx?.isError === true;
 				const summary = theme.fg("dim", arg(args ?? {}));
-				return new Text(`${theme.fg("accent", face)} ${theme.bold(name)} ${summary}`, 0, 0);
+				const glyph = theme.fg(failed ? "error" : "accent", failed ? ERROR_FACE : face);
+				return new Text(`${glyph} ${theme.bold(name)} ${summary}`, 0, 0);
 			},
 		});
 	}
@@ -118,14 +140,22 @@ export default function (pi: ExtensionAPI) {
 			invalidate() {},
 		}));
 
-		ctx.ui.setWorkingIndicator({
-			frames: BLINK.map((frame) => ctx.ui.theme.fg("accent", frame)),
-			intervalMs: 240,
-		});
+		// loader row goes away entirely; the editor border takes its job
+		ctx.ui.setWorkingVisible(false);
 
 		ctx.ui.setHiddenThinkingLabel(LABELS[Math.floor(Math.random() * LABELS.length)]);
 
-		ctx.ui.setEditorComponent((tui, theme, keybindings) => new QuietEditor(tui, theme, keybindings));
-
+		ctx.ui.setEditorComponent((tui, theme, keybindings) => {
+			editor = new QuietEditor(tui, theme, keybindings);
+			return editor;
+		});
 	});
+
+	pi.on("agent_start", () => {
+		agentActive = true;
+		startPulse();
+	});
+	pi.on("agent_end", stopPulse);
+	pi.on("agent_settled", stopPulse);
+	pi.on("session_shutdown", stopPulse);
 }
