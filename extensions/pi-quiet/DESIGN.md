@@ -4,12 +4,17 @@
 
 - **2026-08-11 — tool rows get faces, results stay builtin.** (Supersedes
   same-day "chrome only, no tool-render override": in use, tool rows were
-  the loudest chrome left.) Overrides re-register the seven builtins with
-  a custom `renderCall` only; `renderResult` is omitted, so builtin
-  result rendering (diffs, syntax highlight, ctrl+o expansion) is
-  inherited per extensions.md "Rendering: resolved per slot". Rejected
-  smaller thing: minimal-mode.ts-style full re-render, ~6x the code for
-  worse results.
+  the loudest chrome left.) Overrides re-register builtins with a custom
+  `renderCall` only; `renderResult` is omitted, so builtin result
+  rendering (diffs, syntax highlight, ctrl+o expansion) is inherited per
+  extensions.md "Rendering: resolved per slot". Rejected smaller thing:
+  minimal-mode.ts-style full re-render, ~6x the code for worse results.
+- **2026-08-11 — quiet never faces a tool another extension owns.**
+  Registering a tool name is exclusive: two extensions claiming one name
+  is a hard load error (pi refused to start when quiet and pi-hashline
+  both registered read/edit). So TOOL_ROWS covers only bash, write,
+  grep, find, ls; hashline's read/edit render plain. Reversed if pi ever
+  grows a render-only override that does not claim the name.
 - **2026-08-11 — colors stay in themes.** Border/accent muting is theme
   JSON (data), not code. This extension touches only surfaces a theme
   cannot reach.
