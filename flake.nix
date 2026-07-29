@@ -18,9 +18,6 @@
     piAphrodite.url = "path:./extensions/pi-aphrodite";
     piAphrodite.inputs.nixpkgs.follows = "nixpkgs";
 
-    piMinimal.url = "path:./extensions/pi-minimal";
-    piMinimal.inputs.nixpkgs.follows = "nixpkgs";
-
     piInterview.url = "path:./extensions/pi-interview";
     piInterview.inputs.nixpkgs.follows = "nixpkgs";
 
@@ -49,7 +46,6 @@
     piGeckoWebsearch,
     piRtk,
     piAphrodite,
-    piMinimal,
     piInterview,
     piToolManagement,
     piExtensionManagement,
@@ -144,7 +140,6 @@
         "pi-gecko-websearch" = piGeckoWebsearch.packages.${system}.default;
         "pi-rtk" = piRtk.packages.${system}.default;
         "pi-aphrodite" = piAphrodite.packages.${system}.default;
-        "pi-minimal" = piMinimal.packages.${system}.default;
         "pi-interview" = piInterview.packages.${system}.default;
         "pi-tool-management" = piToolManagement.packages.${system}.default;
         "pi-extension-management" = piExtensionManagement.packages.${system}.default;
@@ -486,7 +481,6 @@
         "gecko-websearch" = self.packages.${system}."pi-gecko-websearch";
         rtk = self.packages.${system}."pi-rtk";
         aphrodite = self.packages.${system}."pi-aphrodite";
-        minimal = self.packages.${system}."pi-minimal";
         interview = self.packages.${system}."pi-interview";
         "tool-management" = self.packages.${system}."pi-tool-management";
         "extension-management" = self.packages.${system}."pi-extension-management";

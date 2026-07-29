@@ -22,10 +22,7 @@
     stage = "active";
     source = "subflake";
   };
-  minimal = {
-    stage = "active";
-    source = "subflake";
-  };
+
   interview = {
     stage = "active";
     source = "subflake";
