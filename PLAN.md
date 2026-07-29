@@ -18,58 +18,61 @@ marker into prose here — the count would lie.
 
 ## Handoff
 
-Last touched: P2b (`human.edit`) landed and is ticked. P2c (`human.review`) is
-the only human primitive left.
+Last touched: P2c (`human.review`) landed and is ticked. All three human
+primitives are done; the next open item is P3 (declaration mechanism).
 
-What landed. `human.edit({ name, prompt, text, context })` as a DSL primitive,
-resolving to `{ text, changed, abandoned }`, plus `checks.pi-loom-human-edit`
-driven by the new `nix/checks/loom-human-edit.sh`. The call path mirrors
-`human.ask` exactly: frozen `human.edit` in the vm sandbox sends the RPC method
-`human.edit`, the host arm of `handleRpc` wraps the record in the same branded
-work-result envelope, and `humanEditBridge` in `host.ts` parks the buffer in the
-run journal, calls `ctx.ui.editor(title, prefill)`, and resolves the parked
-promise. `RunStore.awaitHumanEdit` / `answerHumanEdit` / `awaitingHumanEdits`
-are new, in their own `journal.awaitingEdit` map.
+What landed. `human.review({ name, prompt, subject, context })` as a DSL
+primitive, resolving to `{ verdict, note }` where verdict is one of the fixed
+trio `approve` / `changes` / `reject` (`HUMAN_REVIEW_VERDICTS` in `types.ts`),
+plus `checks.pi-loom-human-review` driven by the new
+`nix/checks/loom-human-review.sh`. The call path mirrors `human.ask` and
+`human.edit`: frozen `human.review` in the vm sandbox sends the RPC method
+`human.review`, the host arm of `handleRpc` wraps the record in the same branded
+work-result envelope, and `humanReviewBridge` in `host.ts` parks the request in
+the run journal, presents the subject, opens the verdict picker, and resolves
+the parked promise. `RunStore.awaitHumanReview` / `answerHumanReview` /
+`awaitingHumanReviews` are new, in their own `journal.awaitingReview` map.
 
-Gates actually run: `nix build .#checks.x86_64-linux.pi-loom-human-edit` (pass,
-prints `human-edit: editor opened prefilled, run resumed with the saved buffer,
-unchanged and abandoned edits stayed distinct`),
+Gates actually run: `nix build .#checks.x86_64-linux.pi-loom-human-review`
+(pass, prints `human-review: verdict picker offered the fixed trio, the note
+reached the next stage, the run resumed with the verdict`),
 `nix build .#checks.x86_64-linux.biome-lint` (pass, same 1 pre-existing warning
-in the eval harness), `nix flake check -L` (pass, all 16 checks; the new one is
-#16).
+in the eval harness), `nix flake check -L` (pass, all 17 checks).
 
 Design decisions worth not re-litigating:
 
-- **The result is a record, not a string.** A buffer saved byte-identical and an
-  abandoned editor both hand back the original text, so only
-  `changed`/`abandoned` separate them. `changed` is computed inside
-  `RunStore.answerHumanEdit` against the prefill it parked, never trusted from
-  the caller, so the UI path and the `workflow_edit` tool path agree.
-- **Abandonment settles the run; it does not re-route.** `human.ask` treats a
-  dismissed picker as "not answering now" and hands the question to the main
-  agent. A closed editor is a decision, so `humanEditBridge` resolves with
-  `abandoned: true` instead. `workflow_edit` exists only for runs with no UI,
-  and omitting its `text` argument means the same thing.
+- **The verdict vocabulary is closed, the note is open.** Workflow-supplied
+  choices are what `human.ask` is for; a review is typed so a later stage can
+  branch on `verdict` without knowing which review produced it. Unknown verdicts
+  are rejected in `RunStore.answerHumanReview`, which leaves the review parked
+  and still answerable rather than resuming on a decision nobody made.
+- **The subject is presented, not titled.** A picker title is one line and a
+  diff is not, so with a UI attached the subject goes into the session as a
+  display-only custom message (`present()` in `host.ts`, `customType
+  "workflow-review"`, `triggerTurn: false`) and the picker asks only for the
+  verdict. `triggerTurn: false` is load-bearing: `deliver()` always costs a model
+  turn, this does not when the session is idle.
+- **Dismissal is asymmetric on purpose.** Dismissing the verdict picker re-routes
+  to the main agent (same as `human.ask`); dismissing the note prompt settles the
+  review with an empty note, because the verdict was already the decision.
 
 Traps for the next step:
 
-- **P2c should reuse `nix/checks/loom-human-edit.sh`, not the ask harness.** It
-  already answers three UI requests in one run through the FIFO on fd 3, with an
-  `await_editor <n>` helper that picks the Nth request out of a file jq is still
-  reading while it grows. A verdict probe needs the same multi-round shape.
-  Note the harness must write the launch prompt line itself; forgetting it looks
-  exactly like "the UI never rendered".
-- **`human.edit` still has no static analysis**, same as `human.ask`:
-  `workflowCallKind()` in `validation.ts` only recognises bare `Identifier`
-  callees, and `human.edit` is a `MemberExpression`. `validateHumanEdit`
-  enforces the stable-name rule at dispatch. P2c inherits the gap; adding
-  member-callee support to `workflowCalls()` is separate work.
-- **`inputsSettled()` is now the single gate on leaving awaiting-input.** It
-  checks all three parking lots (checkpoints, questions, edits). P2c must add
-  its own lot there or a pending review will look like a running run.
-- **`WorkflowHumanUi` is the shared UI-slice type** for all three bridges, so
-  the cold-resume path can hand one object to each. Widen that alias rather than
-  adding a fourth ad-hoc structural type.
+- **`head -1` truncates presented content.** The first run of the review harness
+  failed on a false negative: `jq -r ... | head -1` cut the multi-line diff to
+  its first line. The check now uses `jq -c` so the JSON-encoded string stays on
+  one line. Any future assertion on multi-line message content needs the same.
+- **No static analysis for any human primitive.** `workflowCallKind()` in
+  `validation.ts` only recognises bare `Identifier` callees, and `human.review`
+  is a `MemberExpression` like its two siblings. `validateHumanReview` enforces
+  the stable-name rule at dispatch instead. Adding member-callee support to
+  `workflowCalls()` is separate work and would cover all three at once.
+- **`inputsSettled()` now gates on four parking lots** (checkpoints, questions,
+  edits, reviews). Anything that parks a new kind of human input must add its lot
+  there or a pending item will look like a running run.
+- **`WorkflowHumanUi` now carries `input` as well as `select` and `editor`.** It
+  is still the one shared UI-slice type for every bridge; widen it rather than
+  adding a fifth structural type.
 - **Downstream flag renamed.** `~/nixos/hosts/y0usaf-desktop/finix/materialized-packages.nix`
   sets `"extensible-workflows" = true;`. That key no longer exists; it is now
   `loom`. `lib.enabledExtensions` asserts on unknown flags, so the system flake
@@ -82,7 +85,7 @@ Traps for the next step:
   before. Rationale is in DESIGN.md under Architecture.
 - The ref tree is no longer a package and is excluded from `biome.jsonc`;
   keep it that way, it is only a diff base for upstream fixes.
-- **Two facts both harnesses depend on.** Pi's agent dir defaults to
+- **Two facts all three harnesses depend on.** Pi's agent dir defaults to
   `$HOME/.pi/agent`, not the XDG data path the installed system uses; and an
   RPC `prompt` is refused before command dispatch unless a model resolves
   with a key, which is why the scripts pass throwaway
@@ -105,7 +108,11 @@ Traps for the next step:
       `humanEditBridge` + `journal.awaitingEdit` in the host, `workflow_edit`
       tool as the agent-facing fallback, `checks.pi-loom-human-edit` proving a
       saved edit, an unchanged buffer, and an abandoned editor stay distinct.
-- [ ] **P2c — `human.review`.** Structured verdict over a diff or artifact.
+- [x] **P2c — `human.review`.** Fixed `approve`/`changes`/`reject` verdict plus
+      a free-text note, `humanReviewBridge` + `journal.awaitingReview` in the
+      host, `workflow_review` tool as the agent-facing fallback,
+      `checks.pi-loom-human-review` proving the note crosses into the next
+      stage.
 - [ ] **P3 — declaration mechanism.** JSON-Schema args in `command.json`,
       generated usage, `/workflows` listing, project-local `.pi/workflows/`
       scan root.

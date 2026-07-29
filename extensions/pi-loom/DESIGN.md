@@ -70,9 +70,8 @@ extensions/
     src/
       host.ts            command registration, run lifecycle, TUI blocks
       execution.ts       DSL: agent, parallel, pipeline, phase, checkpoint,
-                         human.ask, human.edit, workflow
+                         human.ask, human.edit, human.review, workflow
       agent-execution.ts sub-agent sessions, outputSchema, model selection
-      human.review       NEXT — the last human participant (P2c)
       artifacts.ts       NEW — typed run artifacts (plan, diff, verdict)
       schema.ts          NEW — JSON-Schema arg validation + generated usage
       registry.ts        extension-registered functions, stages, roles
@@ -166,6 +165,22 @@ dismissed question is a refusal to answer *now*, so it re-routes to the main
 agent; a closed editor is a decision, so it settles the run. The agent-facing
 `workflow_edit` tool exists only for runs with no UI attached, and omitting its
 `text` argument produces the same abandoned outcome.
+
+**`human.review` is a closed verdict plus an open note.** The three verdicts
+(`approve`, `changes`, `reject`) are fixed in `HUMAN_REVIEW_VERDICTS` rather
+than supplied per call, which is exactly what separates it from `human.ask`: a
+later stage can `switch` on the verdict without knowing which review produced
+it. The note is the only channel by which a `changes` verdict says what to
+change, so it is carried in the result record and not just shown to the human.
+
+The subject under review does not fit a picker title, so the UI path is two
+rounds: the diff or artifact is appended to the session as a display-only
+custom message (`triggerTurn: false`, so an idle session spends no model turn),
+then `ctx.ui.select` asks for the verdict and, for the two non-approve
+verdicts, `ctx.ui.input` collects the note. Dismissing the verdict picker
+re-routes to the main agent exactly as `human.ask` does; dismissing the note
+prompt does not, because the verdict was already the decision and an empty note
+is a legal outcome the workflow can branch on.
 
 ## Extension surface contract
 

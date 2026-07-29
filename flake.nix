@@ -433,6 +433,18 @@
           touch $out
         '';
 
+        # P2c acceptance: the last human primitive, and the only one whose
+        # payload has to survive a stage boundary. The probe builds its second
+        # review's prompt out of the first review's note, so the harness reads
+        # the note back off the second picker -- proof the typed verdict's prose
+        # reached the next stage rather than just the run result.
+        pi-loom-human-review = pkgs.runCommand "pi-loom-human-review" {
+          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.gnused pkgs.coreutils];
+        } ''
+          bash ${./nix/checks/loom-human-review.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom
+          touch $out
+        '';
+
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;
