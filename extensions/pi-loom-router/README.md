@@ -11,6 +11,9 @@ Mutation happens inside a workflow run instead, where a sub-agent holds the
 tool, a git worktree bounds the blast radius, and the diff reported is the one
 git recorded.
 
+It also opens the session on what the stack *is* for: at startup a picker lists
+the workflows you can run, and Esc drops straight to chat.
+
 ## Scope
 
 Shipped **only** in `loom` (`packages.pi-loom-router`, wired into the loom
@@ -76,6 +79,44 @@ than only taking it away. The restored tools are intersected with
 `pi.getAllTools()`, so `loom --tools read` stays narrower than the policy
 instead of being widened by it.
 
+## The picker, because subtraction is invisible
+
+Both mechanisms above only ever take something away, and a `loom` that opens on
+an empty prompt looks exactly like a `pi` that has mysteriously lost its
+editing tools. So at `session_start` with `reason: "startup"`, `src/picker.ts`
+offers the workflows this session can actually run:
+
+```
+Start a workflow — or Esc to chat
+→ /build — Plan a change, implement it item by item inside one git worktree,
+          and review every item.
+  /quick — Make one small change with a single agent: no plan, no review,
+          no worktree.
+  Chat instead (Esc)
+```
+
+Esc, or the last row, leaves the editor untouched and drops to chat. Choosing a
+workflow puts `/build ` in the editor with the cursor after it — not a launched
+run, for two reasons: no extension API dispatches a slash command
+(`pi.sendUserMessage` sends text to the model instead), and every workflow's
+first argument is a task description the picker cannot know. You type the task
+and press Enter, with pi's own palette showing the usage hint.
+
+The list comes from `pi.getCommands()` rather than a second copy of the
+engine's discovery rules. The filter anchors itself on `/workflows`, which the
+engine always registers: every other command sharing its `sourceInfo.path` is a
+workflow, except `/workflow`, which controls runs.
+
+Three conditions suppress the picker entirely, and each is deliberate:
+
+- **Any mode but `tui`.** In RPC mode `ui.select` waits for a client response
+  that a headless script never sends, so the dialog would hang rather than
+  appear.
+- **Text already in the editor.** `setEditorText` replaces the buffer, and no
+  menu is worth losing a half-typed thought.
+- **No workflows installed, or no engine loaded.** An empty menu is worse than
+  no menu.
+
 ## Acceptance
 
 `checks.pi-loom-router-gate` (`nix/checks/loom-router-gate.sh`) proves, with no
@@ -95,6 +136,21 @@ driving the handlers it registered — the same shape upstream uses in
 commands must run and twenty mutating ones must come back blocked with a reason
 naming `/quick` and `/build`.
 
+`checks.pi-loom-router-picker` (`nix/checks/loom-router-picker.sh`) uses the
+same stub harness for the picker: startup must open exactly one dialog listing
+`/build` and `/quick` and neither `/workflow` nor another extension's commands;
+Esc and the chat row must both leave the editor empty; choosing `/build` must
+leave exactly `/build `; and no dialog may open without workflows, without the
+engine, outside `tui` mode, outside a startup, or over text the user typed. It
+also asserts `edit` is already gone at the moment the dialog opens, which is
+the registration-order claim rather than a restatement of the gate check.
+
 The honest gap: emitting a real `tool_call` needs an assistant message, so no
 offline check can prove pi *invokes* the handler. The gate check proves the
 extension loads in a real session; this one proves what the handler decides.
+
+The picker has the same shape of gap in reverse: rendering a dialog needs a
+terminal. The check proves what the handler decides, `pi-loom-router-gate`
+proves the extension does not wedge a live RPC session, and the visual half —
+the overlay appearing, Esc dismissing it, Enter prefilling the editor — was
+verified by hand through a pty and is not in CI.

@@ -618,6 +618,22 @@
           touch $out
         '';
 
+        # P5c acceptance: the startup workflow picker. Same stub-ExtensionAPI
+        # shape as pi-loom-router-shell, because the assertion is again about
+        # the extension's own decisions: which commands out of pi.getCommands()
+        # are workflows, that Esc leaves the editor empty, that a choice lands as
+        # a prefilled `/name `, and that no dialog opens without workflows,
+        # outside tui mode, outside a startup, or over text the user already
+        # typed. The mode guard is the load-bearing one — ui.select blocks
+        # forever in RPC mode, so without it every other loom check here would
+        # hang instead of fail.
+        pi-loom-router-picker = pkgs.runCommand "pi-loom-router-picker" {
+          nativeBuildInputs = [pkgs.bash pkgs.nodejs_22 pkgs.coreutils];
+        } ''
+          bash ${./nix/checks/loom-router-picker.sh} ${self.packages.${system}.pi-loom-router}
+          touch $out
+        '';
+
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;

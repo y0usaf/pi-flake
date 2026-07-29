@@ -11,6 +11,12 @@
  * stays offered and every invocation is classified before it runs (P5b-ii,
  * ./shell-policy.ts).
  *
+ * A third mechanism points the *user* rather than the model: at startup the
+ * session opens on a picker listing the workflows it can run, and Esc drops
+ * straight to chat (P5c, ./picker.ts). Policy that only subtracts leaves a
+ * `loom` looking like a `pi` that mysteriously lost its editing tools; the
+ * picker is what makes the stack's purpose visible on the first screen.
+ *
  * Shipped only in `loom` (packages.pi-loom-router, wired into the loom stack in
  * flake.nix). It is deliberately absent from extensions/registry.nix, so plain
  * `pi` and the `pi-full` bundle cannot pick it up through an extension flag.
@@ -33,6 +39,7 @@
  *      `UNKNOWN_TOOL: Tool is outside the launching session boundary: edit`.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { offerWorkflowPicker } from "./picker.ts";
 import { classifyShellCommand } from "./shell-policy.ts";
 
 /**
@@ -117,6 +124,26 @@ export default function loomRouter(pi: ExtensionAPI): void {
 	// tool that came back. Returning nothing leaves the prompt untouched.
 	pi.on("before_agent_start", () => {
 		applyGate(pi);
+	});
+
+	// P5c: the picker. Registered *after* the gate handler on purpose. Handlers
+	// for one event run in registration order and are awaited one at a time, so
+	// the gate — which is synchronous — has already been applied before this one
+	// reaches its first await. A picker that hangs, throws or is dismissed can
+	// therefore never leave the chat agent holding `edit`.
+	//
+	// Only `reason: "startup"` opens it. The event also fires for "reload",
+	// "new", "resume" and "fork"; a modal appearing on `/reload` or when you
+	// return to existing work is a nuisance rather than an offer. Widening this
+	// to "new" later is one condition, if opening a fresh session should feel
+	// like opening loom.
+	//
+	// The mode guard and the empty-editor guard live in ./picker.ts, next to the
+	// reasoning for each; the short version is that ui.select blocks forever in
+	// RPC mode and setEditorText replaces the buffer.
+	pi.on("session_start", async (event, ctx) => {
+		if (event.reason !== "startup") return;
+		await offerWorkflowPicker(pi.getCommands(), ctx);
 	});
 
 	// The second half of the gate, and the one that needs a different mechanism:

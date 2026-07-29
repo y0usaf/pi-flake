@@ -395,6 +395,39 @@ session only — workflow sub-agents are separate sessions built with explicit
 `extensionFactories`, so an exec stage keeps its full shell. Gated by
 `checks.pi-loom-router-shell`.
 
+**Startup picker.** Both mechanisms above are subtractive, and subtraction is
+invisible: a `loom` that opens on an empty prompt looks exactly like a `pi`
+that has mysteriously lost its editing tools. P5c adds the one part of router
+mode aimed at the user rather than the model. At `session_start` with
+`reason: "startup"`, `src/picker.ts` reads `pi.getCommands()`, keeps the
+workflow commands, and offers them through `ctx.ui.select`; Esc, or the
+explicit last row, drops to chat with nothing changed.
+
+Discovery goes through `pi.getCommands()` rather than a second copy of the
+engine's three-scan-root rules, and the filter is self-anchoring: `/workflows`
+is registered unconditionally by the engine, so its `sourceInfo.path` *is* the
+engine's identity in this session, and every other command registered from that
+same path is a workflow except `/workflow`, which controls runs. Measured in a
+real `loom`: `/build`, `/quick`, `/workflows` and `/workflow` all report the
+engine's `src/index.ts`, while every other extension reports its own file.
+
+A choice lands as `/build ` in the editor rather than launching the run. Partly
+because no extension API dispatches a slash command — `pi.sendUserMessage`
+calls `prompt()` with command handling off, so the text would go to the model —
+and partly because since P3a every workflow's first argument is a task
+description the picker cannot know. The user types the task and presses Enter,
+with pi's palette showing the usage the engine generated from `argsSchema`.
+
+Two guards carry more weight than they look. The picker opens only when
+`ctx.mode === "tui"`: in RPC mode `ui.select` emits an `extension_ui_request`
+and waits for a client answer that never comes, so an unguarded picker would
+hang every check in this repo instead of failing it. And a non-empty editor is
+left alone, because `setEditorText` replaces the buffer. Registration order is
+load-bearing too — the picker is a *second* `session_start` handler, registered
+after the gate, so the synchronous gate has already been applied before the
+dialog's first await; the reverse order would leave `edit` active for as long
+as the dialog stayed open. Gated by `checks.pi-loom-router-picker`.
+
 ## Deferred (and why)
 
 - **Nix-declared workflows** (doctrine 04). Nix expresses stacks and
@@ -529,7 +562,12 @@ apart within one loop iteration.
         needs an assistant message, so the invocation path itself is proved by
         `checks.pi-loom-router-gate` loading the extension in a live session.
     - **P5c — picker.** *Accept: startup shows the workflow picker and Esc
-      drops to chat.*
+      drops to chat.* The picker is the additive half of router mode: it reads
+      `pi.getCommands()`, offers the engine's workflow commands through
+      `ctx.ui.select`, and prefills the chosen one into the editor.
+      `checks.pi-loom-router-picker` drives the extension's own handlers with a
+      stub `ExtensionAPI`; rendering a dialog needs a terminal, so the visual
+      half was verified once by hand through a pty and is not in CI.
 - **P6 — `/wf-new` meta-workflow.** *Accept: `/wf-new` interviews, writes
       a runnable `command.json` + script + README into the repo, dry-runs
       it, and commits.*

@@ -18,98 +18,125 @@ marker into prose here — the count would lie.
 
 ## Handoff
 
-Last touched: P5b-ii landed and is ticked, which closes P5b whole. The next
-open item is P5c (workflow picker at startup, Esc drops to chat).
+Last touched: P5c landed and is ticked, which closes P5 whole. The next open
+item is P6 (`/wf-new` meta-workflow).
 
-What landed. `bash` is active again in `loom`, and each invocation is
-classified instead. New file `extensions/pi-loom-router/src/shell-policy.ts`
-exports `classifyShellCommand(command)`; `src/index.ts` dropped `bash` from
-`GATED_TOOLS` (now `["edit", "write"]`) and registered a `tool_call` handler
-that returns `{ block: true, reason: verdict.reason }` for a refused command.
-New check `checks.pi-loom-router-shell` (`nix/checks/loom-router-shell.sh`) and
-the matching `flake.nix` entry. `nix/checks/loom-router-gate.sh` moved `bash`
-from its must-be-absent list to its must-be-present list. DESIGN.md gained a
-**Read-only shell** paragraph and a supersession note on P5b-i's acceptance;
-the router README was rewritten around the two mechanisms.
+What landed. `loom` now opens on a picker listing the workflows it can run, and
+Esc drops to chat. New file `extensions/pi-loom-router/src/picker.ts`;
+`src/index.ts` registers a **second** `session_start` handler that calls
+`offerWorkflowPicker(pi.getCommands(), ctx)` when `event.reason === "startup"`.
+New check `checks.pi-loom-router-picker` (`nix/checks/loom-router-picker.sh`)
+and the matching `flake.nix` entry. DESIGN.md gained a **Startup picker**
+paragraph and a fuller P5c roadmap entry; the router README gained a picker
+section and package.json's description now mentions it.
 
-**The policy is default-deny and deliberately small.** An allowlist of command
-names with no writing mode; argument rules for the few that grow one with a
-flag (`sed -i`, `find -delete`/`-exec`, `sort -o`, `fd -x`); subcommand
-narrowing for `git` (read-only verbs only — `branch`, `tag`, `remote`, `config`
-and `stash` are absent because each has a read form and a write form one flag
-apart) and for `nix` (`eval`, `search`, `flake show|metadata`, `store ls|cat`;
-`nix build` is refused because it drops a `./result` symlink into the tree).
-A quote-aware scanner splits on `;`, `&&`, `||`, `|`, `&`, newlines and parens,
-and refuses outright what it cannot judge: command substitution, backticks,
-process substitution, heredocs, and output redirects to anything but
-`/dev/null` (`2>&1` and other descriptor dups pass).
+**Discovery reads back what the engine registered instead of rescanning.** The
+filter anchors on `/workflows`, which `pi-loom` registers unconditionally: its
+`sourceInfo.path` is the engine's identity for the session, and every other
+command from that same path is a workflow except `/workflow`. Measured in a
+real `loom`, not assumed — `/build`, `/quick`, `/workflows` and `/workflow` all
+report `<store>/pi-loom-3.4.2/src/index.ts` while `pi-interview`, `pi-atelier`
+and the inline llama command each report their own file.
 
-Gates actually run: `nix build .#pi-loom-router` (pass);
-`nix build .#checks.x86_64-linux.pi-loom-router-shell` (pass, seconds);
-`nix build .#checks.x86_64-linux.pi-loom-router-gate` (pass, 12s — the one that
-proves the new relative import resolves inside a real `loom`); `biome lint .`
-via `nix run nixpkgs#biome` (exit 0, one pre-existing warning in
+**A choice prefills `/build ` into the editor; it does not launch the run.**
+No extension API dispatches a slash command — `pi.sendUserMessage` calls the
+session's `prompt()` with command handling off, so `/build fix the parser`
+would reach the model as literal text. That constraint matches the requirement:
+since P3a every workflow's first argument is a task description the picker
+cannot know, so the user types it and presses Enter with pi's palette showing
+the generated usage.
+
+Gates actually run: `nix build .#pi-loom-cli` (pass);
+`nix build .#checks.x86_64-linux.pi-loom-router-picker` (pass, seconds);
+`nix build .#checks.x86_64-linux.pi-loom-router-gate` (pass, 12s — the leg that
+proves the new handler does not wedge a live RPC session); `biome lint .` via
+`nix run nixpkgs#biome` (exit 0, one pre-existing warning in
 `pi-loom/src/workflow-evals.ts`, none in the new files); `nix flake check -L`
-(pass, all checks, 28s warm).
+(pass, all 28 checks, 17s warm).
 
-**Five negative controls, each run against a mutated copy of the package in
-`/tmp`, never against the real tree.** Classifier forced to allow everything →
-`mutating command was allowed through: rm -rf src`. Forced to refuse
-everything → `read-only command was refused: ls -la src`. `tool_call`
-registration removed → `the router registered no tool_call handler`. `bash` put
-back into `GATED_TOOLS` → `the chat agent lost 'bash', which P5b-ii is supposed
-to keep`. `ROUTE_HINT` stripped from the refusal → `the refusal for 'rm -rf
-src' never names /quick`. Nothing in this check passes vacuously.
+**The visual half was verified once by hand through a pty**, because no offline
+check can render a dialog. A `python3` `pty.fork()` harness ran `loom` in a real
+terminal with `/build` and `/quick` installed in a throwaway agent dir, and the
+captured screen showed the overlay (`Start a workflow — or Esc to chat`, three
+rows, the usage tails stripped); Esc left the editor empty and the session
+READY; Enter on the highlighted row left exactly `/build ` in the editor. That
+evidence is real but is not in CI.
+
+**Nine negative controls, each against a mutated copy in `/tmp`, never the real
+tree.** Picker handler removed → `startup offered 0 picker(s)`. Mode guard
+removed → `mode 'rpc' opened a dialog that nothing can answer`. Filter widened
+→ `the picker offers /workflows, which is not a workflow`. Reason guard removed
+→ `session_start reason 'reload' opened an uninvited picker`. Editor guard
+removed → `the picker interrupted a session that already had text`. Usage-tail
+trim disabled → caught. Chat row renamed to start with a slash *and* its
+identity guard removed → `the chat row left '/chat ' in the editor`. Picker
+registered before the gate → `'edit' was still active while the picker was
+open`. One control was **vacuous and is worth knowing why**: removing only the
+`option === CHAT_OPTION` guard changes nothing, because the label does not
+start with `/` and the regex rejects it anyway. Two independent properties
+protect that row; the check catches the loss of both, not of either.
 
 Design decisions worth not re-litigating:
 
-- **Two mechanisms, on purpose.** `setActiveTools` addresses names, which is
-  right for `edit`/`write` (tools that exist to mutate) and useless for `bash`
-  (`ls -la` and `rm -rf src` are the same tool). Do not try to fold the shell
-  policy back into the name gate.
-- **Guardrail, not a sandbox.** Any string classifier loses to an adversary
-  willing to obfuscate. The containment for a hostile model is the exec-stage
-  worktree, not a better regex. Resist growing this file into a parser.
-- **The handler is scoped to the chat session.** Workflow sub-agents are built
-  by `createAgentSession(...)` with explicit `extensionFactories`
-  (`extensions/pi-loom/src/agent-execution.ts:205`), so the router is not in
-  their stack and an exec stage keeps its full shell. Read from the code, not
-  runtime-verified — no offline check can launch a sub-agent.
-- **No registry entry, still.** An entry in `extensions/registry.nix` is what
-  makes an extension installable through `programs.pi.extensions.<name>`; the
-  router would be a silent mutilation of a normal `pi` session. The gate check
-  asserts `pi-full` bundles no copy, which fires if someone "tidies up".
-- **Policy loads last** (final `-e` in `loomStack`) and **name matching covers
-  tool overrides** (pi-hashline registers its own `edit` under the builtin's
-  name). Both unchanged from P5b-i.
+- **The picker lives in the router, not the engine.** `pi-loom` is installable
+  into a plain `pi` through `extensions/registry.nix`, so a startup overlay
+  there would violate P5's "`pi` sessions are unaffected". `pi-loom-router` is
+  already loom-only and already the thing that decides what the chat seat is
+  for, so routing the *user* belongs beside routing the model.
+- **Startup only.** `session_start` also fires for `reload`, `new`, `resume`
+  and `fork`. A modal on `/reload`, or when returning to existing work, is a
+  nuisance rather than an offer. Widening to `new` later is one condition.
+- **Prefill, not launch.** See above; also means `loom --tools read` and every
+  other narrowing still applies, because nothing bypasses command dispatch.
+- **Two mechanisms plus one affordance.** P5b-i addresses tool names, P5b-ii
+  addresses shell invocations, P5c addresses the user. Do not fold any of the
+  three into another.
 
 Traps for the next step:
 
-- **The router now cannot run `nix build` or `nix flake check`.** That is the
-  policy working as designed, but it bites P7 directly: migrating the `next`
-  and `ship` skills to workflows means the validation step has to run inside a
-  stage, not from the chat seat.
+- **`ctx.ui.select` blocks forever in RPC mode.** It emits an
+  `extension_ui_request` and waits for a client response, with no timeout unless
+  one is passed (`src/modes/rpc/rpc-mode.ts:136`). Every pi-driving check here
+  drives `loom` with a stdin script that cannot answer a dialog, so an
+  unguarded startup dialog hangs the whole suite until each check's 300s
+  timeout instead of failing it. `ctx.mode !== "tui"` is the documented guard
+  and is asserted by `loom-router-picker.sh`. Anything that adds interactive UI
+  at startup needs the same guard.
+- **One extension may register several handlers for one event.** They run in
+  registration order and are awaited one at a time
+  (`src/core/extensions/runner.ts:796`), each in its own try/catch, so a
+  throwing handler cannot kill its siblings. Order is a real invariant here:
+  the gate is registered first so it has already applied before the picker's
+  first await.
+- **Pi starts its TUI before initialising extensions**, explicitly "so
+  session_start handlers can use interactive dialogs"
+  (`src/modes/interactive/interactive-mode.ts:725`). Awaiting a dialog in
+  `session_start` is sanctioned, not a hack.
+- **No extension API dispatches a slash command.** `pi.sendUserMessage` looks
+  like one and is not. Anything that wants to *run* a command has to go through
+  the editor or register its own handler.
+- **A pty harness is now a proven way to verify TUI behaviour by hand.**
+  `python3` `pty.fork()`, `os.execv` the binary, read the master fd, strip ANSI
+  with `sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g'`. Use it for evidence when a claim is
+  about rendering; do not try to make it a nix check.
+- **The router still cannot run `nix build` or `nix flake check`.** Policy
+  working as designed, but it bites P7: migrating `next` and `ship` to
+  workflows means validation runs inside a stage, not from the chat seat.
 - **The allowlist will refuse legitimate read-only tools it has not heard of**
   (`bat`, `delta`, `tokei`, `xargs` even in read-only use). Extending it is one
   line in `READ_ONLY_COMMANDS`; widening the parser is not the answer.
-- **A stub-`ExtensionAPI` harness is now a proven pattern here and costs
-  milliseconds.** `loom-router-shell.sh` imports the built package's
-  `src/index.ts`, hands it a stub `pi` that records `on(...)` handlers, and
-  calls them with synthetic events — the same shape upstream uses in
-  `packages/coding-agent/test/plan-mode-extension.test.ts`. Prefer it over
-  booting pi in RPC mode whenever the assertion is about an extension's own
-  decisions.
+- **The stub-`ExtensionAPI` harness is the default tool here now** — two checks
+  use it and both run in milliseconds. Import the built package's
+  `src/index.ts`, hand it a stub `pi` that records `on(...)` handlers, call them
+  with synthetic events. Prefer it over booting pi in RPC mode whenever the
+  assertion is about an extension's own decisions.
 - **Node runs extension TypeScript directly, but only with a literal `.ts`
   specifier.** Type stripping is default-on from Node 22.18 (nixpkgs
-  `nodejs_22` is 22.23.1), so `node driver.mjs` can `import()` a `.ts` file.
-  `./shell-policy.ts` is written with its real extension because jiti (pi's
-  loader) resolves both forms while Node resolves only the literal path.
-- **No offline check can prove pi *invokes* a `tool_call` handler.** Emitting
-  one needs an assistant message, so it needs a model. The split used here:
-  `pi-loom-router-shell` proves what the handler decides,
-  `pi-loom-router-gate` proves the extension loads in a live `loom` session.
-- **Never give the router a test hook.** The gate check reads the active set
-  from a *witness* extension appended through trailing argv, and from a
+  `nodejs_22` is 22.23.1). `./picker.ts` and `./shell-policy.ts` are written
+  with their real extension because jiti (pi's loader) resolves both forms
+  while Node resolves only the literal path.
+- **Never give the router a test hook.** `loom-router-gate.sh` reads the active
+  set from a *witness* extension appended through trailing argv, and from a
   **command handler**, not `session_start`: two extensions' `session_start`
   handlers have no guaranteed order, but a slash command is dispatched long
   after startup settles.
@@ -127,8 +154,9 @@ Traps for the next step:
   them from `session_start` and `before_agent_start`.
 - **A policy extension can be stood in for by trailing argv.** `loom` ends in
   `exec pi --no-extensions <stack> "$@"`, so `loom -e /tmp/probe.ts ...`
-  appends another extension. That is how `loom-tool-boundary.sh` and
-  `loom-router-gate.sh` observe or simulate policy without editing the stack.
+  appends another extension. That is how `loom-tool-boundary.sh`,
+  `loom-router-gate.sh` and this step's `getCommands()` probe observed policy
+  without editing the stack.
 - **preflight rejects an unknown model before a run exists.** A probe script
   that hardcodes a fake model inside `agent(...)` never produces a
   `state.json`: it is refused at launch as a notify. Pick per assertion.
@@ -151,7 +179,8 @@ Traps for the next step:
   system flake placing `workflows/*/` into `<agentDir>/workflows/`. A new
   shipped workflow needs a nix check that copies the directory in itself and an
   entry in `~/nixos/.../modules/dev/pi/workflows.nix`. **`/quick` is not in that
-  file yet**; until it is, the user sees `/build` but not `/quick`.
+  file yet**; until it is, the picker on the user's real machine shows `/build`
+  and not `/quick`.
 - **The `/workflows` listing has its own customType.** Runs deliver under
   `"customType":"workflow"`, the listing under `"customType":"workflow-list"`.
 - **A failed run is still delivered as a workflow message**, formatted
@@ -166,21 +195,18 @@ Traps for the next step:
 - **`local a="$1" b="$work/$a"` in one statement fails under `set -u`.** Bash
   does not expose `a` to the rest of its own `local` statement; the error reads
   `name: unbound variable`. Split the declarations.
-- **The SKILL.md question resolved itself mid-step, from outside this loop.**
-  `extensions/pi-loom/skills/pi-extensible-workflows/SKILL.md` was modified and
-  deliberately uncommitted through eight handoffs; at 23:10 during this step it
-  was committed by the user as `9b022f4 docs(pi-loom): rewrite workflow skill
-  for the fork's real surface`, so this step's commit sits on top of it and the
-  tree is clean. Nothing here touched that file — commits stage explicit paths,
-  never `-A`. Two consequences: HEAD moved under a running step once, so
-  re-read `git log` rather than trusting a remembered SHA; and the file is now
-  a live, owned document, which is where the agent-facing docs for `stage(...)`,
-  `exec`, `/build`, `/quick`, the router gate and the shell policy belong. As of
-  that commit they still describe none of them — check before assuming.
 - **Stages are still invisible to the model.** `workflow_catalog` lists
   registered functions, not stages. Nothing tells an agent that `stage(...)`
   exists. Wiring them into a catalog is a natural P6 item, and it matters more
   now that the chat agent is refused writes and has to know what to delegate.
+- **`extensions/pi-loom/skills/pi-extensible-workflows/SKILL.md` is now a live,
+  owned document** (committed by the user as `9b022f4`). It is where the
+  agent-facing docs for `stage(...)`, `exec`, `/build`, `/quick`, the router
+  gate, the shell policy and now the picker belong. As of this step it still
+  describes none of them — check before assuming.
+- **The `next` skill's own doc says `nix flake check` runs 13 checks.** It runs
+  28. Left unedited on purpose (out of scope for P5c), but worth a one-word fix
+  next time `.pi/skills/next/SKILL.md` is touched for its own sake.
 - **The flake only sees git-tracked files.** A new source or check script that
   is not `git add`ed does not exist inside `nix build`. Stage before building.
 - **`result` is a relative symlink.** The check harnesses `cd` into a temp
@@ -210,8 +236,8 @@ Traps for the next step:
   `$HOME/.pi/agent`, not the XDG data path the installed system uses; and an RPC
   `prompt` is refused before command dispatch unless a model resolves with a
   key, which is why the scripts pass throwaway `--provider/--model/--api-key`
-  flags. `loom-router-shell.sh` is the first check that drives no pi at all and
-  needs neither.
+  flags. `loom-router-shell.sh` and `loom-router-picker.sh` drive no pi at all
+  and need neither.
 
 ## Current phase
 
@@ -287,7 +313,14 @@ Traps for the next step:
       reason naming `/quick` and `/build`. `checks.pi-loom-router-shell` drives
       the extension's own handlers with a stub `ExtensionAPI` over 13 read-only
       and 20 mutating commands.
-- [ ] **P5c — picker.** Startup overlay; Esc drops to chat.
+- [x] **P5c — picker.** `loom` opens on a workflow picker and Esc drops to
+      chat: `extensions/pi-loom-router/src/picker.ts` filters `pi.getCommands()`
+      down to the engine's workflow commands, offers them through
+      `ctx.ui.select` from a second `session_start` handler registered after the
+      gate, and prefills the chosen one into the editor as `/<name> `.
+      `checks.pi-loom-router-picker` drives the extension's own handlers with a
+      stub `ExtensionAPI` over nine scenarios; the overlay's rendering needs a
+      terminal and was verified by hand through a pty — see the handoff.
 - [ ] **P6 — `/wf-new` meta-workflow.**
 - [ ] **P7 — ecosystem fill.** `/explore`, `/debug`, `/review`; migrate the
       `ship` and `next` skills to workflows.

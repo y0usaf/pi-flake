@@ -1,7 +1,7 @@
 {
   "name": "pi-loom-router",
   "version": "1.0.0",
-  "description": "Pi extension that gates the chat agent's mutating tools in the workflow-first loom stack; in memory, never persisted",
+  "description": "Pi extension for the workflow-first loom stack: gates the chat agent's mutating tools in memory, never persisted, and opens each session on a workflow picker",
   "license": "MIT",
   "homepage": "https://github.com/y0usaf/pi-flake/tree/main/extensions/pi-loom-router",
   "repository": {
