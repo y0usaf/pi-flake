@@ -10,9 +10,16 @@
 # source: "subflake" (own flake input under extensions/) or
 #         "vendored" (third-party tree built inline in flake.nix).
 #
-# Trees under extensions/ with no entry here are not packages. Today that is
-# extensions/vekexasia_pi-extensible-workflows/: a pinned pristine reference
-# tree, kept as the diff base for taking upstream fixes into the pi-loom fork.
+# An entry here is what makes an extension installable through a flag, so a
+# tree under extensions/ with no entry is either not a package or must not be
+# reachable from a plain `pi`. Today:
+#   extensions/vekexasia_pi-extensible-workflows/ — pinned pristine reference
+#     tree, the diff base for taking upstream fixes into the pi-loom fork; not
+#     a package at all.
+#   extensions/pi-loom-router/ — packaged as packages.pi-loom-router and wired
+#     directly into the loom stack in flake.nix. Kept out on purpose: it strips
+#     edit/write/bash from the chat agent, which is correct in `loom` and would
+#     be a silent mutilation of anyone's normal `pi` session.
 {
   gecko-websearch = {
     stage = "active";

@@ -333,6 +333,44 @@
             };
           };
 
+        # pi-loom-router — the policy gate of the loom stack. Removes edit,
+        # write and bash from the chat agent's active tool set at session_start,
+        # in memory, never persisted, so mutation happens inside workflow runs
+        # instead. Deliberately NOT in extensions/registry.nix: a registry entry
+        # would expose it as an extension flag and let it leak into anyone's
+        # plain `pi`. Pi loads ./src/index.ts directly; type-only imports mean
+        # there is nothing to build and no node_modules to ship.
+        # Design: extensions/pi-loom/DESIGN.md (Router gate)
+        pi-loom-router = let
+          routerPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-loom-router/package.json);
+        in
+          pkgs.stdenvNoCC.mkDerivation {
+            pname = "pi-loom-router";
+            version = routerPackageJson.version;
+            src = lib.cleanSource ./extensions/pi-loom-router;
+
+            dontBuild = true;
+
+            installPhase = ''
+              runHook preInstall
+
+              mkdir -p "$out"
+              cp package.json README.md "$out"/
+              cp -r src "$out"/
+
+              runHook postInstall
+            '';
+
+            passthru.packageName = routerPackageJson.name;
+
+            meta = with lib; {
+              description = routerPackageJson.description;
+              homepage = routerPackageJson.homepage;
+              license = licenses.mit;
+              platforms = platforms.all;
+            };
+          };
+
         # pi with default extensions pre-bundled.
         pi-full = self.lib.piWithExtensions {
           inherit pkgs;
@@ -347,14 +385,18 @@
         # proves doctrine 06 (bare core must boot) at runtime.
         # Design: extensions/pi-loom/DESIGN.md
         pi-loom-cli = let
-          # P0 landed the engine fork. P1+ adds pi-loom-builtins and
-          # pi-loom-router to this stack. See DESIGN.md roadmap.
+          # P0 landed the engine fork, P5b-i the router. A pi-loom-builtins
+          # layer joins this stack later. See DESIGN.md roadmap.
           loomStack = [
             self.packages.${system}."pi-loom" # workflow engine
             self.packages.${system}."pi-interview" # backs human.ask
             self.packages.${system}."pi-aphrodite" # compression for long runs
             self.packages.${system}."pi-hashline" # edit anchors for executor sub-agents
             self.packages.${system}."pi-atelier" # status rail = live run progress
+            # Policy last on purpose: extensions load in argv order, so the
+            # router's session_start handler runs after every handler that could
+            # still be enabling tools.
+            self.packages.${system}."pi-loom-router" # chat agent cannot mutate
           ];
           # pi-tool-management is excluded on purpose: it persists a global
           # disabled-tools list and would fight the router's in-memory gate.
@@ -397,6 +439,7 @@
         pi-aphrodite-build = self.packages.${system}."pi-aphrodite";
         pi-loom-build = self.packages.${system}."pi-loom";
         pi-loom-cli-build = self.packages.${system}.pi-loom-cli;
+        pi-loom-router-build = self.packages.${system}.pi-loom-router;
 
         # Build-only checks cannot see runtime wiring: pi-loom-cli-build proves
         # the wrapper evaluates, this proves it boots. Runs `loom` headlessly in
@@ -530,7 +573,7 @@
 
         # P5a acceptance: the workflow launch boundary is not the main agent's
         # live tool visibility. A probe extension narrows the session the way
-        # the P5b router will (edit/write/bash dropped at session_start); a
+        # pi-loom-router does (edit/write/bash dropped at session_start); a
         # workflow launched in that session must still record all three in its
         # launch snapshot, and its sub-agent must reach model resolution rather
         # than being refused as outside the launching session boundary.
@@ -538,6 +581,23 @@
           nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.findutils pkgs.coreutils];
         } ''
           bash ${./nix/checks/loom-tool-boundary.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom
+          touch $out
+        '';
+
+        # P5b-i acceptance: the router gate. Boots `loom` and plain `pi` headlessly
+        # with a witness extension appended through trailing argv and compares the
+        # two active tool sets: loom must hold none of edit/write/bash and must
+        # still hold read, plain pi must hold all three. Also checks structurally
+        # that pi-full bundles no copy of the router (the failure mode of adding it
+        # to extensions/registry.nix), and re-proves the P5a interlock with the
+        # real router in the stack rather than a stand-in.
+        pi-loom-router-gate = pkgs.runCommand "pi-loom-router-gate" {
+          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.findutils pkgs.coreutils];
+        } ''
+          bash ${./nix/checks/loom-router-gate.sh} \
+            ${self.packages.${system}.pi-loom-cli}/bin/loom \
+            ${self.packages.${system}.pi}/bin/pi \
+            ${self.packages.${system}.pi-full}
           touch $out
         '';
 

@@ -360,6 +360,25 @@ extension that narrows tools mid-session no longer narrows what a workflow may
 grant, and `--tools` is the way to do that. Gated by
 `checks.pi-loom-tool-boundary`.
 
+**Router gate.** `pi-loom-router` (`extensions/pi-loom-router/`) is the policy
+half of that separation and ships only in the `loom` stack — it has no entry in
+`extensions/registry.nix`, so no extension flag can pull it into a plain `pi`.
+At `session_start`, and again at `before_agent_start` for tools enabled later,
+it calls `setActiveTools` to drop `edit`, `write` and `bash` from the chat
+agent. `bash` goes whole because `setActiveTools` addresses names, not
+invocations, and a gate that leaves `bash` reachable is not a gate; read-only
+shell returns in P5b-ii behind a `tool_call` classifier.
+
+The gate is a *swap*, not a subtraction, and the reason is measured rather than
+aesthetic: pi's default active set is `read`, `bash`, `edit`, `write`, while
+`grep`, `find` and `ls` are configured but inactive. Subtracting the mutating
+three leaves a router holding `read` alone, which is the "no file access at
+all" router this document rejects below. So the same call switches `grep`,
+`find` and `ls` on, intersected with `pi.getAllTools()` so `loom --tools read`
+stays narrower than the policy instead of being widened by it. Matching is by
+name, which is also how overrides are covered: pi-hashline registers its own
+`edit` under the builtin's name. Gated by `checks.pi-loom-router-gate`.
+
 ## Deferred (and why)
 
 - **Nix-declared workflows** (doctrine 04). Nix expresses stacks and
@@ -472,7 +491,22 @@ apart within one loop iteration.
     - **P5b — router gate.** `pi-loom-router`, a policy extension that calls
       `setActiveTools` at `session_start`, in memory, never persisted, shipped
       only in the `loom` stack. *Accept: in `loom`, the main agent has no
-      edit/write/mutating-bash tool, and `pi` sessions are unaffected.*
+      edit/write/mutating-bash tool, and `pi` sessions are unaffected.* Split
+      in two: removing a tool by name and deciding whether a shell command
+      mutates are different mechanisms with different failure modes, and
+      `setActiveTools` cannot express the second at all.
+      - **P5b-i — the gate.** `pi-loom-router` as its own package, in the loom
+        stack only, swapping the mutating tools out of the chat agent's active
+        set and the read-only ones in. *Accept: in `loom` the main agent holds
+        none of edit/write/bash and does hold read/grep/find/ls; plain `pi`
+        holds all three mutating tools; `pi-full` bundles no copy of the
+        router; and a workflow launched in a gated session still records
+        edit/write/bash in its launch snapshot.*
+      - **P5b-ii — read-only shell.** `bash` re-admitted to the chat agent
+        behind a `tool_call` handler that blocks anything that can mutate.
+        *Accept: in `loom` the main agent can run a read-only command and is
+        refused a mutating one with a reason naming the workflow to use
+        instead.*
     - **P5c — picker.** *Accept: startup shows the workflow picker and Esc
       drops to chat.*
 - **P6 — `/wf-new` meta-workflow.** *Accept: `/wf-new` interviews, writes
