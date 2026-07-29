@@ -1,0 +1,23 @@
+{
+  "name": "pi-chrono-break",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Model-callable context rewind for Pi: drop a failed line of work and everything after it, leaving one frozen breadcrumb.",
+  "keywords": ["pi-package", "pi-extension", "context", "rewind", "chrono-break"],
+  "scripts": {
+    "test": "bun test"
+  },
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0"
+  }
+}
