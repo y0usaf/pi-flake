@@ -12,18 +12,23 @@
 // The loop stops at consensus, a hard round cap, or a human checkpoint.
 //
 // Launch args (JSON):
-//   topic: string (required)
+//   topic?: string — what to debate. Optional when sessionContext is present.
+//   sessionContext?: string — transcript of the session this was launched from.
+//      The engine fills it in for slash launches (command.json declares
+//      `sessionContext`), so a bare /ideate debates what the session is already
+//      circling instead of demanding a topic that was just discussed.
 //   context?: string
 //   maxRounds?: 1-10 (default 5)
 //   models?: string[] — ideator model ids (default: the four enabled models)
 //   judgeModel?: string — defaults to models[0]
 
-if (!args || typeof args.topic !== "string" || !args.topic.trim()) {
-  throw new Error('ideate requires args.topic (non-empty string), e.g. { topic: "local-first sync engine" }');
+const givenTopic = args && typeof args.topic === "string" ? args.topic.trim() : "";
+const sessionContext = args && typeof args.sessionContext === "string" ? args.sessionContext.trim() : "";
+if (!givenTopic && !sessionContext) {
+  throw new Error('ideate needs args.topic (non-empty string) when there is no session to build on, e.g. { topic: "local-first sync engine" }');
 }
 
-const topic = args.topic.trim();
-const context = typeof args.context === "string" ? args.context.trim() : "";
+const givenContext = args && typeof args.context === "string" ? args.context.trim() : "";
 const maxRounds = Number.isInteger(args.maxRounds) && args.maxRounds > 0 ? Math.min(args.maxRounds, 10) : 5;
 
 // Cheap ideator set, all via vercel-ai-gateway (~$0.14-6.6/M vs fable's $22.5/M out).
@@ -38,6 +43,53 @@ const models =
     ? args.models.map((m) => m.trim())
     : DEFAULT_MODELS;
 const judgeModel = typeof args.judgeModel === "string" && args.judgeModel.trim() ? args.judgeModel.trim() : DEFAULT_JUDGE_MODEL;
+
+// A session becomes a debate brief in exactly one cheap pass. Handing the raw
+// transcript to every ideator instead would multiply its tokens by models x
+// passes x rounds, and most of a session is detail no debater needs.
+const BRIEF_SCHEMA = {
+  type: "object",
+  properties: {
+    topic: { type: "string", description: "The one question worth debating, as a single sentence" },
+    background: { type: "string", description: "What the session established that a debater must know: constraints, decisions already made, code and files involved" },
+    openQuestions: { type: "array", items: { type: "string" }, description: "Concrete questions the session left unresolved" },
+  },
+  required: ["topic", "background", "openQuestions"],
+  additionalProperties: false,
+};
+
+let brief = null;
+if (sessionContext) {
+  await phase("session-brief");
+  brief = await agent(
+    prompt(
+      "You are reading the transcript of a working session between a developer and a coding agent.\n\nTranscript:\n{session}\n\n{instruction}\n\nGround every field in what the transcript actually says; invent nothing.",
+      {
+        session: sessionContext,
+        instruction: givenTopic
+          ? 'The debate topic is already fixed: "' +
+            givenTopic +
+            '". Restate it verbatim as topic, then extract the background a debater needs in order to build on this session rather than start over.'
+          : "Name the single most debate-worthy open question this session is circling — a design decision still in play, not work already finished — as topic, then extract the background a debater needs.",
+      },
+    ),
+    { label: "session-brief", model: judgeModel, outputSchema: BRIEF_SCHEMA },
+  );
+}
+
+const topic = givenTopic || (brief && typeof brief.topic === "string" ? brief.topic.trim() : "");
+if (!topic) {
+  throw new Error("ideate could not derive a topic from the session transcript; pass one explicitly, e.g. /ideate <topic>");
+}
+
+const openQuestions = brief && Array.isArray(brief.openQuestions) ? brief.openQuestions.filter((q) => typeof q === "string" && q.trim()) : [];
+const context = [
+  givenContext,
+  brief && typeof brief.background === "string" && brief.background.trim() ? "From the session this run was launched in:\n" + brief.background.trim() : "",
+  openQuestions.length ? "Unresolved in that session:\n- " + openQuestions.join("\n- ") : "",
+]
+  .filter((part) => part)
+  .join("\n\n");
 
 const IDEOLOGY =
   "You are an ideator in a multi-model debate. Propose ideas on their merits, attack weak points in others' positions, concede explicitly when an objection is answered, and merge positions when a synthesis is possible. Be concrete; no platitudes.";

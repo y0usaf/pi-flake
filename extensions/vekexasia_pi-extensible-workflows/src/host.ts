@@ -1566,6 +1566,64 @@ function workflowKeyLabel(keybindings: unknown, binding: string, fallback: strin
   return [...new Set(vim ? [...configured, vim] : configured)].join("/");
 }
 
+// Session context for slash-launched workflows (local addition, not upstream).
+//
+// A workflow child gets nothing but its `args`: it runs in its own node process
+// with no handle on the session that launched it. So /ideate could only debate a
+// topic the user retyped, even when the session it was typed into already held
+// the whole discussion. A `command.json` may now declare `sessionContext`, and
+// the handler renders the active branch (compaction applied) into that argument
+// before the run is launched.
+//
+// Only user and assistant text is rendered. Tool calls and tool results are where
+// a session's bulk lives, and handing them to a workflow spends tokens on noise.
+// The render is tail-truncated to `maxChars`, so the newest turns survive and the
+// cost stays bounded however long the session ran.
+type SessionContextSpec = { key: string; maxChars: number };
+const SESSION_CONTEXT_DEFAULTS: SessionContextSpec = { key: "sessionContext", maxChars: 12000 };
+function sessionContextSpec(value: unknown, specPath: string): SessionContextSpec | undefined {
+  if (value === undefined || value === false) return undefined;
+  if (value === true) return SESSION_CONTEXT_DEFAULTS;
+  if (!object(value)) throw new WorkflowError("INVALID_METADATA", `Workflow command at ${specPath} sessionContext must be true or an object`);
+  const key = value.key === undefined ? SESSION_CONTEXT_DEFAULTS.key : value.key;
+  if (typeof key !== "string" || !key.trim()) throw new WorkflowError("INVALID_METADATA", `Workflow command at ${specPath} sessionContext.key must be a non-empty string`);
+  const maxChars = value.maxChars === undefined ? SESSION_CONTEXT_DEFAULTS.maxChars : value.maxChars;
+  if (typeof maxChars !== "number" || !Number.isInteger(maxChars) || maxChars <= 0) throw new WorkflowError("INVALID_METADATA", `Workflow command at ${specPath} sessionContext.maxChars must be a positive integer`);
+  return { key: key.trim(), maxChars };
+}
+function sessionEntryText(carrier: Record<string, unknown>): string {
+  if (typeof carrier.content === "string") return carrier.content.trim();
+  if (!Array.isArray(carrier.content)) return "";
+  return carrier.content.filter((block): block is { text: string } => object(block) && block.type === "text" && typeof block.text === "string").map((block) => block.text).join("\n").trim();
+}
+function sessionTranscript(sessionManager: unknown, maxChars: number): string {
+  const build = object(sessionManager) ? asFn(sessionManager.buildContextEntries) : undefined;
+  const entries = build ? build.call(sessionManager) : undefined;
+  if (!Array.isArray(entries)) return "";
+  const parts: string[] = [];
+  for (const entry of entries) {
+    if (!object(entry)) continue;
+    // A compacted session keeps its older turns only as these summaries, so
+    // without them the transcript would start mid-thought.
+    if (entry.type === "compaction" || entry.type === "branch_summary") {
+      if (typeof entry.summary === "string" && entry.summary.trim()) parts.push(`[summary of earlier turns] ${entry.summary.trim()}`);
+      continue;
+    }
+    if (entry.type === "custom_message") {
+      const injected = sessionEntryText(entry);
+      if (injected) parts.push(`context: ${injected}`);
+      continue;
+    }
+    if (entry.type !== "message" || !object(entry.message)) continue;
+    const role = typeof entry.message.role === "string" ? entry.message.role : "";
+    if (role !== "user" && role !== "assistant") continue;
+    const text = sessionEntryText(entry.message);
+    if (text) parts.push(`${role}: ${text}`);
+  }
+  const transcript = parts.join("\n\n");
+  return transcript.length <= maxChars ? transcript : `[earlier turns dropped to fit ${String(maxChars)} characters]\n\n${transcript.slice(transcript.length - maxChars)}`;
+}
+
 export default function workflowExtension(pi: ExtensionAPI, home?: string, clipboard = copyToClipboard, transport: AgentTransport = localAgentTransport, agentDir?: string, additionalSkillPaths: readonly string[] = []) {
   beginWorkflowExtensionLoading();
   const registry = loadingRegistry();
@@ -2668,7 +2726,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     },
   });
   if (exposeWorkflowTools) pi.registerTool(workflowTool);
-  type WorkflowCommandSpec = { name: string; description?: string; script?: string; args?: JsonValue; argKey?: string };
+  type WorkflowCommandSpec = { name: string; description?: string; script?: string; args?: JsonValue; argKey?: string; sessionContext?: JsonValue };
   const workflowCommandRoots = [join(dirname(fileURLToPath(import.meta.url)), "../workflows"), join(dirname(fileURLToPath(import.meta.url)), "../../workflows"), join(extensionAgentDir, "workflows")];
   const seenWorkflowCommands = new Set<string>();
   for (const root of workflowCommandRoots) {
@@ -2685,6 +2743,7 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
       const spec = parsedSpec as WorkflowCommandSpec;
       if (typeof spec.name !== "string" || !/^[a-zA-Z0-9][\w-]*$/.test(spec.name)) throw new WorkflowError("INVALID_METADATA", `Workflow command at ${specPath} requires a name matching /^[a-zA-Z0-9][\\w-]*$/`);
       if (spec.argKey !== undefined && typeof spec.argKey !== "string") throw new WorkflowError("INVALID_METADATA", `Workflow command at ${specPath} argKey must be a string`);
+      const sessionContext = sessionContextSpec(spec.sessionContext, specPath);
       if (seenWorkflowCommands.has(spec.name)) continue;
       const scriptFile = spec.script ?? "workflow.js";
       const scriptPath = join(dir, scriptFile);
@@ -2698,9 +2757,26 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
           if (trimmed) {
             try { workflowArgs = JSON.parse(trimmed) as JsonValue; }
             catch { workflowArgs = spec.argKey ? { [spec.argKey]: trimmed } : trimmed; }
-          } else if (spec.args === undefined && spec.argKey) {
+          } else if (spec.args === undefined && spec.argKey && !sessionContext) {
             ctx.ui.notify(`Usage: /${spec.name} <${spec.argKey}> or /${spec.name} '{ "${spec.argKey}": "..." }'`, "warning");
             return;
+          }
+          if (sessionContext) {
+            const transcript = sessionTranscript(ctx.sessionManager, sessionContext.maxChars);
+            // A bare command in an empty session has nothing to work from, and a
+            // workflow launched with neither argument nor transcript would fail
+            // deep inside the child. Refuse where the user typed it instead.
+            if (!transcript && !trimmed && spec.args === undefined && spec.argKey) {
+              ctx.ui.notify(`/${spec.name} needs something to work from: this session has no conversation yet. Try /${spec.name} <${spec.argKey}>`, "warning");
+              return;
+            }
+            // Only object (or absent) arguments can carry the extra key; a scalar
+            // launch is left exactly as it was rather than silently reshaped.
+            if (transcript && (workflowArgs === null || object(workflowArgs))) {
+              const withSession: Record<string, JsonValue> = object(workflowArgs) ? { ...(workflowArgs as Record<string, JsonValue>) } : {};
+              if (withSession[sessionContext.key] === undefined) withSession[sessionContext.key] = transcript;
+              workflowArgs = withSession;
+            }
           }
           const result = await workflowTool.execute(`command-${spec.name}`, { name: spec.name, scriptPath, args: workflowArgs }, undefined, undefined, ctx);
           const details = result.details as { runId?: string } | undefined;

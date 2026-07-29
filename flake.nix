@@ -336,6 +336,22 @@
         pi-rtk-test = piRtk.checks.${system}.test;
         pi-aphrodite-build = self.packages.${system}."pi-aphrodite";
         pi-extensible-workflows-build = self.packages.${system}."pi-extensible-workflows";
+
+        # Runtime acceptance for the local `sessionContext` field on a workflow
+        # command.json: a build only proves it compiles, not that a bare slash
+        # command reaches its workflow child carrying the session it was typed
+        # in. Runs against pi wrapped with just the workflows extension, so no
+        # other extension can answer for it.
+        pi-workflow-session-context = pkgs.runCommand "pi-workflow-session-context" {
+          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.coreutils];
+        } ''
+          bash ${./nix/checks/workflow-session-context.sh} ${self.lib.piWithExtensions {
+            inherit pkgs;
+            pi = self.packages.${system}.pi;
+            extensions = {workflows = self.packages.${system}."pi-extensible-workflows";};
+          }}/bin/pi
+          touch $out
+        '';
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;

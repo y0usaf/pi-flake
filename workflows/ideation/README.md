@@ -45,13 +45,32 @@ source of truth; the home-dir copy is a store symlink, never edited in place.
 
 ## Invoke
 
-Slash command:
+Bare, with no topic at all — the debate is about whatever the current session
+is circling:
 
 ```
+/ideate
+```
+
+The engine renders the active session branch (user and assistant turns, tool
+output left out, compaction summaries kept) into the `sessionContext` argument
+before the run starts; `command.json` asks for that by declaring
+`"sessionContext": { "key": "sessionContext", "maxChars": 12000 }`. The
+workflow then spends **one cheap model call** turning that transcript into a
+brief — `{ topic, background, openQuestions }` — and debates the topic it
+found. Handing the raw transcript to every ideator instead would multiply its
+tokens by models x passes x rounds.
+
+With a topic, which fixes the question but keeps the session as background:
+
+```
+/ideate a local-first sync engine for my notes
 /ideate '{ "topic": "a local-first sync engine for my notes" }'
 ```
 
-Or via the `workflow` tool (adds a budget backstop):
+Or via the `workflow` tool (adds a budget backstop). Nothing injects a session
+here — the tool path has no slash-command handler, so pass `sessionContext`
+yourself if you want one:
 
 ```json
 {
@@ -63,11 +82,17 @@ Or via the `workflow` tool (adds a budget backstop):
 
 Optional args:
 
-- `context` — background info fed to every participant.
+- `topic` — required only when there is no `sessionContext` to derive it from.
+- `sessionContext` — session transcript to build on. Filled in automatically
+  for slash launches; a bare `/ideate` in a session with no conversation yet is
+  refused with a usage hint instead of starting a run.
+- `context` — background info fed to every participant. Kept alongside the
+  session brief, never replaced by it.
 - `maxRounds` — 1–10, default 5. Raise for hard topics, lower to save tokens.
 - `models` — ideator model ids (default: glm-5.2-fast + deepseek-v4-flash via
   vercel-ai-gateway). Must be available models (credentials configured).
-- `judgeModel` — defaults to `vercel-ai-gateway/moonshotai/kimi-k3-fast`.
+- `judgeModel` — defaults to `vercel-ai-gateway/moonshotai/kimi-k3-fast`. Also
+  writes the session brief.
 
 Runs are backgrounded by default; completion arrives as a follow-up message.
 Add `"foreground": true` when the caller must wait for the final synthesis in
