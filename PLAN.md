@@ -18,82 +18,98 @@ marker into prose here — the count would lie.
 
 ## Handoff
 
-Last touched: P4b-i landed and is ticked. P4b was split in two first (P4b-i the
-`exec` stage, P4b-ii the `/build` workflow); the next open item is P4b-ii.
+Last touched: P4b-ii landed and is ticked. P4b is now complete; the next open
+item is P4c (`/quick`).
 
-What landed. The `exec` stage: `stage("exec", { item, worktree?, context?, model?,
-role?, label? })` implements one plan item inside an isolated git worktree and
-returns `{ summary, notes, files, diff, diffTruncated, branch, path }`. The agent
-is asked only for `summary` and `notes`; `files` and `diff` come from git, so an
-unreported edit still shows up. `checks.pi-loom-exec-stage`
-(`nix/checks/loom-exec-stage.sh`) is the runtime gate. DESIGN.md now carries the
-P4b-i / P4b-ii acceptance criteria and a paragraph on why exec's artifact is
-git's word rather than the model's.
+What landed. `workflows/build/` — `command.json`, `build.js`, `README.md` — the
+`/build` workflow: plan once, then per plan item exec followed by review, all
+exec calls sharing one worktree named `build`. It owns no prompt of its own;
+every prompt comes from the stage library. A `changes` verdict feeds the review
+note back into a repair exec, up to `maxFixes` (default 1); a `reject` ends that
+item. The return value is keyed per item (`items[]`, plus a `verdicts` map and
+`counts`). `checks.pi-loom-build-workflow` (`nix/checks/loom-build-workflow.sh`)
+is the gate. DESIGN.md gained a paragraph on /build's verdict policy and on
+exactly what its gate can and cannot prove.
 
-Gates actually run: `nix build .#pi-loom` (pass),
-`nix build .#checks.x86_64-linux.pi-loom-exec-stage -L` (pass),
-`nix build .#checks.x86_64-linux.pi-loom-stages -L` (pass, after updating its
-stage-list assertion), `nix flake check -L` (pass, every check including the new
-`pi-loom-exec-stage`; `biome lint .` unchanged at 1 pre-existing warning and 5
-infos).
+Gates actually run: `nix build .#pi-loom-cli` (pass), the check by hand against
+`"$(readlink -f result)/bin/loom"` (pass),
+`nix build .#checks.x86_64-linux.pi-loom-build-workflow -L` (pass),
+`nix flake check -L` (pass, all checks; `biome lint .` unchanged at 1
+pre-existing warning and 5 infos).
+
+**Acceptance honesty.** DESIGN.md's P4b-ii criterion is that `/build "<task>"`
+emits a plan artifact, an exec diff and a review verdict keyed per plan item.
+Those three artifacts were **not** observed: every one needs an agent to have
+returned, and neither the nix sandbox nor this step had a model key. What was
+proven is the wiring around them — discovery from the installed path, argument
+rejection with generated usage, and plan-before-exec ordering. DESIGN.md's own
+P4b split rationale says this half's acceptance needs a real model, so the box
+is ticked on that reading. A real-model `/build` run is still worth doing once
+by hand before trusting it.
 
 Design decisions worth not re-litigating:
 
-- **exec takes its base commit before the agent exists.** `git rev-parse HEAD`
-  runs inside the worktree first; the diff is `git diff <base>` afterwards. That
-  is what lets several exec calls share one worktree and still each report only
-  their own item's diff, since the engine commits the worktree as every agent
-  returns.
-- **The model is never asked which files it touched.** git is asked. The output
-  schema is only `{summary, notes}` on purpose: asking for a `files` list you
-  then discard invites drift between what the model says and what is true.
-- **`git add -A` before diffing.** The engine's own snapshot does the same, so
-  this is not novel state mutation, and it is what makes new files appear in the
-  diff at all.
-- **Diff text is capped at 200000 characters** with `diffTruncated` reporting it.
-  Uncapped, one runaway item would either bury the review prompt or breach the
-  engine's 10 MB RPC boundary and kill the run.
-- **exec hardcodes no model, role or tool list.** Same reason as every other
-  stage: the library is not preflighted against the caller's capabilities, so
-  everything capability-shaped comes from the caller, whose script *is*
-  preflighted. With no `tools` option the agent inherits the workflow's full tool
-  set, which is what gives it edit and write.
+- **One worktree for the whole run.** Every exec call passes `worktree: "build"`,
+  and the engine keys worktrees by name, so item 2 builds on item 1. Each item
+  still reports only its own diff because exec takes its base commit at its own
+  start and the engine commits the worktree as each agent returns.
+- **`changes` retries, `reject` does not.** A `changes` note says what to fix, so
+  it is actionable context for another exec pass. `reject` means the approach is
+  wrong; another blind pass entrenches it. Rejected items stay in the report with
+  their verdict.
+- **Report diffs are clipped twice.** exec caps its diff at 200000 characters;
+  /build clips again at 20000 per item for the returned report, keeping
+  `diffChars` and `diffTruncated`. Full diffs live on the engine-owned branch
+  named in `worktree.branch`.
+- **The reviewer is shown the diff, not the summary.** `reviewSubject()` passes
+  exec's full (exec-capped) diff into the review stage. Reviewing a summary is
+  reviewing a claim.
+- **Empty string means "not given" for `model`.** The stage library omits an
+  empty model rather than validating it, so `reviewModel` defaulting to `model`
+  defaulting to `""` leaves the session default intact.
 
 Traps for the next step:
 
-- **The offline gate stops at exec's agent call.** `loom-exec-stage.sh` proves
-  the worktree is open, populated, branch-owned and base-recorded *before* the
-  agent launches, and nothing after it: every post-agent line needs the agent to
-  have returned, and the sandbox has no network and no key. P4b-ii's `/build`
-  check faces the same wall; assert the wiring, never a model's output.
+- **The `/workflows` listing has its own customType.** Runs deliver under
+  `"customType":"workflow"`, the listing under `"customType":"workflow-list"`. A
+  harness waiting on the wrong one burns its whole timeout and then reports an
+  empty listing, which looks like a discovery bug and is not one.
+- **A failed run is still delivered as a workflow message**, formatted
+  `Workflow <name> failed (runId=...): error=<CODE>: <message>; ...; artifacts:
+  runDirectory=... statePath=... journalPath=...`. That string is how an offline
+  check reads a failure, since nothing completes without a model.
+- **The cheapest offline evidence lives in two files per run.** `state.json` has
+  `state`, `phase`, `phaseHistory[].phase` and `error.code`; `snapshot.json` has
+  `args` *after* argsSchema defaults were applied. Ordering and argument wiring
+  are both provable from those without any agent returning.
 - **How to reach an agent boundary offline:** pass a model that does not exist.
   `WorkflowAgentExecutor.resolve()` throws `UNKNOWN_MODEL` at the top of
   `execute()`, before the attempt loop, before any session or socket, so there is
-  no retry, no backoff and no network. The probe catches it and the run still
-  completes, which keeps the harness's completion parsing unchanged.
+  no retry, no backoff and no network.
+- **`workflows/` is not in the `pi-loom` package.** The install path is the
+  system flake placing `workflows/*/` into `<agentDir>/workflows/`. A new shipped
+  workflow therefore needs a nix check that copies the directory in itself —
+  `loom-build-workflow.sh` takes it as its second argument — and a matching
+  entry in `~/nixos/.../modules/dev/pi/workflows.nix` before a user sees it.
+- **A nix store copy is read-only.** `cp -r ${./workflows/build} …` then
+  `chmod -R u+w` in the harness, or the run store cannot treat it as an install.
+- **`local a="$1" b="$work/$a"` in one statement fails under `set -u`.** Bash
+  does not expose `a` to the rest of its own `local` statement; the error reads
+  `name: unbound variable`. Split the declarations.
 - **Never put a backtick inside `STAGE_LIBRARY_SOURCE`.** That string is a TS
   template literal, so a backtick in a sandbox-side comment ends it and the build
-  fails with unrelated-looking `TS2304: Cannot find name` errors. Use plain
-  quotes in the appended source; backticks are fine in the surrounding TS.
+  fails with unrelated-looking `TS2304: Cannot find name` errors.
 - **The stage list is asserted as a literal string.** `loom-stages.sh` matches
   `available stages: plan, exec, review`. Adding or reordering a stage means
   updating that assertion in the same commit.
-- **Worktree-scoped shell operations are journal-visible.** Their keys start with
-  `shell/worktree/worktree%2Fnamed%2F<name>/`, and the recorded value is
-  `{exitCode, stdout, stderr}`. That is how the check proves the base commit was
-  read inside the worktree rather than in the repo.
-- **`git worktree list` in the probe repo sees the engine's worktree** even
-  though the worktree directory lives under the run store
-  (`~/.pi/workflows/projects/<slug>/sessions/<sid>/runs/<runid>/worktrees/`).
-  Worktree metadata is registered in the repo's `.git`, which is what makes the
-  count assertion possible.
 - **`extensions/pi-loom/skills/pi-extensible-workflows/SKILL.md` is still
   modified in the working tree and still deliberately uncommitted.** Same state
-  as the previous four handoffs: `HEAD` content is byte-identical to the vendored
+  as the previous five handoffs: `HEAD` content is byte-identical to the vendored
   upstream copy, the working-tree content is a rewrite by something outside these
   steps. Left untouched again; commits here stage explicit paths, never `-A`.
   Decide what it is before committing it. It also means the agent-facing docs for
-  `stage(...)` and `exec` were *not* written — that file is where they belong.
+  `stage(...)`, `exec` and now `/build` were *not* written — that file is where
+  they belong.
 - **Stages are still invisible to the model.** `workflow_catalog` lists
   registered functions, not stages. Nothing tells an agent that `stage(...)`
   exists, and `STAGE_LIBRARY[].description/required/optional/output` are
@@ -108,8 +124,8 @@ Traps for the next step:
   the agent dir defaults to `$HOME/.pi/agent`, but running a check script from a
   Pi session inherits `PI_CODING_AGENT_DIR` and the user-scope scan finds the real
   agent dir instead of the throwaway one. `loom-workflow-args.sh`,
-  `loom-project-workflows.sh`, `loom-stages.sh` and `loom-exec-stage.sh` export it
-  explicitly; the three older harnesses do not.
+  `loom-project-workflows.sh`, `loom-stages.sh`, `loom-exec-stage.sh` and
+  `loom-build-workflow.sh` export it explicitly; the three older harnesses do not.
 - **Never `head -1` a presented message.** Usage text and the `/workflows` listing
   are multi-line, so harnesses serialise with `jq -c` before decoding.
 - **`inputsSettled()` gates on four parking lots** (checkpoints, questions, edits,
@@ -127,7 +143,7 @@ Traps for the next step:
   Rationale is in DESIGN.md under Architecture.
 - The ref tree is no longer a package and is excluded from `biome.jsonc`; keep it
   that way, it is only a diff base for upstream fixes.
-- **Two facts all seven harnesses depend on.** Pi's agent dir defaults to
+- **Two facts all eight harnesses depend on.** Pi's agent dir defaults to
   `$HOME/.pi/agent`, not the XDG data path the installed system uses; and an RPC
   `prompt` is refused before command dispatch unless a model resolves with a key,
   which is why the scripts pass throwaway `--provider/--model/--api-key` flags.
@@ -172,8 +188,12 @@ Traps for the next step:
       reports the diff git recorded, not the diff the model claims;
       `checks.pi-loom-exec-stage` proves the worktree is open, populated and
       base-recorded before the implementing agent launches.
-- [ ] **P4b-ii — `/build`.** plan → exec → review over one worktree, keyed per
-      plan item.
+- [x] **P4b-ii — `/build`.** `workflows/build/` chains plan → exec → review over
+      one worktree named `build`, keyed per plan item, with `changes` verdicts
+      feeding repair passes; `checks.pi-loom-build-workflow` proves discovery
+      from the installed path, usage rejection before a run exists, and
+      plan-before-exec ordering. The three artifacts themselves need a real
+      model — see the acceptance-honesty note in the handoff.
 - [ ] **P4c — `/quick`.**
 - [ ] **P5 — router + picker.**
 - [ ] **P6 — `/wf-new` meta-workflow.**

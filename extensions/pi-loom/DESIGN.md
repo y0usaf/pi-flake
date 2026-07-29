@@ -275,6 +275,25 @@ reads `git diff <base>`. Several exec calls sharing one worktree each report
 only their own item's diff, because each takes its base at its own start, and
 the engine commits the worktree as every agent returns.
 
+`/build` (`workflows/build/`) is the first consumer of all three stages, and it
+owns no prompt of its own — only wiring. It runs plan once, then per plan item
+exec followed by review, and every exec call passes the same worktree name, so
+item 2 sees item 1's code while each item still reports only its own diff. The
+verdict vocabulary decides what happens next: `changes` is the one verdict a
+repair pass can act on, because its note says precisely what to fix, so the note
+becomes the next exec's context, up to `maxFixes` times. `reject` means the
+approach is wrong, which another blind pass would entrench, so it ends that item
+and leaves the verdict standing in the report.
+
+What `checks.pi-loom-build-workflow` can prove stops where the network does. The
+plan artifact, the exec diff and the review verdict all require an agent to have
+returned, so the gate proves *ordering* instead: it installs the shipped
+`workflows/build/` into a throwaway agent dir exactly as the system flake does,
+rejects a task-less launch before a run exists, and launches with a model name
+that does not resolve — which fails inside the plan phase, having entered no
+item phase and opened no worktree. A `/build` that called exec before plan could
+not produce that state.
+
 ## Extension surface contract
 
 **Read path.** A workflow script receives a frozen `args` object (validated
