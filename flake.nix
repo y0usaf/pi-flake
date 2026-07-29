@@ -410,6 +410,17 @@
           touch $out
         '';
 
+        # P2a acceptance: human.ask is a DSL participant, so the only honest
+        # gate is a real round trip. Boots `loom` in RPC mode, where
+        # ctx.ui.select surfaces as an extension_ui_request line, answers it,
+        # and requires the suspended run to resume with the chosen value.
+        pi-loom-human-ask = pkgs.runCommand "pi-loom-human-ask" {
+          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.coreutils];
+        } ''
+          bash ${./nix/checks/loom-human-ask.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom
+          touch $out
+        '';
+
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;

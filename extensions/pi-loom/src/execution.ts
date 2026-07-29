@@ -195,6 +195,10 @@ const prompt = (template, values) => {
   return template.replace(/{{|}}|{([A-Za-z_$][\w$]*)}/g, (match, key) => match === "{{" ? "{" : match === "}}" ? "}" : typeof values[key] === "string" ? values[key] : JSON.stringify(values[key], null, 2));
 };
 const checkpoint = input => rpc("checkpoint", [input]).then(unwrap);
+// The human is a callable participant: human.ask blocks the run until a person
+// picks one of the workflow's own choices. Frozen so a workflow cannot swap the
+// implementation out from under a later call.
+const human = Object.freeze({ ask: input => rpc("human.ask", [input]).then(unwrap) });
 const phase = name => rpc("phase", [name]);
 const log = message => rpc("log", [message]);
 const functionOccurrences = new Map();
@@ -268,7 +272,7 @@ const pipeline = async (operationName, items, stages) => {
   return Object.fromEntries(results.map(result => [result.name, result.value]));
 };
 const safeMath = Object.fromEntries(Object.getOwnPropertyNames(Math).filter(name => name !== "random").map(name => [name, Math[name]]));
-const sandbox = { agent, shell, withWorktree: rejectWorktree, prompt, checkpoint, parallel, pipeline, phase, log, args: config.args, Promise, JSON, Math: Object.freeze(safeMath) };
+const sandbox = { agent, shell, withWorktree: rejectWorktree, prompt, checkpoint, human, parallel, pipeline, phase, log, args: config.args, Promise, JSON, Math: Object.freeze(safeMath) };
 for (const [name, fn] of Object.entries(functions)) Object.defineProperty(sandbox, name, { value: fn, writable: false, configurable: false });
 for (const name of ["Date","eval","Function","WebAssembly","process","require","module","exports","console","fetch","XMLHttpRequest","WebSocket","performance","crypto","setTimeout","setInterval","setImmediate","queueMicrotask","Intl","SharedArrayBuffer","Atomics"]) sandbox[name] = undefined;
 const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
@@ -488,6 +492,21 @@ export function runWorkflow(script: string, args: JsonValue = null, bridge: Work
           const result = await bridge.checkpoint(values[0], controller.signal);
           if (typeof result !== "boolean") fail("INTERNAL_ERROR", "checkpoint must return a boolean");
           value = branded({ name, ok: true, value: result ? "approved" : "rejected" });
+        } catch (error) {
+          const typed = asWorkflowError(error);
+          if (!OUTCOME_ERRORS.has(typed.code)) throw typed;
+          value = branded({ name, ok: false, failedAt: name, error: { code: typed.code, message: typed.message, ...(isWorkflowAuthored(typed) ? { authored: true } : {}) } });
+        }
+      } else if (method === "human.ask") {
+        // Same branded work-result envelope as checkpoint, so a cancelled or
+        // failed question surfaces through the workflow's normal failure path
+        // instead of resolving to a fake answer.
+        if (!bridge.humanAsk || !object(values[0])) fail("INTERNAL_ERROR", "human.ask requires an available bridge and object input");
+        const name = typeof values[0].name === "string" ? values[0].name : "human.ask";
+        try {
+          const result = await bridge.humanAsk(values[0], controller.signal);
+          if (typeof result !== "string") fail("INTERNAL_ERROR", "human.ask must return a string");
+          value = branded({ name, ok: true, value: result });
         } catch (error) {
           const typed = asWorkflowError(error);
           if (!OUTCOME_ERRORS.has(typed.code)) throw typed;
