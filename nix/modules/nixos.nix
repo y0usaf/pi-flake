@@ -74,7 +74,7 @@ in {
       rtk = mkEnableOption "pi-rtk extension";
       aphrodite = mkEnableOption "pi-aphrodite Aphrodite CCR tool-output compression extension";
       minimal = mkEnableOption "pi-minimal compact rendering and borderless editor extension";
-      interview = mkEnableOption "pi-interview ask-user questionnaire and auto-answer extension";
+      interview = mkEnableOption "pi-interview ask-user questionnaire extension";
       "tool-management" = mkEnableOption "pi-tool-management persistent disabled-tools UI extension";
       "extension-management" = mkEnableOption "pi-extension-management persistent disabled-extensions UI extension";
       webfetch = mkEnableOption "pi-webfetch extension";

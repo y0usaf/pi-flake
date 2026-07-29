@@ -1,30 +1,69 @@
-import type { ThinkingLevel } from "@earendil-works/pi-ai";
-import {
-	type ExtensionAPI,
-	type ExtensionCommandContext,
-	type ExtensionContext,
-	keyHint,
-} from "@earendil-works/pi-coding-agent";
-import { Container, Spacer, Text } from "@earendil-works/pi-tui";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
+import { Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { configPath, loadConfig, parseBoolean, saveConfig } from "./config.js";
-import { buildAutoAnswerContext } from "./context.js";
-import { createJudgmentAnswers, normalizeQuestions } from "./protocol.js";
-import { runAutoAnswerer } from "./answerer.js";
-import { runWithLoader } from "./loader.js";
-import { runQuestionnaire } from "./questionnaire.js";
 import {
-	INTERVIEW_REASONING_LEVELS,
-	type InterviewAnswer,
-	type InterviewConfig,
-	type InterviewMode,
-	type InterviewQuestion,
-	type InterviewToolDetails,
-	type QuestionnaireResult,
+	CONFIG_FIELD_NAMES,
+	CONFIG_FIELDS,
+	DEFAULT_CONFIG,
+	normalizeConfig,
+	setConfigField,
+} from "./config.js";
+import { buildToolResult, findDanglingToolCalls, hasRecoveryMessage, insertToolResults } from "./durability.js";
+import { createJudgmentAnswers, normalizeQuestions } from "./protocol.js";
+import { runQuestionnaire } from "./questionnaire.js";
+import type {
+	AnswerSource,
+	InterviewAnswer,
+	InterviewConfig,
+	InterviewMode,
+	InterviewQuestion,
+	InterviewToolDetails,
+	QuestionnaireResult,
 } from "./types.js";
 
 const TOOL_NAME = "interview_user";
 const STATUS_KEY = "pi-interview";
+/** customType of the message that carries answers recovered after a restart. */
+const RECOVERY_TYPE = "pi-interview";
+
+const INTERRUPTED_TEXT = `[PI INTERVIEW INTERRUPTED]
+The questionnaire was still open when the session ended, so no answers were recorded. Continue with best judgment and do not repeat the same questions unless work is blocked.`;
+
+const RECOVERED_TEXT = `[PI INTERVIEW INTERRUPTED]
+The questionnaire was still open when the session ended. The user answered it after restarting; those answers appear in a later message in this conversation.`;
+
+interface ConfigLoadResult {
+	config: InterviewConfig;
+	error?: string;
+}
+
+function configPath(): string {
+	return join(getAgentDir(), "interview.json");
+}
+
+function loadConfig(): ConfigLoadResult {
+	const path = configPath();
+	if (!existsSync(path)) return { config: { ...DEFAULT_CONFIG } };
+	try {
+		return { config: normalizeConfig(JSON.parse(readFileSync(path, "utf8"))) };
+	} catch (error) {
+		return {
+			config: { ...DEFAULT_CONFIG },
+			error: `Could not read ${path}: ${error instanceof Error ? error.message : String(error)}`,
+		};
+	}
+}
+
+function saveConfig(config: InterviewConfig): void {
+	const path = configPath();
+	mkdirSync(dirname(path), { recursive: true });
+	const temporaryPath = `${path}.tmp-${process.pid}`;
+	writeFileSync(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+	renameSync(temporaryPath, path);
+}
 
 const QuestionOptionSchema = Type.Object({
 	value: Type.Optional(Type.String({ description: "Stable option value; derived from label when omitted" })),
@@ -49,14 +88,14 @@ const InterviewParams = Type.Object({
 	questions: Type.Array(InterviewQuestionSchema, {
 		minItems: 1,
 		maxItems: 5,
-		description: "Fully composed questionnaire to present unchanged or auto-answer",
+		description: "Fully composed questionnaire to present unchanged",
 	}),
 });
 
 function primaryGuidance(config: InterviewConfig): string {
 	const answerRule =
 		config.mode === "auto"
-			? "Auto mode: compose exactly the questions you would ask the user. A separate inference context answers that same questionnaire using bounded current-session context."
+			? "Auto mode: compose exactly the questions you would ask the user. Every question resolves to “Use your judgment” and returns immediately, so the decision points are recorded in the transcript and you then decide them yourself."
 			: "User-answer mode: the questionnaire is shown to the user and selections return to this tool call.";
 	const strictRule =
 		config.mode === "strict"
@@ -70,17 +109,7 @@ User clarification uses interview_user, following the standard ask-user-question
 - Inspect the repository first when facts are discoverable. Do not ask for facts available through tools or conventional safe defaults.
 - Do not ask free-form clarification questions in assistant prose while interview_user is available.
 - Batch at most ${config.maxQuestions} questions with at most ${Math.max(1, config.maxOptions - 1)} domain options each. Host adds “Use your judgment”; optional free text follows allowOther.
-- Treat returned answers according to their source label: direct user selections are requirements; auto-answers are inferred defaults.${strictRule}`;
-}
-
-function modelRef(config: InterviewConfig): string {
-	return config.provider && config.model ? `${config.provider}/${config.model}` : "not configured";
-}
-
-function formatTokens(count: number): string {
-	if (count < 1000) return String(count);
-	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-	return `${Math.round(count / 1000)}k`;
+- Treat returned answers according to their source label: direct user selections are requirements; judgment answers are yours to decide.${strictRule}`;
 }
 
 function answerLines(questions: readonly InterviewQuestion[], answers: readonly InterviewAnswer[]): string[] {
@@ -91,39 +120,43 @@ function answerLines(questions: readonly InterviewQuestion[], answers: readonly 
 	});
 }
 
-function questionnaireContent(
-	result: QuestionnaireResult,
-	source: "user" | "model" | "fallback",
-	autoModelRef?: string,
-): string {
+const CONTENT_HEADINGS: Record<AnswerSource, { heading: string; instruction: string }> = {
+	user: {
+		heading: "[PI INTERVIEW ANSWERS — selected directly by user]",
+		instruction: "Treat these answers as requirements for current request.",
+	},
+	resumed: {
+		heading: "[PI INTERVIEW ANSWERS — selected directly by user after a session restart]",
+		instruction:
+			"The questionnaire above was interrupted; these are the user's answers to it. Treat them as requirements and resume the interrupted work.",
+	},
+	judgment: {
+		heading: "[PI INTERVIEW — auto mode, no user input collected]",
+		instruction:
+			"Auto mode recorded these decision points without asking anyone. Decide each one yourself using available evidence and conventional reversible defaults.",
+	},
+	interrupted: {
+		heading: "[PI INTERVIEW INTERRUPTED]",
+		instruction: "Continue with best judgment.",
+	},
+};
+
+function questionnaireContent(result: QuestionnaireResult, source: AnswerSource): string {
 	if (result.cancelled) {
-		return `[PI INTERVIEW ANSWERS]\nUser cancelled the questionnaire. Continue with best judgment and avoid repeating the same questions unless work is blocked.`;
+		return "[PI INTERVIEW ANSWERS]\nUser cancelled the questionnaire. Continue with best judgment and avoid repeating the same questions unless work is blocked.";
 	}
-	const heading =
-		source === "user"
-			? "[PI INTERVIEW ANSWERS — selected directly by user]"
-			: source === "model"
-				? `[PI INTERVIEW AUTO-ANSWERS — selected by ${autoModelRef ?? "configured model"}]`
-				: "[PI INTERVIEW AUTO-ANSWER FALLBACK]";
-	const instruction =
-		source === "user"
-			? "Treat these answers as requirements for current request."
-			: source === "model"
-				? "Use these model-inferred answers as resolved defaults for current request; they are not direct user statements."
-				: "Auto-answer inference failed. Continue using primary-agent judgment for these decisions.";
+	const { heading, instruction } = CONTENT_HEADINGS[source];
 	return `${heading}\n${answerLines(result.questions, result.answers).join("\n\n")}\n\n${instruction}`;
 }
-
 
 function renderSummary(
 	details: InterviewToolDetails | undefined,
 	fallback: string,
 	theme: ExtensionContext["ui"]["theme"],
-	expanded: boolean,
 ): Container {
 	const container = new Container();
-	const title = details?.answerSource === "model" ? "Interview · auto" : details?.answerSource === "fallback" ? "Interview · fallback" : "Interview";
-	const titleColor = details?.error ? "warning" : details?.cancelled ? "warning" : "toolTitle";
+	const title = details?.answerSource === "judgment" ? "Interview · auto" : "Interview";
+	const titleColor = details?.error || details?.cancelled ? "warning" : "toolTitle";
 	container.addChild(new Text(theme.fg(titleColor, theme.bold(title)), 0, 0));
 	if (details?.error) {
 		container.addChild(new Text(theme.fg("warning", details.message ?? fallback), 0, 0));
@@ -144,82 +177,25 @@ function renderSummary(
 	} else if (!details?.error) {
 		container.addChild(new Text(fallback, 0, 0));
 	}
-	if (expanded && details?.modelRef) {
-		container.addChild(new Spacer(1));
-		let footer = details.modelRef;
-		if (details.usage) {
-			footer += ` · ↑${formatTokens(details.usage.inputTokens)} ↓${formatTokens(details.usage.outputTokens)}`;
-			if (details.usage.attempts > 1) footer += ` · ${details.usage.attempts} attempts`;
-		}
-		container.addChild(new Text(theme.fg("dim", footer), 0, 0));
-	}
 	return container;
 }
 
-function parseModelRef(value: string): { provider: string; model: string } | undefined {
-	const slash = value.indexOf("/");
-	if (slash <= 0 || slash === value.length - 1) return undefined;
-	return { provider: value.slice(0, slash), model: value.slice(slash + 1) };
-}
-
-async function selectModel(
-	ctx: ExtensionCommandContext,
-	requested?: string,
-): Promise<{ provider: string; model: string } | undefined> {
-	if (requested?.trim()) {
-		const parsed = parseModelRef(requested.trim());
-		if (!parsed) {
-			ctx.ui.notify("Use provider/model, e.g. anthropic/claude-haiku-4-5", "warning");
-			return undefined;
-		}
-		if (!ctx.modelRegistry.find(parsed.provider, parsed.model)) {
-			ctx.ui.notify(`Model ${parsed.provider}/${parsed.model} not found`, "error");
-			return undefined;
-		}
-		return parsed;
-	}
-
-	try {
-		await ctx.modelRegistry.refresh();
-	} catch {
-		// Existing snapshot may still be usable.
-	}
-	const choices = ctx.modelRegistry
-		.getAvailable()
-		.map((model) => `${model.provider}/${model.id}`)
-		.sort((left, right) => left.localeCompare(right));
-	if (choices.length === 0) {
-		ctx.ui.notify("No authenticated models available. Run /login first.", "error");
-		return undefined;
-	}
-	const selected = await ctx.ui.select("Select auto-answer model", choices);
-	return selected ? parseModelRef(selected) : undefined;
-}
-
 function configStatus(config: InterviewConfig): string {
+	const fields = CONFIG_FIELD_NAMES.map((name) => `${name}: ${config[name]} (${CONFIG_FIELDS[name].help})`);
 	return [
 		`pi-interview: ${config.mode}`,
-		`Auto-answer model: ${modelRef(config)}`,
-		`Reasoning: ${config.reasoning}`,
-		`Questions/options: ${config.maxQuestions}/${config.maxOptions}`,
-		`Recent messages shared for auto-answer: ${config.maxContextMessages}`,
-		`Session-context budget: ${config.maxContextChars} chars (questionnaire excluded)`,
-		`Project context files: ${config.includeContextFiles ? "shared for auto-answer" : "not shared"}`,
-		`Timeout: ${config.timeoutMs}ms`,
+		...fields,
 		`Config: ${configPath()}`,
 		"",
-		"manual: main model asks when needed; user answers.",
-		"auto: main model asks when needed; separate model answers.",
-		"strict: main model must ask every request; user answers.",
+		"manual: main model asks when needed; you answer.",
+		"auto:   main model asks when needed; every question resolves to “Use your judgment”.",
+		"strict: main model must ask every request; you answer.",
 	].join("\n");
 }
 
 export default function piInterview(pi: ExtensionAPI): void {
 	let loaded = loadConfig();
 	let config = loaded.config;
-	let currentPrompt = "Current user request";
-	let currentContextFiles: unknown;
-	let currentImageCount = 0;
 
 	function applyModeState(ctx: ExtensionContext): void {
 		const active = pi.getActiveTools();
@@ -228,8 +204,10 @@ export default function piInterview(pi: ExtensionAPI): void {
 		if (!canRun && active.includes(TOOL_NAME)) {
 			pi.setActiveTools(active.filter((name) => name !== TOOL_NAME));
 		}
-		const status = config.mode === "auto" ? `interview:auto · ${modelRef(config)}` : `interview:${config.mode}`;
-		ctx.ui.setStatus(STATUS_KEY, config.mode === "off" ? undefined : ctx.ui.theme.fg("accent", status));
+		ctx.ui.setStatus(
+			STATUS_KEY,
+			config.mode === "off" ? undefined : ctx.ui.theme.fg("accent", `interview:${config.mode}`),
+		);
 	}
 
 	function persist(next: InterviewConfig, ctx: ExtensionContext): boolean {
@@ -239,19 +217,61 @@ export default function piInterview(pi: ExtensionAPI): void {
 			applyModeState(ctx);
 			return true;
 		} catch (error) {
-			ctx.ui.notify(`Could not save pi-interview config: ${error instanceof Error ? error.message : String(error)}`, "error");
+			ctx.ui.notify(
+				`Could not save pi-interview config: ${error instanceof Error ? error.message : String(error)}`,
+				"error",
+			);
 			return false;
 		}
+	}
+
+	function judgmentResult(questions: InterviewQuestion[]): QuestionnaireResult {
+		return { questions, answers: createJudgmentAnswers(questions), cancelled: false };
+	}
+
+	/**
+	 * Finish a questionnaire that was still open when the previous process died.
+	 *
+	 * The questions are not stored anywhere by this extension: pi already
+	 * persisted them inside the arguments of the tool call itself, so they are
+	 * read back out of the session. The answers are delivered as a pi custom
+	 * message, which pi persists, which is what makes them survive a second
+	 * restart without a sidecar file.
+	 */
+	async function resumeInterrupted(ctx: ExtensionContext): Promise<void> {
+		if (config.mode !== "manual" && config.mode !== "strict") return;
+		if (!ctx.hasUI) return;
+		const messages = ctx.sessionManager.buildContextEntries().flatMap(sessionEntryToContextMessages);
+		const pending = findDanglingToolCalls(messages, TOOL_NAME).filter(
+			(call) => !hasRecoveryMessage(messages, RECOVERY_TYPE, call.toolCallId),
+		);
+		const call = pending.at(-1);
+		if (!call) return;
+		const raw = call.arguments.questions;
+		const questions = normalizeQuestions(Array.isArray(raw) ? raw : [], config);
+		if (questions.length === 0) return;
+
+		ctx.ui.notify("Interview was interrupted by a restart — finishing it now", "info");
+		const result = await runQuestionnaire(ctx, questions);
+		if (result.cancelled || result.answers.length === 0) return;
+		pi.sendMessage(
+			{
+				customType: RECOVERY_TYPE,
+				content: questionnaireContent(result, "resumed"),
+				display: true,
+				details: { toolCallId: call.toolCallId },
+			},
+			{ triggerTurn: true },
+		);
 	}
 
 	pi.on("session_start", (_event, ctx) => {
 		loaded = loadConfig();
 		config = loaded.config;
-		currentPrompt = "Current user request";
-		currentContextFiles = undefined;
-		currentImageCount = 0;
 		applyModeState(ctx);
 		if (loaded.error && ctx.hasUI) ctx.ui.notify(loaded.error, "error");
+		// Deliberately not awaited: startup must not block on an overlay.
+		void resumeInterrupted(ctx);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
@@ -259,19 +279,44 @@ export default function piInterview(pi: ExtensionAPI): void {
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
-		currentPrompt = event.prompt;
-		currentContextFiles = event.systemPromptOptions.contextFiles;
-		currentImageCount = event.images?.length ?? 0;
 		if (config.mode === "off") return;
 		if ((config.mode === "manual" || config.mode === "strict") && !ctx.hasUI) return;
 		return { systemPrompt: `${event.systemPrompt}\n\n${primaryGuidance(config)}` };
+	});
+
+	/**
+	 * Repair tool calls left unanswered by a dead process.
+	 *
+	 * Pi writes the assistant message holding a tool call before the tool runs
+	 * and the result only when it returns, and repairs nothing on load, so an
+	 * interrupted questionnaire ships a `tool_use` block with no `tool_result`
+	 * and the provider rejects the turn. `ctx.sessionManager` is read-only, so
+	 * this hook — the one place a message list can be rewritten — supplies the
+	 * missing result on every request instead.
+	 */
+	pi.on("context", (event) => {
+		const dangling = findDanglingToolCalls(event.messages, TOOL_NAME);
+		if (dangling.length === 0) return;
+		const inserts = dangling.map((call) => {
+			const recovered = hasRecoveryMessage(event.messages, RECOVERY_TYPE, call.toolCallId);
+			return {
+				afterIndex: call.messageIndex,
+				message: buildToolResult(
+					call.toolCallId,
+					TOOL_NAME,
+					recovered ? RECOVERED_TEXT : INTERRUPTED_TEXT,
+					!recovered,
+				) as (typeof event.messages)[number],
+			};
+		});
+		return { messages: insertToolResults(event.messages, inserts) };
 	});
 
 	pi.registerTool({
 		name: TOOL_NAME,
 		label: "Interview user",
 		description:
-			"Ask one or more structured multiple-choice questions composed by the main-session model. Depending on /interview mode, answers come from the user or a separate auto-answer inference.",
+			"Ask one or more structured multiple-choice questions composed by the main-session model. Depending on /interview mode, answers come from the user or resolve to “Use your judgment”.",
 		promptSnippet: "interview_user({ questions }): ask a structured questionnaire composed in the main session",
 		promptGuidelines: [
 			"Use interview_user when a user-owned decision materially changes implementation, scope, compatibility, risk, or UX.",
@@ -292,70 +337,21 @@ export default function piInterview(pi: ExtensionAPI): void {
 			const questions = normalizeQuestions(params.questions, config);
 			if (questions.length === 0) throw new Error("interview_user requires at least one valid question with options");
 
-			if (config.mode === "auto") {
-				const packet = buildAutoAnswerContext(
-					ctx,
-					config,
-					currentPrompt,
-					questions,
-					currentContextFiles,
-					currentImageCount,
-				);
-				const run = await runWithLoader(
-					ctx,
-					`Auto-answering with ${modelRef(config)}…`,
-					(taskSignal) => runAutoAnswerer(ctx, config, packet, questions, taskSignal),
-					signal,
-				);
-				if (run.status !== "ok") {
-					const message = run.status === "cancelled" ? "Auto-answer cancelled" : run.error;
-					const answers = createJudgmentAnswers(questions);
-					const questionnaire = { questions, answers, cancelled: false };
-					return {
-						content: [
-							{
-								type: "text",
-								text: `${questionnaireContent(questionnaire, "fallback")}\n\nAuto-answer unavailable: ${message}`,
-							},
-						],
-						details: {
-							mode: config.mode,
-							answerSource: "fallback",
-							modelRef: modelRef(config),
-							questions,
-							answers,
-							cancelled: false,
-							error: run.status,
-							message,
-						} as InterviewToolDetails,
-					};
-				}
-				const questionnaire = { questions, answers: run.value.answers, cancelled: false };
+			if (config.mode === "auto" || !ctx.hasUI) {
+				const result = judgmentResult(questions);
+				const note = ctx.hasUI ? "" : "\n\nInteractive UI unavailable, so nobody was asked.";
 				return {
-					content: [{ type: "text", text: questionnaireContent(questionnaire, "model", run.value.modelRef) }],
+					content: [{ type: "text", text: `${questionnaireContent(result, "judgment")}${note}` }],
 					details: {
 						mode: config.mode,
-						answerSource: "model",
-						modelRef: run.value.modelRef,
+						answerSource: "judgment",
 						questions,
-						answers: run.value.answers,
+						answers: result.answers,
 						cancelled: false,
-						usage: run.value.usage,
 					} as InterviewToolDetails,
 				};
 			}
 
-			if (!ctx.hasUI) {
-				return {
-					content: [{ type: "text", text: "Interactive UI unavailable. Continue using best judgment." }],
-					details: {
-						mode: config.mode,
-						error: "ui_unavailable",
-						message: "Interactive UI unavailable",
-						questions,
-					} as InterviewToolDetails,
-				};
-			}
 			const questionnaire = await runQuestionnaire(ctx, questions, signal);
 			return {
 				content: [{ type: "text", text: questionnaireContent(questionnaire, "user") }],
@@ -376,41 +372,25 @@ export default function piInterview(pi: ExtensionAPI): void {
 				0,
 			);
 		},
-		renderResult(result, { expanded, isPartial }, theme) {
+		renderResult(result, { isPartial }, theme) {
 			if (isPartial) return new Text(theme.fg("muted", "Interviewing…"), 0, 0);
 			const fallback = result.content[0]?.type === "text" ? result.content[0].text : "(no result)";
-			const details = result.details as InterviewToolDetails | undefined;
-			const container = renderSummary(details, fallback, theme, expanded);
-			if (!expanded && details?.modelRef && details.answers?.length) {
-				container.addChild(new Text(theme.fg("dim", keyHint("app.tools.expand", "for model + usage")), 0, 0));
-			}
-			return container;
+			return renderSummary(result.details as InterviewToolDetails | undefined, fallback, theme);
 		},
 	});
 
 	pi.registerCommand("interview", {
-		description: "Manage ask-user interviews: manual, auto, strict, off, model, config",
+		description: "Manage ask-user interviews: manual, auto, strict, off, config",
 		getArgumentCompletions: (prefix) => {
 			const trimmed = prefix.trim();
 			if (!trimmed.includes(" ")) {
-				const values = ["manual", "auto", "strict", "off", "model", "config"];
-				const matches = values.filter((value) => value.startsWith(trimmed));
+				const matches = ["manual", "auto", "strict", "off", "config"].filter((value) => value.startsWith(trimmed));
 				return matches.length ? matches.map((value) => ({ value, label: value })) : null;
 			}
 			const parts = trimmed.split(/\s+/);
 			if (parts[0] === "config" && parts.length <= 2) {
-				const values = [
-					"reasoning=",
-					"maxTokens=",
-					"maxQuestions=",
-					"maxOptions=",
-					"maxContextMessages=",
-					"maxContextChars=",
-					"includeContextFiles=",
-					"timeoutMs=",
-				];
 				const last = parts.at(-1) ?? "";
-				const matches = values.filter((value) => value.startsWith(last));
+				const matches = CONFIG_FIELD_NAMES.map((name) => `${name}=`).filter((value) => value.startsWith(last));
 				return matches.length ? matches.map((value) => ({ value: `config ${value}`, label: value })) : null;
 			}
 			return null;
@@ -419,50 +399,13 @@ export default function piInterview(pi: ExtensionAPI): void {
 			const [command = "", ...tail] = args.trim().split(/\s+/).filter(Boolean);
 			const rest = tail.join(" ");
 
-			if (command === "manual" || command === "strict") {
+			if (command === "manual" || command === "auto" || command === "strict" || command === "off") {
 				if (rest) {
-					ctx.ui.notify(`${command} mode uses direct user answers and does not take a model`, "warning");
+					ctx.ui.notify(`/interview ${command} takes no arguments`, "warning");
 					return;
 				}
-				if (persist({ ...config, mode: command as InterviewMode }, ctx)) {
-					ctx.ui.notify(
-						command === "manual"
-							? "pi-interview manual: main model may ask; user answers"
-							: "pi-interview strict: main model must ask every request; user answers",
-						"info",
-					);
-				}
-				return;
-			}
-
-			if (command === "auto") {
-				let selected = rest ? await selectModel(ctx, rest) : undefined;
-				if (!selected && !rest && config.provider && config.model && ctx.modelRegistry.find(config.provider, config.model)) {
-					selected = { provider: config.provider, model: config.model };
-				}
-				if (!selected && !rest) selected = await selectModel(ctx);
-				if (!selected) return;
-				const next = { ...config, mode: "auto" as const, ...selected };
-				if (!persist(next, ctx)) return;
-				const sameAsPrimary = ctx.model?.provider === selected.provider && ctx.model.id === selected.model;
-				ctx.ui.notify(
-					`pi-interview auto-answer: ${selected.provider}/${selected.model}${sameAsPrimary ? " (same model as primary; separate context)" : ""}`,
-					sameAsPrimary ? "warning" : "info",
-				);
-				return;
-			}
-
-			if (command === "off") {
-				if (persist({ ...config, mode: "off" }, ctx)) ctx.ui.notify("pi-interview disabled", "info");
-				return;
-			}
-
-			if (command === "model") {
-				const selected = await selectModel(ctx, rest || undefined);
-				if (!selected) return;
-				if (persist({ ...config, ...selected }, ctx)) {
-					ctx.ui.notify(`Auto-answer model: ${selected.provider}/${selected.model}`, "info");
-				}
+				if (!persist({ ...config, mode: command as InterviewMode }, ctx)) return;
+				ctx.ui.notify(`pi-interview ${command}`, "info");
 				return;
 			}
 
@@ -472,61 +415,16 @@ export default function piInterview(pi: ExtensionAPI): void {
 					return;
 				}
 				const match = rest.match(/^(\w+)=(.+)$/);
-				if (!match) {
+				if (!match?.[1] || match[2] === undefined) {
 					ctx.ui.notify("Use /interview config key=value", "warning");
 					return;
 				}
-				const key = match[1];
-				const value = match[2];
-				if (!key || value === undefined) {
-					ctx.ui.notify("Use /interview config key=value", "warning");
+				const applied = setConfigField(config, match[1], match[2]);
+				if (!applied.ok) {
+					ctx.ui.notify(applied.error, "warning");
 					return;
 				}
-				const next = { ...config };
-				const integer = /^\d+$/.test(value) ? Number(value) : Number.NaN;
-				switch (key) {
-					case "reasoning":
-						if (!INTERVIEW_REASONING_LEVELS.includes(value as ThinkingLevel)) {
-							ctx.ui.notify(`reasoning: ${INTERVIEW_REASONING_LEVELS.join(", ")}`, "warning");
-							return;
-						}
-						next.reasoning = value as InterviewConfig["reasoning"];
-						break;
-					case "maxTokens":
-						if (!Number.isInteger(integer) || integer < 256 || integer > 16384) return void ctx.ui.notify("maxTokens must be 256-16384", "warning");
-						next.maxTokens = integer;
-						break;
-					case "maxQuestions":
-						if (!Number.isInteger(integer) || integer < 1 || integer > 5) return void ctx.ui.notify("maxQuestions must be 1-5", "warning");
-						next.maxQuestions = integer;
-						break;
-					case "maxOptions":
-						if (!Number.isInteger(integer) || integer < 2 || integer > 7) return void ctx.ui.notify("maxOptions must be 2-7", "warning");
-						next.maxOptions = integer;
-						break;
-					case "maxContextMessages":
-						if (!Number.isInteger(integer) || integer < 0 || integer > 30) return void ctx.ui.notify("maxContextMessages must be 0-30", "warning");
-						next.maxContextMessages = integer;
-						break;
-					case "maxContextChars":
-						if (!Number.isInteger(integer) || integer < 2000 || integer > 100000) return void ctx.ui.notify("maxContextChars must be 2000-100000", "warning");
-						next.maxContextChars = integer;
-						break;
-					case "includeContextFiles": {
-						const parsed = parseBoolean(value);
-						if (parsed === undefined) return void ctx.ui.notify("includeContextFiles must be true/false", "warning");
-						next.includeContextFiles = parsed;
-						break;
-					}
-					case "timeoutMs":
-						if (!Number.isInteger(integer) || integer < 5000 || integer > 180000) return void ctx.ui.notify("timeoutMs must be 5000-180000", "warning");
-						next.timeoutMs = integer;
-						break;
-					default:
-						ctx.ui.notify("Unknown config key. Run /interview config for current settings.", "warning");
-						return;
-				}
-				if (persist(next, ctx)) ctx.ui.notify(`pi-interview: ${key}=${value}`, "info");
+				if (persist(applied.config, ctx)) ctx.ui.notify(`pi-interview: ${match[1]}=${match[2]}`, "info");
 				return;
 			}
 

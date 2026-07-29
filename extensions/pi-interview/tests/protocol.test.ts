@@ -1,11 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-	createJudgmentAnswers,
-	normalizeCustomAnswer,
-	normalizeQuestions,
-	parseAutoAnswers,
-	USE_JUDGMENT_VALUE,
-} from "../src/protocol.ts";
+import { createJudgmentAnswers, normalizeCustomAnswer, normalizeQuestions, USE_JUDGMENT_VALUE } from "../src/protocol.ts";
 
 const limits = { maxQuestions: 3, maxOptions: 5 };
 
@@ -86,33 +80,8 @@ describe("normalizeCustomAnswer", () => {
 	});
 });
 
-describe("parseAutoAnswers", () => {
-	test("maps selected values and custom answers to questionnaire result shape", () => {
-		const questions = sampleQuestions();
-		const result = parseAutoAnswers(
-			'```json\n{"answers":[{"id":"api-scope","value":"internal"},{"id":"target","custom":"Linux only"}]}\n```',
-			questions,
-		);
-		expect(result.ok).toBe(true);
-		if (!result.ok) return;
-		expect(result.answers).toEqual([
-			{ id: "api-scope", value: "internal", label: "Internal only", wasCustom: false, index: 2 },
-			{ id: "target", value: "Linux only", label: "Linux only", wasCustom: true },
-		]);
-	});
-
-	test("rejects missing or unknown answers", () => {
-		const questions = sampleQuestions();
-		expect(parseAutoAnswers('{"answers":[]}', questions).ok).toBe(false);
-		expect(
-			parseAutoAnswers(
-				'{"answers":[{"id":"api-scope","value":"unknown"},{"id":"target","value":"portable"}]}',
-				questions,
-			).ok,
-		).toBe(false);
-	});
-
-	test("creates explicit use-judgment fallback answers", () => {
+describe("createJudgmentAnswers", () => {
+	test("answers every question with the host judgment option", () => {
 		const answers = createJudgmentAnswers(sampleQuestions());
 		expect(answers).toHaveLength(2);
 		expect(answers.every((answer) => answer.value === USE_JUDGMENT_VALUE)).toBe(true);

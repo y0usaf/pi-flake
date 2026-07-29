@@ -1,99 +1,62 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import {
-	INTERVIEW_MODES,
-	INTERVIEW_REASONING_LEVELS,
-	type InterviewConfig,
-	type InterviewMode,
-	type InterviewReasoning,
-} from "./types.js";
+import { INTERVIEW_MODES, type InterviewConfig, type InterviewMode } from "./types.js";
+
+/**
+ * Pure configuration core: no file system, no pi imports, no I/O.
+ * Reading and writing interview.json lives in index.ts, the imperative shell.
+ *
+ * Every tunable field is declared once here. Defaults, ranges, help text, the
+ * `/interview config` parser, and the completion list all read this table, so a
+ * range can never disagree with itself.
+ */
+export const CONFIG_FIELDS = {
+	maxQuestions: { default: 3, min: 1, max: 5, help: "questions per questionnaire" },
+	maxOptions: { default: 5, min: 2, max: 7, help: "options per question, including “Use your judgment”" },
+} as const;
+
+export type ConfigFieldName = keyof typeof CONFIG_FIELDS;
+
+export const CONFIG_FIELD_NAMES = Object.keys(CONFIG_FIELDS) as ConfigFieldName[];
 
 export const DEFAULT_CONFIG: InterviewConfig = {
 	mode: "off",
-	provider: "",
-	model: "",
-	reasoning: "low",
-	maxTokens: 4096,
-	maxQuestions: 3,
-	maxOptions: 5,
-	maxContextMessages: 8,
-	maxContextChars: 24000,
-	includeContextFiles: false,
-	timeoutMs: 45000,
+	maxQuestions: CONFIG_FIELDS.maxQuestions.default,
+	maxOptions: CONFIG_FIELDS.maxOptions.default,
 };
 
-export interface ConfigLoadResult {
-	config: InterviewConfig;
-	error?: string;
-}
+export type ConfigFieldResult = { ok: true; config: InterviewConfig } | { ok: false; error: string };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function integerInRange(value: unknown, fallback: number, min: number, max: number): number {
-	return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : fallback;
-}
-
-function normalize(raw: unknown): InterviewConfig {
-	if (!isRecord(raw)) return { ...DEFAULT_CONFIG };
-	return {
-		mode: INTERVIEW_MODES.includes(raw.mode as InterviewMode) ? (raw.mode as InterviewMode) : DEFAULT_CONFIG.mode,
-		provider: typeof raw.provider === "string" ? raw.provider.trim() : DEFAULT_CONFIG.provider,
-		model: typeof raw.model === "string" ? raw.model.trim() : DEFAULT_CONFIG.model,
-		reasoning: INTERVIEW_REASONING_LEVELS.includes(raw.reasoning as InterviewReasoning)
-			? (raw.reasoning as InterviewReasoning)
-			: DEFAULT_CONFIG.reasoning,
-		maxTokens: integerInRange(raw.maxTokens, DEFAULT_CONFIG.maxTokens, 256, 16384),
-		maxQuestions: integerInRange(raw.maxQuestions, DEFAULT_CONFIG.maxQuestions, 1, 5),
-		maxOptions: integerInRange(raw.maxOptions, DEFAULT_CONFIG.maxOptions, 2, 7),
-		maxContextMessages: integerInRange(raw.maxContextMessages, DEFAULT_CONFIG.maxContextMessages, 0, 30),
-		maxContextChars: integerInRange(raw.maxContextChars, DEFAULT_CONFIG.maxContextChars, 2000, 100000),
-		includeContextFiles:
-			typeof raw.includeContextFiles === "boolean" ? raw.includeContextFiles : DEFAULT_CONFIG.includeContextFiles,
-		timeoutMs: integerInRange(raw.timeoutMs, DEFAULT_CONFIG.timeoutMs, 5000, 180000),
-	};
-}
-
-export function configPath(): string {
-	return join(getAgentDir(), "interview.json");
-}
-
-export function loadConfig(): ConfigLoadResult {
-	const path = configPath();
-	if (!existsSync(path)) return { config: { ...DEFAULT_CONFIG } };
-	try {
-		return { config: normalize(JSON.parse(readFileSync(path, "utf8"))) };
-	} catch (error) {
-		return {
-			config: { ...DEFAULT_CONFIG },
-			error: `Could not read ${path}: ${error instanceof Error ? error.message : String(error)}`,
-		};
+/** Coerce anything read off disk into a valid config. Unknown keys are dropped. */
+export function normalizeConfig(raw: unknown): InterviewConfig {
+	const source = isRecord(raw) ? raw : {};
+	const config = { ...DEFAULT_CONFIG };
+	config.mode = INTERVIEW_MODES.includes(source.mode as InterviewMode)
+		? (source.mode as InterviewMode)
+		: DEFAULT_CONFIG.mode;
+	for (const name of CONFIG_FIELD_NAMES) {
+		const field = CONFIG_FIELDS[name];
+		const value = source[name];
+		config[name] =
+			typeof value === "number" && Number.isInteger(value) && value >= field.min && value <= field.max
+				? value
+				: field.default;
 	}
+	return config;
 }
 
-export function saveConfig(config: InterviewConfig): void {
-	const path = configPath();
-	mkdirSync(dirname(path), { recursive: true });
-	const temporaryPath = `${path}.tmp-${process.pid}`;
-	writeFileSync(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-	renameSync(temporaryPath, path);
-}
-
-export function parseBoolean(value: string): boolean | undefined {
-	switch (value.trim().toLowerCase()) {
-		case "true":
-		case "on":
-		case "yes":
-		case "1":
-			return true;
-		case "false":
-		case "off":
-		case "no":
-		case "0":
-			return false;
-		default:
-			return undefined;
+/** Apply one `key=value` edit. Returns a new config or an error string. */
+export function setConfigField(config: InterviewConfig, key: string, value: string): ConfigFieldResult {
+	if (!CONFIG_FIELD_NAMES.includes(key as ConfigFieldName)) {
+		return { ok: false, error: `Unknown key ${key}. Known keys: ${CONFIG_FIELD_NAMES.join(", ")}` };
 	}
+	const name = key as ConfigFieldName;
+	const field = CONFIG_FIELDS[name];
+	const parsed = /^\d+$/.test(value.trim()) ? Number(value.trim()) : Number.NaN;
+	if (!Number.isInteger(parsed) || parsed < field.min || parsed > field.max) {
+		return { ok: false, error: `${name} must be ${field.min}-${field.max}` };
+	}
+	return { ok: true, config: { ...config, [name]: parsed } };
 }
