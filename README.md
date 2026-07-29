@@ -74,7 +74,6 @@ Flake `inputs` cannot pass arbitrary booleans into another flake's outputs. Use 
       extensionFlags = {
         "gecko-websearch" = false;
         rtk = false;
-        minimal = true;
         interview = true;
         "tool-management" = false;
         webfetch = true;
@@ -113,7 +112,6 @@ Only flags set to `true` are copied into the bundled wrapper.
 
             # Option 2: selected bundled extensions
             # extensions = {
-            #   minimal = true;
             #   interview = true;
             #   # tool-management = true; # persistent disabled-tools menu/UI
             #   webfetch = true;
