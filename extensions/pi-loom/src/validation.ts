@@ -1,14 +1,14 @@
 import { atomicWriteFile } from "./persistence.js";
 import { mkdirSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as acorn from "acorn";
 import { Script } from "node:vm";
 import { Value } from "typebox/value";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { WorkflowError } from "./types.js";
-import type { AgentDefinition, AgentResourceExclusions, AgentResourcePolicy, CheckpointInput, HumanAskInput, HumanEditInput, HumanReviewInput, JsonSchema, JsonValue, LaunchSnapshot, PreflightCapabilities, PreflightResult, ShellOptions, StaticWorkflowCall, StaticWorkflowExecution, StaticWorkflowScope, ValidatedWorkflowLaunch, WorkflowCallKind, WorkflowErrorCode, WorkflowExtensionMetadata, WorkflowExtensionSettings, WorkflowMetadata, WorkflowRoleDirectoryRegistration, WorkflowSettings, WorkflowSettingsOverrides, WorkflowSettingsResolution, WorkflowSettingsSources, WorkflowValidationContext, WorkflowValidationParameters } from "./types.js";
+import type { AgentDefinition, AgentResourceExclusions, AgentResourcePolicy, CheckpointInput, DryRunInput, HumanAskInput, HumanEditInput, HumanReviewInput, JsonSchema, JsonValue, LaunchSnapshot, PreflightCapabilities, PreflightResult, ShellOptions, StaticWorkflowCall, StaticWorkflowExecution, StaticWorkflowScope, ValidatedWorkflowLaunch, WorkflowCallKind, WorkflowErrorCode, WorkflowExtensionMetadata, WorkflowExtensionSettings, WorkflowMetadata, WorkflowRoleDirectoryRegistration, WorkflowSettings, WorkflowSettingsOverrides, WorkflowSettingsResolution, WorkflowSettingsSources, WorkflowValidationContext, WorkflowValidationParameters } from "./types.js";
 import type { WorkflowRegistryApi } from "./registry.js";
 import { registeredWorkflowRoleDirectoryRegistrations } from "./registry.js";
 import { STAGE_ENTRY_POINT, STAGE_INTERNAL_PREFIX, STAGE_NAMES } from "./stages.js";
@@ -30,6 +30,18 @@ export function validateCheckpoint(value: unknown): CheckpointInput {
   if (Buffer.byteLength(value.prompt) > 1024) fail("INVALID_METADATA", "checkpoint prompt exceeds 1024 UTF-8 bytes");
   if (Buffer.byteLength(JSON.stringify(value.context)) > 4096) fail("INVALID_METADATA", "checkpoint context exceeds 4096 UTF-8 bytes");
   return { name: value.name, prompt: value.prompt, context: value.context };
+}
+
+// dryRun reads a workflow directory and never executes it, but reading is
+// still a capability: the path is held to the same rule as the scaffold
+// stage's `directory`, so a workflow cannot walk out of the project it was
+// launched in to enumerate a home directory. Resolution against the run's cwd
+// happens in the host bridge, which is the only place that knows it.
+export function validateDryRun(value: unknown): DryRunInput {
+  if (!object(value) || Object.keys(value).some((key) => key !== "directory") || typeof value.directory !== "string" || value.directory.trim() === "") fail("INVALID_METADATA", "dryRun requires only a directory string");
+  const directory = value.directory.trim();
+  if (isAbsolute(directory) || directory.split("/").includes("..")) fail("INVALID_METADATA", `dryRun directory must stay inside the project (got: ${directory})`);
+  return { directory };
 }
 
 // human.ask has no static analysis pass: `human.ask(...)` is a MemberExpression
@@ -738,14 +750,28 @@ function hasDynamicAgentRole(node: acorn.AnyNode | undefined): boolean {
   }
   return false;
 }
-export function preflight(script: string, capabilities: PreflightCapabilities, schemas: readonly unknown[] = [], metadata: WorkflowMetadata = { name: "workflow" }, compatibility = false): PreflightResult {
-  const checkedMetadata = validateWorkflowMetadata(metadata);
+/**
+ * The half of preflight that needs nothing but the script text.
+ *
+ * Parse, the three reserved instrumentation identifiers, and the stage-library
+ * collision guard. Split out of `preflight` because a dry run (workflow-
+ * commands.ts) has to ask "would this script load?" without a model list, a
+ * settings path or any of the capability plumbing preflight needs. Same code,
+ * so a scaffolded workflow that passes the dry run cannot fail these same
+ * checks at its first real launch.
+ */
+export function validateWorkflowScriptStructure(script: string): acorn.Program {
   const program = parseWorkflow(script);
   if (hasIdentifier(program, INTERNAL_AGENT_NAME)) fail("INVALID_METADATA", `${INTERNAL_AGENT_NAME} is reserved for workflow agent instrumentation`);
   if (hasIdentifier(program, INTERNAL_WORKTREE_NAME)) fail("INVALID_METADATA", `${INTERNAL_WORKTREE_NAME} is reserved for workflow withWorktree instrumentation`);
   if (hasIdentifier(program, INTERNAL_SHELL_NAME)) fail("INVALID_METADATA", `${INTERNAL_SHELL_NAME} is reserved for workflow shell instrumentation`);
   const stageConflict = stageLibraryConflict(program);
   if (stageConflict) fail("INVALID_METADATA", `${stageConflict} is provided by the loom stage library; rename this top-level declaration. Stages are called as stage("${STAGE_NAMES[0] ?? "plan"}", { ... }); available stages: ${STAGE_NAMES.join(", ")}`);
+  return program;
+}
+export function preflight(script: string, capabilities: PreflightCapabilities, schemas: readonly unknown[] = [], metadata: WorkflowMetadata = { name: "workflow" }, compatibility = false): PreflightResult {
+  const checkedMetadata = validateWorkflowMetadata(metadata);
+  const program = validateWorkflowScriptStructure(script);
   validateDirectPrimitiveReferences(program, "withWorktree");
   validateRemovedWorkflowPrimitives(program, compatibility ? "RESUME_INCOMPATIBLE" : "INVALID_METADATA");
   validateDirectPrimitiveReferences(program, "shell");

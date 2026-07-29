@@ -18,72 +18,97 @@ marker into prose here — the count would lie.
 
 ## Handoff
 
-Last touched: P6b landed and is ticked. The next open item is P6c (`/wf-new`
-dry-run and commit).
+Last touched: P6c-i landed and is ticked. The next open item is P6c-ii
+(`/wf-new` dry-run and commit), which is the consumer of what this step built.
 
-What landed. `workflows/wf-new/` — `command.json`, `wf-new.js`, `README.md` —
-and `nix/checks/loom-wf-new-workflow.sh` with its `flake.nix` entry
-(`checks.pi-loom-wf-new-workflow`). DESIGN.md gained a `/wf-new` section after
-the scaffold-stage section and a gate line on the P6b roadmap entry. No engine
-source changed: P6b is entirely a shipped workflow plus its check.
+What landed. `dryRun({ directory })`: a sandbox global that loads a workflow
+directory the way Pi registers slash commands and launches it once with
+deliberately invalid arguments — no model, no API key, no run. Engine changes:
+`dryRunWorkflowCommand` + `DRY_RUN_ARGUMENTS` in `src/workflow-commands.ts`,
+`validateDryRun` and the extracted `validateWorkflowScriptStructure` in
+`src/validation.ts`, `DryRunInput` and `WorkflowBridge.dryRun` in `src/types.ts`,
+the `dryRun` RPC method and sandbox entry in `src/execution.ts`, `dryRunBridge`
+plus both launch-site wirings in `src/host.ts`, and one line in
+`SANDBOX_GLOBALS` (`src/stages.ts`) so it reaches the generated authoring
+contract. New: `nix/checks/loom-dry-run.sh` and `checks.pi-loom-dry-run`.
+DESIGN.md gained a `dryRun` section after the `/wf-new` section and a split P6c
+roadmap entry. **No workflow calls `dryRun` yet** — that is P6c-ii.
 
-**The interview is structured by the stage, not by conversation: one question
-per scaffold input.** `name` answer → the stage's `name`; `scope` answer → its
-`directory`; `shape` answer → its `context`. Nothing is inferred from the task
-sentence, which is what makes "parks rather than guesses" true by construction
-rather than by discipline.
+**The dry run is the registration path, not a copy of it.** It calls
+`discoverWorkflowCommands`, `validateWorkflowCommandSpec`,
+`workflowCommandUsage` and `parseWorkflowCommandArgs` — the same functions
+`src/host.ts` registers commands with. A hand-written "does this look like a
+workflow?" checker would diverge from the loader the first time the loader
+changed, and the scaffold it blessed would fail at its first real launch.
 
-**`human.ask` offers choices and never a text field, so the name candidates are
-derived from the task's own words.** Filler is dropped, a leading digit gets a
-`wf-` prefix, duplicates collapse, and two constant fallbacks are a floor
-because `human.ask` refuses fewer than two choices. `audit the flake inputs for
-staleness` offers `audit-flake`, `audit-flake-inputs`, `wf-audit`. Derivation is
-deterministic so the check can assert the exact list. Escape hatch for a task
-whose words make bad names: pass `name` in the launch arguments and the naming
-question is skipped — documented, and **not covered by any check**.
+**"Launched with deliberately invalid arguments" stops at the argument gate.**
+`parseWorkflowCommandArgs` rejecting `{"__loomDryRun":true}` is the last thing
+that happens before a run exists, so reaching it proves discovery and usage
+generation. It is *not* a second `loom` process: the sandbox has no binary path,
+and everything past the gate needs a model. A JSON object rather than malformed
+text, because with `argKey` set unparseable text is a valid launch. A command
+whose schema accepts the sentinel reports `rejectedInvalidArguments: false`
+instead of failing.
 
-Gates actually run: `nix build .#checks.x86_64-linux.pi-loom-wf-new-workflow -L`
-(pass); `nix build .#pi-loom-cli` (pass); `biome lint .` via
-`nix run nixpkgs#biome` (exit 0, one pre-existing warning in
-`pi-loom/src/workflow-evals.ts`); `nix flake check -L` (pass, all 30 checks).
+Gates actually run: `nix build .#pi-loom` (pass);
+`nix build .#checks.x86_64-linux.pi-loom-dry-run -L` (pass);
+`nix flake check -L` (pass, all 31 checks, `biome-lint` among them).
 
-**Three negative controls, each a mutated copy of `workflows/wf-new/` in `/tmp`,
-driven through the real check script, never the real tree.** The name question
-replaced by `slugCandidates(task)[0]` → `/wf-new asked something other than the
-naming question first (got: 'Where should /audit-flake be written?')`. The scope
-answer replaced by the stage's default `.pi/workflows` → `the chosen name and
-scope never reached stage("scaffold")`. Filler filtering removed from the
-derivation → `did not offer the candidate names derived from the task`. Each
-mutant exits 1; the clean directory exits 0.
+**Two engine mutants, each reverted from a `/tmp` backup after the run.**
+Replacing `validateWorkflowScriptStructure(readFileSync(...))` with a bare
+`readFileSync` → `a script that redeclares stage was accepted`. Commenting out
+the shadow-clash `fail(...)` → `a name already claimed by an installed root was
+accepted`. Both exit 1; the restored tree exits 0.
 
 Design decisions worth not re-litigating:
 
-- **The interview is the acceptance surface, not decoration.** Every question
-  maps to exactly one `stage("scaffold", ...)` input. Adding a question that
-  maps to nothing puts the run one park away from an answer that changes
-  nothing, which is how interviews become ceremony people route around.
-- **The scope choices are relative paths on purpose.** `__stagePathArg` rejects
-  absolute paths and `..`, so the user-scope agent dir is unreachable from the
-  scaffold stage; the two choices are `.pi/workflows` (project) and `workflows`
-  (this repo's shipped set). A user-scope scaffold would need a different
-  mechanism, not a third choice.
-- **The engine checks the model's homework, and that is the whole point.** The
-  agent returns `{ summary, notes }` and nothing else; every fact in the
-  artifact that can be established from disk is read from disk. Same principle
-  as `exec` reporting git's diff rather than the model's summary of it. Do not
-  add fields to `SCAFFOLD_OUTPUT` that the engine could verify itself.
-- **The scaffold writes into the user's own checkout, like `quick` and unlike
-  `exec`.** The new workflow directory *is* the artifact; hiding it in a scratch
-  worktree would mean the user cannot run the thing that was just written.
+- **`dryRun` is a global, not a stage.** Every stage runs exactly one agent
+  under a fixed output contract; a dry run runs none. `stage("dryrun", ...)`
+  would make the stage list mean two things, and would have forced the
+  `plan, exec, review, quick, scaffold` substring assertion in three check
+  scripts to grow for a step that runs no model.
+- **Shadowing is a failure, not a warning.** The first scan root to claim a name
+  wins, so a scaffold whose name is already taken registers and can still never
+  be launched. Self-comparison is by `specPath`, which is why the bridge
+  resolves the directory to an absolute path before calling.
+- **The script is parsed, never run.** `validateWorkflowScriptStructure` is the
+  half of `preflight` needing only script text (parse, reserved instrumentation
+  identifiers, stage-library collision). Splitting it out means a dry run needs
+  no model list or settings path, and cannot drift from the launch guards.
+- **The path rule is `validateDryRun`, in `src/validation.ts`.** Relative only,
+  no `..`, resolved against the run's cwd by the host bridge — the same rule the
+  scaffold stage's `directory` gets, for the same reason: reading is a
+  capability too.
 - **P6 is split by failure mode, not by file.** Writing the files (P6a), asking
-  the questions (P6b) and proving the result loads (P6c) fail differently, and
-  only P6a is reusable by anything other than `/wf-new`.
+  the questions (P6b), proving the result loads (P6c-i) and committing it
+  (P6c-ii) fail differently; only P6a and P6c-i are reusable by anything other
+  than `/wf-new`.
 - **The picker lives in the router, not the engine**, and offers a choice by
   prefilling `/<name> ` into the editor rather than launching a run: no
   extension API dispatches a slash command.
 
 Traps for the next step:
 
+- **A Node-import check leg is impossible for anything reaching
+  `src/validation.ts`.** It imports `@earendil-works/pi-coding-agent`, a peer
+  dependency that exists only inside a running Pi, so
+  `node --import ...src/workflow-commands.ts` dies with `ERR_MODULE_NOT_FOUND`
+  (the built `dist/` fails the same way). `loom-stages.sh` and
+  `loom-scaffold-stage.sh` get away with it because `src/stages.ts` imports one
+  *type* and nothing else. Anything deeper needs a real `loom` run.
+- **`jq`'s `//` is the alternative operator and treats `false` as empty.**
+  `jq -r '.flag // ""'` turns a real `false` into `""`, so an assertion against
+  `"false"` can never pass — the failure looks like a wrong value, not a wrong
+  accessor. `loom-dry-run.sh` keeps `field()` for strings and adds
+  `flag() { jq -r "(.$1 | tostring)" ...; }` for booleans.
+- **One `loom` run can carry a whole check.** `loom-dry-run.sh` drives eleven
+  scenarios through one probe workflow that launches no agent: the run is the
+  only fixed cost (about ten seconds), each extra scenario is a `try/catch` and
+  one field in the returned artifact. Prefer that over one run per case.
+- **`dryRunWorkflowCommand` scans the *parent* of the directory it is given**,
+  because that is how a workflows root is scanned. Fixtures sharing a parent
+  can shadow each other by name, so `loom-dry-run.sh` gives every fixture its
+  own parent directory.
 - **A parked run is only `awaiting_input` while pi is alive.** `session_shutdown`
   promotes every non-terminal run to `interrupted`
   (`SHUTDOWN_TERMINAL_RUN_STATES`, `src/host.ts:23`), so a harness that reads
@@ -213,19 +238,19 @@ Traps for the next step:
 - **`local a="$1" b="$work/$a"` in one statement fails under `set -u`.** Bash
   does not expose `a` to the rest of its own `local` statement; the error reads
   `name: unbound variable`. Split the declarations.
-- **Stages are visible to a scaffolding agent now, but still not to the chat
-  agent.** `WORKFLOW_AUTHORING_CONTRACT` reaches a model only through the
-  `scaffold` prompt. `workflow_catalog` still lists registered functions and
-  model aliases, not stages, so nothing tells the chat agent in `loom` that
-  `stage(...)` exists. Folding stages into that tool is still an open idea; it
-  is not needed by P6c.
+- **The authoring contract reaches a scaffolding agent, never the chat agent.**
+  `WORKFLOW_AUTHORING_CONTRACT` (stages, and now `dryRun`) is handed to a model
+  only through the `scaffold` prompt. `workflow_catalog` still lists registered
+  functions and model aliases, not stages, so nothing tells the chat agent in
+  `loom` that `stage(...)` or `dryRun(...)` exists. Folding them into that tool
+  is still an open idea; P6c-ii does not need it.
 - **`extensions/pi-loom/skills/pi-extensible-workflows/SKILL.md` is a live,
   owned document** (committed by the user as `9b022f4`). It is where the
   agent-facing docs for `stage(...)`, `exec`, `scaffold`, `/build`, `/quick`,
   `/wf-new`, the router gate, the shell policy and the picker belong. As of this
   step it still describes none of them — check before assuming.
 - **The `next` skill's own doc says `nix flake check` runs 13 checks.** It runs
-  30. Left unedited on purpose (out of scope), but worth a one-word fix next
+  31. Left unedited on purpose (out of scope), but worth a one-word fix next
   time `.pi/skills/next/SKILL.md` is touched for its own sake.
 - **The flake only sees git-tracked files.** A new source or check script that
   is not `git add`ed does not exist inside `nix build`. Stage before building.
@@ -358,9 +383,19 @@ Traps for the next step:
       `interview` phase; `workflows/wf-new/` is the shipped directory and
       `checks.pi-loom-wf-new-workflow` proves the park and the answered path.
       The scaffolded workflow's quality needs a real model — see the handoff.
-- [ ] **P6c — `/wf-new` dry-run and commit.** Launch the new command with
-      invalid arguments to prove discovery and usage without a model, then
-      commit the directory.
+- [x] **P6c-i — `dryRun({ directory })`.** A sandbox global over a host bridge
+      that calls the command-registration path itself — `discoverWorkflow
+      Commands`, `validateWorkflowCommandSpec`, `workflowCommandUsage`,
+      `parseWorkflowCommandArgs` in `src/workflow-commands.ts` — then launches
+      the directory once with deliberately invalid arguments and stops at the
+      gate a real slash command stops at. The script is parsed under the
+      launch-time guards (`validateWorkflowScriptStructure`) and never run;
+      `checks.pi-loom-dry-run` proves one directory that registers, one that
+      declares no schema, and six ways a scaffold would not register, in a
+      single model-free run.
+- [ ] **P6c-ii — `/wf-new` dry-run and commit.** Dry-run the freshly scaffolded
+      directory, then commit it — and report a failure before committing
+      anything when it would not register.
 - [ ] **P7 — ecosystem fill.** `/explore`, `/debug`, `/review`; migrate the
       `ship` and `next` skills to workflows.
 - [ ] **P8 — bare-core CI.** `checks.pi-loom-bare`.

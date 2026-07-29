@@ -180,6 +180,7 @@ const SANDBOX_GLOBALS: readonly string[] = Object.freeze([
   "prompt(template, values) -- fill {placeholder} slots in a template string",
   "shell(command, { timeoutMs }) -- run a command; returns { exitCode, stdout, stderr }",
   "stage(name, input) -- run a reviewed, shared step; the list follows",
+  "dryRun({ directory }) -- load a workflow directory the way Pi registers slash commands, without running it; returns { name, signature, usage, requiredArgs, rejectedInvalidArguments, rejection } and throws with the reason when it would not register",
   "human.ask / human.edit / human.review -- park the run until a person answers",
   "checkpoint(name, value) -- record a resumable point",
   "parallel(tasks) / pipeline(steps) -- fan out, or chain",
