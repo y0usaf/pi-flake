@@ -8,7 +8,7 @@ import { Script } from "node:vm";
 import { Value } from "typebox/value";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { WorkflowError } from "./types.js";
-import type { AgentDefinition, AgentResourceExclusions, AgentResourcePolicy, CheckpointInput, HumanAskInput, HumanEditInput, JsonSchema, JsonValue, LaunchSnapshot, PreflightCapabilities, PreflightResult, ShellOptions, StaticWorkflowCall, StaticWorkflowExecution, StaticWorkflowScope, ValidatedWorkflowLaunch, WorkflowCallKind, WorkflowErrorCode, WorkflowExtensionMetadata, WorkflowExtensionSettings, WorkflowMetadata, WorkflowRoleDirectoryRegistration, WorkflowSettings, WorkflowSettingsOverrides, WorkflowSettingsResolution, WorkflowSettingsSources, WorkflowValidationContext, WorkflowValidationParameters } from "./types.js";
+import type { AgentDefinition, AgentResourceExclusions, AgentResourcePolicy, CheckpointInput, HumanAskInput, HumanEditInput, HumanReviewInput, JsonSchema, JsonValue, LaunchSnapshot, PreflightCapabilities, PreflightResult, ShellOptions, StaticWorkflowCall, StaticWorkflowExecution, StaticWorkflowScope, ValidatedWorkflowLaunch, WorkflowCallKind, WorkflowErrorCode, WorkflowExtensionMetadata, WorkflowExtensionSettings, WorkflowMetadata, WorkflowRoleDirectoryRegistration, WorkflowSettings, WorkflowSettingsOverrides, WorkflowSettingsResolution, WorkflowSettingsSources, WorkflowValidationContext, WorkflowValidationParameters } from "./types.js";
 import type { WorkflowRegistryApi } from "./registry.js";
 import { registeredWorkflowRoleDirectoryRegistrations } from "./registry.js";
 import { annotateModelAliasError, deepFreeze, errorText, fail, jsonValue, modelAliasName, modelCapability, object, parseThinking, positiveInteger, resolveModelReference, unknownModel, validateModelAliases, validateResourcePattern } from "./utils.js";
@@ -19,6 +19,10 @@ export const DEFAULT_SETTINGS: Readonly<WorkflowSettings> = Object.freeze({ conc
 // journal rewrite cost per edit dominates, and a workflow wanting a bigger
 // artifact should hand over a path, not the bytes.
 export const HUMAN_EDIT_TEXT_LIMIT = 65536;
+// A review subject is read, never round-tripped, but it is parked in the same
+// whole-file journal, so it gets the same ceiling for the same reason.
+export const HUMAN_REVIEW_SUBJECT_LIMIT = 65536;
+export const HUMAN_REVIEW_NOTE_LIMIT = 4096;
 
 export function validateCheckpoint(value: unknown): CheckpointInput {
   if (!object(value) || Object.keys(value).some((key) => !["name", "prompt", "context"].includes(key)) || typeof value.name !== "string" || value.name.trim() === "" || typeof value.prompt !== "string" || !jsonValue(value.context)) fail("INVALID_METADATA", "checkpoint requires only name, prompt, and JSON context");
@@ -55,6 +59,32 @@ export function validateHumanEdit(value: unknown): HumanEditInput {
   if (Buffer.byteLength(value.text) > HUMAN_EDIT_TEXT_LIMIT) fail("INVALID_METADATA", `human.edit text exceeds ${String(HUMAN_EDIT_TEXT_LIMIT)} UTF-8 bytes`);
   if (Buffer.byteLength(JSON.stringify(context)) > 4096) fail("INVALID_METADATA", "human.edit context exceeds 4096 UTF-8 bytes");
   return { name: value.name, prompt: value.prompt, text: value.text, context };
+}
+
+// Same dispatch-time enforcement again, and the same 64 KiB ceiling: a review
+// subject is a diff or an artifact, and past that size the workflow should hand
+// over a path for the reviewer to open rather than inline the bytes into the
+// journal. The verdict vocabulary is closed here, not at the UI, so the tool
+// fallback and the picker cannot disagree about what a verdict is.
+export function validateHumanReview(value: unknown): HumanReviewInput {
+  if (!object(value) || Object.keys(value).some((key) => !["name", "prompt", "subject", "context"].includes(key)) || typeof value.name !== "string" || value.name.trim() === "" || typeof value.prompt !== "string" || value.prompt.trim() === "" || typeof value.subject !== "string" || value.subject.trim() === "" || (value.context !== undefined && !jsonValue(value.context))) fail("INVALID_METADATA", "human.review requires name, prompt, subject, and optional JSON context");
+  const context = value.context === undefined ? null : value.context;
+  if (Buffer.byteLength(value.prompt) > 1024) fail("INVALID_METADATA", "human.review prompt exceeds 1024 UTF-8 bytes");
+  if (Buffer.byteLength(value.subject) > HUMAN_REVIEW_SUBJECT_LIMIT) fail("INVALID_METADATA", `human.review subject exceeds ${String(HUMAN_REVIEW_SUBJECT_LIMIT)} UTF-8 bytes`);
+  if (Buffer.byteLength(JSON.stringify(context)) > 4096) fail("INVALID_METADATA", "human.review context exceeds 4096 UTF-8 bytes");
+  return { name: value.name, prompt: value.prompt, subject: value.subject, context };
+}
+
+// A note is prose written by a human at a picker, not a payload a workflow
+// controls, so it is capped well below the subject and normalised to a trimmed
+// string here. An empty note is legal: the workflow decides whether a bare
+// "changes" verdict is enough to act on.
+export function normalizeReviewNote(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value !== "string") fail("INVALID_METADATA", "human.review note must be a string");
+  const note = value.trim();
+  if (Buffer.byteLength(note) > HUMAN_REVIEW_NOTE_LIMIT) fail("INVALID_METADATA", `human.review note exceeds ${String(HUMAN_REVIEW_NOTE_LIMIT)} UTF-8 bytes`);
+  return note;
 }
 
 export function workflowSettingsPath(agentDir = getAgentDir()): string { return join(agentDir, ROLE_DIRECTORY, "settings.json"); }

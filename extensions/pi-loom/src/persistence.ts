@@ -5,9 +5,9 @@ import { access, link, mkdir, open, readFile, readdir, rename, rm, stat, writeFi
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
-import type { BudgetApprovalRequest, HumanEditResult, JsonValue, LaunchSnapshot, RunRecord, WorkflowBudgetUsage, WorkflowRunEvent } from "./types.js";
+import type { BudgetApprovalRequest, HumanEditResult, HumanReviewResult, HumanReviewVerdict, JsonValue, LaunchSnapshot, RunRecord, WorkflowBudgetUsage, WorkflowRunEvent } from "./types.js";
 import type { OwnershipRecord } from "./agent-execution.js";
-import { WorkflowError } from "./types.js";
+import { HUMAN_REVIEW_VERDICTS, WorkflowError } from "./types.js";
 import { loadLaunchSnapshot } from "./utils.js";
 
 export interface EffectiveSystemPrompt { sessionId: string; attempt: number; turn: number; sha256: string; prompt: string }
@@ -30,7 +30,11 @@ export interface AwaitingHumanRequest { path: string; name: string; prompt: stri
 export interface AwaitingHumanEdit { path: string; name: string; prompt: string; text: string; context: JsonValue }
 export type PendingWorkflowDecision = BudgetApprovalRequest
 export type PersistedOwnershipNode = OwnershipRecord
-type Journal = { completed: Record<string, CompletedOperation>; awaiting?: Record<string, AwaitingCheckpoint>; awaitingHuman?: Record<string, AwaitingHumanRequest>; awaitingEdit?: Record<string, AwaitingHumanEdit>; decisions?: Record<string, PendingWorkflowDecision> };
+// A review posed but not judged. `subject` is kept so a cold resume can show
+// the reviewer the same diff or artifact the run parked, not a stale re-read of
+// whatever the working tree looks like now.
+export interface AwaitingHumanReview { path: string; name: string; prompt: string; subject: string; context: JsonValue }
+type Journal = { completed: Record<string, CompletedOperation>; awaiting?: Record<string, AwaitingCheckpoint>; awaitingHuman?: Record<string, AwaitingHumanRequest>; awaitingEdit?: Record<string, AwaitingHumanEdit>; awaitingReview?: Record<string, AwaitingHumanReview>; decisions?: Record<string, PendingWorkflowDecision> };
 const TERMINAL_SUMMARY_STATES = new Set(["completed", "failed", "stopped"]);
 const EMPTY_USAGE: WorkflowBudgetUsage = { tokens: 0, costUsd: 0, durationMs: 0, agentLaunches: 0 };
 const SYSTEM_PROMPT_STORAGE = ".system-prompts";
@@ -571,6 +575,42 @@ export class RunStore {
       const result: HumanEditResult = text === undefined ? { text: request.text, changed: false, abandoned: true } : { text, changed: text !== request.text, abandoned: false };
       journal.completed[request.path] = { path: request.path, value: result as unknown as JsonValue };
       journal.awaitingEdit = Object.fromEntries(Object.entries(journal.awaitingEdit ?? {}).filter(([path]) => path !== request.path));
+      return { request, result };
+    });
+  }
+
+  // The review trio. Its own map again, and for a sharper reason than the edit
+  // map: a review answer is two fields (verdict plus note) where an ask answer
+  // is one string, so replaying a review through the ask map would lose the note.
+  async awaitHumanReview(request: AwaitingHumanReview): Promise<HumanReviewResult | undefined> {
+    const replayed = await this.replay(request.path);
+    if (replayed) return replayed.value as unknown as HumanReviewResult;
+    return this.updateJournal((journal) => {
+      const completed = journal.completed[request.path];
+      if (completed) return completed.value as unknown as HumanReviewResult;
+      journal.awaitingReview ??= {};
+      journal.awaitingReview[request.path] = request;
+      return undefined;
+    });
+  }
+
+  async awaitingHumanReviews(): Promise<readonly AwaitingHumanReview[]> {
+    await this.journalWrite;
+    const journal = await json<Journal>(join(this.directory, "journal.json"));
+    return Object.values(journal.awaitingReview ?? {});
+  }
+
+  // Unknown verdicts are rejected here rather than coerced, so a malformed tool
+  // call leaves the review parked and answerable instead of resuming the run
+  // with a verdict nobody chose.
+  async answerHumanReview(name: string, verdict: string, note: string): Promise<{ request: AwaitingHumanReview; result: HumanReviewResult } | undefined> {
+    if (!(HUMAN_REVIEW_VERDICTS as readonly string[]).includes(verdict)) return undefined;
+    return this.updateJournal((journal) => {
+      const request = Object.values(journal.awaitingReview ?? {}).find((item) => item.name === name);
+      if (!request || journal.completed[request.path]) return undefined;
+      const result: HumanReviewResult = { verdict: verdict as HumanReviewVerdict, note };
+      journal.completed[request.path] = { path: request.path, value: result as unknown as JsonValue };
+      journal.awaitingReview = Object.fromEntries(Object.entries(journal.awaitingReview ?? {}).filter(([path]) => path !== request.path));
       return { request, result };
     });
   }

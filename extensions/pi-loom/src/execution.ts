@@ -197,11 +197,13 @@ const prompt = (template, values) => {
 const checkpoint = input => rpc("checkpoint", [input]).then(unwrap);
 // The human is a callable participant: human.ask blocks the run until a person
 // picks one of the workflow's own choices, human.edit until a person saves or
-// abandons a text buffer. Frozen so a workflow cannot swap the implementation
-// out from under a later call.
+// abandons a text buffer, human.review until a person judges a diff or artifact.
+// Frozen so a workflow cannot swap the implementation out from under a later
+// call.
 const human = Object.freeze({
   ask: input => rpc("human.ask", [input]).then(unwrap),
   edit: input => rpc("human.edit", [input]).then(unwrap),
+  review: input => rpc("human.review", [input]).then(unwrap),
 });
 const phase = name => rpc("phase", [name]);
 const log = message => rpc("log", [message]);
@@ -526,6 +528,21 @@ export function runWorkflow(script: string, args: JsonValue = null, bridge: Work
           const result = await bridge.humanEdit(values[0], controller.signal);
           if (!object(result) || typeof result.text !== "string" || typeof result.changed !== "boolean" || typeof result.abandoned !== "boolean") fail("INTERNAL_ERROR", "human.edit must return text with changed and abandoned flags");
           value = branded({ name, ok: true, value: { text: result.text, changed: result.changed, abandoned: result.abandoned } });
+        } catch (error) {
+          const typed = asWorkflowError(error);
+          if (!OUTCOME_ERRORS.has(typed.code)) throw typed;
+          value = branded({ name, ok: false, failedAt: name, error: { code: typed.code, message: typed.message, ...(isWorkflowAuthored(typed) ? { authored: true } : {}) } });
+        }
+      } else if (method === "human.review") {
+        // Same envelope again. The payload is a verdict plus a note because the
+        // note is the whole point of a "changes" verdict: it is what the next
+        // stage is supposed to act on.
+        if (!bridge.humanReview || !object(values[0])) fail("INTERNAL_ERROR", "human.review requires an available bridge and object input");
+        const name = typeof values[0].name === "string" ? values[0].name : "human.review";
+        try {
+          const result = await bridge.humanReview(values[0], controller.signal);
+          if (!object(result) || typeof result.verdict !== "string" || typeof result.note !== "string") fail("INTERNAL_ERROR", "human.review must return a verdict with a note");
+          value = branded({ name, ok: true, value: { verdict: result.verdict, note: result.note } });
         } catch (error) {
           const typed = asWorkflowError(error);
           if (!OUTCOME_ERRORS.has(typed.code)) throw typed;
