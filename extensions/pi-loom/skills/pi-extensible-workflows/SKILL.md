@@ -1,69 +1,89 @@
 ---
 name: pi-extensible-workflows
-description: Use when the task is complex enough to require multiple subagents or when the user explicitly asks for a workflow.
+description: Use when the user explicitly asks for a workflow, fan-out, or multi-agent orchestration, or when a task decomposes into several independent agent tasks whose results must be combined.
 ---
 
 # pi-extensible-workflows
 
+## When to use
+
+- Use `workflow` only for genuinely multi-agent orchestration; a single agent uses ordinary tools or `Agent` directly.
+- Do not launch a workflow for a single quick read, edit, or question, even if the user mentions agents.
+- Give phases distinct responsibilities and keep result flow explicit.
+- Inspect the `workflow_catalog` tool result at least once before creating the first workflow for a task; call it again when you need details about a global function.
+
 ## Default path
 
-Use `workflow` only for genuinely multi-agent orchestration; a single agent uses ordinary tools or `Agent` directly. Give phases distinct responsibilities and keep result flow explicit.
-
-For most multi-agent tasks, start with a named inline workflow: provide a non-empty `name` and a `script` that fans out independent work with `parallel(...)`, awaits the keyed results, passes them into one summarizing `agent(...)`, and returns.
+For most multi-agent tasks, start with a named inline workflow: provide a non-empty `name` and a `script` that marks a `phase(...)`, fans out independent work with `parallel(...)`, awaits the keyed results, passes them into one summarizing `agent(...)`, and returns.
 
 ```js
+phase("Research");
 const reports = await parallel("research", {
-  first: () => agent("Research the first target."),
-  second: () => agent("Research the second target."),
+  first: () => agent("Research the first target.", { label: "first target" }),
+  second: () => agent("Research the second target.", { label: "second target" }),
 });
 
+phase("Summarize");
 return await agent(
   prompt("Summarize these reports:\n\n{reports}", { reports }),
+  { label: "summary" },
 );
 ```
 
-Await `parallel(...)` or `pipeline(...)` results before interpolation. Runs are backgrounded by default; set the tool-call `foreground: true` when the caller must wait for the final value.
-
-## Runtime and safety rules
-
-
+- Await `parallel(...)` or `pipeline(...)` results before interpolation; interpolate with `prompt("...{value}", { value })`. Placeholders in plain strings stay literal.
+- Runs are backgrounded by default; completion arrives as a follow-up message. Set the tool-call `foreground: true` when the caller must wait for the final value.
+- A reviewed JavaScript file on disk can use `scriptPath` instead of `script`.
+- A registered workflow launches by name with JSON args:
 
 ```json
 { "workflow": "workflowName", "args": { "issue": 42 } }
 ```
 
-A reviewed JavaScript file on disk can use `scriptPath` instead of `script`.
+## Progress and observability
 
-Recovery map:
-  - `workflow_status({ runId })` reads a compact authoritative summary for a run in the current project, across sessions; after failure follow-ups, especially `CANCELLED` or `interrupted`, call it before recovery or replacement work and pass its returned `state` as `expectedState`;
-  - `agent(..., { retries })` reruns one agent call in the same run for transient failures;
-  - `workflow_retry({ runId, expectedState?, foreground? })` replays a failed run into a child;
-  - `workflow_resume({ runId, expectedState?, budget?, foreground? })` continues a `budget_exhausted` run;
-  - recovery inherits the source snapshot's foreground/background launch mode, while legacy snapshots without `launchMode` recover in background; set `foreground: true` or `false` to override it;
-  - `parentRunId` on a new launch only borrows named worktrees and never replays or resumes.
+- Call `phase("Name")` when a new group of work starts; phases are persisted per run and drive status and live progress views.
+- Give every `agent(...)` call a unique short `label` (2-5 words) such as `{ label: "repo inventory" }`; labels make live status and failure reports readable.
+- Use `log(messageString)` for brief operator status lines, not for data flow.
 
-For an explicitly failed run, call `workflow_status({ runId })` first and pass its returned state as `expectedState` to `workflow_retry({ runId, expectedState, foreground: <prevValue> })`: diagnostics list replayable and incomplete paths, artifacts, and valid named worktrees; the tool creates a linked child, replays completed agent, shell, function, and checkpoint operations, and executes incomplete work. External side effects before failure are not guaranteed exactly once. After a `CANCELLED` or `interrupted` outcome, confirm whether the user accepted a recovery prompt before starting replacement work; a failure follow-up may have been queued before the original run resumed.
-`workflow_stop` requires the exact run ID; `workflow_status({ runId })` returns only run metadata, state, delivery, budget/usage when configured, and agent summary shims, not transcripts or session payloads. Foreground launches and foreground recovery retain their terminal value and completed `runId`, while background launches and recovery return `runId` immediately and deliver completion or failure as a follow-up. Retry versus per-agent `retries` and `workflow_resume` is always explicit.
-Inspect tool `workflow_catalog` result at least once before creating the first workflow for a task. Make sure to call workflow_catalog more than once if you need to inspect details about a global function.
+## Runtime and safety rules
 
-Workflow JavaScript has no imports, filesystem, network, process, or timers. Delegate that work to agents. `shell(command, options)` is the trusted host RPC for deterministic gates: it inherits the workflow or active-worktree cwd, merges string `env` overrides, and returns `{ exitCode, stdout, stderr }`; nonzero exits are results, but launch failures and timeouts fail with `SHELL_FAILED`.
-
-Example use of `shell`:
+- Workflow JavaScript has no imports, filesystem, network, process, or timers; delegate that work to agents.
+- Available globals: `agent`, `shell`, `prompt`, `parallel`, `pipeline`, `withWorktree`, `checkpoint`, `human`, `phase`, `log`, `args`, plus `Promise`, `JSON`, and a frozen deterministic `Math` subset.
+- `shell(command, options)` is the trusted host RPC for deterministic gates: it inherits the workflow or active-worktree cwd, merges string `env` overrides, and returns `{ exitCode, stdout, stderr }`. Nonzero exits are results; launch failures and timeouts fail with `SHELL_FAILED`.
+- Using `shell()` to perform mutations is usually an antipattern. Use it mainly for verifications or idempotent actions:
 
 ```js
-// ... other code
 const testRes = await shell("yarn test", { env: { CI: "1" } });
-if (testRes.exitCode === 0) {
-  // success path
-  return { ok: true };
-}
+if (testRes.exitCode === 0) return { ok: true };
 ```
 
-Most of the times using `shell()` to perform mutations is an antipattern. Use it mainly for verifications or idempotent actions.
+## Human in the loop
 
-## Advanced capabilities
+A human is a callable participant beside `agent(...)`. Each call parks the run as awaiting input until a person (or the parent assistant, via the matching tool) responds; each request has a unique `name` within the run.
 
-Registered functions, `outputSchema`, budgets, checkpoints, worktrees, retry/resume, CLI export, and `pipeline(...)` remain available for workflows that need them. Treat these as advanced controls rather than requirements for the default inline path.
+- `await human.ask({ name, prompt, choices, context? })` returns the chosen string. Requires 2-12 unique non-empty choices; `prompt` up to 1024 bytes, JSON `context` up to 4096 bytes. Answered by `workflow_answer({ runId, name, answer })`.
+- `await human.edit({ name, prompt, text, context? })` returns `{ text, changed, abandoned }`; `text` up to 64 KiB. Answered by `workflow_edit({ runId, name, text? })`; omitting `text` leaves the buffer unedited.
+- `await human.review({ name, prompt, subject, context? })` returns `{ verdict, note }` with verdict exactly `approve`, `changes`, or `reject`; `subject` up to 64 KiB, so pass a file path instead of inlining a large diff. Answered by `workflow_review({ runId, name, verdict, note? })`.
+- `await checkpoint(...)` returns a boolean approval, answered by `workflow_respond({ runId, approved, name?, proposalId? })`.
+- Headless CLI runs cannot ask a human; keep human calls out of workflows meant for CLI export.
+
+## Recovery
+
+Recovery map:
+
+- `workflow_status({ runId })` reads a compact authoritative summary for a run in the current project, across sessions. It returns run metadata, state, delivery, budget and usage when configured, and agent summaries, not transcripts.
+- `agent(..., { retries })` reruns one agent call in the same run for transient failures.
+- `workflow_retry({ runId, expectedState?, foreground? })` replays a persisted failed run into a linked child: completed agent, shell, function, and checkpoint operations replay; incomplete work executes.
+- `workflow_resume({ runId, expectedState?, budget?, foreground? })` continues a `budget_exhausted` run.
+- `parentRunId` on a new launch only borrows named worktrees; it never replays or resumes.
+
+Rules:
+
+- After a failure follow-up, especially `CANCELLED` or `interrupted`, call `workflow_status({ runId })` first and pass its returned `state` as `expectedState` to the recovery tool, so recovery cannot act on a state that changed.
+- After `CANCELLED` or `interrupted`, confirm whether the user already accepted a recovery prompt before starting replacement work; a failure follow-up may have been queued before the original run resumed.
+- Recovery inherits the source snapshot's foreground or background launch mode; legacy snapshots without `launchMode` recover in background. Set `foreground: true` or `false` to override.
+- External side effects from before the failure are not guaranteed exactly once.
+- `workflow_stop` requires the exact run ID. Foreground launches and foreground recovery return the terminal value with the completed `runId`; background launches return `runId` immediately and deliver completion or failure as a follow-up.
 
 ## `agent()` options
 
@@ -81,25 +101,24 @@ export interface AgentOptions {
 }
 ```
 
-Extensions may add JSON-compatible agent options such as `advisor: true`; core keys retain validation and role constraints. Extension options go to setup hooks/native setup and are not inherited by child agents.
-
-Agent calls are unnamed. Direct calls receive hidden source call-site identity; aliases are unsupported, and calls from one source site must not race outside `parallel` or `pipeline`, whose structural keys make replay deterministic.
+- A role owns execution policy: with `role`, do not set `model`, `thinking`, or `tools`; only task options such as `label`, `outputSchema`, `retries`, `timeoutMs`, or a `withWorktree` scope may accompany it.
+- Extensions may add JSON-compatible agent options such as `advisor: true`; core keys keep validation and role constraints. Extension options go to setup hooks and are not inherited by child agents.
+- Agent calls have no user-visible aliases: `label` is display only. Replay identity comes from the source call site, so calls from one site must not race outside `parallel` or `pipeline`, whose structural keys make replay deterministic.
 
 ## Passing agent results
 
-Use independent `agent(prompt, options)` calls and pass each completed result explicitly to the next prompt. This keeps workflow execution deterministic and makes replay state local to each call:
+Use independent `agent(prompt, options)` calls and pass each completed result explicitly to the next prompt; this keeps replay state local to each call:
 
 ```js
-const findings = await agent("Inspect the implementation.");
+const findings = await agent("Inspect the implementation.", { label: "inspect" });
 const fix = await agent(
-  prompt("Propose the smallest fix from these findings:\n\n{findings}", {
-    findings,
-  }),
+  prompt("Propose the smallest fix from these findings:\n\n{findings}", { findings }),
+  { label: "propose fix" },
 );
 return { findings, fix };
 ```
 
-Direct nested-agent results are one-shot: `get_subagent_result` releases the scheduler payload after successful delivery, and a repeated retrieval fails with `AGENT_RESULT_COLLECTED`. Retry only when the earlier tool call failed before delivering the result.
+Direct nested-agent results are one-shot: `get_subagent_result` releases the payload after successful delivery, and a repeated retrieval fails with `AGENT_RESULT_COLLECTED`. Retry only when the earlier tool call failed before delivering the result.
 
 ## Worktrees
 
@@ -107,34 +126,24 @@ Use `withWorktree(name, callback)` for top-level agents that collaborate in one 
 
 ```js
 const result = await withWorktree("issue", async ({ path, branch }) => {
-  const report = await agent("Implement the issue");
+  const report = await agent("Implement the issue", { label: "implement issue" });
   return { path, branch, report };
 });
 ```
 
-Entering the scope materializes its worktree before the callback. The callback receives a frozen reference containing only the real string `path` and `branch`; callbacks may ignore the argument, and their bare return value is preserved. Concurrent agents share mutable files, so assign non-conflicting work or coordinate explicitly.
-
-Branches may call any workflow function, not only `agent()`. Use separate named scopes when parallel branches need isolated worktrees:
-
-```js
-const results = await parallel("implementation", {
-  api: () => withWorktree("api", () => agent("Implement the API")),
-  ui: () => withWorktree("ui", () => agent("Implement the UI")),
-});
-```
-
-Registered extension functions receive `withWorktree` in context and can compose other registered functions with `context.invoke("reviewRepository", { focus: "security" })`. Their public inputs and outputs remain JSON; callbacks cannot cross the extension boundary.
+- Entering the scope materializes its worktree before the callback; the callback receives a frozen `{ path, branch }` reference and its bare return value is preserved.
+- Concurrent agents share mutable files, so assign non-conflicting work or use separate named scopes when parallel branches need isolation: `parallel("implementation", { api: () => withWorktree("api", () => agent("Implement the API", { label: "api" })), ui: () => withWorktree("ui", () => agent("Implement the UI", { label: "ui" })) })`.
+- Registered extension functions receive `withWorktree` in context and can compose other registered functions with `context.invoke("reviewRepository", { focus: "security" })`; their public inputs and outputs stay JSON, and callbacks cannot cross the extension boundary.
 
 ## Rules
 
-- Use `log(messageString)` for brief operator status.
-- A role owns execution policy: with `role`, do not set `model`, `thinking`, or `tools`; only task options such as `outputSchema`, retries, timeout, or a `withWorktree` scope may accompany it.
 - Use `parallel()` for independent tasks with different flows and `pipeline()` when every keyed item follows the same ordered stages; do not duplicate identical chains in `parallel()`. Signatures are `parallel(operationName, tasksRecord)` and `pipeline(operationName, itemsRecord, stagesRecord)`; keys are stable task, item, and stage names.
 - Preserve item metadata in workflow code between pipeline stages instead of making agents echo it through `outputSchema`.
 - Use a JavaScript loop for repeated work; each direct `agent(...)` call gets deterministic call-site and occurrence identity.
-- Runs default to background; set tool-call `foreground: true` when asked to wait.
-- Add `budget` only for aggregate limits. Do not invent limits, omit if user do not ask explicitly. Valid dimensions are exactly `tokens`, `costUsd`, `durationMs`, and `agentLaunches`; each is `{ soft?: number, hard?: number }` with `soft < hard`.
-- `budget_exhausted` runs resume through `workflow_resume`: omitted patch values stay unchanged, `null` removes a limit, and tightening resumes directly. Relaxation stores the exact proposal and returns `{ state: "awaiting_approval", proposalId }`; `workflow_respond` must answer that ID. Rejection leaves the run exhausted; approval applies the budget and cold-resumes it. `workflow_retry` is only for persisted `failed` runs and inherits cumulative usage; replay itself consumes no budget.
-- `parallel()` and `pipeline()` return keyed bare values; await them before use. Interpolate results with `prompt("...{value}", { value })`; placeholders in plain strings remain literal.
-- Use `outputSchema` only when another phase compares, aggregates, or validates a result, never for final prose. Keep only consumer-needed fields and avoid repeated evidence. Agents with it must call `workflow_result`; one repair prompt is built in. Omit `retries` unless an extra retry is justified and work is idempotent.
+- `parallel()` and `pipeline()` return keyed bare values; await them before use.
+- Use `outputSchema` only when another phase compares, aggregates, or validates a result, never for final prose. Keep only consumer-needed fields. Agents with it must call `workflow_result`; one repair prompt is built in.
+- Omit `retries` unless an extra retry is justified and the work is idempotent.
 - Do not add persona specifications to agent prompts; define the task directly.
+- Add `budget` only for aggregate limits the user asked for. Valid dimensions are exactly `tokens`, `costUsd`, `durationMs`, and `agentLaunches`; each is `{ soft?: number, hard?: number }` with `soft < hard`.
+- `budget_exhausted` runs resume through `workflow_resume`: omitted patch values stay unchanged, `null` removes a limit, tightening resumes directly. Relaxation stores the proposal and returns `{ state: "awaiting_approval", proposalId }`; `workflow_respond` must answer that ID. Rejection leaves the run exhausted; approval applies the budget and cold-resumes. `workflow_retry` is only for persisted `failed` runs and inherits cumulative usage; replay itself consumes no budget.
+- Advanced controls — registered functions, `outputSchema`, budgets, checkpoints, worktrees, retry and resume, CLI export, `pipeline(...)` — stay available but are not requirements for the default inline path.
