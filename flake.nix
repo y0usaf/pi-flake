@@ -512,6 +512,22 @@
           touch $out
         '';
 
+        # P4c acceptance: the `/quick` workflow — one agent, no plan stage, no
+        # review stage, no worktree. The change itself needs a real model, so
+        # what is provable offline is everything around it: a task-less launch
+        # never becomes a run; a launch with an unknown model dies in the
+        # `quick` phase having entered no other, which a /quick that planned
+        # first could not do; no worktree is opened; and the pre-agent snapshot
+        # of the working tree wrote objects while leaving the probe repository's
+        # index and `git status` untouched. Needs git and diffutils: the probe
+        # repository is real and deliberately dirty.
+        pi-loom-quick-workflow = pkgs.runCommand "pi-loom-quick-workflow" {
+          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.git pkgs.findutils pkgs.coreutils pkgs.diffutils];
+        } ''
+          bash ${./nix/checks/loom-quick-workflow.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom ${./workflows/quick}
+          touch $out
+        '';
+
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;

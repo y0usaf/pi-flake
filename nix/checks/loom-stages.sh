@@ -53,7 +53,9 @@ let missing = "";
 try { await stage("plan", {}); } catch (error) { missing = error.message; }
 let bounded = "";
 try { await stage("plan", { task: "t", maxItems: 99 }); } catch (error) { bounded = error.message; }
-return { seen: seen, unknown: unknown, missing: missing, bounded: bounded };
+let quick = "";
+try { await stage("quick", {}); } catch (error) { quick = error.message; }
+return { seen: seen, unknown: unknown, missing: missing, bounded: bounded, quick: quick };
 JS
 
 # --- a script that collides with the library ------------------------------
@@ -119,7 +121,7 @@ field() { jq -r ".$1 // \"\"" "$work/probe.json"; }
   fail_with "stage() is not defined in the sandbox (typeof stage = '$(field seen)')" "$work/probe.json"
 
 case "$(field unknown)" in
-  *"Unknown stage: nope"*"available stages: plan, exec, review"*) ;;
+  *"Unknown stage: nope"*"available stages: plan, exec, review, quick"*) ;;
   *) fail_with "an unknown stage name did not list the available stages (got: '$(field unknown)')" ;;
 esac
 
@@ -131,6 +133,11 @@ esac
 case "$(field bounded)" in
   *"stage plan: maxItems must be an integer between 1 and 20"*) ;;
   *) fail_with "a stage did not reject out-of-range input (got: '$(field bounded)')" ;;
+esac
+
+case "$(field quick)" in
+  *"stage quick: task is required"*) ;;
+  *) fail_with "the quick stage did not reject a missing task (got: '$(field quick)')" ;;
 esac
 
 # ----------------------------------------------------------- name collision

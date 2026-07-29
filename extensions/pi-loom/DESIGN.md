@@ -294,6 +294,33 @@ that does not resolve — which fails inside the plan phase, having entered no
 item phase and opened no worktree. A `/build` that called exec before plan could
 not produce that state.
 
+`stage("quick", ...)` is `exec`'s deliberate opposite, and `/quick`
+(`workflows/quick/`) is its only consumer: one agent, no plan, no review, and
+**no worktree**. The trade is the one recorded in the decision table — plan →
+exec → review on a typo is ceremony, and ceremony is what makes people route
+around a workflow engine entirely — so the agent edits the user's own checkout
+and the change is sitting unstaged in their tree when the run returns.
+
+Dropping the worktree costs the diff base that `exec` gets for free, so `quick`
+takes its own: before the agent exists, and again after it returns, it runs
+`git add -A` and `git write-tree` **through a throwaway `GIT_INDEX_FILE`** and
+keeps the resulting tree object. Two properties follow. The user's index,
+working tree and refs are never touched — the only trace is unreferenced objects
+that `git gc` prunes — and because both sides are captured identically,
+everything that was already dirty at launch cancels out of the diff instead of
+being attributed to the agent. The artifact is still git's rather than the
+model's, which is the property `exec` and `quick` are unwilling to give up:
+both return the same `{ summary, notes }` contract from the agent and let git
+supply `files` and `diff`.
+
+`checks.pi-loom-quick-workflow` stops at the same wall as `/build`'s gate: the
+change itself needs a model. What it proves offline is that `/quick` reaches one
+stage and only one — an unresolvable model name fails the run inside the `quick`
+phase with no other phase entered, where a `/quick` that planned first would have
+failed in `plan` — that no worktree was opened, and that the pre-agent snapshot
+genuinely ran, by writing objects into a deliberately dirty probe repository
+while leaving its index byte-identical and its `git status` output unchanged.
+
 ## Extension surface contract
 
 **Read path.** A workflow script receives a frozen `args` object (validated
