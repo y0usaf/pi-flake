@@ -25,6 +25,12 @@
 // time, and it is deliberately not re-validated against the caller's model and
 // role capabilities at launch. That is why no stage hardcodes a model or a
 // role — both are passed in by the caller, whose script *is* preflighted.
+//
+// One stage is not just a prompt: `exec` writes code inside an isolated git
+// worktree and reports the diff **git** recorded, never the diff the model says
+// it made. An agent that forgets to mention an edit cannot hide it, because the
+// artifact is assembled from `git diff` against the commit the worktree sat on
+// before the agent started.
 import type { JsonSchema } from "./types.js";
 
 /** The single global a workflow script calls. Reserved: a script may not declare it. */
@@ -37,7 +43,11 @@ export interface StageDefinition {
   description: string;
   required: readonly string[];
   optional: readonly string[];
-  /** Shape the stage's agent must return, and therefore what callers can rely on. */
+  /**
+   * Shape this stage's agent must return. A stage may add engine-derived fields
+   * on top of it -- `exec` appends git's own view of the change -- but never
+   * returns fewer than these.
+   */
   output: JsonSchema;
 }
 
@@ -66,6 +76,19 @@ const PLAN_OUTPUT: JsonSchema = {
   additionalProperties: false,
 };
 
+// What the exec agent itself must return, and deliberately all of it: the stage
+// never asks the model which files it touched, because git already knows and
+// cannot be argued with. files/diff/branch/path are added by the stage.
+const EXEC_OUTPUT: JsonSchema = {
+  type: "object",
+  properties: {
+    summary: { type: "string", description: "What was implemented, in one or two sentences" },
+    notes: { type: "string", description: "What a reviewer must know: assumptions, skipped work, checks that failed. May be empty" },
+  },
+  required: ["summary", "notes"],
+  additionalProperties: false,
+};
+
 // Same vocabulary as HUMAN_REVIEW_VERDICTS on purpose: a workflow can switch on
 // `.verdict` without knowing whether a model or a person produced it, which is
 // what lets /build fall back to human.review for the same decision.
@@ -87,6 +110,13 @@ export const STAGE_LIBRARY: readonly StageDefinition[] = Object.freeze([
     required: ["task"],
     optional: ["context", "maxItems", "model", "role", "label"],
     output: PLAN_OUTPUT,
+  }),
+  Object.freeze({
+    name: "exec",
+    description: "Implement one plan item inside an isolated git worktree and return the diff git recorded.",
+    required: ["item"],
+    optional: ["context", "worktree", "model", "role", "label"],
+    output: EXEC_OUTPUT,
   }),
   Object.freeze({
     name: "review",
@@ -114,6 +144,7 @@ async function stage(name, input) {
   var given = input === undefined || input === null ? {} : input;
   if (typeof given !== "object" || Array.isArray(given)) throw new Error("stage " + name + ": input must be an object");
   if (name === "plan") return await __stagePlan(given);
+  if (name === "exec") return await __stageExec(given);
   if (name === "review") return await __stageReview(given);
   throw new Error("Unknown stage: " + name + "; available stages: ${STAGE_NAME_LIST}");
 }
@@ -161,6 +192,64 @@ async function __stagePlan(input) {
     "- Read whatever you need, but edit no files.",
   ].join("\\n");
   return await agent(prompt(template, { task: task, context: context, maxItems: maxItems }), __stageAgentOptions(input, "plan", ${JSON.stringify(PLAN_OUTPUT)}));
+}
+// Diff text is capped in characters: a runaway diff would otherwise bury the
+// review prompt that consumes it, and a truly enormous one would breach the
+// engine's 10 MB RPC boundary before this code ever sees it. Truncation is
+// reported so a caller can tell a small change from a clipped one.
+function __stageDiffLimit() { return 200000; }
+async function __stageGit(stageName, command) {
+  var result = await shell(command, { timeoutMs: 120000 });
+  if (result.exitCode !== 0) throw new Error("stage " + stageName + ": " + command + " failed (exit " + result.exitCode + "): " + (result.stderr || result.stdout || "no output"));
+  return result.stdout;
+}
+async function __stageExec(input) {
+  var item = __stageText(input, "exec", "item", true);
+  var context = __stageText(input, "exec", "context", false);
+  var worktreeName = __stageText(input, "exec", "worktree", false) || "exec";
+  var options = __stageAgentOptions(input, "exec", ${JSON.stringify(EXEC_OUTPUT)});
+  var template = [
+    "You are implementing one item of a plan inside an isolated git worktree.",
+    "",
+    "Item:",
+    "{item}",
+    "",
+    "Repository context (may be empty):",
+    "{context}",
+    "",
+    "Rules:",
+    "- Your working directory is a scratch worktree of this repository. Edit files there.",
+    "- Implement this item and nothing else; leave unrelated code alone.",
+    "- Verify the way the item says to; if it says nothing, use the repository's own checks.",
+    "- Never run git commit, git push or git checkout: the engine snapshots the worktree for you.",
+    "- summary says what you implemented; notes says what a reviewer must know, including what you could not do.",
+    "- The diff a reviewer reads is taken from git, not from your summary, so an unreported edit still shows up.",
+  ].join("\\n");
+  return await withWorktree(worktreeName, async function (tree) {
+    // Base commit first, before the agent exists. Everything the agent does lands
+    // after it, so several exec calls sharing one worktree still each report only
+    // their own item's diff.
+    var base = (await __stageGit("exec", "git rev-parse HEAD")).trim();
+    if (!/^[0-9a-f]{7,64}$/.test(base)) throw new Error("stage exec: the worktree has no base commit to diff against");
+    var result = await agent(prompt(template, { item: item, context: context }), options);
+    // The engine commits the worktree as the agent returns; "git add -A" picks
+    // up anything left unstaged so that new files appear in the diff too.
+    await __stageGit("exec", "git add -A");
+    var names = (await __stageGit("exec", "git diff --name-only " + base + " --")).split("\\n");
+    var files = [];
+    for (var index = 0; index < names.length; index += 1) if (names[index]) files.push(names[index]);
+    var full = await __stageGit("exec", "git diff --no-color " + base + " --");
+    var truncated = full.length > __stageDiffLimit();
+    return {
+      summary: result.summary,
+      notes: result.notes,
+      files: files,
+      diff: truncated ? full.slice(0, __stageDiffLimit()) + "\\n... diff truncated by the exec stage ..." : full,
+      diffTruncated: truncated,
+      branch: tree.branch,
+      path: tree.path,
+    };
+  });
 }
 async function __stageReview(input) {
   var item = __stageText(input, "review", "item", true);

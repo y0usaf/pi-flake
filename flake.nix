@@ -484,6 +484,19 @@
           touch $out
         '';
 
+        # P4b-i acceptance: the `exec` stage, which is the one that writes code.
+        # An offline sandbox cannot run the implementing agent, so this proves
+        # everything around it instead: exec is a stage with an enforced input
+        # contract, and it opens a populated git worktree on its own branch and
+        # reads that worktree's HEAD as the diff base *before* the agent is
+        # launched. Needs git: the probe repository and the worktree are real.
+        pi-loom-exec-stage = pkgs.runCommand "pi-loom-exec-stage" {
+          nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.gnused pkgs.gawk pkgs.git pkgs.findutils pkgs.coreutils];
+        } ''
+          bash ${./nix/checks/loom-exec-stage.sh} ${self.packages.${system}.pi-loom-cli}/bin/loom
+          touch $out
+        '';
+
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;
