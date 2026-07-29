@@ -18,115 +18,129 @@ marker into prose here — the count would lie.
 
 ## Handoff
 
-Last touched: P5a landed and is ticked. P5 was split in three; the next open
-item is P5b (the router gate itself), which P5a exists to make safe.
+Last touched: P5b was split in two and P5b-i landed and is ticked. The next
+open item is P5b-ii (read-only shell), which is the only part of P5b's stated
+acceptance still missing.
 
-What landed. One engine change in `extensions/pi-loom/src/host.ts`: the tool set
-a run may grant its sub-agents (`rootTools`, and the same set on every resume
-path) now comes from `pi.getAllTools()` instead of `pi.getActiveTools()`. A small
-monotone helper, `observeSessionTools()`, unions each observation into
-`sessionToolBoundary` and never removes. `checks.pi-loom-tool-boundary`
-(`nix/checks/loom-tool-boundary.sh`) is the gate. DESIGN.md gained a **Launch
-boundary** paragraph under Architecture and a three-way split of P5 in the
-Roadmap.
+What landed. A new package, `pi-loom-router`
+(`extensions/pi-loom-router/{package.json,README.md,src/index.ts}`), packaged in
+`flake.nix` as `packages.pi-loom-router` with `stdenvNoCC` — no build, no
+node_modules, because the source imports only types. It is last in `loomStack`,
+and has **no entry in `extensions/registry.nix`**, which is what keeps it out of
+`pi-full` and out of reach of every extension flag. At `session_start`, and
+again at `before_agent_start`, it calls `setActiveTools` to remove `edit`,
+`write` and `bash` and add `grep`, `find` and `ls`. Gated by
+`checks.pi-loom-router-gate` (`nix/checks/loom-router-gate.sh`). DESIGN.md gained
+a **Router gate** paragraph under Architecture and a two-way split of P5b in the
+Roadmap; `registry.nix`'s header comment now explains why a package can be
+missing from it.
 
-Why this had to come before the router. The router's whole job is to call
-`setActiveTools` so the chat agent cannot edit, write or run bash. The engine
-used to read `getActiveTools()` at launch time as the run's tool ceiling, so the
-router would also have starved every workflow sub-agent: preflight refuses
-`agent(..., { tools: ["edit"] })` with `UNKNOWN_TOOL`, and `/build` and `/quick`
-would have been unusable in the one stack that ships them. Landing P5b first
-would have looked like a router bug and cost a debugging session.
+**The gate had to become a swap, and this was measured, not guessed.** The first
+version only subtracted the mutating three. Instrumenting the check to print the
+witnessed active set showed the result was `["read","aphrodite_retrieve"]`: pi's
+default active set is `read`, `bash`, `edit`, `write`, while `grep`, `find` and
+`ls` are *configured but inactive*, so subtraction alone leaves a router that
+cannot list a directory or search for a symbol. DESIGN.md rejects exactly that
+under "Hard router (no file access at all)". The gate now adds the read-only
+three back, intersected with `pi.getAllTools()` so `loom --tools read` still
+bounds the session. Witnessed result is now
+`["read","aphrodite_retrieve","grep","find","ls"]`.
 
-Gates actually run: `nix build .#pi-loom-cli` (pass); `loom-tool-boundary.sh` by
-hand against `"$(readlink -f result)/bin/loom"` (pass); `nix flake check -L`
-(pass, all 15 checks, including `biome-lint`).
+Gates actually run: `nix build .#pi-loom-router` (pass); `nix build
+.#pi-loom-cli` (pass); `loom-router-gate.sh` by hand against `"$(readlink -f
+result)/bin/loom"` (pass, ~10s); `nix flake check -L` (pass, all 26 checks,
+including `biome-lint`, `pi-loom-tool-boundary` and the new
+`pi-loom-router-build` / `pi-loom-router-gate`).
 
-**The check has a verified negative control.** The `rootTools` line was
-temporarily reverted to `pi.getActiveTools()`, rebuilt, and the harness re-run:
-it failed with `the launch snapshot lost 'edit'`, and the snapshot read
-`"tools":["read","aphrodite_retrieve"]`. The good version was then restored from
-a copy. So the check discriminates rather than passing vacuously.
+**Both halves of the check have verified negative controls.** With `GATED_TOOLS`
+emptied and `loom` rebuilt, the harness failed with `the chat agent still holds
+'edit' in loom, so the router gate did not fire`. With `RESTORED_TOOLS` emptied,
+it failed with `the gated chat agent has no 'grep', so it cannot read the repo it
+is supposed to route over`. The good file was restored from a copy in `/tmp` and
+the passing run repeated. So neither assertion passes vacuously.
 
 Design decisions worth not re-litigating:
 
-- **`getAllTools()` is the boundary; `getActiveTools()` is visibility.** Measured
-  against a real host, not assumed: a default session reports
-  `["read","bash","edit","write","grep","find","ls"]` from `getAllTools()` and
-  only the first four from `getActiveTools()`; `pi --tools read` reports
-  `["read"]` from **both**. So `--tools` still bounds a run and `setActiveTools`
-  no longer can. That is the entire mechanism of P5a.
-- **Order-independence was the deciding property.** A union-of-active-sets
-  boundary would have worked only if the engine's `session_start` handler ran
-  before the router's. `getAllTools()` needs no such assumption, which is why it
-  beat the union even though the union was written first.
-- **The cost is real and stated.** An extension that narrows tools mid-session no
-  longer narrows what a workflow may grant. Restricting workflows is `--tools`.
-  Do not "fix" this back without reading the Launch boundary paragraph in
-  DESIGN.md.
-- **Resume paths use the same boundary.** `activeSnapshotTools(..., "session")`
-  and the resume prologue's compatibility check both moved. Missing either would
-  have meant a gated session could launch a run but not resume it
-  (`RESUME_INCOMPATIBLE: Required tool is unavailable: edit`).
+- **`bash` is gated whole, not narrowed.** `setActiveTools` addresses tool names,
+  not invocations; a gate that leaves `bash` reachable is not a gate, since
+  `bash` writes any file `edit` could. Narrowing is a different mechanism
+  (`tool_call` returning `{ block: true, reason }`) and is P5b-ii.
+- **No registry entry, on purpose.** An entry in `extensions/registry.nix` is
+  what makes an extension installable through `programs.pi.extensions.<name>`.
+  The router strips edit/write/bash, which is correct in `loom` and would be a
+  silent mutilation of a normal `pi` session, so it is wired straight into
+  `loomStack` instead. The check asserts `pi-full` bundles no copy of it, which
+  is the assertion that fires if someone "tidies up" by adding the entry.
+- **Policy loads last.** The router is the final `-e` in `loomStack` so its
+  `session_start` handler runs after every handler that might still be enabling
+  tools. Nothing depends on that today; it costs nothing and removes a class of
+  ordering bug.
+- **Name matching covers tool overrides.** pi-hashline registers its own `edit`
+  under the builtin's name, so one `edit` entry gates both.
 
 Traps for the next step:
 
+- **Never give the router a test hook.** The check reads the active set from a
+  *witness* extension appended through trailing argv, and reads it from a
+  **command handler**, not from `session_start`: two extensions' `session_start`
+  handlers have no guaranteed order, but a slash command is dispatched long after
+  startup settles, so what it sees is the gate's final answer.
+- **`before_agent_start` re-gating is not covered by the check.** It only fires
+  on a submitted prompt, and a slash command bypasses it, so proving it needs a
+  model. It is three lines of the same filter; treat it as unproven if it ever
+  looks suspect.
+- **Running the harness by hand inherits `PI_DEFAULT_PACKAGES`.** Inside a Pi
+  session, the plain-`pi` leg of `loom-router-gate.sh` reports extension tools
+  (`web_search`, `aphrodite_retrieve`) that the nix sandbox will not have. The
+  assertions only require edit/write/bash, so both environments pass, but do not
+  read that list as pi's default set.
+- **`pi-full` is now inside a check closure.** `pi-loom-router-gate` takes it as
+  its third argument for the bundle assertion, so `nix flake check` builds
+  `pi-full` too.
 - **Action methods are illegal during extension loading.** Calling
-  `pi.getActiveTools()` in the factory body kills the whole stack with
+  `pi.getActiveTools()` in a factory body kills the whole stack with
   `Failed to load extension ... Extension runtime not initialized. Action methods
-  cannot be called during extension loading.` The boundary helper is therefore
-  only ever called from `session_start` and from launch, never at load.
+  cannot be called during extension loading.` The router only ever calls them
+  from `session_start` and `before_agent_start`.
 - **A policy extension can be stood in for by trailing argv.** `loom` ends in
   `exec pi --no-extensions <stack> "$@"`, so `loom -e /tmp/probe.ts ...` appends
-  another extension. That is how `loom-tool-boundary.sh` gates a session without
-  `pi-loom-router` existing yet, and how P5b can be A/B tested by hand.
+  another extension. That is how both `loom-tool-boundary.sh` and
+  `loom-router-gate.sh` observe or simulate policy without editing the stack.
 - **preflight rejects an unknown model before a run exists.** A probe script that
   hardcodes `model: "...not-a-real-model"` inside `agent(...)` never produces a
-  `state.json`: it is refused at launch as a notify. `/quick`'s harness gets a
-  run only because the model arrives through `args`. Pick per assertion: a
-  notify probe proves preflight order, a run probe proves snapshot contents.
+  `state.json`: it is refused at launch as a notify. Pick per assertion: a notify
+  probe proves preflight order, a run probe proves snapshot contents.
 - **The `UNKNOWN_MODEL` notify keeps the raw detail inline**, reading
   `The workflow requested the unavailable model Unknown model <name> (settings:
   ...).` The formatter only strips a colon form, so match two substrings rather
   than one sentence.
 - **The available-stage assertions are substring matches.** `loom-stages.sh` and
-  `loom-exec-stage.sh` matched `*"available stages: plan, exec, review"*`, which
-  still passes after a stage is appended — the check silently stops proving the
-  list. Both now name all four; a fifth stage must extend them again.
+  `loom-exec-stage.sh` name all four stages; a fifth stage must extend them
+  again.
 - **Never put a backtick or a `$` followed by `{` inside `STAGE_LIBRARY_SOURCE`.**
   That string is a TS template literal: a backtick ends it (unrelated-looking
   `TS2304: Cannot find name` errors) and a dollar-brace interpolates. Shell inside
-  it must use `$(...)` and bare `$var`, which is why the snapshot command reads
-  `dir="$(mktemp -d)"` and `"$dir/index"`.
+  it must use `$(...)` and bare `$var`.
 - **`git status` rewrites the index stat cache.** A harness that copies
   `.git/index` and then runs `git status` will see its own bookkeeping as a diff.
   Capture status first, copy the index second, compare in that order.
 - **A clean probe repo cannot prove a snapshot happened.** `git write-tree` on an
   unmodified tree reproduces HEAD's existing tree object and writes nothing, so
-  the loose-object count assertion needs the probe repo dirtied first (one
-  modified tracked file, one untracked file).
+  the loose-object count assertion needs the probe repo dirtied first.
 - **`workflows/` is not in the `pi-loom` package.** The install path is the
   system flake placing `workflows/*/` into `<agentDir>/workflows/`. A new shipped
-  workflow needs a nix check that copies the directory in itself —
-  `loom-quick-workflow.sh` takes it as its second argument — and a matching entry
-  in `~/nixos/.../modules/dev/pi/workflows.nix`. **`/quick` is not in that file
-  yet**; until it is, the user sees `/build` but not `/quick`.
+  workflow needs a nix check that copies the directory in itself and a matching
+  entry in `~/nixos/.../modules/dev/pi/workflows.nix`. **`/quick` is not in that
+  file yet**; until it is, the user sees `/build` but not `/quick`.
 - **The `/workflows` listing has its own customType.** Runs deliver under
   `"customType":"workflow"`, the listing under `"customType":"workflow-list"`. A
-  harness waiting on the wrong one burns its whole timeout and then reports an
-  empty listing, which looks like a discovery bug and is not one.
+  harness waiting on the wrong one burns its whole timeout.
 - **A failed run is still delivered as a workflow message**, formatted
   `Workflow <name> failed (runId=...): error=<CODE>: <message>; ...; artifacts:
-  runDirectory=... statePath=... journalPath=...`. That string is how an offline
-  check reads a failure, since nothing completes without a model.
+  runDirectory=... statePath=... journalPath=...`.
 - **The cheapest offline evidence lives in two files per run.** `state.json` has
   `state`, `phase`, `phaseHistory[].phase` and `error.code`; `snapshot.json` has
-  `args` *after* argsSchema defaults were applied. Ordering and argument wiring
-  are both provable from those without any agent returning.
-- **How to reach an agent boundary offline:** pass a model that does not exist.
-  `WorkflowAgentExecutor.resolve()` throws `UNKNOWN_MODEL` at the top of
-  `execute()`, before the attempt loop, before any session or socket, so there is
-  no retry, no backoff and no network.
+  `tools` (the launch boundary) and `args` *after* argsSchema defaults.
 - **A nix store copy is read-only.** `cp -r ${./workflows/quick} …` then
   `chmod -R u+w` in the harness, or the run store cannot treat it as an install.
 - **`local a="$1" b="$work/$a"` in one statement fails under `set -u`.** Bash
@@ -134,29 +148,25 @@ Traps for the next step:
   `name: unbound variable`. Split the declarations.
 - **`extensions/pi-loom/skills/pi-extensible-workflows/SKILL.md` is still
   modified in the working tree and still deliberately uncommitted.** Same state
-  as the previous six handoffs: `HEAD` content is byte-identical to the vendored
+  as the previous seven handoffs: `HEAD` content is byte-identical to the vendored
   upstream copy, the working-tree content is a rewrite by something outside these
   steps. Left untouched again; commits here stage explicit paths, never `-A`.
   Decide what it is before committing it. It also means the agent-facing docs for
-  `stage(...)`, `exec`, `/build` and now `quick`/`/quick` were *not* written —
-  that file is where they belong.
+  `stage(...)`, `exec`, `/build`, `/quick` and now the router gate were *not*
+  written — that file is where they belong.
 - **Stages are still invisible to the model.** `workflow_catalog` lists
   registered functions, not stages. Nothing tells an agent that `stage(...)`
-  exists, and `STAGE_LIBRARY[].description/required/optional/output` are
-  documentation nothing consumes yet. Wiring them into a catalog is a natural P6
-  item once the SKILL.md ownership question is settled.
+  exists. Wiring them into a catalog is a natural P6 item once the SKILL.md
+  ownership question is settled. It matters more now: the gated chat agent cannot
+  edit, so it has to know what to delegate to.
 - **The flake only sees git-tracked files.** A new source or check script that is
   not `git add`ed does not exist inside `nix build`. Stage before building.
 - **`result` is a relative symlink.** The check harnesses `cd` into a temp
-  project, so running one by hand needs `"$(readlink -f result)/bin/loom"`, not
-  `./result/bin/loom`.
-- **`PI_CODING_AGENT_DIR` leaks into hand-run harnesses.** Inside the nix sandbox
-  the agent dir defaults to `$HOME/.pi/agent`, but running a check script from a
-  Pi session inherits `PI_CODING_AGENT_DIR` and the user-scope scan finds the real
-  agent dir instead of the throwaway one. `loom-workflow-args.sh`,
-  `loom-project-workflows.sh`, `loom-stages.sh`, `loom-exec-stage.sh`,
-  `loom-build-workflow.sh`, `loom-quick-workflow.sh` and `loom-tool-boundary.sh`
-  export it explicitly; the three older harnesses do not.
+  project, so running one by hand needs `"$(readlink -f result)/bin/loom"`.
+- **`PI_CODING_AGENT_DIR` leaks into hand-run harnesses.** Running a check script
+  from a Pi session inherits it and the user-scope scan finds the real agent dir
+  instead of the throwaway one. The seven newest harnesses export it explicitly;
+  the three oldest do not.
 - **Never `head -1` a presented message.** Usage text and the `/workflows` listing
   are multi-line, so harnesses serialise with `jq -c` before decoding.
 - **`inputsSettled()` gates on four parking lots** (checkpoints, questions, edits,
@@ -166,19 +176,18 @@ Traps for the next step:
   sets `"extensible-workflows" = true;`. That key no longer exists; it is now
   `loom`. `lib.enabledExtensions` asserts on unknown flags, so the system flake
   fails to evaluate the moment it bumps this input. Flip the flag in the same
-  change that bumps the input (the `ship` skill does both).
+  change that bumps the input (the `ship` skill does both). Note `router` is
+  **not** a valid flag and must never become one.
 - **Fork identity is still upstream-named on purpose.** package.json is still
   `pi-extensible-workflows@3.4.2`, and the scan-root constants still resolve
   `<agentDir>/pi-extensible-workflows/{SYSTEM.md,roles}`. Renaming moves paths
   inside the user's agent dir, so it must land with the system flake, not before.
-  Rationale is in DESIGN.md under Architecture.
 - The ref tree is no longer a package and is excluded from `biome.jsonc`; keep it
   that way, it is only a diff base for upstream fixes.
-- **Two facts all ten harnesses depend on.** Pi's agent dir defaults to
+- **Two facts all eleven harnesses depend on.** Pi's agent dir defaults to
   `$HOME/.pi/agent`, not the XDG data path the installed system uses; and an RPC
   `prompt` is refused before command dispatch unless a model resolves with a key,
   which is why the scripts pass throwaway `--provider/--model/--api-key` flags.
-  Reuse them for P8 rather than rediscovering both.
 
 ## Current phase
 
@@ -238,8 +247,17 @@ Traps for the next step:
       and on both resume paths; `checks.pi-loom-tool-boundary` gates a session
       the way P5b's router will and proves the snapshot keeps `edit`, `write`
       and `bash` while preflight stops only at the unknown model.
-- [ ] **P5b — router gate.** `pi-loom-router` as its own package in the `loom`
-      stack only.
+- [x] **P5b-i — router gate.** `pi-loom-router` is its own package
+      (`extensions/pi-loom-router/`), wired into the `loom` stack only and
+      deliberately absent from `extensions/registry.nix`; at `session_start`
+      and `before_agent_start` it swaps `edit`, `write` and `bash` out of the
+      chat agent's active set and `grep`, `find` and `ls` in, in memory, never
+      persisted. `checks.pi-loom-router-gate` proves the swap in `loom`, that
+      plain `pi` keeps all three mutating tools, that `pi-full` bundles no copy
+      of the router, and that a run launched in a gated session still records
+      all three in its launch snapshot.
+- [ ] **P5b-ii — read-only shell.** `bash` back on the chat agent behind a
+      `tool_call` classifier.
 - [ ] **P5c — picker.** Startup overlay; Esc drops to chat.
 - [ ] **P6 — `/wf-new` meta-workflow.**
 - [ ] **P7 — ecosystem fill.** `/explore`, `/debug`, `/review`; migrate the
