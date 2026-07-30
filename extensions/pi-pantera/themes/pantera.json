@@ -7,12 +7,12 @@
     "bok": "#68FFD6",
     "blush": "#FF84FF",
     "butter": "#FFFAF1",
-    "ash": "#DFDBDD",
-    "smoke": "#BFBC8",
+    "ash": "#ECEBF0",
+    "smoke": "#BFBCC8",
     "squid": "#858392",
     "oyster": "#605F6B",
     "pepper": "#201F26",
-    "bbq": "#2D2C35",
+    "bbq": "#2D2C36",
     "charcoal": "#3A3943",
     "iron": "#4D4C57",
     "coral": "#FF577D",
@@ -32,7 +32,7 @@
     "cumin": "#BF976F",
     "sapphire": "#4949FF",
     "lichen": "#5CDFEA",
-    "salt": "#F1EFEF"
+    "salt": "#F7F6FB"
   },
   "colors": {
     "accent": "charple",
