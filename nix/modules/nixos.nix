@@ -83,8 +83,6 @@ in {
       review = mkEnableOption "pi-review /review and /end-review code review workflow extension";
       vcc = mkEnableOption "pi-vcc algorithmic conversation compactor and vcc_recall history search";
       caveman = mkEnableOption "pi-caveman terse-response mode extension";
-      "extensible-workflows" = mkEnableOption "pi-extensible-workflows workflow engine extension (lifecycle: testing)";
-      workflows = mkEnableOption "pi-workflows workflow engine with runs rendered into the transcript; forked from pi-extensible-workflows (lifecycle: testing)";
     };
 
     extraExtensions = mkOption {

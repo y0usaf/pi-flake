@@ -146,45 +146,7 @@
         "pi-webfetch" = piWebfetch.packages.${system}.default;
         "pi-hashline" = piHashline.packages.${system}.default;
         "pi-chrono-break" = piChronoBreak.packages.${system}.default;
-        # Forked from the pristine reference tree at
-        # @extensions/vekexasia_pi-extensible-workflows/ (MIT). Ships the engine
-        # and the transcript renderer as two entry points of one extension.
-        "pi-workflows" = let
-          workflowsForkPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-workflows/package.json);
-        in
-          pkgs.buildNpmPackage {
-            pname = "pi-workflows";
-            version = workflowsForkPackageJson.version;
-            src = lib.cleanSource ./extensions/pi-workflows;
 
-            npmBuildScript = "build";
-            npmDepsFetcherVersion = 2;
-            npmDepsHash = "sha256-3i3nSXTx1JpV6WmNSenJFE69KU46irXA5M0wFENLpMY=";
-
-            nodejs = pkgs.nodejs_22;
-
-            installPhase = ''
-              runHook preInstall
-
-              npm prune --omit=dev
-
-              mkdir -p "$out"
-              cp package.json README.md CHANGELOG.md DESIGN.md "$out"/
-              cp -r src skills examples dist "$out"/
-              cp -r node_modules "$out"/
-
-              runHook postInstall
-            '';
-
-            passthru.packageName = workflowsForkPackageJson.name;
-
-            meta = with lib; {
-              description = workflowsForkPackageJson.description;
-              homepage = workflowsForkPackageJson.homepage;
-              license = licenses.mit;
-              platforms = platforms.all;
-            };
-          };
         "pi-advisor" = let
           advisorPackageJson = builtins.fromJSON (builtins.readFile ./extensions/RimuruW_pi-advisor/package.json);
         in
@@ -331,48 +293,6 @@
             };
           };
 
-        # Vendored from @extensions/vekexasia_pi-extensible-workflows/ (MIT).
-        # Pi loads ./src/index.ts directly; dist is shipped for the exports map;
-        # production node_modules provide the runtime deps (acorn, minimatch).
-        "pi-extensible-workflows" = let
-          workflowsPackageJson = builtins.fromJSON (builtins.readFile ./extensions/vekexasia_pi-extensible-workflows/package.json);
-        in
-          pkgs.buildNpmPackage {
-            pname = "pi-extensible-workflows";
-            version = workflowsPackageJson.version;
-            src = lib.cleanSource ./extensions/vekexasia_pi-extensible-workflows;
-
-            npmBuildScript = "build";
-            npmDepsFetcherVersion = 2;
-            npmDepsHash = "sha256-3i3nSXTx1JpV6WmNSenJFE69KU46irXA5M0wFENLpMY=";
-
-            nodejs = pkgs.nodejs_22;
-
-            installPhase = ''
-              runHook preInstall
-
-              npm prune --omit=dev
-
-              mkdir -p "$out"
-              cp package.json README.md CHANGELOG.md "$out"/
-              cp -r src skills examples dist "$out"/
-              # Workflows are NOT shipped in the package: the system flake places
-              # workflows/*/ into <agentDir>/workflows, the engine's third scan root.
-              cp -r node_modules "$out"/
-
-              runHook postInstall
-            '';
-
-            passthru.packageName = workflowsPackageJson.name;
-
-            meta = with lib; {
-              description = workflowsPackageJson.description;
-              homepage = workflowsPackageJson.homepage;
-              license = licenses.mit;
-              platforms = platforms.all;
-            };
-          };
-
         # pi with default extensions pre-bundled.
         pi-full = self.lib.piWithExtensions {
           inherit pkgs;
@@ -409,39 +329,9 @@
         pi-rtk-test = piRtk.checks.${system}.test;
         pi-aphrodite-build = self.packages.${system}."pi-aphrodite";
         pi-extension-management-build = self.packages.${system}."pi-extension-management";
-        pi-extensible-workflows-build = self.packages.${system}."pi-extensible-workflows";
+
         pi-quiet-build = self.packages.${system}."pi-quiet";
 
-        # Runtime acceptance for the local `sessionContext` field on a workflow
-        # command.json: a build only proves it compiles, not that a bare slash
-        # command reaches its workflow child carrying the session it was typed
-        # in. Runs against pi wrapped with just the workflows extension, so no
-        # other extension can answer for it.
-        pi-workflow-session-context =
-          pkgs.runCommand "pi-workflow-session-context" {
-            nativeBuildInputs = [pkgs.bash pkgs.jq pkgs.gnugrep pkgs.coreutils];
-          } ''
-            bash ${./nix/checks/workflow-session-context.sh} ${self.lib.piWithExtensions {
-              inherit pkgs;
-              pi = self.packages.${system}.pi;
-              extensions = {workflows = self.packages.${system}."pi-extensible-workflows";};
-            }}/bin/pi
-            touch $out
-          '';
-
-        # Static gate for the packs in workflows/. They ship as raw .js that the
-        # engine evaluates as an async function body, so top-level `return` and
-        # `await` are legal there and a parse error to every other parser: the
-        # TypeScript build never sees them and biome cannot lint them. This check
-        # parses them the way the engine does and validates each command.json
-        # against the fields host.ts reads.
-        workflow-packs =
-          pkgs.runCommand "pi-flake-workflow-packs" {
-            nativeBuildInputs = [pkgs.nodejs];
-          } ''
-            node ${./nix/checks/workflow-packs.mjs} ${./workflows}
-            touch $out
-          '';
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;
@@ -571,14 +461,12 @@
         webfetch = self.packages.${system}."pi-webfetch";
         hashline = self.packages.${system}."pi-hashline";
         "chrono-break" = self.packages.${system}."pi-chrono-break";
-        workflows = self.packages.${system}."pi-workflows";
+
         advisor = self.packages.${system}."pi-advisor";
         review = self.packages.${system}."pi-review";
         vcc = self.packages.${system}."pi-vcc";
         caveman = self.packages.${system}."pi-caveman";
         quiet = self.packages.${system}."pi-quiet";
-
-        "extensible-workflows" = self.packages.${system}."pi-extensible-workflows";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.
@@ -705,9 +593,6 @@
           export PI_SKIP_VERSION_CHECK=1
           export PI_TELEMETRY=0
 
-          # Real node for pi-extensible-workflows child processes (bun binary
-          # cannot re-exec node flags; see patches in extensions/vekexasia_pi-extensible-workflows).
-          export PI_WORKFLOW_NODE_PATH="${pkgs.nodejs_22}/bin/node"
 
           if [ -n "''${PI_DEFAULT_PACKAGES:-}" ]; then
             export PI_DEFAULT_PACKAGES="@out@/share/pi:''${PI_DEFAULT_PACKAGES}"
