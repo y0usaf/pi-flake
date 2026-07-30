@@ -7,8 +7,9 @@
 #   paused   — source kept in tree, but not built, bundled, or checked.
 #   retired  — remove the entry here AND delete the source from extensions/.
 #
-# source: "subflake" (own flake input under extensions/) or
-#         "vendored" (third-party tree built inline in flake.nix).
+# source: "subflake" (own flake input under extensions/),
+#         "vendored" (third-party tree built inline in flake.nix), or
+#         "inline" (first-party tree in this repo, built inline by the root flake).
 {
   gecko-websearch = {
     stage = "active";
@@ -60,9 +61,15 @@
     dir = "ndraiman_pi-cursor-provider";
   };
 
+  pantera = {
+    stage = "active";
+    source = "inline";
+    dir = "pi-pantera";
+  };
+
   quiet = {
     stage = "active";
-    source = "vendored";
+    source = "inline";
     dir = "pi-quiet";
   };
 

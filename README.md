@@ -142,7 +142,8 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | Name | Description |
 |------|-------------|
 | `pi-gecko-websearch` | Web search using Firefox's engine |
-| `pi-rtk` | `rtk rewrite` shell-command optimization to cut token usage |
+| `pi-rtk` | `rtk rewrite` shell-command optimization that reduces shell output before it reaches the model |
+| `pi-aphrodite` | Intercepts oversized tool output, stores it locally, and substitutes a `<<<CCR:hash|type|size>>>` marker that the `aphrodite_retrieve` tool expands |
 | `pi-interview` | Main-session ask-user questionnaire + optional separate-context auto-answers (`/interview`) |
 | `pi-management` | Persistent disabled-tools (`/tools`) and disabled-extensions (`/extensions`) menus |
 | `pi-webfetch` | HTTP fetching utilities |
@@ -217,6 +218,7 @@ If you want full control:
 ```nix
 inputs.pi-flake.packages.<system>."pi-gecko-websearch"
 inputs.pi-flake.packages.<system>."pi-rtk"
+inputs.pi-flake.packages.<system>."pi-aphrodite"
 inputs.pi-flake.packages.<system>."pi-interview"
 inputs.pi-flake.packages.<system>."pi-management"
 inputs.pi-flake.packages.<system>."pi-webfetch"
