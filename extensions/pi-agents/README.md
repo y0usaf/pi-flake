@@ -39,7 +39,8 @@ Example:
 {
   "maxDepth": 1,
   "maxLiveAgents": 6,
-  "model": "anthropic/claude-haiku-4-5"
+  "model": "anthropic/claude-haiku-4-5",
+  "orchestrator": false
 }
 ```
 
@@ -51,7 +52,9 @@ Depth is counted from the root session at depth `0`:
 
 `maxLiveAgents` caps the total number of live agents kept in the in-memory registry at once.
 
-Defaults: `maxDepth: 1`, `maxLiveAgents: 6`, no `model` override.
+Defaults: `maxDepth: 1`, `maxLiveAgents: 6`, no `model` override, `orchestrator: false`.
+
+`orchestrator: true` strips `write`/`edit` from the main session at session start, so file mutations route through spawned executor agents; `read`/`bash` stay for context-gathering and verification. The `/orchestrate` command toggles the same mode at runtime. `bash` is a deliberate escape hatch — this is a delegation default, not a sandbox.
 
 `model` picks the model every spawned child runs on — the point being to push delegated work onto a cheaper model than the parent session. Accepted forms:
 
