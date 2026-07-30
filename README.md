@@ -79,7 +79,6 @@ Flake `inputs` cannot pass arbitrary booleans into another flake's outputs. Use 
         webfetch = true;
         hashline = true;
 
-        advisor = true;
         review = true;
         vcc = true;
         caveman = true;
@@ -117,7 +116,6 @@ Only flags set to `true` are copied into the bundled wrapper.
             #   webfetch = true;
             #   hashline = true;
 
-            #   advisor = true;
             #   review = true;
             #   vcc = true;
             #   caveman = true;
@@ -148,7 +146,6 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-webfetch` | HTTP fetching utilities |
 | `pi-hashline` | Strict hashline v3 read/edit tool override |
 
-| `pi-advisor` | Stage-aware strategic guidance from a separately configured advisor model |
 | `pi-review` | `/review` and `/end-review` code review workflow |
 | `pi-vcc` | Algorithmic conversation compactor with `/pi-vcc`, `/pi-vcc-recall`, and `vcc_recall` |
 | `pi-caveman` | Terse-response mode with configurable compression levels |
@@ -221,13 +218,11 @@ inputs.pi-flake.packages.<system>."pi-tool-management"
 inputs.pi-flake.packages.<system>."pi-webfetch"
 inputs.pi-flake.packages.<system>."pi-hashline"
 
-inputs.pi-flake.packages.<system>."pi-advisor"
 inputs.pi-flake.packages.<system>."pi-review"
 inputs.pi-flake.packages.<system>."pi-vcc"
 inputs.pi-flake.packages.<system>."pi-caveman"
 ```
 
-`pi-advisor` is bundled in `pi-full`, but its `advisor` tool starts disabled. Run `/advisor on [provider/model]` to configure and enable it.
 `pi-interview` is bundled in `pi-full` but defaults to `off`. Use `/interview manual`, `/interview auto [provider/model]`, or `/interview strict`; configuration persists to `~/.pi/agent/interview.json`.
 
 `pi-review` PR review mode shells out to `gh`; install and authenticate GitHub CLI separately if you want `/review pr ...`.
