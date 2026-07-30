@@ -6,7 +6,7 @@ Nix flake for building [pi](https://github.com/earendil-works/pi) with optional 
 - Base `pi` package built from source
 - Pre-configured extension packages
 - Upstream tool controls incl. `--exclude-tools`
-- Optional persistent `/tools` UI via `pi-tool-management`
+- Optional persistent `/tools` + `/extensions` UI via `pi-management`
 - **Builder functions** for custom extension combinations
 - Flag-driven extension selection for downstream flakes
 - Bundled extensions load automatically without writing to `settings.json`
@@ -75,7 +75,7 @@ Flake `inputs` cannot pass arbitrary booleans into another flake's outputs. Use 
         "gecko-websearch" = false;
         rtk = false;
         interview = true;
-        "tool-management" = false;
+        management = false;
         webfetch = true;
         hashline = true;
 
@@ -112,7 +112,7 @@ Only flags set to `true` are copied into the bundled wrapper.
             # Option 2: selected bundled extensions
             # extensions = {
             #   interview = true;
-            #   # tool-management = true; # persistent disabled-tools menu/UI
+            #   # management = true; # persistent disabled-tools + disabled-extensions menus
             #   webfetch = true;
             #   hashline = true;
 
@@ -142,7 +142,7 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-gecko-websearch` | Web search using Firefox's engine |
 | `pi-rtk` | `rtk rewrite` shell-command optimization to cut token usage |
 | `pi-interview` | Main-session ask-user questionnaire + optional separate-context auto-answers (`/interview`) |
-| `pi-tool-management` | Persistent disabled-tools menu/UI via `/tools` |
+| `pi-management` | Persistent disabled-tools (`/tools`) and disabled-extensions (`/extensions`) menus |
 | `pi-webfetch` | HTTP fetching utilities |
 | `pi-hashline` | Strict hashline v3 read/edit tool override |
 
@@ -214,7 +214,7 @@ If you want full control:
 inputs.pi-flake.packages.<system>."pi-gecko-websearch"
 inputs.pi-flake.packages.<system>."pi-rtk"
 inputs.pi-flake.packages.<system>."pi-interview"
-inputs.pi-flake.packages.<system>."pi-tool-management"
+inputs.pi-flake.packages.<system>."pi-management"
 inputs.pi-flake.packages.<system>."pi-webfetch"
 inputs.pi-flake.packages.<system>."pi-hashline"
 

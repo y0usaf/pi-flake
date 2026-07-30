@@ -32,22 +32,6 @@
       },
       "parent": []
     },
-    "piExtensionManagement": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-extension-management",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-extension-management",
-        "type": "path"
-      },
-      "parent": []
-    },
     "piGeckoWebsearch": {
       "inputs": {
         "nixpkgs": [
@@ -96,6 +80,22 @@
       },
       "parent": []
     },
+    "piManagement": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-management",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-management",
+        "type": "path"
+      },
+      "parent": []
+    },
     "piRtk": {
       "inputs": {
         "nixpkgs": [
@@ -129,22 +129,6 @@
         "type": "github"
       }
     },
-    "piToolManagement": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-tool-management",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-tool-management",
-        "type": "path"
-      },
-      "parent": []
-    },
     "piWebfetch": {
       "inputs": {
         "nixpkgs": [
@@ -165,13 +149,12 @@
       "inputs": {
         "nixpkgs": "nixpkgs",
         "piAphrodite": "piAphrodite",
-        "piExtensionManagement": "piExtensionManagement",
         "piGeckoWebsearch": "piGeckoWebsearch",
         "piHashline": "piHashline",
         "piInterview": "piInterview",
+        "piManagement": "piManagement",
         "piRtk": "piRtk",
         "piSrc": "piSrc",
-        "piToolManagement": "piToolManagement",
         "piWebfetch": "piWebfetch"
       }
     }

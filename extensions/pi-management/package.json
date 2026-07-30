@@ -1,15 +1,15 @@
 {
-  "name": "pi-extension-management",
+  "name": "pi-management",
   "version": "1.0.0",
-  "description": "Pi extension that manages a global disabled-extensions list with persistent settings and in-session reload",
+  "description": "Pi extension that manages global disabled-tools and disabled-extensions lists with persistent settings",
   "license": "MIT",
-  "homepage": "https://github.com/y0usaf/pi-flake/tree/main/extensions/pi-extension-management",
+  "homepage": "https://github.com/y0usaf/pi-flake/tree/main/extensions/pi-management",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/y0usaf/pi-flake.git",
-    "directory": "extensions/pi-extension-management"
+    "directory": "extensions/pi-management"
   },
-  "keywords": ["pi", "extension", "extension-management", "disabled-extensions"],
+  "keywords": ["pi", "extension", "tool-management", "extension-management", "disabled-tools", "disabled-extensions"],
   "files": ["src", "README.md", "package.json"],
   "type": "module",
   "pi": {

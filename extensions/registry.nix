@@ -27,11 +27,7 @@
     stage = "active";
     source = "subflake";
   };
-  tool-management = {
-    stage = "active";
-    source = "subflake";
-  };
-  extension-management = {
+  management = {
     stage = "active";
     source = "subflake";
   };
