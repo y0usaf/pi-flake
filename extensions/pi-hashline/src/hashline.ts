@@ -32,14 +32,10 @@ export type HashlineLoc =
   | { range: { pos: string; end: string } };
 
 export type RawEdit = {
-  op?: string;
-  pos?: string;
-  end?: string;
-  lines?: string[] | string | null;
-  oldText?: string;
-  newText?: string;
   loc?: HashlineLoc;
   content?: string[] | string | null;
+  oldText?: string;
+  newText?: string;
 };
 
 export type EditRequest = {
@@ -66,7 +62,7 @@ type StaleAnchor = {
 
 const HASH_SPACE_SIZE = HASHLINE_BIGRAMS_COUNT * HASHLINE_BIGRAMS_COUNT;
 
-export function computeLineHash(_lineNumber: number, line: string): string {
+export function computeLineHash(line: string): string {
   const xxHash32 = (globalThis as unknown as { Bun?: { hash?: { xxHash32?: (value: string, seed?: number) => number } } }).Bun?.hash?.xxHash32;
   if (typeof xxHash32 !== "function") {
     throw new Error("[E_HASH_UNAVAILABLE] Bun.hash.xxHash32 is required for hashline v3 anchors.");
@@ -93,10 +89,7 @@ function joinVisibleLines(lines: string[], preserveTerminalNewline: boolean): st
 
 export function formatHashlineRegion(lines: string[], startLine: number): string {
   return lines
-    .map((line, index) => {
-      const lineNumber = startLine + index;
-      return `${lineNumber}${computeLineHash(lineNumber, line)}|${line}`;
-    })
+    .map((line, index) => `${startLine + index}${computeLineHash(line)}|${line}`)
     .join("\n");
 }
 
@@ -124,9 +117,9 @@ function stringifyAnchor(anchor: Anchor): string {
   return `${anchor.line}${anchor.hash}`;
 }
 
-function parseEditLines(value: string[] | string | null | undefined, editIndex: number, fieldName = "lines"): string[] {
+function parseEditLines(value: string[] | string | null | undefined, editIndex: number): string[] {
   if (value === undefined) {
-    throw new Error(`Edit ${editIndex} requires a "${fieldName}" field.`);
+    throw new Error(`Edit ${editIndex} requires a "content" field.`);
   }
   if (value === null) return [];
   const lines = typeof value === "string"
@@ -139,7 +132,7 @@ function parseEditLines(value: string[] | string | null | undefined, editIndex: 
       HASHLINE_PLUS_PREFIX_RE.test(line) ||
       DIFF_DELETE_PREFIX_RE.test(line)
     ) {
-      throw new Error(`[E_INVALID_PATCH] edits[${editIndex}].${fieldName} must contain literal file content, not rendered hashline anchors or diff prefixes. Offending line: ${JSON.stringify(line)}`);
+      throw new Error(`[E_INVALID_PATCH] edits[${editIndex}].content must contain literal file content, not rendered hashline anchors or diff prefixes. Offending line: ${JSON.stringify(line)}`);
     }
   }
 
@@ -156,7 +149,7 @@ function validateAnchor(anchor: Anchor, fileLines: string[], staleAnchors: Stale
     return;
   }
 
-  const actual = computeLineHash(anchor.line, current);
+  const actual = computeLineHash(current);
   if (actual !== anchor.hash) staleAnchors.push({ requested: anchor, actual });
 }
 
@@ -197,7 +190,7 @@ function formatStaleAnchorError(staleAnchors: StaleAnchor[], fileLines: string[]
       if (previous !== -1 && lineNumber > previous + 1) out.push("    ...");
       previous = lineNumber;
       const line = fileLines[lineNumber - 1]!;
-      const prefix = `${lineNumber}${computeLineHash(lineNumber, line)}`;
+      const prefix = `${lineNumber}${computeLineHash(line)}`;
       out.push(`${retryLines.has(lineNumber) ? ">>>" : "   "} ${prefix}|${line}`);
     }
   }
@@ -209,29 +202,16 @@ function formatStaleAnchorError(staleAnchors: StaleAnchor[], fileLines: string[]
   return out.join("\n");
 }
 
-function describeLineEdit(edit: RawEdit): string {
-  if (edit.loc !== undefined) return `loc ${JSON.stringify(edit.loc)}`;
-  switch (edit.op) {
-    case "replace":
-      return edit.end ? `replace ${edit.pos}-${edit.end}` : `replace ${edit.pos}`;
-    case "append":
-      return edit.pos ? `append after ${edit.pos}` : "append at EOF";
-    case "prepend":
-      return edit.pos ? `prepend before ${edit.pos}` : "prepend at BOF";
-    default:
-      return edit.op ?? "edit";
-  }
-}
-
 function resolveLocEdit(index: number, edit: RawEdit, fileLines: string[], staleAnchors: StaleAnchor[]): LineEdit {
-  const lines = parseEditLines(edit.content, index, "content");
+  const lines = parseEditLines(edit.content, index);
   const loc = edit.loc;
+  const label = `loc ${JSON.stringify(loc)}`;
 
   if (loc === "append") {
-    return { requestIndex: index, label: describeLineEdit(edit), kind: "append", start: fileLines.length, end: fileLines.length, lines };
+    return { requestIndex: index, label, kind: "append", start: fileLines.length, end: fileLines.length, lines };
   }
   if (loc === "prepend") {
-    return { requestIndex: index, label: describeLineEdit(edit), kind: "prepend", start: 0, end: 0, lines };
+    return { requestIndex: index, label, kind: "prepend", start: 0, end: 0, lines };
   }
   if (!loc || typeof loc !== "object") {
     throw new Error(`[E_BAD_OP] Edit ${index} loc must be "append", "prepend", {append}, {prepend}, or {range}.`);
@@ -240,12 +220,12 @@ function resolveLocEdit(index: number, edit: RawEdit, fileLines: string[], stale
   if ("append" in loc) {
     const pos = parseAnchor(loc.append);
     validateAnchor(pos, fileLines, staleAnchors);
-    return { requestIndex: index, label: describeLineEdit(edit), kind: "append", start: pos.line, end: pos.line, lines };
+    return { requestIndex: index, label, kind: "append", start: pos.line, end: pos.line, lines };
   }
   if ("prepend" in loc) {
     const pos = parseAnchor(loc.prepend);
     validateAnchor(pos, fileLines, staleAnchors);
-    return { requestIndex: index, label: describeLineEdit(edit), kind: "prepend", start: pos.line - 1, end: pos.line - 1, lines };
+    return { requestIndex: index, label, kind: "prepend", start: pos.line - 1, end: pos.line - 1, lines };
   }
   if ("range" in loc) {
     const pos = parseAnchor(loc.range.pos);
@@ -255,7 +235,7 @@ function resolveLocEdit(index: number, edit: RawEdit, fileLines: string[], stale
     if (end.line < pos.line) {
       throw new Error(`[E_BAD_REF] Edit ${index} has end before pos (${stringifyAnchor(end)} < ${stringifyAnchor(pos)}).`);
     }
-    return { requestIndex: index, label: describeLineEdit(edit), kind: "replace", start: pos.line - 1, end: end.line, lines };
+    return { requestIndex: index, label, kind: "replace", start: pos.line - 1, end: end.line, lines };
   }
 
   throw new Error(`[E_BAD_OP] Edit ${index} loc must be "append", "prepend", {append}, {prepend}, or {range}.`);
@@ -263,64 +243,7 @@ function resolveLocEdit(index: number, edit: RawEdit, fileLines: string[], stale
 
 function resolveLineEdits(edits: RawEdit[], fileLines: string[]): LineEdit[] {
   const staleAnchors: StaleAnchor[] = [];
-  const resolved: LineEdit[] = [];
-
-  for (const [index, edit] of edits.entries()) {
-    if (edit.op === "replace_text") continue;
-    if (edit.loc !== undefined) {
-      resolved.push(resolveLocEdit(index, edit, fileLines, staleAnchors));
-      continue;
-    }
-    const lines = parseEditLines(edit.lines, index);
-    const pos = edit.pos ? parseAnchor(edit.pos) : undefined;
-    const end = edit.end ? parseAnchor(edit.end) : undefined;
-
-    if (pos) validateAnchor(pos, fileLines, staleAnchors);
-    if (end) validateAnchor(end, fileLines, staleAnchors);
-
-    switch (edit.op) {
-      case "replace": {
-        if (!pos) throw new Error(`Edit ${index} with op "replace" requires a pos anchor.`);
-        const endAnchor = end ?? pos;
-        if (endAnchor.line < pos.line) {
-          throw new Error(`[E_BAD_REF] Edit ${index} has end before pos (${stringifyAnchor(endAnchor)} < ${stringifyAnchor(pos)}).`);
-        }
-        resolved.push({
-          requestIndex: index,
-          label: describeLineEdit(edit),
-          kind: "replace",
-          start: pos.line - 1,
-          end: endAnchor.line,
-          lines,
-        });
-        break;
-      }
-      case "append": {
-        resolved.push({
-          requestIndex: index,
-          label: describeLineEdit(edit),
-          kind: "append",
-          start: pos ? pos.line : fileLines.length,
-          end: pos ? pos.line : fileLines.length,
-          lines,
-        });
-        break;
-      }
-      case "prepend": {
-        resolved.push({
-          requestIndex: index,
-          label: describeLineEdit(edit),
-          kind: "prepend",
-          start: pos ? pos.line - 1 : 0,
-          end: pos ? pos.line - 1 : 0,
-          lines,
-        });
-        break;
-      }
-      default:
-        throw new Error(`[E_BAD_OP] Unknown edit op ${JSON.stringify(edit.op)}. Expected replace, append, prepend, or replace_text.`);
-  }
-  }
+  const resolved = edits.map((edit, index) => resolveLocEdit(index, edit, fileLines, staleAnchors));
 
   if (staleAnchors.length > 0) {
     throw new Error(formatStaleAnchorError(staleAnchors, fileLines));
@@ -526,31 +449,24 @@ function applyExactUniqueReplacePreservingLineEndings(
   return rawContent.slice(0, rawStart) + restoreLineTerminator(normalizedNew, preferredEnding) + rawContent.slice(rawEnd);
 }
 
-function applyExactUniqueReplace(content: string, oldText: string, newText: string): string {
-  const normalizedOld = normalizeToLF(oldText);
-  const normalizedNew = normalizeToLF(newText);
-  const start = findUniqueNormalizedMatch(content, normalizedOld);
-  return content.slice(0, start) + normalizedNew + content.slice(start + normalizedOld.length);
+function isReplaceTextEdit(edit: RawEdit): boolean {
+  return edit.oldText !== undefined || edit.newText !== undefined;
 }
 
-export function applyEditsToContent(original: string, edits: RawEdit[]): string {
-  const textEdits = edits.filter((edit) => edit.op === "replace_text");
-  if (textEdits.length > 0) {
-    if (edits.length !== 1) {
-      throw new Error("[E_EDIT_CONFLICT] replace_text cannot be mixed with anchor edits in one call. Use anchors or split the request.");
-    }
-    const edit = textEdits[0]!;
-    if (typeof edit.oldText !== "string" || typeof edit.newText !== "string") {
-      throw new Error("[E_BAD_OP] replace_text requires string oldText and newText.");
-    }
-    return applyExactUniqueReplace(original, edit.oldText, edit.newText);
+/**
+ * Extract the sole replace_text edit when present. Throws when replace_text is
+ * mixed with anchor edits or carries non-string fields.
+ */
+function getSoleReplaceTextEdit(edits: RawEdit[]): { oldText: string; newText: string } | undefined {
+  if (!edits.some(isReplaceTextEdit)) return undefined;
+  if (edits.length !== 1) {
+    throw new Error("[E_EDIT_CONFLICT] replace_text cannot be mixed with anchor edits in one call. Use anchors or split the request.");
   }
-
-  const preserveTerminalNewline = original.endsWith("\n");
-  const originalLines = getVisibleLines(original);
-  const lineEdits = resolveLineEdits(edits, originalLines);
-  const nextLines = applyLineEdits(originalLines, lineEdits);
-  return joinVisibleLines(nextLines, preserveTerminalNewline);
+  const edit = edits[0]!;
+  if (typeof edit.oldText !== "string" || typeof edit.newText !== "string") {
+    throw new Error("[E_BAD_OP] replace_text requires string oldText and newText.");
+  }
+  return { oldText: edit.oldText, newText: edit.newText };
 }
 
 export function applyEditsToRawContentPreservingLineEndings(
@@ -559,16 +475,9 @@ export function applyEditsToRawContentPreservingLineEndings(
   options: { defaultLineEnding?: LineEnding | LineTerminator } = {},
 ): string {
   const fallback = resolveFallbackLineTerminator(options.defaultLineEnding);
-  const textEdits = edits.filter((edit) => edit.op === "replace_text");
-  if (textEdits.length > 0) {
-    if (edits.length !== 1) {
-      throw new Error("[E_EDIT_CONFLICT] replace_text cannot be mixed with anchor edits in one call. Use anchors or split the request.");
-    }
-    const edit = textEdits[0]!;
-    if (typeof edit.oldText !== "string" || typeof edit.newText !== "string") {
-      throw new Error("[E_BAD_OP] replace_text requires string oldText and newText.");
-    }
-    return applyExactUniqueReplacePreservingLineEndings(originalRaw, edit.oldText, edit.newText, fallback);
+  const replaceText = getSoleReplaceTextEdit(edits);
+  if (replaceText) {
+    return applyExactUniqueReplacePreservingLineEndings(originalRaw, replaceText.oldText, replaceText.newText, fallback);
   }
 
   const nextRecords = applyLineRecordEdits(splitTextLineRecords(originalRaw), edits, fallback);
@@ -576,18 +485,11 @@ export function applyEditsToRawContentPreservingLineEndings(
 }
 
 export function computeEditLineMetrics(original: string, edits: RawEdit[]): { addedLines: number; removedLines: number } {
-  const textEdits = edits.filter((edit) => edit.op === "replace_text");
-  if (textEdits.length > 0) {
-    if (edits.length !== 1) {
-      throw new Error("[E_EDIT_CONFLICT] replace_text cannot be mixed with anchor edits in one call. Use anchors or split the request.");
-    }
-    const edit = textEdits[0]!;
-    if (typeof edit.oldText !== "string" || typeof edit.newText !== "string") {
-      throw new Error("[E_BAD_OP] replace_text requires string oldText and newText.");
-    }
+  const replaceText = getSoleReplaceTextEdit(edits);
+  if (replaceText) {
     return {
-      addedLines: getVisibleLines(edit.newText).length,
-      removedLines: getVisibleLines(edit.oldText).length,
+      addedLines: getVisibleLines(replaceText.newText).length,
+      removedLines: getVisibleLines(replaceText.oldText).length,
     };
   }
 

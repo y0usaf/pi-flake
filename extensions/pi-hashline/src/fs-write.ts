@@ -1,49 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, open, readlink, rename, stat, unlink } from "node:fs/promises";
-import { dirname, join, parse, resolve, sep } from "node:path";
+import { chmod, open, realpath, rename, stat, unlink } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { type FileSnapshot, getFileSnapshot, sameFileSnapshot } from "./snapshot";
 
+/**
+ * Resolve the real filesystem target of an existing path. Callers verify
+ * existence first, so realpath covers symlink chains and reports ELOOP on
+ * cycles.
+ */
 export async function resolveMutationTargetPath(path: string): Promise<string> {
-  const absolutePath = resolve(path);
-  const { root } = parse(absolutePath);
-  const parts = absolutePath.slice(root.length).split(sep).filter((part) => part.length > 0);
-  const visitedSymlinks = new Set<string>();
-
-  async function resolveFromParts(currentPath: string, remainingParts: string[]): Promise<string> {
-    if (remainingParts.length === 0) return currentPath;
-
-    const [nextPart, ...tail] = remainingParts;
-    const candidatePath = join(currentPath, nextPart!);
-
-    try {
-      const candidateStats = await lstat(candidatePath);
-      if (!candidateStats.isSymbolicLink()) {
-        return resolveFromParts(candidatePath, tail);
-      }
-
-      if (visitedSymlinks.has(candidatePath)) {
-        const error = new Error(`Too many symbolic links while resolving ${path}`) as NodeJS.ErrnoException;
-        error.code = "ELOOP";
-        throw error;
-      }
-      visitedSymlinks.add(candidatePath);
-
-      const linkTargetPath = resolve(dirname(candidatePath), await readlink(candidatePath));
-      const targetRoot = parse(linkTargetPath).root;
-      const targetParts = linkTargetPath
-        .slice(targetRoot.length)
-        .split(sep)
-        .filter((part) => part.length > 0);
-      return resolveFromParts(targetRoot, [...targetParts, ...tail]);
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return join(candidatePath, ...tail);
-      }
-      throw error;
-    }
-  }
-
-  return resolveFromParts(root, parts);
+  return realpath(resolve(path));
 }
 
 async function syncDirectory(path: string): Promise<void> {
@@ -90,7 +56,6 @@ export async function writeTextFileAtomically(
   let renamed = false;
 
   try {
-    await mkdir(dir, { recursive: true });
     await writeTempFileDurably(tempPath, content, currentStat.mode);
 
     if (options.expectedSnapshot) {

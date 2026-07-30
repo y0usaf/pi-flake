@@ -7,9 +7,6 @@ import { computeLineHash } from "../src/hashline";
 let diffInput: { oldContent: string; newContent: string } | undefined;
 let patchInput: { path: string; oldContent: string; newContent: string } | undefined;
 
-mock.module("@earendil-works/pi-ai", () => ({
-  StringEnum: () => ({}),
-}));
 
 mock.module("@earendil-works/pi-coding-agent", () => ({
   DEFAULT_MAX_BYTES: 50 * 1024,
@@ -58,7 +55,7 @@ test("edit returns host-visible diff and unified patch details", async () => {
   try {
     await writeFile(path, "a\nb\nc\n", "utf8");
     const tool = captureEditTool();
-    const lineId = `2${computeLineHash(2, "b")}`;
+    const lineId = `2${computeLineHash("b")}`;
     const result = await tool.execute(
       "edit-1",
       {
@@ -76,8 +73,42 @@ test("edit returns host-visible diff and unified patch details", async () => {
     expect(result.details.diff).toBe("-2 b\n+2 B");
     expect(result.details.patch).toBe("--- sample.txt\n+++ sample.txt\n");
     expect(result.details.firstChangedLine).toBe(2);
-    expect(result.content[0].text).toContain(`2${computeLineHash(2, "B")}|B`);
+    expect(result.content[0].text).toContain(`2${computeLineHash("B")}|B`);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
+});
+
+test("prepareArguments maps legacy edit shapes onto strict v3 shapes", () => {
+  const tool = captureEditTool();
+  expect(tool.prepareArguments({
+    path: "f.txt",
+    edits: [
+      { op: "replace", pos: "1aabb", lines: ["X"] },
+      { op: "replace", pos: "2aabb", end: "3ccdd", lines: null },
+      { op: "append", lines: ["tail"] },
+      { op: "prepend", pos: "1aabb", lines: "head" },
+      { op: "replace_text", oldText: "a", newText: "b" },
+      { loc: "append", content: ["kept"] },
+    ],
+  })).toEqual({
+    path: "f.txt",
+    edits: [
+      { loc: { range: { pos: "1aabb", end: "1aabb" } }, content: ["X"] },
+      { loc: { range: { pos: "2aabb", end: "3ccdd" } }, content: null },
+      { loc: "append", content: ["tail"] },
+      { loc: { prepend: "1aabb" }, content: "head" },
+      { oldText: "a", newText: "b" },
+      { loc: "append", content: ["kept"] },
+    ],
+  });
+
+  expect(tool.prepareArguments({ path: "f.txt", oldText: "a", newText: "b" })).toEqual({
+    path: "f.txt",
+    edits: [{ oldText: "a", newText: "b" }],
+  });
+  expect(tool.prepareArguments({ path: "f.txt", old_text: "a", new_text: "b" })).toEqual({
+    path: "f.txt",
+    edits: [{ oldText: "a", newText: "b" }],
+  });
 });
