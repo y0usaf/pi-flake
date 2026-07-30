@@ -9,42 +9,6 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 // ---------------------------------------------------------------------------
-// LRU Cache — simple Map with TTL, max 50 entries, 15-min expiry
-// ---------------------------------------------------------------------------
-
-interface CacheEntry {
-	content: string;
-	contentType: string;
-	bytes: number;
-	timestamp: number;
-}
-
-const CACHE_TTL_MS = 15 * 60 * 1000;
-const CACHE_MAX = 50;
-const cache = new Map<string, CacheEntry>();
-
-function cacheGet(key: string): CacheEntry | undefined {
-	const entry = cache.get(key);
-	if (!entry) return undefined;
-	if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
-		cache.delete(key);
-		return undefined;
-	}
-	cache.delete(key);
-	cache.set(key, entry);
-	return entry;
-}
-
-function cacheSet(key: string, entry: CacheEntry): void {
-	while (cache.size >= CACHE_MAX) {
-		const oldest = cache.keys().next().value;
-		if (oldest !== undefined) cache.delete(oldest);
-		else break;
-	}
-	cache.set(key, entry);
-}
-
-// ---------------------------------------------------------------------------
 // Turndown — lazy singleton
 // ---------------------------------------------------------------------------
 
@@ -159,7 +123,7 @@ export default function (pi: ExtensionAPI) {
 		name: "web_fetch",
 		label: "Web Fetch",
 		description:
-			"Fetch a URL and return its content as markdown. For HTML pages, converts to clean markdown. For other content types, returns raw text. Includes a 15-minute cache.",
+			"Fetch a URL and return its content as markdown. For HTML pages, converts to clean markdown. For other content types, returns raw text.",
 		promptSnippet: "Fetch a URL and return its content as markdown",
 		promptGuidelines: [
 			"Use web_fetch to read documentation, API references, or other web content. URL must start with http:// or https:// (public http is tried as https first; localhost/private http stays http). HTML is converted to markdown; non-HTML is returned as-is.",
@@ -211,20 +175,6 @@ export default function (pi: ExtensionAPI) {
 				fallbackUrl = originalUrl;
 			}
 
-			// Check cache
-			let cachedUrl = fetchUrl;
-			let cached = cacheGet(fetchUrl);
-			if (!cached && fallbackUrl) {
-				const fallbackCached = cacheGet(fallbackUrl);
-				if (fallbackCached) {
-					cached = fallbackCached;
-					cachedUrl = fallbackUrl;
-				}
-			}
-			if (cached) {
-				return buildResult(cached.content, cached.bytes, cached.contentType, cachedUrl, prompt, true);
-			}
-
 			onUpdate?.({ content: [{ type: "text", text: `Fetching ${fetchUrl}...` }], details: undefined });
 
 			let lastAttemptUrl = fetchUrl;
@@ -262,10 +212,7 @@ export default function (pi: ExtensionAPI) {
 					content = rawText;
 				}
 
-				// Cache it
-				cacheSet(effectiveUrl, { content, contentType, bytes, timestamp: Date.now() });
-
-				return buildResult(content, bytes, contentType, effectiveUrl, prompt, false);
+				return buildResult(content, bytes, contentType, effectiveUrl, prompt);
 			} catch (err: unknown) {
 				if (err instanceof Error && err.name === "TimeoutError") {
 					throw new Error(`Fetch timed out after ${FETCH_TIMEOUT_MS / 1000}s for ${lastAttemptUrl}`);
@@ -286,7 +233,6 @@ function buildResult(
 	contentType: string,
 	url: string,
 	prompt: string | undefined,
-	fromCache: boolean,
 ) {
 	const truncation = truncateHead(content, {
 		maxLines: DEFAULT_MAX_LINES,
@@ -297,7 +243,7 @@ function buildResult(
 	if (prompt) {
 		text += `Looking for: ${prompt}\n\n`;
 	}
-	text += `URL: ${url}\nSize: ${formatSize(bytes)} | Type: ${contentType}${fromCache ? " (cached)" : ""}\n\n`;
+	text += `URL: ${url}\nSize: ${formatSize(bytes)} | Type: ${contentType}\n\n`;
 	text += truncation.content;
 
 	if (truncation.truncated) {
@@ -311,7 +257,6 @@ function buildResult(
 			url,
 			bytes,
 			contentType,
-			fromCache,
 			truncated: truncation.truncated,
 		},
 	};
