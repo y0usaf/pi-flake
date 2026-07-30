@@ -7,7 +7,6 @@ A pi coding agent extension that fetches URLs and returns their content as clean
 - Fetches any URL via HTTP GET
 - Converts HTML to markdown (via Turndown)
 - Returns raw text for non-HTML content
-- 15-minute LRU cache (50 entries max)
 - Tries `https://` first for public `http://` URLs; preserves localhost/private HTTP and falls back when HTTPS is unavailable
 - Follows same-host redirects only (up to 5 hops)
 - Truncates large output to stay within context limits
