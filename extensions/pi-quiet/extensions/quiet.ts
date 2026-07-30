@@ -1,11 +1,11 @@
 /**
  * pi-quiet — minimalist chrome, emoticon soul.
  *
- * Header removed; working loader row removed; random hidden-thinking
- * label; faces on builtin tool rows; face embedded in the editor's top
- * border (colored by the live thinking-level border color). While an
- * agent run is active the whole top border pulses through PULSE — the
- * editor border IS the working indicator.
+ * Header removed; working loader row removed; hidden thinking collapses to
+ * one blank line (empty label); faces on builtin tool rows; face embedded
+ * in the editor's top border (colored by the live thinking-level border
+ * color). While an agent run is active the whole top border pulses through
+ * PULSE — the editor border IS the working indicator.
  *
  * Tool rows re-register the builtin *definitions* (not the wrapped
  * AgentTools) so promptSnippet/promptGuidelines survive the override, and
@@ -34,7 +34,6 @@ const PULSE_MS = 240;
 const PULSE: ThemeColor[] = ["dim", "muted", "accent", "muted"];
 const EDITOR_FACE = "(^-^)";
 const ERROR_FACE = "(x_x)";
-const LABELS = ["scheming...", "rummaging...", "conjuring...", "plotting...", "percolating..."];
 
 const tilde = (path?: string) => {
 	const p = path ?? ".";
@@ -149,7 +148,9 @@ export default function (pi: ExtensionAPI) {
 		// loader row goes away entirely; the editor border takes its job
 		ctx.ui.setWorkingVisible(false);
 
-		ctx.ui.setHiddenThinkingLabel(LABELS[Math.floor(Math.random() * LABELS.length)]);
+		// empty label: the builtin Text renders zero visible text, so a hidden
+		// thinking run costs one blank line instead of a word. ctrl+t unhides.
+		ctx.ui.setHiddenThinkingLabel("");
 
 		ctx.ui.setEditorComponent((tui, theme, keybindings) => {
 			editor = new QuietEditor(tui, theme, keybindings);
