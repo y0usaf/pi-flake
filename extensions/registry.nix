@@ -71,6 +71,13 @@
     note = "Emoticon chrome: no header, blink spinner, face tool rows, face-border editor. Evaluating since 2026-08-11.";
   };
 
+  subagent = {
+    stage = "testing";
+    source = "vendored";
+    dir = "earendil_pi-subagent";
+    note = "Vendored from upstream pi examples/extensions/subagent. Planner/executor delegation: expensive planner, cheap worker, chain mode. Evaluating since 2026-08-12; opt-in until a real multi-step chain has run end to end, because every child is a full pi subprocess billing its own system prompt. Promote to active once the chain path has replaced hand-driven model switching for a week.";
+  };
+
   kimi = {
     stage = "paused";
     source = "subflake";
