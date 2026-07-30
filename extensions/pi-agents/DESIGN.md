@@ -1,8 +1,8 @@
 # pi-agents DESIGN
 
-Multi-agent orchestration for pi: root tools `spawn_agent`, `delegate`,
-`kill_agent`, `list_agents`; in-process child `Agent` instances with their own
-tools and conversation history.
+Multi-agent orchestration for pi: root tools `spawn_agent`, `kill_agent`,
+`list_agents`; in-process child `Agent` instances whose lifetime is exactly
+one contract — spawn, answer, removed.
 
 ## Locked decisions
 
@@ -22,23 +22,20 @@ tools and conversation history.
   `reservedIds` is added before any `await` so parallel `spawn_agent` calls
   cannot both pass the capacity/duplicate checks. `killSubtree` marks states
   killed and aborts them, but only deletes idle states; an in-flight
-  spawn/delegate removes its own state in `finally` once the prompt settles,
+  spawn removes its own state in `finally` once the prompt settles,
   and only if `children.get(id) === state`. No work continues against an
   unregistered agent.
-- **2026-08 — spawn removes on any error; delegate removes only on timeout.**
-  A failed spawn leaves a child that never ran its task — useless, so it is
-  torn down. A failed delegate leaves a working child with valuable history,
-  so it survives ordinary errors; timeout is destructive because the child may
-  be wedged.
-- **2026-08 — Blocking spawn/delegate.** Tools return when the run finishes;
+- **2026-08 — The subtree is removed on any error.** A failed run leaves
+  nothing behind; there is no partially-alive agent state to reason about.
+- **2026-08 — Blocking spawn.** The tool returns when the run finishes;
   parallel tool execution provides concurrency. No background-spawn handle
   API until a use case forces one.
 - **2026-08 — Child-controlled text is sanitized before rendering.** Reports
   and activity previews pass through `stripControlSequences` (OSC, CSI, C0)
   so a prompt-injected child cannot write terminal escapes into the TUI.
 - **2026-07 — Contract-first invocations; the result is data.** `spawn_agent`
-  and `delegate` require an AskUserQuestion-style contract (questions,
-  options, `allowOther`). The child gets a `submit_answers` tool; the run
+  requires an AskUserQuestion-style contract (questions, options,
+  `allowOther`). The child gets a `submit_answers` tool; the run
   completes only once it has been called, and the tool result is the
   validated answers — `report` is demoted to a progress channel. Prose
   results were unparseable and had no mechanical done-check; answers-as-data
@@ -49,18 +46,19 @@ tools and conversation history.
   be prevented from ending its turn, so an unfulfilled contract is re-prompted,
   at most `MAX_CONTRACT_NUDGES` (10) times — the watchdog bound; abort,
   timeout, and kill still interrupt it. A model refusing at nudge 10 refuses
-  at 500. After the cap: error — spawn tears the child down (prior decision),
-  delegate keeps it.
+  at 500. After the cap: error, and the subtree is torn down.
 - **2026-07 — Contract schema diverges from pi-interview deliberately.**
   Zero options plus `allowOther` is a legal free-text question (edit-style
   tasks have no enumerable options); the host-added option is "Unable to
   determine" (`__unable__`) — an explicit punt beats fabrication; free-text
   answers cap at 2000 chars (agents write more than users).
-- **2026-07 — A fulfilled contract ends the agent by default.** spawn/delegate
-  remove the child subtree as soon as it answers; `keep: true` opts into
-  persistence for delegate follow-ups. An idle answered child is a leaked
-  resource and made delegate-vs-respawn ambiguous; default removal makes
-  spawn a typed function call — which is the point of the contract.
+- **2026-07 — An agent's lifetime is its contract; delegate and keep are
+  removed.** The subtree is removed the moment it answers, unconditionally.
+  A keep/delegate persistence mode existed for one release; it made survival
+  a per-call boolean an LLM parent had to repeat correctly forever, and
+  contract answers already travel as data into the next spawn's task.
+  Reversal condition: executors demonstrably rebuilding large context every
+  spawn — then revisit persistence, not before.
 
 ## Architecture
 
@@ -76,7 +74,7 @@ Single-file extension (`index.ts`). Sections, in order:
 - child state, `subscribeChild`, `collectResult` — machinery
 - renderers — machinery (TUI only)
 - `multiAgent()` — registry (`children`, `reservedIds`), subtree
-  authorization, spawn/delegate/kill lifecycle — decision-making
+  authorization, spawn/kill lifecycle — decision-making
 
 The registry owns child lifecycle. The extension boundary is
 `createChildTools` + `createChildManagementTools`: everything a child can

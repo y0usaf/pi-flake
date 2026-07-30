@@ -1,10 +1,10 @@
 # pi-agents
 
-Multi-agent extension for pi. Root agents get four orchestration tools — `spawn_agent`, `delegate`, `kill_agent`, `list_agents` — plus every spawned child gets `read`, `write`, `edit`, `bash`, `report`, `submit_answers`, and descendant-scoped orchestration tools of its own.
+Multi-agent extension for pi. Root agents get three orchestration tools — `spawn_agent`, `kill_agent`, `list_agents` — plus every spawned child gets `read`, `write`, `edit`, `bash`, `report`, `submit_answers`, and descendant-scoped orchestration tools of its own.
 
 Every invocation carries a **contract**: AskUserQuestion-style questions (options, optional free text) the child must answer via `submit_answers` before its run can end. The tool result is those answers as data — the child behaves like a typed function call, not a chat transcript. `report` is a progress channel only.
 
-Children are in-process `Agent` instances that persist across interactions with their full conversation history. Recursive spawning is bounded by `pi-agents.json` via `maxDepth` and `maxLiveAgents`.
+An agent's lifetime is its contract: it exists from spawn until it answers, then it is removed. Follow-up work is a new spawn with the prior answers folded into the task. Recursive spawning is bounded by `pi-agents.json` via `maxDepth` and `maxLiveAgents`.
 
 ## Install
 
@@ -66,27 +66,19 @@ Unknown keys in `pi-agents.json` are a hard error, so a typo like `"models"` is 
 
 ### `spawn_agent(id, system_prompt, task, contract, [timeout_seconds])`
 
-Creates a new child agent with its own system prompt. The child gets `read`, `write`, `edit`, `bash`, `report`, `submit_answers`, and descendant-scoped `spawn_agent`/`delegate`/`kill_agent`/`list_agents` tools. Blocks until the contract is fulfilled.
+Creates a new child agent with its own system prompt. The child gets `read`, `write`, `edit`, `bash`, `report`, `submit_answers`, and descendant-scoped `spawn_agent`/`kill_agent`/`list_agents` tools. Blocks until the contract is fulfilled.
 
 `contract` is a non-empty array of questions: `{ id?, label?, prompt, options?: [{label, value?, description?, recommended?}], allowOther? }`. The host normalizes it (caps: 8 questions, 8 options each, dedupe, derived ids) and appends an "Unable to determine" (`__unable__`) option to every question so the child can punt explicitly instead of fabricating. Zero options + `allowOther` (the default) makes a plain free-text question.
 
 If the child ends a run without a valid `submit_answers` call, it is re-prompted ("nudged") up to 10 times, then the call errors. On spawn errors the subtree is removed; the result content is the formatted answers, and `details.answers` carries them structurally.
 
-By default a child is **removed as soon as its contract is fulfilled** — spawn behaves like a typed function call: contract in, answers out, agent gone. Pass `keep: true` to retain it (with its history) for `delegate` follow-ups; free kept agents with `kill_agent`.
+A child is **removed as soon as its contract is fulfilled** — spawn is a typed function call: contract in, answers out, agent gone. There is no persistent-agent mode; the parent holds the answers as data and folds them into the next spawn's task when work continues.
 
 Multiple `spawn_agent` calls in one turn run concurrently (parallel tool execution). Spawning is rejected when it would exceed configured `maxDepth` or `maxLiveAgents`.
 
 - `timeout_seconds` — optional, must be a finite number greater than 0. If the child is still running when the deadline expires it is aborted, removed from the registry, and an error is thrown.
 
 **File-system access:** child `read`, `write`, `edit`, and `bash` are pi's built-in tools, created against the child's inherited working directory. None of them are confined to that tree — absolute paths outside it are accepted, and `bash` has the same OS-level file and network access as the user running pi. There is no sandbox; the working directory is a default, not a boundary.
-
-### `delegate(id, message, contract, [timeout_seconds])`
-
-Sends follow-up work to an **existing kept** child (spawned with `keep: true`). The child keeps its full conversation history from previous runs. Each call carries a **fresh contract** that replaces the previous one; the call blocks until the child fulfills it, and the child is removed after answering unless this call also passes `keep: true`.
-
-Descendant agents can only delegate to agents in their own subtree.
-
-- `timeout_seconds` — optional, must be a finite number greater than 0. If the child is still running when the deadline expires it is aborted, removed from the registry, and an error is thrown. If you still need that worker after a timeout, spawn a new child.
 
 ### `submit_answers(answers)` (child-only)
 
@@ -98,15 +90,15 @@ Progress channel. Reports stream to the parent via `tool_execution_update` durin
 
 ### `kill_agent(id)`
 
-Kills a child agent and frees its resources. Aborts the child if it's still running. If the target has descendants, the whole subtree is killed recursively.
+Aborts a running child and frees its resources; descendants are killed recursively. Fulfilled contracts remove agents automatically, so this is the abort lever for stuck or unwanted runs.
 
 ### `list_agents()`
 
-Lists currently active child agent IDs and their status. The root agent sees the full registry. Descendant agents only see their own subtree. Output includes depth and parent metadata.
+Lists currently active child agent IDs and their status. Because fulfilled contracts auto-remove agents, entries are in-flight runs. The root agent sees the full registry; descendant agents only see their own subtree.
 
 Example output:
 ```
-• worker — idle, depth 1, root child, anthropic/claude-haiku-4-5, 3 reports, contract fulfilled
+• worker — running, depth 1, root child, anthropic/claude-haiku-4-5, 3 reports, contract pending
 • reviewer — running, depth 2, parent worker, anthropic/claude-haiku-4-5, 0 reports, contract pending
 ```
 
@@ -160,34 +152,34 @@ The model is a bare id, following pi's own `/model` picker; the provider is appe
 
 ```
 Parent: "Refactor auth and write tests in parallel"
-├─ spawn_agent("refactor", "You refactor code.", "Refactor the auth module", keep=true,
+├─ spawn_agent("refactor", "You refactor code.", "Refactor the auth module",
 │              contract=[{prompt: "Which files changed?"},
 │                        {prompt: "Behavior preserved?", options: [{label: "Yes"}, {label: "No"}]}])
 │   ├─ child reads files, edits code
 │   ├─ report("Refactored 3 files")          ← progress, streamed to parent
 │   └─ submit_answers([{id: "question-1", value: "auth.ts, session.ts, index.ts"},
-│                      {id: "question-2", value: "yes"}])   ← fulfills the contract
+│                      {id: "question-2", value: "yes"}])   ← fulfilled; agent removed
 │
 └─ spawn_agent("tests", "You write tests.", "Write tests for auth",
                contract=[{prompt: "How many tests pass?"}])
     ├─ child reads code, writes test files
-    └─ submit_answers([{id: "question-1", value: "12"}])   ← no keep: agent auto-removed
+    └─ submit_answers([{id: "question-1", value: "12"}])   ← fulfilled; agent removed
 
 // Both run concurrently. Parent gets both contracts' answers as data.
 
-Parent: "The refactor agent should also update the docs"
-└─ delegate("refactor", "Update the migration docs too", keep=true,
-            contract=[{prompt: "Docs updated where?"}])
-    └─ kept child resumes with full history, fulfills the fresh contract
+Parent: "Now update the migration docs for that refactor"
+└─ spawn_agent("docs", "You write docs.",
+               "The auth refactor changed auth.ts, session.ts, index.ts; behavior preserved. Update the migration docs.",
+               contract=[{prompt: "Docs updated where?"}])
+    └─ fresh executor; the prior answers travel in the task, not in agent state
 
-Parent: "Which agents are still alive?"
+Parent: "Is anything still running?"
 └─ list_agents()
-    └─ • refactor — idle, depth 1, root child, anthropic/claude-sonnet-4-5, 2 reports, contract fulfilled
-       (tests is gone — auto-removed when its contract completed)
+    └─ • docs — running, depth 1, root child, anthropic/claude-haiku-4-5, 0 reports, contract pending
 
-Parent: "Done with the refactor agent"
-└─ kill_agent("refactor")
-    └─ child freed, resources released
+Parent: "Abort it"
+└─ kill_agent("docs")
+    └─ running child aborted, subtree freed
 ```
 
 ## Caveats / Known Limitations
@@ -195,7 +187,7 @@ Parent: "Done with the refactor agent"
 - **One model for the whole subtree** — `model` in `pi-agents.json` applies to every child and descendant; there is no per-`spawn_agent` override. Unset means all children use the parent session's active model.
 - **Children run in-process** — they are not isolated processes; a crash or infinite loop in a child can affect the parent session.
 - **Recursive spawning is config-bounded** — descendants may spawn more descendants only while doing so stays within configured `maxDepth` and `maxLiveAgents`.
-- **Subtree-scoped control** — descendant agents can only manage agents in their own subtree; they cannot delegate to or kill arbitrary siblings from other branches.
+- **Subtree-scoped control** — descendant agents can only manage agents in their own subtree; they cannot spawn into or kill arbitrary siblings' branches.
 - **No file-system confinement** — child `read`/`write`/`edit`/`bash` are pi's built-in tools running with the user's OS-level file and network access. The working directory is where relative paths resolve, nothing more.
 - **Minimal allowlisted env for `bash`** — child shell commands receive a small allowlisted environment: `PATH`, `HOME`, `SHELL`, `USER`, `LOGNAME`, locale/timezone variables, `TERM`/`COLORTERM`, `TMPDIR`, `XDG_RUNTIME_DIR`, and TLS/CA certificate variables (`SSL_CERT_FILE`, `SSL_CERT_DIR`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`). This filters which *environment variables* children inherit — it does not protect secrets stored in files, since a child can read them via `bash`. Pass genuinely needed extra variables inline per command.
 - **Child text is sanitized for the terminal** — reports and activity previews have ANSI/OSC escape sequences stripped before rendering, so a child cannot inject terminal control sequences into the TUI.
