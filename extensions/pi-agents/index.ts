@@ -18,7 +18,7 @@ import { spawn as spawnProcess } from "node:child_process";
 import { dirname, join, resolve, isAbsolute, sep, relative } from "node:path";
 import { Agent, type AgentTool, type AgentToolResult, type AgentEvent } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
-import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { Text, Container, Spacer } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 
@@ -96,9 +96,13 @@ const CONFIG_FILE_NAME = "pi-agents.json";
 const DEFAULT_MAX_DEPTH = 1;
 const DEFAULT_MAX_LIVE_AGENTS = 6;
 
+const CONFIG_KEYS = new Set(["maxDepth", "maxLiveAgents", "model"]);
+
 interface PiAgentsConfig {
 	maxDepth: number;
 	maxLiveAgents: number;
+	/** Model for spawned children: "provider/modelId" or a bare modelId. Unset = inherit the parent session's model. */
+	model?: string;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -117,6 +121,14 @@ function normalizePositiveInteger(value: unknown, key: string, path: string): nu
 		throw new Error(`${path}: "${key}" must be an integer ≥ 1`);
 	}
 	return value as number;
+}
+
+function normalizeModelSpec(value: unknown, key: string, path: string): string {
+	const spec = typeof value === "string" ? value.trim() : "";
+	if (spec === "") {
+		throw new Error(`${path}: "${key}" must be a non-empty string ("provider/modelId" or "modelId")`);
+	}
+	return spec;
 }
 
 async function readConfigFragment(path: string): Promise<Partial<PiAgentsConfig>> {
@@ -139,7 +151,7 @@ async function readConfigFragment(path: string): Promise<Partial<PiAgentsConfig>
 		throw new Error(`${path}: expected a JSON object`);
 	}
 
-	const unknownKeys = Object.keys(parsed).filter((key) => key !== "maxDepth" && key !== "maxLiveAgents");
+	const unknownKeys = Object.keys(parsed).filter((key) => !CONFIG_KEYS.has(key));
 	if (unknownKeys.length > 0) {
 		throw new Error(`${path}: unknown key(s): ${unknownKeys.join(", ")}`);
 	}
@@ -151,6 +163,9 @@ async function readConfigFragment(path: string): Promise<Partial<PiAgentsConfig>
 	if ("maxLiveAgents" in parsed) {
 		config.maxLiveAgents = normalizePositiveInteger(parsed.maxLiveAgents, "maxLiveAgents", path);
 	}
+	if ("model" in parsed) {
+		config.model = normalizeModelSpec(parsed.model, "model", path);
+	}
 	return config;
 }
 
@@ -160,7 +175,32 @@ async function loadPiAgentsConfig(cwd: string): Promise<PiAgentsConfig> {
 	return {
 		maxDepth: projectConfig.maxDepth ?? globalConfig.maxDepth ?? DEFAULT_MAX_DEPTH,
 		maxLiveAgents: projectConfig.maxLiveAgents ?? globalConfig.maxLiveAgents ?? DEFAULT_MAX_LIVE_AGENTS,
+		model: projectConfig.model ?? globalConfig.model,
 	};
+}
+
+/**
+ * Resolve a config model spec against the session's model registry.
+ * Accepts "provider/modelId" (exact) or a bare modelId (unique across available providers).
+ */
+function resolveChildModel(spec: string, registry: ModelRegistry): Model<any> {
+	const slash = spec.indexOf("/");
+	if (slash > 0) {
+		const scoped = registry.find(spec.slice(0, slash), spec.slice(slash + 1));
+		if (scoped) return scoped as Model<any>;
+	}
+	const matches = registry.getAvailable().filter((candidate) => candidate.id === spec);
+	if (matches.length === 1) return matches[0] as Model<any>;
+	if (matches.length > 1) {
+		throw new Error(
+			`pi-agents: model "${spec}" is ambiguous (${matches.map((m) => `${m.provider}/${m.id}`).join(", ")}). ` +
+			`Qualify it as "provider/modelId".`,
+		);
+	}
+	throw new Error(
+		`pi-agents: model "${spec}" is not in the model registry. ` +
+		`Use a "provider/modelId" pair that /model lists, e.g. "anthropic/claude-haiku-4-5".`,
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -838,9 +878,10 @@ function renderAgentResult(
 
 export default function multiAgent(pi: ExtensionAPI) {
 	const children = new Map<string, ChildState>();
-	// cachedGetApiKey is initialized from the first spawn_agent ctx.
+	// cachedGetApiKey and cachedRegistry are initialized from the first ctx we see.
 	// This assumes modelRegistry is stable for the session lifetime.
 	let cachedGetApiKey: ((provider: string) => Promise<string | undefined>) | undefined;
+	let cachedRegistry: ModelRegistry | undefined;
 	let cachedConfig: PiAgentsConfig | undefined;
 	let cachedConfigCwd: string | undefined;
 	let cachedConfigError: Error | undefined;
@@ -1087,6 +1128,8 @@ export default function multiAgent(pi: ExtensionAPI) {
 		onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void,
 	): Promise<AgentToolResult<AgentToolDetails>> {
 		const config = await getConfig(cwd);
+		// config.model overrides the inherited parent model; unset means inherit.
+		const childModel = config.model && cachedRegistry ? resolveChildModel(config.model, cachedRegistry) : model;
 		if (children.has(params.id)) {
 			throw new Error(
 				`Child agent "${params.id}" already exists. ` +
@@ -1109,7 +1152,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		}
 
 		const reports: string[] = [];
-		const child = buildChildAgent(params.id, params.system_prompt, model, cwd, reports);
+		const child = buildChildAgent(params.id, params.system_prompt, childModel, cwd, reports);
 		const state: ChildState = {
 			id: params.id,
 			parentId: parentState?.id,
@@ -1150,8 +1193,11 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		clearConfigCache();
+		cachedRegistry ??= ctx.modelRegistry;
+		cachedGetApiKey ??= (provider: string) => ctx.modelRegistry.getApiKeyForProvider(provider);
 		try {
-			await getConfig(ctx.cwd);
+			const config = await getConfig(ctx.cwd);
+			if (config.model) resolveChildModel(config.model, ctx.modelRegistry);
 		} catch (err) {
 			if (ctx.hasUI) {
 				ctx.ui.notify(`pi-agents config error: ${(err as Error).message}`, "error");
@@ -1180,7 +1226,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		description:
 			"Spawn a child agent with its own system prompt and task. " +
 			"Children get read, write, edit, bash, report, and descendant-scoped orchestration tools. " +
-			"Recursive spawning is bounded by pi-agents.json maxDepth/maxLiveAgents. " +
+			"Recursive spawning is bounded by pi-agents.json maxDepth/maxLiveAgents, which also picks the child model. " +
 			"This call blocks until the child finishes. Multiple spawn_agent calls in the same turn run concurrently. " +
 			"On success, use delegate to send it more work or kill_agent to free its resources. " +
 			"On any error (including timeout) the agent subtree is removed from the registry automatically.",
@@ -1198,6 +1244,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			const model = ctx.model;
 			if (!model) throw new Error("No model selected");
 
+			cachedRegistry ??= ctx.modelRegistry;
 			cachedGetApiKey ??= (provider: string) => ctx.modelRegistry.getApiKeyForProvider(provider);
 			return await spawnChild(undefined, params, model, ctx.cwd, signal, onUpdate);
 		},

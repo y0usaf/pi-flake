@@ -36,7 +36,8 @@ Example:
 ```json
 {
   "maxDepth": 1,
-  "maxLiveAgents": 6
+  "maxLiveAgents": 6,
+  "model": "anthropic/claude-haiku-4-5"
 }
 ```
 
@@ -47,6 +48,15 @@ Depth is counted from the root session at depth `0`:
 - `maxDepth: 2` → grandchildren allowed
 
 `maxLiveAgents` caps the total number of live agents kept in the in-memory registry at once.
+
+`model` picks the model every spawned child runs on — the point being to push delegated work onto a cheaper model than the parent session. Accepted forms:
+
+- `"provider/modelId"` — exact, e.g. `"anthropic/claude-haiku-4-5"`, `"vercel-ai-gateway/moonshotai/kimi-k2"` (provider is everything before the first `/`).
+- `"modelId"` — bare id, accepted when exactly one available provider offers it; ambiguous ids are rejected with the list of qualified matches.
+
+Unset means children inherit whatever model the parent session has active. A spec that resolves to nothing fails loudly: the session-start notification reports it and `spawn_agent` throws, rather than silently falling back. Descendants use the same configured model, not their parent's.
+
+Unknown keys in `pi-agents.json` are a hard error, so a typo like `"models"` fails at session start instead of being ignored.
 
 ## Tools
 
@@ -159,7 +169,7 @@ Parent: "Which agents are still alive?"
 
 ## Caveats / Known Limitations
 
-- **Children share the parent's model** — there is no per-child model selection; all children use whatever model the parent session has active.
+- **One model for the whole subtree** — `model` in `pi-agents.json` applies to every child and descendant; there is no per-`spawn_agent` override. Unset means all children use the parent session's active model.
 - **Children run in-process** — they are not isolated processes; a crash or infinite loop in a child can affect the parent session.
 - **Recursive spawning is config-bounded** — descendants may spawn more descendants only while doing so stays within configured `maxDepth` and `maxLiveAgents`.
 - **Subtree-scoped control** — descendant agents can only manage agents in their own subtree; they cannot delegate to or kill arbitrary siblings from other branches.
