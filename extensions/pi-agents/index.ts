@@ -2,46 +2,59 @@
  * Multi-Agent Extension for pi
  *
  * Parent tools: spawn_agent, delegate, kill_agent, list_agents.
- * Children additionally get read, write, edit, bash, report, and
- * descendant-scoped orchestration tools subject to maxDepth/maxLiveAgents.
+ * Children additionally get pi's built-in read/write/edit/bash tools, a
+ * report tool, and descendant-scoped orchestration tools bounded by
+ * maxDepth/maxLiveAgents from pi-agents.json.
  *
  * Children are in-process Agent instances that persist across interactions.
- * Report streams intermediate results to the parent via onUpdate.
+ * spawn_agent and delegate block until the child finishes its current run;
+ * multiple calls in one turn run concurrently.
  *
- * spawn_agent and delegate block until the child finishes its current run.
- * Multiple spawn_agent calls in one turn run concurrently (parallel tool execution).
+ * Concurrency invariants (see DESIGN.md):
+ * - Spawn capacity and ID uniqueness are reserved synchronously before any
+ *   await, so parallel spawn_agent calls cannot both pass the checks.
+ * - killSubtree marks states killed and aborts them, but only removes states
+ *   with no active run. A running spawn/delegate removes its own state in its
+ *   finally block once the prompt has settled, so no work continues against
+ *   an unregistered agent.
+ * - Teardown is identity-checked: callers only remove the exact ChildState
+ *   they operated on, never a same-ID replacement.
  */
 
-import { readFile, writeFile, mkdir, realpath } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { spawn as spawnProcess } from "node:child_process";
-import { dirname, join, resolve, isAbsolute, sep, relative } from "node:path";
+import { join, resolve } from "node:path";
 import { Agent, type AgentTool, type AgentToolResult, type AgentEvent } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
-import { getAgentDir, type ExtensionAPI, type ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { streamSimple } from "@earendil-works/pi-ai/compat";
+import {
+	createBashTool,
+	createEditTool,
+	createReadTool,
+	createWriteTool,
+	getAgentDir,
+	type ExtensionAPI,
+	type ModelRegistry,
+} from "@earendil-works/pi-coding-agent";
 import { Text, Container, Spacer } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 // ---------------------------------------------------------------------------
-// Child process environment (strict allowlist)
+// Child bash environment (strict allowlist)
 // ---------------------------------------------------------------------------
 
 const SAFE_ENV_KEYS: ReadonlySet<string> = new Set([
-	// Core shell & paths
 	"PATH",
 	"HOME",
 	"SHELL",
 	"USER",
 	"LOGNAME",
-	// Locale & timezone
 	"LANG",
 	"LC_ALL",
 	"LC_CTYPE",
 	"TZ",
-	// Terminal
 	"TERM",
 	"COLORTERM",
-	// Temp dirs
 	"TMPDIR",
 	"XDG_RUNTIME_DIR",
 	// TLS / CA certificates (required on NixOS and custom-CA environments)
@@ -222,15 +235,21 @@ interface AgentToolDetails {
 }
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-// MAX_RENDERED_ACTIVITY: max items shown in collapsed/live views (E2)
 const MAX_RENDERED_ACTIVITY = 8;
-// MAX_ACTIVITY_STORAGE: cap on stored activity items to prevent unbounded growth (E1)
+// Cap on stored activity items to prevent unbounded growth during a run.
 const MAX_ACTIVITY_STORAGE = 500;
 const SHUTDOWN_GRACE_MS = 5000;
 
-function isWithinDirectory(base: string, target: string): boolean {
-	const rel = relative(base, target);
-	return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
+/**
+ * Strip terminal control sequences from child-controlled text before it
+ * reaches the TUI: OSC sequences (ESC ] ... ST), CSI sequences, and stray C0
+ * controls except tab/newline. Child reports and tool args are untrusted.
+ */
+function stripControlSequences(value: string): string {
+	return value
+		.replace(/\u001B\][\s\S]*?(?:\u0007|\u001B\\|\u009C)/g, "")
+		.replace(/[\u001B\u009B][[\]()#;?]*(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]/g, "")
+		.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
 }
 
 function normalizePositiveTimeout(value: number | undefined, label: string): number | undefined {
@@ -323,234 +342,18 @@ function formatToolActivity(name: string, args: Record<string, unknown>): string
 }
 
 // ---------------------------------------------------------------------------
-// Tool schemas (F4: moved above createChildTools)
-// ---------------------------------------------------------------------------
-
-const readToolSchema = Type.Object({
-	path: Type.String({ description: "File path to read" }),
-	offset: Type.Optional(Type.Number({ description: "Line number to start from (1-indexed)" })),
-	limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read" })),
-});
-
-const writeToolSchema = Type.Object({
-	path: Type.String({ description: "File path to write" }),
-	content: Type.String({ description: "Content to write" }),
-});
-
-const editToolSchema = Type.Object({
-	path: Type.String({ description: "File path to edit" }),
-	edits: Type.Array(
-		Type.Object({
-			oldText: Type.String({ description: "Exact text to find" }),
-			newText: Type.String({ description: "Replacement text" }),
-		}),
-	),
-});
-
-const bashToolSchema = Type.Object({
-	command: Type.String({ description: "Bash command to execute" }),
-	timeout: Type.Optional(Type.Number({ description: "Seconds before the command is terminated (must be > 0). The process group receives SIGTERM, then SIGKILL after 3 seconds if still running. Partial stdout/stderr is still returned." })),
-});
-
-// ---------------------------------------------------------------------------
-// Child tool implementations
+// Child tools: pi built-ins + report
 // ---------------------------------------------------------------------------
 
 function createChildTools(cwd: string): AgentTool<any>[] {
-	const findNearestExistingRealPath = async (candidate: string): Promise<string> => {
-		let current = candidate;
-		while (true) {
-			try {
-				return await realpath(current);
-			} catch {
-				const parent = dirname(current);
-				if (parent === current) {
-					throw new Error(`Cannot resolve path "${candidate}" against working directory "${cwd}"`);
-				}
-				current = parent;
-			}
-		}
-	};
-
-	const resolvePath = async (p: string): Promise<string> => {
-		const lexical = isAbsolute(p) ? p : resolve(cwd, p);
-		if (!isWithinDirectory(cwd, lexical)) {
-			throw new Error(`Path traversal denied: "${p}" resolves outside the working directory "${cwd}". Use bash if you need files outside this tree.`);
-		}
-
-		const cwdReal = await realpath(cwd);
-		const realTarget = await findNearestExistingRealPath(lexical);
-		if (!isWithinDirectory(cwdReal, realTarget)) {
-			throw new Error(`Path traversal denied: "${p}" resolves outside the working directory "${cwdReal}". Use bash if you need files outside this tree.`);
-		}
-
-		return lexical;
-	};
-
-	const readTool: AgentTool<typeof readToolSchema> = {
-		name: "read",
-		label: "Read",
-		description: "Read a file's contents. Use offset/limit for large files.",
-		parameters: readToolSchema,
-		execute: async (_id, params) => {
-			const filePath = await resolvePath(params.path.replace(/^@/, ""));
-			let content: string;
-			try {
-				content = await readFile(filePath, "utf-8");
-			} catch (err) {
-				throw new Error(`Cannot read ${params.path}: ${(err as Error).message}`);
-			}
-			const lines = content.split("\n");
-			const offset = params.offset ?? 1;
-			const limit = params.limit ?? lines.length;
-			const sliced = lines.slice(offset - 1, offset - 1 + limit);
-			const result = sliced.join("\n");
-			const truncated = result.length > 50000 ? result.slice(0, 50000) + "\n[truncated]" : result;
-			return { content: [{ type: "text", text: truncated }], details: { path: filePath } };
-		},
-	};
-
-	const writeTool: AgentTool<typeof writeToolSchema> = {
-		name: "write",
-		label: "Write",
-		description: "Write content to a file. Creates parent directories.",
-		parameters: writeToolSchema,
-		execute: async (_id, params) => {
-			const filePath = await resolvePath(params.path.replace(/^@/, ""));
-			await mkdir(dirname(filePath), { recursive: true });
-			await writeFile(filePath, params.content, "utf-8");
-			return {
-				content: [{ type: "text", text: `Wrote ${params.content.split("\n").length} lines to ${params.path}` }],
-				details: { path: filePath },
-			};
-		},
-	};
-
-	const editTool: AgentTool<typeof editToolSchema> = {
-		name: "edit",
-		label: "Edit",
-		description: "Edit a file using exact text replacement.",
-		parameters: editToolSchema,
-		execute: async (_id, params) => {
-			const filePath = await resolvePath(params.path.replace(/^@/, ""));
-			let content: string;
-			try {
-				content = await readFile(filePath, "utf-8");
-			} catch (err) {
-				throw new Error(`Cannot read ${params.path}: ${(err as Error).message}`);
-			}
-			for (const edit of params.edits) {
-				const occurrences = content.split(edit.oldText).length - 1;
-				if (occurrences === 0) {
-					throw new Error(`oldText not found in ${params.path}:\n${edit.oldText.slice(0, 200)}`);
-				}
-				if (occurrences > 1) {
-					throw new Error(`oldText appears ${occurrences} times in ${params.path} — be more specific:\n${edit.oldText.slice(0, 200)}`);
-				}
-				content = content.replace(edit.oldText, () => edit.newText);
-			}
-			await writeFile(filePath, content, "utf-8");
-			return {
-				content: [{ type: "text", text: `Applied ${params.edits.length} edit(s) to ${params.path}` }],
-				details: { path: filePath },
-			};
-		},
-	};
-
-const DEFAULT_BASH_TIMEOUT_S = 120;
-
-	const bashTool: AgentTool<typeof bashToolSchema> = {
-		name: "bash",
-		label: "Bash",
-		description: "Execute a bash command. Returns stdout followed by stderr (prefixed with STDERR:), truncated if large.",
-		parameters: bashToolSchema,
-		execute: async (_id, params, signal) => {
-			// Default timeout prevents pipe-drain deadlock when commands fork background processes.
-			const commandTimeout = normalizePositiveTimeout(params.timeout ?? DEFAULT_BASH_TIMEOUT_S, "bash timeout");
-			return new Promise<AgentToolResult<unknown>>((res) => {
-				const proc = spawnProcess("bash", ["-c", params.command], {
-					cwd,
-					detached: true,
-					stdio: ["ignore", "pipe", "pipe"],
-					env: buildSafeEnv(),
-				});
-				let stdout = "";
-				let stderr = "";
-				const MAX_OUTPUT_CHARS = 100_000;
-				proc.stdout!.on("data", (d: Buffer) => {
-					if (stdout.length < MAX_OUTPUT_CHARS) stdout += d.toString();
-				});
-				proc.stderr!.on("data", (d: Buffer) => {
-					if (stderr.length < MAX_OUTPUT_CHARS) stderr += d.toString();
-				});
-
-				const killGroup = (sig: NodeJS.Signals) => {
-					const pid = proc.pid;
-					if (!pid) return;
-					try {
-						process.kill(-pid, sig);
-					} catch (err) {
-						const code = (err as NodeJS.ErrnoException).code;
-						if (code === "ESRCH") return;
-						try {
-							proc.kill(sig);
-						} catch {}
-					}
-				};
-
-				let timedOut = false;
-				let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-				let escalationHandle: ReturnType<typeof setTimeout> | undefined;
-				const terminate = (reason: "abort" | "timeout") => {
-					if (reason === "timeout") timedOut = true;
-					killGroup("SIGTERM");
-					clearTimeout(escalationHandle);
-					escalationHandle = setTimeout(() => killGroup("SIGKILL"), 3000);
-				};
-
-				if (commandTimeout !== undefined) {
-					timeoutHandle = setTimeout(() => terminate("timeout"), commandTimeout * 1000);
-				}
-
-				const onAbort = () => terminate("abort");
-				const cleanup = () => {
-					clearTimeout(timeoutHandle);
-					clearTimeout(escalationHandle);
-					if (signal) signal.removeEventListener("abort", onAbort);
-				};
-
-				proc.on("close", (code) => {
-					cleanup();
-					let output = stdout;
-					if (stderr) output += (output ? "\n" : "") + `STDERR:\n${stderr}`;
-					if (timedOut) {
-						const partial = output || "(no output before timeout)";
-						output = `[TIMEOUT after ${commandTimeout}s — output may be incomplete]\n${partial}`;
-					} else if (!output) {
-						output = `(exit code ${code ?? 0})`;
-					}
-					if (output.length > 50000) {
-						output = "[output truncated — showing last 50000 chars]\n" + output.slice(-50000);
-					}
-					res({ content: [{ type: "text", text: output }], details: { exitCode: code ?? 0, timedOut } });
-				});
-				proc.on("error", (err) => {
-					cleanup();
-					res({ content: [{ type: "text", text: `Error: ${err.message}` }], details: { exitCode: 1, timedOut: false } });
-				});
-
-				if (signal) {
-					if (signal.aborted) onAbort();
-					else signal.addEventListener("abort", onAbort, { once: true });
-				}
-			});
-		},
-	};
-
+	const bashTool = createBashTool(cwd, {
+		exposeSessionEnvironment: false,
+		spawnHook: (context) => ({ ...context, env: buildSafeEnv() }),
+	});
 	return [
-		readTool as AgentTool<any>,
-		writeTool as AgentTool<any>,
-		editTool as AgentTool<any>,
+		createReadTool(cwd) as AgentTool<any>,
+		createWriteTool(cwd) as AgentTool<any>,
+		createEditTool(cwd) as AgentTool<any>,
 		bashTool as AgentTool<any>,
 	];
 }
@@ -569,7 +372,9 @@ interface ChildState {
 	agent: Agent;
 	reports: string[];
 	activity: ActivityItem[];
-	locked: boolean; // D4: concurrent delegate guard
+	/** Set while a spawn/delegate run is in flight; blocks concurrent delegate. */
+	locked: boolean;
+	/** Set by killSubtree. The owning run removes this state once its prompt settles. */
 	killed: boolean;
 }
 
@@ -587,7 +392,6 @@ function extractLastAssistantText(agent: Agent): string {
 	return "(no output)";
 }
 
-// D2: buildReportTool now accepts reports array directly instead of full state
 function buildReportTool(childId: string, reports: string[]): AgentTool<typeof reportSchema> {
 	return {
 		name: "report",
@@ -598,7 +402,7 @@ function buildReportTool(childId: string, reports: string[]): AgentTool<typeof r
 			"times; every call is delivered.",
 		parameters: reportSchema,
 		execute: async (_toolCallId, params) => {
-			reports.push(params.message);
+			reports.push(stripControlSequences(params.message));
 			return {
 				content: [{ type: "text", text: "Report delivered to parent." }],
 				details: { childId, reportIndex: reports.length - 1 },
@@ -635,16 +439,20 @@ function subscribeChild(
 		}
 	};
 
+	const trimActivity = () => {
+		if (state.activity.length > MAX_ACTIVITY_STORAGE) {
+			state.activity = state.activity.slice(-MAX_ACTIVITY_STORAGE);
+		}
+	};
+
 	const innerUnsub = child.subscribe((event: AgentEvent) => {
 		if (event.type === "tool_execution_start") {
 			state.activity.push({
 				type: "tool_start",
-				label: formatToolActivity(event.toolName, event.args),
+				label: stripControlSequences(formatToolActivity(event.toolName, event.args)),
 				timestamp: Date.now(),
 			});
-			if (state.activity.length > MAX_ACTIVITY_STORAGE) {
-				state.activity = state.activity.slice(-MAX_ACTIVITY_STORAGE);
-			}
+			trimActivity();
 			emit();
 		} else if (event.type === "tool_execution_end") {
 			if (event.toolName === "report" && !event.isError) {
@@ -663,23 +471,19 @@ function subscribeChild(
 					timestamp: Date.now(),
 				});
 			}
-			if (state.activity.length > MAX_ACTIVITY_STORAGE) {
-				state.activity = state.activity.slice(-MAX_ACTIVITY_STORAGE);
-			}
+			trimActivity();
 			emit();
 		} else if (event.type === "message_end" && event.message.role === "assistant") {
 			const msg = event.message as AssistantMessage;
 			const textParts = msg.content.filter((c): c is TextContent => c.type === "text");
 			if (textParts.length > 0) {
-				const preview = textParts[0].text.split("\n")[0];
+				const preview = stripControlSequences(textParts[0].text.split("\n")[0]);
 				state.activity.push({
 					type: "text",
 					label: preview.length > 60 ? preview.slice(0, 60) + "..." : preview,
 					timestamp: Date.now(),
 				});
-				if (state.activity.length > MAX_ACTIVITY_STORAGE) {
-					state.activity = state.activity.slice(-MAX_ACTIVITY_STORAGE);
-				}
+				trimActivity();
 				emit();
 			}
 		}
@@ -694,7 +498,6 @@ function subscribeChild(
 function collectResult(childId: string, state: ChildState, reportStartIdx: number): AgentToolResult<AgentToolDetails> {
 	const newReports = state.reports.slice(reportStartIdx);
 	const text = newReports.length > 0 ? newReports.join("\n---\n") : extractLastAssistantText(state.agent);
-	// F5: Agent resets error on each prompt, so this reflects the most recent run's failure state
 	const error = state.agent.state.errorMessage;
 	return {
 		content: [{ type: "text", text: error ? `[Error]: ${error}\n\n${text}` : text }],
@@ -726,18 +529,43 @@ function renderAgentCall(
 	return new Text(text, 0, 0);
 }
 
+function activityIcon(item: ActivityItem, theme: any): string {
+	if (item.type === "report") return theme.fg("warning", "↑");
+	if (item.type === "tool_start") return theme.fg("accent", "→");
+	if (item.type === "text") return theme.fg("dim", "·");
+	return theme.fg("success", "✓");
+}
+
+function formatActivityTail(activity: ActivityItem[], theme: any): string {
+	const visible = activity.slice(-MAX_RENDERED_ACTIVITY);
+	const skipped = activity.length - visible.length;
+	let text = "";
+	if (skipped > 0) text += "\n  " + theme.fg("muted", `... ${skipped} earlier`);
+	for (const item of visible) {
+		text += "\n  " + activityIcon(item, theme) + " " + theme.fg("dim", item.label);
+	}
+	return text;
+}
+
+function clearSpinner(context: any): void {
+	if (context.state._spinnerInterval) {
+		clearInterval(context.state._spinnerInterval);
+		context.state._spinnerInterval = null;
+	}
+}
+
 function renderAgentResult(
 	result: { content: any[]; details?: unknown },
 	options: { expanded: boolean; isPartial: boolean },
 	theme: any,
 	context: any,
 ) {
-	// F1: runtime shape check before casting to AgentToolDetails
 	const details = (result.details && typeof result.details === "object" && "childId" in result.details)
 		? result.details as AgentToolDetails
 		: undefined;
 
 	if (!details) {
+		clearSpinner(context);
 		const t = result.content[0];
 		return new Text(t?.type === "text" ? t.text : "(no output)", 0, 0);
 	}
@@ -746,7 +574,6 @@ function renderAgentResult(
 
 	// -- still running: spinner + live activity feed --
 	if (isPartial && !details.done) {
-		// Start spinner interval if not already running
 		if (!context.state._spinnerInterval) {
 			context.state._spinnerFrame = 0;
 			context.state._spinnerInterval = setInterval(() => {
@@ -757,38 +584,18 @@ function renderAgentResult(
 
 		const frame = SPINNER_FRAMES[context.state._spinnerFrame ?? 0];
 		const activity = details.activity;
-		// E2/E3: use MAX_RENDERED_ACTIVITY
-		const visible = activity.slice(-MAX_RENDERED_ACTIVITY);
-		const skipped = activity.length - visible.length;
 
 		let text = theme.fg("accent", frame) + " " + theme.fg("toolTitle", theme.bold(details.childId));
 		text += theme.fg("muted", ` (${activity.length} actions)`);
+		text += formatActivityTail(activity, theme);
 
-		if (skipped > 0) text += "\n  " + theme.fg("muted", `... ${skipped} earlier`);
-		for (const item of visible) {
-			const icon =
-				item.type === "report"
-					? theme.fg("warning", "↑")
-					: item.type === "tool_start"
-						? theme.fg("accent", "→")
-						: item.type === "text"
-							? theme.fg("dim", "·")
-							: theme.fg("success", "✓");
-			text += "\n  " + icon + " " + theme.fg("dim", item.label);
-		}
-
-		// F2: use instanceof check instead of unsafe cast
 		const prev = context.lastComponent;
 		const component = (prev instanceof Text) ? prev : new Text("", 0, 0);
 		component.setText(text);
 		return component;
 	}
 
-	// -- done: clear spinner --
-	if (context.state._spinnerInterval) {
-		clearInterval(context.state._spinnerInterval);
-		context.state._spinnerInterval = null;
-	}
+	clearSpinner(context);
 
 	const hasError = !!details.error;
 	const icon = hasError ? theme.fg("error", "✗") : theme.fg("success", "✓");
@@ -807,24 +614,14 @@ function renderAgentResult(
 			container.addChild(new Text(theme.fg("error", `Error: ${details.error}`), 0, 0));
 		}
 
-		// Activity log
 		if (activity.length > 0) {
 			container.addChild(new Spacer(1));
 			container.addChild(new Text(theme.fg("muted", "─── Activity ───"), 0, 0));
 			for (const item of activity) {
-				const itemIcon =
-					item.type === "report"
-						? theme.fg("warning", "↑")
-						: item.type === "tool_start"
-							? theme.fg("accent", "→")
-							: item.type === "text"
-								? theme.fg("dim", "·")
-								: theme.fg("success", "✓");
-				container.addChild(new Text(`  ${itemIcon} ${theme.fg("dim", item.label)}`, 0, 0));
+				container.addChild(new Text(`  ${activityIcon(item, theme)} ${theme.fg("dim", item.label)}`, 0, 0));
 			}
 		}
 
-		// Reports
 		if (reports.length > 0) {
 			container.addChild(new Spacer(1));
 			container.addChild(new Text(theme.fg("muted", "─── Reports ───"), 0, 0));
@@ -836,7 +633,6 @@ function renderAgentResult(
 			}
 		}
 
-		// Final output
 		const finalText = result.content[0];
 		if (finalText?.type === "text" && reports.length === 0) {
 			container.addChild(new Spacer(1));
@@ -847,26 +643,13 @@ function renderAgentResult(
 		return container;
 	}
 
-	// Collapsed view — E3: use MAX_RENDERED_ACTIVITY instead of hardcoded 5
+	// Collapsed view
 	let text = `${icon} ${theme.fg("toolTitle", theme.bold(details.childId))}`;
 	text += theme.fg("muted", ` (${activity.length} actions, ${reports.length} reports)`);
 	if (hasError && details.error) {
 		text += "\n  " + theme.fg("error", details.error);
 	} else {
-		const visible = activity.slice(-MAX_RENDERED_ACTIVITY);
-		const skipped = activity.length - visible.length;
-		if (skipped > 0) text += "\n  " + theme.fg("muted", `... ${skipped} earlier`);
-		for (const item of visible) {
-			const itemIcon =
-				item.type === "report"
-					? theme.fg("warning", "↑")
-					: item.type === "tool_start"
-						? theme.fg("accent", "→")
-						: item.type === "text"
-							? theme.fg("dim", "·")
-							: theme.fg("success", "✓");
-			text += "\n  " + itemIcon + " " + theme.fg("dim", item.label);
-		}
+		text += formatActivityTail(activity, theme);
 	}
 
 	return new Text(text, 0, 0);
@@ -878,6 +661,8 @@ function renderAgentResult(
 
 export default function multiAgent(pi: ExtensionAPI) {
 	const children = new Map<string, ChildState>();
+	/** IDs reserved by in-flight spawns that have not yet inserted into `children`. */
+	const reservedIds = new Set<string>();
 	// cachedGetApiKey and cachedRegistry are initialized from the first ctx we see.
 	// This assumes modelRegistry is stable for the session lifetime.
 	let cachedGetApiKey: ((provider: string) => Promise<string | undefined>) | undefined;
@@ -955,7 +740,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 	function getAccessibleTarget(callerId: string | undefined, targetId: string, action: string, allowSelf = false): ChildState {
 		if (callerId) getCallerState(callerId);
 		const state = children.get(targetId);
-		if (!state) {
+		if (!state || state.killed) {
 			throw new Error(
 				`Child agent "${targetId}" not found. Visible agents: ${formatScopedAgentIds(callerId)}. ` +
 				`Call list_agents() for full status.`,
@@ -971,6 +756,12 @@ export default function multiAgent(pi: ExtensionAPI) {
 		return state;
 	}
 
+	/**
+	 * Mark the subtree killed and abort its agents. States with no active run
+	 * are removed immediately; a state whose run is in flight stays registered
+	 * (as a killed tombstone) and is removed by that run's finally block once
+	 * the prompt settles, so no work continues against an unregistered agent.
+	 */
 	function killSubtree(rootId: string): { killedIds: string[]; reportCount: number } {
 		const ids = getSubtreeIds(rootId);
 		let reportCount = 0;
@@ -982,9 +773,17 @@ export default function multiAgent(pi: ExtensionAPI) {
 			state.agent.abort();
 		}
 		for (const id of ids) {
-			children.delete(id);
+			const state = children.get(id);
+			if (state && !state.locked) children.delete(id);
 		}
 		return { killedIds: ids, reportCount };
+	}
+
+	/** Remove exactly this state if it is still the registered one and has no active run. */
+	function removeStateIfCurrent(state: ChildState): void {
+		if (!state.locked && children.get(state.id) === state) {
+			children.delete(state.id);
+		}
 	}
 
 	function listAgentsResult(callerId?: string): AgentToolResult<unknown> {
@@ -1023,6 +822,8 @@ export default function multiAgent(pi: ExtensionAPI) {
 			);
 		}
 
+		if (signal?.aborted) throw new Error(`delegate to "${params.id}" aborted before start`);
+
 		const reportStart = state.reports.length;
 		state.activity = [];
 
@@ -1031,6 +832,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 		const unsub = subscribeChild(state.agent, params.id, state, onUpdate);
 		state.locked = true;
+
 		try {
 			const runPromise = state.agent.prompt(params.message);
 			await withOptionalTimeout(state.agent, params.id, runPromise, params.timeout_seconds);
@@ -1039,6 +841,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			}
 		} catch (err) {
 			if (err instanceof AgentTimeoutError) {
+				state.killed = true;
 				killSubtree(params.id);
 			}
 			throw err;
@@ -1046,6 +849,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			state.locked = false;
 			unsub();
 			signal?.removeEventListener("abort", onAbort);
+			if (state.killed) removeStateIfCurrent(state);
 		}
 
 		return collectResult(params.id, state, reportStart);
@@ -1115,6 +919,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		];
 		return new Agent({
 			initialState: { systemPrompt, model, tools: childTools },
+			streamFn: streamSimple,
 			getApiKey: cachedGetApiKey,
 		});
 	}
@@ -1127,68 +932,81 @@ export default function multiAgent(pi: ExtensionAPI) {
 		signal?: AbortSignal,
 		onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void,
 	): Promise<AgentToolResult<AgentToolDetails>> {
-		const config = await getConfig(cwd);
-		// config.model overrides the inherited parent model; unset means inherit.
-		const childModel = config.model && cachedRegistry ? resolveChildModel(config.model, cachedRegistry) : model;
-		if (children.has(params.id)) {
+		if (signal?.aborted) throw new Error(`spawn of "${params.id}" aborted before start`);
+
+		// Reserve ID and capacity synchronously, before any await, so parallel
+		// spawn_agent calls cannot both pass these checks.
+		if (children.has(params.id) || reservedIds.has(params.id)) {
 			throw new Error(
 				`Child agent "${params.id}" already exists. ` +
 				`Use delegate("${params.id}", …) to send it more work, or call list_agents() to inspect active agents.`,
 			);
 		}
-
 		const parentState = callerId ? getCallerState(callerId) : undefined;
 		const childDepth = (parentState?.depth ?? 0) + 1;
-		if (childDepth > config.maxDepth) {
-			throw new Error(
-				`Cannot spawn agent "${params.id}": depth ${childDepth} exceeds configured maxDepth ${config.maxDepth}.`,
-			);
-		}
-		if (children.size >= config.maxLiveAgents) {
-			throw new Error(
-				`Cannot spawn agent "${params.id}": maxLiveAgents ${config.maxLiveAgents} reached. ` +
-				`Kill or reuse an existing agent before spawning another one.`,
-			);
-		}
+		const reservedLive = children.size + reservedIds.size;
+		reservedIds.add(params.id);
 
-		const reports: string[] = [];
-		const child = buildChildAgent(params.id, params.system_prompt, childModel, cwd, reports);
-		const state: ChildState = {
-			id: params.id,
-			parentId: parentState?.id,
-			rootId: parentState?.rootId ?? params.id,
-			depth: childDepth,
-			cwd,
-			createdAt: Date.now(),
-			agent: child,
-			reports,
-			activity: [],
-			locked: false,
-			killed: false,
-		};
-		children.set(params.id, state);
-
-		const onAbort = () => child.abort();
-		signal?.addEventListener("abort", onAbort, { once: true });
-
-		const unsub = subscribeChild(child, params.id, state, onUpdate);
-		state.locked = true;
 		try {
-			const runPromise = child.prompt(params.task);
-			await withOptionalTimeout(child, params.id, runPromise, params.timeout_seconds);
-			if (state.killed) {
-				throw new Error(`Agent "${params.id}" was killed while running`);
+			const config = await getConfig(cwd);
+			// config.model overrides the inherited parent model; unset means inherit.
+			const childModel = config.model && cachedRegistry ? resolveChildModel(config.model, cachedRegistry) : model;
+			if (childDepth > config.maxDepth) {
+				throw new Error(
+					`Cannot spawn agent "${params.id}": depth ${childDepth} exceeds configured maxDepth ${config.maxDepth}.`,
+				);
 			}
-		} catch (err) {
-			killSubtree(params.id);
-			throw err;
-		} finally {
-			state.locked = false;
-			unsub();
-			signal?.removeEventListener("abort", onAbort);
-		}
+			if (reservedLive >= config.maxLiveAgents) {
+				throw new Error(
+					`Cannot spawn agent "${params.id}": maxLiveAgents ${config.maxLiveAgents} reached. ` +
+					`Kill or reuse an existing agent before spawning another one.`,
+				);
+			}
 
-		return collectResult(params.id, state, 0);
+			const reports: string[] = [];
+			const child = buildChildAgent(params.id, params.system_prompt, childModel, cwd, reports);
+			const state: ChildState = {
+				id: params.id,
+				parentId: parentState?.id,
+				rootId: parentState?.rootId ?? params.id,
+				depth: childDepth,
+				cwd,
+				createdAt: Date.now(),
+				agent: child,
+				reports,
+				activity: [],
+				locked: true,
+				killed: false,
+			};
+			children.set(params.id, state);
+
+			const onAbort = () => child.abort();
+			signal?.addEventListener("abort", onAbort, { once: true });
+
+			const unsub = subscribeChild(child, params.id, state, onUpdate);
+			try {
+				const runPromise = child.prompt(params.task);
+				await withOptionalTimeout(child, params.id, runPromise, params.timeout_seconds);
+				if (state.killed) {
+					throw new Error(`Agent "${params.id}" was killed while running`);
+				}
+			} catch (err) {
+				// spawn removes the subtree on any error; delegate keeps the child
+				// for ordinary errors and only removes it on timeout.
+				state.killed = true;
+				killSubtree(params.id);
+				throw err;
+			} finally {
+				state.locked = false;
+				unsub();
+				signal?.removeEventListener("abort", onAbort);
+				if (state.killed) removeStateIfCurrent(state);
+			}
+
+			return collectResult(params.id, state, 0);
+		} finally {
+			reservedIds.delete(params.id);
+		}
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -1310,6 +1128,16 @@ export default function multiAgent(pi: ExtensionAPI) {
 		label: "List Agents",
 		description: "List all currently active child agent IDs and their status. Includes depth and parent metadata.",
 		parameters: listSchema,
+
+		renderCall(_args, theme) {
+			return new Text(theme.fg("toolTitle", theme.bold("list_agents")), 0, 0);
+		},
+
+		renderResult(result) {
+			const text = result.content[0]?.type === "text" ? result.content[0].text : "done";
+			return new Text(text, 0, 0);
+		},
+
 		async execute() {
 			return listAgentsResult();
 		},
