@@ -1,7 +1,7 @@
 {
   "name": "pi-quiet",
   "version": "0.1.0",
-  "description": "Minimalist chrome for pi: no header, no spinner, one dim footer line",
+  "description": "Minimalist chrome for pi: no header, no loader row, pulsing editor border",
   "homepage": "https://github.com/y0usaf/pi-flake",
   "repository": {
     "type": "git",
