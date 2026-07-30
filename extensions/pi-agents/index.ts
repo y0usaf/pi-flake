@@ -1530,7 +1530,8 @@ export default function multiAgent(pi: ExtensionAPI) {
 		if (!Number.isInteger(n) || n < 2 || n > 5) throw new Error(`Panel size ${n} must be between 2 and 5`);
 		if (children.size + reservedIds.size + n > config.maxLiveAgents) throw new Error(`Panel of ${n} exceeds maxLiveAgents cap ${config.maxLiveAgents} (live count ${children.size + reservedIds.size})`);
 		if (models && !cachedRegistry) throw new Error("pi-agents: cannot resolve panel models because the model registry is not available");
-		const memberModels = models ? models.map((spec) => resolveChildModel(spec, cachedRegistry as ModelRegistry)) : Array(n).fill(model);
+		// Precedence: explicit per-member models, then configured child model, then inherited parent model.
+		const memberModels = models ? models.map((spec) => resolveChildModel(spec, cachedRegistry as ModelRegistry)) : Array(n).fill(config.model && cachedRegistry ? resolveChildModel(config.model, cachedRegistry) : model);
 		const memberParams = Array.from({ length: n }, (_, i) => ({ ...params, id: `${params.id}-${i + 1}`, panel: undefined }));
 		let finished = 0;
 		// Each member's spawnChild already aborts its agent on the shared signal.
