@@ -82,6 +82,7 @@ Flake `inputs` cannot pass arbitrary booleans into another flake's outputs. Use 
         review = true;
         vcc = true;
         caveman = true;
+        "cursor-provider" = true;
       };
     };
   };
@@ -119,6 +120,7 @@ Only flags set to `true` are copied into the bundled wrapper.
             #   review = true;
             #   vcc = true;
             #   caveman = true;
+            #   "cursor-provider" = true;
             # };
 
             # Option 3: concrete package
@@ -149,6 +151,7 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-review` | `/review` and `/end-review` code review workflow |
 | `pi-vcc` | Algorithmic conversation compactor with `/pi-vcc`, `/pi-vcc-recall`, and `vcc_recall` |
 | `pi-caveman` | Terse-response mode with configurable compression levels |
+| `pi-cursor-provider` | Cursor models via browser OAuth and a local OpenAI-compatible gRPC proxy (`/login cursor`) |
 | `pi-agents` | Multi-agent orchestration: `spawn_agent`, `delegate`, `kill_agent`, `list_agents` over in-process children (`testing`, opt-in) |
 
 ## Extension Lifecycle
@@ -221,6 +224,7 @@ inputs.pi-flake.packages.<system>."pi-hashline"
 inputs.pi-flake.packages.<system>."pi-review"
 inputs.pi-flake.packages.<system>."pi-vcc"
 inputs.pi-flake.packages.<system>."pi-caveman"
+inputs.pi-flake.packages.<system>."pi-cursor-provider"
 inputs.pi-flake.packages.<system>."pi-agents"
 ```
 
@@ -229,6 +233,8 @@ inputs.pi-flake.packages.<system>."pi-agents"
 `pi-review` PR review mode shells out to `gh`; install and authenticate GitHub CLI separately if you want `/review pr ...`.
 
 `pi-vcc` registers `/pi-vcc`, `/pi-vcc-recall`, `vcc_recall`, and a `session_before_compact` hook. By default it does not override Pi's normal `/compact`; set `overrideDefaultCompaction: true` in `~/.pi/agent/pi-vcc-config.json` to make VCC handle all compaction paths.
+
+`pi-cursor-provider` adds a `cursor` provider: `/login cursor` runs a browser PKCE OAuth flow, then the extension starts a localhost OpenAI-compatible proxy that translates to Cursor's Connect-gRPC endpoint (`api2.cursor.sh`). It needs a Cursor account with model access; the bundle ships its one npm dependency (`@bufbuild/protobuf`) in the extension's `node_modules`, so no `npm install` is required. `PI_CURSOR_RAW_MODELS=1` disables effort-suffix model dedup.
 
 ### Variants
 
