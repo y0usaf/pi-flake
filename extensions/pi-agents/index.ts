@@ -161,6 +161,7 @@ const spawnSchema = Type.Object({
 	system_prompt: Type.String({ description: "System prompt defining the child agent's role and behavior" }),
 	task: Type.String({ description: "Initial task to assign to the child agent" }),
 	contract: contractSchema,
+	keep: Type.Optional(Type.Boolean({ description: "Keep the agent alive after its contract is fulfilled so it can take delegate calls; default false — the agent (and its subtree) is removed once it answers, like a tool call returning." })),
 	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds to wait for the agent to finish (must be > 0). If the deadline expires the agent is aborted, removed from the registry, and an error is thrown." })),
 });
 
@@ -168,6 +169,7 @@ const delegateSchema = Type.Object({
 	id: Type.String({ description: "ID of an existing child agent" }),
 	message: Type.String({ description: "Follow-up task or message to send to the child" }),
 	contract: contractSchema,
+	keep: Type.Optional(Type.Boolean({ description: "Keep the agent alive after this contract is fulfilled; default false — the agent (and its subtree) is removed once it answers." })),
 	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds to wait for the agent to finish (must be > 0). If the deadline expires the agent is aborted, removed from the registry, and an error is thrown." })),
 });
 
@@ -1193,7 +1195,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 	async function delegateToChild(
 		callerId: string | undefined,
-		params: { id: string; message: string; timeout_seconds?: number; contract: unknown },
+		params: { id: string; message: string; timeout_seconds?: number; contract: unknown; keep?: boolean },
 		signal?: AbortSignal,
 		onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void,
 	): Promise<AgentToolResult<AgentToolDetails>> {
@@ -1238,7 +1240,10 @@ export default function multiAgent(pi: ExtensionAPI) {
 			if (state.killed) removeStateIfCurrent(state);
 		}
 
-		return collectResult(params.id, state, reportStart);
+		const result = collectResult(params.id, state, reportStart);
+		// Agent-as-tool: a fulfilled contract ends the agent unless the caller asked to keep it.
+		if (!params.keep) killSubtree(params.id);
+		return result;
 	}
 
 	function createChildManagementTools(callerId: string, cwd: string, model: Model<any>): AgentTool<any>[] {
@@ -1247,8 +1252,8 @@ export default function multiAgent(pi: ExtensionAPI) {
 			label: "Spawn Agent",
 			description:
 				"Spawn a descendant agent within your own subtree. Requires a contract; " +
-				"the descendant's result is its structured contract answers. " +
-				"Subject to configured maxDepth and maxLiveAgents limits.",
+				"the descendant's result is its structured contract answers, and it is removed once it answers " +
+				"unless keep: true. Subject to configured maxDepth and maxLiveAgents limits.",
 			parameters: spawnSchema,
 			execute: async (_toolCallId, params, signal, onUpdate) => {
 				return await spawnChild(callerId, params, model, cwd, signal, onUpdate);
@@ -1258,7 +1263,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		const delegateTool: AgentTool<typeof delegateSchema> = {
 			name: "delegate",
 			label: "Delegate",
-			description: "Send follow-up work with a fresh contract to a descendant agent in your subtree.",
+			description: "Send follow-up work with a fresh contract to a kept descendant agent in your subtree; it is removed after answering unless keep: true.",
 			parameters: delegateSchema,
 			execute: async (_toolCallId, params, signal, onUpdate) => {
 				return await delegateToChild(callerId, params, signal, onUpdate);
@@ -1316,7 +1321,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 	async function spawnChild(
 		callerId: string | undefined,
-		params: { id: string; system_prompt: string; task: string; timeout_seconds?: number; contract: unknown },
+		params: { id: string; system_prompt: string; task: string; timeout_seconds?: number; contract: unknown; keep?: boolean },
 		model: Model<any>,
 		cwd: string,
 		signal?: AbortSignal,
@@ -1396,7 +1401,10 @@ export default function multiAgent(pi: ExtensionAPI) {
 				if (state.killed) removeStateIfCurrent(state);
 			}
 
-			return collectResult(params.id, state, 0);
+			const result = collectResult(params.id, state, 0);
+			// Agent-as-tool: a fulfilled contract ends the agent unless the caller asked to keep it.
+			if (!params.keep) killSubtree(params.id);
+			return result;
 		} finally {
 			reservedIds.delete(params.id);
 		}
@@ -1443,7 +1451,8 @@ export default function multiAgent(pi: ExtensionAPI) {
 			"Recursive spawning is bounded by pi-agents.json maxDepth/maxLiveAgents, which also picks the child model. " +
 			"This call blocks until the contract is fulfilled; an unfulfilled contract is nudged up to 10 times, then errors. " +
 			"Multiple spawn_agent calls in the same turn run concurrently. " +
-			"On success, use delegate to send it more work or kill_agent to free its resources. " +
+			"By default the agent is removed as soon as its contract is fulfilled (a tool call that returns); " +
+			"pass keep: true to retain it for delegate follow-ups, and kill_agent to free a kept agent. " +
 			"On any error (including timeout) the agent subtree is removed from the registry automatically.",
 		parameters: spawnSchema,
 
@@ -1500,9 +1509,10 @@ export default function multiAgent(pi: ExtensionAPI) {
 		name: "delegate",
 		label: "Delegate",
 		description:
-			"Send a follow-up task with a fresh contract to an existing child agent (must have been previously spawned " +
-			"with spawn_agent). The child resumes with its full conversation history and tools intact; the new contract " +
-			"replaces the old one, and the call blocks until the child fulfills it via submit_answers.",
+			"Send a follow-up task with a fresh contract to an existing kept child agent (spawned with keep: true). " +
+			"The child resumes with its full conversation history and tools intact; the new contract " +
+			"replaces the old one, and the call blocks until the child fulfills it via submit_answers. " +
+			"The child is removed after answering unless this call also passes keep: true.",
 		parameters: delegateSchema,
 
 		renderCall(args, theme, context) {

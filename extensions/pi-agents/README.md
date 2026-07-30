@@ -72,6 +72,8 @@ Creates a new child agent with its own system prompt. The child gets `read`, `wr
 
 If the child ends a run without a valid `submit_answers` call, it is re-prompted ("nudged") up to 10 times, then the call errors. On spawn errors the subtree is removed; the result content is the formatted answers, and `details.answers` carries them structurally.
 
+By default a child is **removed as soon as its contract is fulfilled** — spawn behaves like a typed function call: contract in, answers out, agent gone. Pass `keep: true` to retain it (with its history) for `delegate` follow-ups; free kept agents with `kill_agent`.
+
 Multiple `spawn_agent` calls in one turn run concurrently (parallel tool execution). Spawning is rejected when it would exceed configured `maxDepth` or `maxLiveAgents`.
 
 - `timeout_seconds` — optional, must be a finite number greater than 0. If the child is still running when the deadline expires it is aborted, removed from the registry, and an error is thrown.
@@ -80,7 +82,7 @@ Multiple `spawn_agent` calls in one turn run concurrently (parallel tool executi
 
 ### `delegate(id, message, contract, [timeout_seconds])`
 
-Sends follow-up work to an **existing** child (must have been previously spawned with `spawn_agent`). The child keeps its full conversation history from previous runs. Each call carries a **fresh contract** that replaces the previous one; the call blocks until the child fulfills it.
+Sends follow-up work to an **existing kept** child (spawned with `keep: true`). The child keeps its full conversation history from previous runs. Each call carries a **fresh contract** that replaces the previous one; the call blocks until the child fulfills it, and the child is removed after answering unless this call also passes `keep: true`.
 
 Descendant agents can only delegate to agents in their own subtree.
 
@@ -158,7 +160,7 @@ The model is a bare id, following pi's own `/model` picker; the provider is appe
 
 ```
 Parent: "Refactor auth and write tests in parallel"
-├─ spawn_agent("refactor", "You refactor code.", "Refactor the auth module",
+├─ spawn_agent("refactor", "You refactor code.", "Refactor the auth module", keep=true,
 │              contract=[{prompt: "Which files changed?"},
 │                        {prompt: "Behavior preserved?", options: [{label: "Yes"}, {label: "No"}]}])
 │   ├─ child reads files, edits code
@@ -169,22 +171,23 @@ Parent: "Refactor auth and write tests in parallel"
 └─ spawn_agent("tests", "You write tests.", "Write tests for auth",
                contract=[{prompt: "How many tests pass?"}])
     ├─ child reads code, writes test files
-    └─ submit_answers([{id: "question-1", value: "12"}])
+    └─ submit_answers([{id: "question-1", value: "12"}])   ← no keep: agent auto-removed
 
 // Both run concurrently. Parent gets both contracts' answers as data.
 
 Parent: "The refactor agent should also update the docs"
-└─ delegate("refactor", "Update the migration docs too",
+└─ delegate("refactor", "Update the migration docs too", keep=true,
             contract=[{prompt: "Docs updated where?"}])
-    └─ child resumes with full history, fulfills the fresh contract
-
-Parent: "Done with the test agent"
-└─ kill_agent("tests")
-    └─ child freed, resources released
+    └─ kept child resumes with full history, fulfills the fresh contract
 
 Parent: "Which agents are still alive?"
 └─ list_agents()
     └─ • refactor — idle, depth 1, root child, anthropic/claude-sonnet-4-5, 2 reports, contract fulfilled
+       (tests is gone — auto-removed when its contract completed)
+
+Parent: "Done with the refactor agent"
+└─ kill_agent("refactor")
+    └─ child freed, resources released
 ```
 
 ## Caveats / Known Limitations

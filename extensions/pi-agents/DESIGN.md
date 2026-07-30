@@ -56,6 +56,11 @@ tools and conversation history.
   tasks have no enumerable options); the host-added option is "Unable to
   determine" (`__unable__`) — an explicit punt beats fabrication; free-text
   answers cap at 2000 chars (agents write more than users).
+- **2026-07 — A fulfilled contract ends the agent by default.** spawn/delegate
+  remove the child subtree as soon as it answers; `keep: true` opts into
+  persistence for delegate follow-ups. An idle answered child is a leaked
+  resource and made delegate-vs-respawn ambiguous; default removal makes
+  spawn a typed function call — which is the point of the contract.
 
 ## Architecture
 
