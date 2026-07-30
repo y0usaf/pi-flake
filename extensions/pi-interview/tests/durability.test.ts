@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import {
 	buildToolResult,
 	findDanglingToolCalls,
-	hasRecoveryMessage,
 	insertToolResults,
 	type MessageLike,
 } from "../src/durability.ts";
@@ -64,16 +63,6 @@ describe("insertToolResults", () => {
 	});
 });
 
-describe("hasRecoveryMessage", () => {
-	test("matches customType and toolCallId together", () => {
-		const messages = [
-			{ role: "custom", customType: "other", details: { toolCallId: "call-1" } },
-			{ role: "custom", customType: "pi-interview", details: { toolCallId: "call-2" } },
-		];
-		expect(hasRecoveryMessage(messages, "pi-interview", "call-1")).toBe(false);
-		expect(hasRecoveryMessage(messages, "pi-interview", "call-2")).toBe(true);
-	});
-});
 
 describe("buildToolResult", () => {
 	test("pairs with the call it repairs", () => {

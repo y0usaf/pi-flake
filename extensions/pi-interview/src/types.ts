@@ -27,7 +27,6 @@ export interface InterviewAnswer {
 	value: string;
 	label: string;
 	wasCustom: boolean;
-	index?: number;
 }
 
 export interface QuestionnaireResult {
@@ -37,7 +36,7 @@ export interface QuestionnaireResult {
 }
 
 /** Who produced the answers attached to a tool result. */
-export type AnswerSource = "user" | "judgment" | "resumed" | "interrupted";
+export type AnswerSource = "user" | "judgment";
 
 export interface InterviewToolDetails {
 	mode?: InterviewMode;

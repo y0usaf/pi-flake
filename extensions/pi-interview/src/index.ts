@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getAgentDir, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
-import { Container, type OverlayHandle, Text } from "@earendil-works/pi-tui";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
 	CONFIG_FIELD_NAMES,
@@ -11,7 +11,7 @@ import {
 	normalizeConfig,
 	setConfigField,
 } from "./config.js";
-import { buildToolResult, findDanglingToolCalls, hasRecoveryMessage, insertToolResults } from "./durability.js";
+import { buildToolResult, findDanglingToolCalls, insertToolResults } from "./durability.js";
 import { createJudgmentAnswers, normalizeQuestions } from "./protocol.js";
 import { runQuestionnaire } from "./questionnaire.js";
 import type {
@@ -26,14 +26,8 @@ import type {
 
 const TOOL_NAME = "interview_user";
 const STATUS_KEY = "pi-interview";
-/** customType of the message that carries answers recovered after a restart. */
-const RECOVERY_TYPE = "pi-interview";
-
 const INTERRUPTED_TEXT = `[PI INTERVIEW INTERRUPTED]
-The questionnaire was still open when the session ended, so no answers were recorded. Continue with best judgment and do not repeat the same questions unless work is blocked.`;
-
-const RECOVERED_TEXT = `[PI INTERVIEW INTERRUPTED]
-The questionnaire was still open when the session ended. The user answered it after restarting; those answers appear in a later message in this conversation.`;
+The questionnaire was interrupted by a restart, so no answer was recorded. Ask the questionnaire again if the answer still matters; otherwise continue with best judgment.`;
 
 interface ConfigLoadResult {
 	config: InterviewConfig;
@@ -48,7 +42,8 @@ function loadConfig(): ConfigLoadResult {
 	const path = configPath();
 	if (!existsSync(path)) return { config: { ...DEFAULT_CONFIG } };
 	try {
-		return { config: normalizeConfig(JSON.parse(readFileSync(path, "utf8"))) };
+		const normalized = normalizeConfig(JSON.parse(readFileSync(path, "utf8")));
+		return { config: normalized.config, error: normalized.warnings.length ? normalized.warnings.join("; ") : undefined };
 	} catch (error) {
 		return {
 			config: { ...DEFAULT_CONFIG },
@@ -125,19 +120,10 @@ const CONTENT_HEADINGS: Record<AnswerSource, { heading: string; instruction: str
 		heading: "[PI INTERVIEW ANSWERS — selected directly by user]",
 		instruction: "Treat these answers as requirements for current request.",
 	},
-	resumed: {
-		heading: "[PI INTERVIEW ANSWERS — selected directly by user after a session restart]",
-		instruction:
-			"The questionnaire above was interrupted; these are the user's answers to it. Treat them as requirements and resume the interrupted work.",
-	},
 	judgment: {
 		heading: "[PI INTERVIEW — auto mode, no user input collected]",
 		instruction:
 			"Auto mode recorded these decision points without asking anyone. Decide each one yourself using available evidence and conventional reversible defaults.",
-	},
-	interrupted: {
-		heading: "[PI INTERVIEW INTERRUPTED]",
-		instruction: "Continue with best judgment.",
 	},
 };
 
@@ -229,87 +215,13 @@ export default function piInterview(pi: ExtensionAPI): void {
 		return { questions, answers: createJudgmentAnswers(questions), cancelled: false };
 	}
 
-	/**
-	 * Ask a questionnaire from `session_start`, where the editor slot is not ours.
-	 *
-	 * Two separate hazards live in that window, both caused by other extensions
-	 * still installing their own UI while this runs. pi-quiet is the concrete
-	 * one today: its `session_start` handler calls `ui.setEditorComponent`, and
-	 * pi implements that as `editorContainer.clear()` followed by
-	 * `ui.setFocus(newEditor)`.
-	 *
-	 * The clear evicts an inline component, so the questionnaire is rendered in
-	 * the overlay layer, which is a separate stack. The focus call then hands
-	 * keyboard input to the new editor, and pi-tui records a non-overlay
-	 * component taking focus from an overlay as a deliberate handoff, which
-	 * disables the reclaim it would otherwise perform on the next keypress. The
-	 * overlay stays on screen and answers nothing — so hold focus explicitly
-	 * until the questionnaire closes.
-	 *
-	 * Which extension runs first is decided by directory read order, so this
-	 * cannot be fixed by ordering; the invariant has to be asserted.
-	 */
-	async function askOnStartup(ctx: ExtensionContext, questions: InterviewQuestion[]): Promise<QuestionnaireResult> {
-		let overlay: OverlayHandle | undefined;
-		const holdFocus = setInterval(() => {
-			if (overlay && !overlay.isFocused()) overlay.focus();
-		}, 150);
-		holdFocus.unref?.();
-		try {
-			return await runQuestionnaire(ctx, questions, undefined, {
-				overlay: true,
-				onHandle: (handle) => {
-					overlay = handle;
-				},
-			});
-		} finally {
-			clearInterval(holdFocus);
-		}
-	}
-
-	/**
-	 * Finish a questionnaire that was still open when the previous process died.
-	 *
-	 * The questions are not stored anywhere by this extension: pi already
-	 * persisted them inside the arguments of the tool call itself, so they are
-	 * read back out of the session. The answers are delivered as a pi custom
-	 * message, which pi persists, which is what makes them survive a second
-	 * restart without a sidecar file.
-	 */
-	async function resumeInterrupted(ctx: ExtensionContext): Promise<void> {
-		if (config.mode !== "manual" && config.mode !== "strict") return;
-		if (!ctx.hasUI) return;
-		const messages = ctx.sessionManager.buildContextEntries().flatMap(sessionEntryToContextMessages);
-		const pending = findDanglingToolCalls(messages, TOOL_NAME).filter(
-			(call) => !hasRecoveryMessage(messages, RECOVERY_TYPE, call.toolCallId),
-		);
-		const call = pending.at(-1);
-		if (!call) return;
-		const raw = call.arguments.questions;
-		const questions = normalizeQuestions(Array.isArray(raw) ? raw : [], config);
-		if (questions.length === 0) return;
-
-		ctx.ui.notify("Interview was interrupted by a restart — finishing it now", "info");
-		const result = await askOnStartup(ctx, questions);
-		if (result.cancelled || result.answers.length === 0) return;
-		pi.sendMessage(
-			{
-				customType: RECOVERY_TYPE,
-				content: questionnaireContent(result, "resumed"),
-				display: true,
-				details: { toolCallId: call.toolCallId },
-			},
-			{ triggerTurn: true },
-		);
-	}
 
 	pi.on("session_start", (_event, ctx) => {
 		loaded = loadConfig();
 		config = loaded.config;
 		applyModeState(ctx);
 		if (loaded.error && ctx.hasUI) ctx.ui.notify(loaded.error, "error");
-		// Deliberately not awaited: startup must not block on an overlay.
-		void resumeInterrupted(ctx);
+
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
@@ -335,18 +247,10 @@ export default function piInterview(pi: ExtensionAPI): void {
 	pi.on("context", (event) => {
 		const dangling = findDanglingToolCalls(event.messages, TOOL_NAME);
 		if (dangling.length === 0) return;
-		const inserts = dangling.map((call) => {
-			const recovered = hasRecoveryMessage(event.messages, RECOVERY_TYPE, call.toolCallId);
-			return {
-				afterIndex: call.messageIndex,
-				message: buildToolResult(
-					call.toolCallId,
-					TOOL_NAME,
-					recovered ? RECOVERED_TEXT : INTERRUPTED_TEXT,
-					!recovered,
-				) as (typeof event.messages)[number],
-			};
-		});
+		const inserts = dangling.map((call) => ({
+			afterIndex: call.messageIndex,
+			message: buildToolResult(call.toolCallId, TOOL_NAME, INTERRUPTED_TEXT, true) as (typeof event.messages)[number],
+		}));
 		return { messages: insertToolResults(event.messages, inserts) };
 	});
 
@@ -382,6 +286,8 @@ export default function piInterview(pi: ExtensionAPI): void {
 					content: [{ type: "text", text: `${questionnaireContent(result, "judgment")}${note}` }],
 					details: {
 						mode: config.mode,
+						error: questions.length < params.questions.length ? "Malformed questions or options were dropped" : undefined,
+						message: questions.length < params.questions.length ? `Accepted ${questions.length} of ${params.questions.length} questions.` : undefined,
 						answerSource: "judgment",
 						questions,
 						answers: result.answers,
@@ -395,6 +301,8 @@ export default function piInterview(pi: ExtensionAPI): void {
 				content: [{ type: "text", text: questionnaireContent(questionnaire, "user") }],
 				details: {
 					mode: config.mode,
+					error: questions.length < params.questions.length ? "Malformed questions or options were dropped" : undefined,
+					message: questions.length < params.questions.length ? `Accepted ${questions.length} of ${params.questions.length} questions.` : undefined,
 					answerSource: "user",
 					questions: questionnaire.questions,
 					answers: questionnaire.answers,

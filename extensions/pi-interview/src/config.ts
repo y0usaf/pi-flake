@@ -24,27 +24,25 @@ export const DEFAULT_CONFIG: InterviewConfig = {
 };
 
 export type ConfigFieldResult = { ok: true; config: InterviewConfig } | { ok: false; error: string };
+export interface NormalizedConfig { config: InterviewConfig; warnings: string[]; }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Coerce anything read off disk into a valid config. Unknown keys are dropped. */
-export function normalizeConfig(raw: unknown): InterviewConfig {
+export function normalizeConfig(raw: unknown): NormalizedConfig {
 	const source = isRecord(raw) ? raw : {};
 	const config = { ...DEFAULT_CONFIG };
-	config.mode = INTERVIEW_MODES.includes(source.mode as InterviewMode)
-		? (source.mode as InterviewMode)
-		: DEFAULT_CONFIG.mode;
+	const warnings: string[] = [];
+	if (source.mode !== undefined && !INTERVIEW_MODES.includes(source.mode as InterviewMode)) warnings.push(`Invalid mode ${String(source.mode)}; using ${DEFAULT_CONFIG.mode}`);
+	config.mode = INTERVIEW_MODES.includes(source.mode as InterviewMode) ? (source.mode as InterviewMode) : DEFAULT_CONFIG.mode;
 	for (const name of CONFIG_FIELD_NAMES) {
-		const field = CONFIG_FIELDS[name];
-		const value = source[name];
-		config[name] =
-			typeof value === "number" && Number.isInteger(value) && value >= field.min && value <= field.max
-				? value
-				: field.default;
+		const field = CONFIG_FIELDS[name], value = source[name];
+		if (value !== undefined && !(typeof value === "number" && Number.isInteger(value) && value >= field.min && value <= field.max)) warnings.push(`Invalid ${name}; using ${field.default}`);
+		config[name] = typeof value === "number" && Number.isInteger(value) && value >= field.min && value <= field.max ? value : field.default;
 	}
-	return config;
+	return { config, warnings };
 }
 
 /** Apply one `key=value` edit. Returns a new config or an error string. */

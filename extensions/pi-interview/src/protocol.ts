@@ -150,7 +150,6 @@ export function createJudgmentAnswers(questions: readonly InterviewQuestion[]): 
 			value: option.value,
 			label: option.label,
 			wasCustom: false,
-			index: fallbackIndex + 1,
 		});
 	}
 	return answers;
