@@ -142,36 +142,6 @@
         "pi-webfetch" = piWebfetch.packages.${system}.default;
         "pi-hashline" = piHashline.packages.${system}.default;
 
-        "pi-advisor" = let
-          advisorPackageJson = builtins.fromJSON (builtins.readFile ./extensions/RimuruW_pi-advisor/package.json);
-        in
-          pkgs.stdenvNoCC.mkDerivation {
-            pname = "pi-advisor";
-            version = advisorPackageJson.version;
-            src = lib.cleanSource ./extensions/RimuruW_pi-advisor;
-
-            dontBuild = true;
-
-            installPhase = ''
-              runHook preInstall
-
-              mkdir -p "$out"
-              cp package.json README.md CHANGELOG.md LICENSE index.ts "$out"/
-              cp -r src "$out"/
-
-              runHook postInstall
-            '';
-
-            passthru.packageName = advisorPackageJson.name;
-
-            meta = with lib; {
-              description = advisorPackageJson.description;
-              homepage = advisorPackageJson.homepage;
-              license = licenses.mit;
-              platforms = platforms.all;
-            };
-          };
-
         "pi-review" = let
           reviewPackageJson = builtins.fromJSON (builtins.readFile ./extensions/earendil_pi-review/package.json);
         in
@@ -488,7 +458,6 @@
         webfetch = self.packages.${system}."pi-webfetch";
         hashline = self.packages.${system}."pi-hashline";
 
-        advisor = self.packages.${system}."pi-advisor";
         review = self.packages.${system}."pi-review";
         vcc = self.packages.${system}."pi-vcc";
         caveman = self.packages.${system}."pi-caveman";

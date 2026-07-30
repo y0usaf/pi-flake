@@ -43,11 +43,6 @@
     stage = "active";
     source = "subflake";
   };
-  advisor = {
-    stage = "active";
-    source = "vendored";
-    dir = "RimuruW_pi-advisor";
-  };
   review = {
     stage = "active";
     source = "vendored";

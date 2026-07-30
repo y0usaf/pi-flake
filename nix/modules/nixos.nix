@@ -79,7 +79,6 @@ in {
       "extension-management" = mkEnableOption "pi-extension-management persistent disabled-extensions UI extension";
       webfetch = mkEnableOption "pi-webfetch extension";
       hashline = mkEnableOption "pi-hashline v3 read/edit tool override";
-      advisor = mkEnableOption "pi-advisor strategic advisor-model extension";
       review = mkEnableOption "pi-review /review and /end-review code review workflow extension";
       vcc = mkEnableOption "pi-vcc algorithmic conversation compactor and vcc_recall history search";
       caveman = mkEnableOption "pi-caveman terse-response mode extension";
