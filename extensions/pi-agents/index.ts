@@ -1,7 +1,7 @@
 /**
  * Multi-Agent Extension for pi
  *
- * Parent tools: spawn_agent, answer_agent, kill_agent, list_agents.
+ * Parent tools: agent, agent_answer, agent_kill, agent_list.
  * Children additionally get pi's built-in read/write/edit/bash tools, a
  * progress-only report tool, a submit_answers tool, and descendant-scoped
  * orchestration tools bounded by maxDepth/maxLiveAgents from pi-agents.json.
@@ -11,14 +11,14 @@
  * submit_answers; the tool result is those answers as data. Enforcement is a
  * re-prompt loop capped at MAX_CONTRACT_NUDGES.
  *
- * An agent's lifetime is its contract: spawn_agent blocks until the child
+ * An agent's lifetime is its contract: agent blocks until the child
  * fulfills it, returns the answers as data, and removes the child — a typed
  * function call. If it calls ask_parent, this call returns its questions and
- * the agent stays alive until answer_agent or kill_agent. Multiple calls in one turn run concurrently.
+ * the agent stays alive until agent_answer or agent_kill. Multiple calls in one turn run concurrently.
  *
  * Concurrency invariants (see DESIGN.md):
  * - Spawn capacity and ID uniqueness are reserved synchronously before any
- *   await, so parallel spawn_agent calls cannot both pass the checks.
+ *   await, so parallel agent calls cannot both pass the checks.
  * - killSubtree marks states killed and aborts them, but only removes states
  *   with no active run. A running spawn removes its own state in its
  *   finally block once the prompt has settled, so no work continues against
@@ -196,7 +196,7 @@ interface PiAgentsConfig {
 	maxLiveAgents: number;
 	/** Model for spawned children: "provider/modelId" or a bare modelId. Unset = inherit the parent session's model. */
 	model?: string;
-	/** Default panel member models, one spec per member ("provider/modelId" or a bare modelId). Used when spawn_agent's panel omits models. */
+	/** Default panel member models, one spec per member ("provider/modelId" or a bare modelId). Used when agent's panel omits models. */
 	panelModels?: string[];
 	/** Strip write/edit from the main session so mutations route through spawned executors. Toggle with /orchestrate. */
 	orchestrator: boolean;
@@ -689,7 +689,7 @@ function buildAskParentTool(childId: string, holder: { state?: ChildState }): Ag
 			state.askCount++;
 			state.contract.pendingAsk = questions;
 			state.awaitingSince = Date.now();
-			return { content: [{ type: "text", text: "Questions recorded. End your turn now; your run suspends until the parent answers via answer_agent." }], details: { childId, questionCount: questions.length } };
+			return { content: [{ type: "text", text: "Questions recorded. End your turn now; your run suspends until the parent answers via agent_answer." }], details: { childId, questionCount: questions.length } };
 		},
 	};
 }
@@ -880,7 +880,7 @@ function collectResult(childId: string, state: ChildState, reportStartIdx: numbe
 		if (newReports.length > 0) text += `\n\nProgress reports:\n${newReports.join("\n---\n")}`;
 	} else if (state.contract.pendingAsk) {
 		const questions = state.contract.pendingAsk;
-		text = `Agent "${childId}" asks ${questions.length} question(s) and stays alive awaiting your answers:\n${renderQuestionLines(questions).join("\n")}\nAnswer with answer_agent({ id: "${childId}", answers: [{ id, value }, ...] }), or kill_agent("${childId}") to abandon.`;
+		text = `Agent "${childId}" asks ${questions.length} question(s) and stays alive awaiting your answers:\n${renderQuestionLines(questions).join("\n")}\nAnswer with agent_answer({ id: "${childId}", answers: [{ id, value }, ...] }), or agent_kill("${childId}") to abandon.`;
 		if (newReports.length > 0) text += `\n\nProgress reports:\n${newReports.join("\n---\n")}`;
 	} else {
 		text = newReports.length > 0 ? newReports.join("\n---\n") : extractLastAssistantText(state.agent);
@@ -903,7 +903,7 @@ function collectResult(childId: string, state: ChildState, reportStartIdx: numbe
 }
 
 // ---------------------------------------------------------------------------
-// Renderers (spawn_agent)
+// Renderers (agent)
 // ---------------------------------------------------------------------------
 
 function renderAgentCall(
@@ -1166,7 +1166,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 	const ORCHESTRATOR_GATE =
 		"ORCHESTRATOR MODE: write, edit, and bash are unavailable. You cannot mutate files, run builds or tests, " +
-		"or inspect git — spawn an executor via spawn_agent for any of it. read, grep, find, and ls are yours: " +
+		"or inspect git — spawn an executor via agent for any of it. read, grep, find, and ls are yours: " +
 		"use them to ground the contracts you write.";
 
 	pi.on("before_agent_start", async (event) => {
@@ -1188,13 +1188,13 @@ export default function multiAgent(pi: ExtensionAPI) {
 	}
 
 	pi.registerCommand("orchestrate", {
-		description: "Toggle orchestrator mode (strip write/edit/bash, add grep/find/ls; delegate mutations via spawn_agent)",
+		description: "Toggle orchestrator mode (strip write/edit/bash, add grep/find/ls; delegate mutations via agent)",
 		handler: async (_args, ctx) => {
 			applyOrchestrator(!orchestratorOn, ctx);
 			if (ctx.hasUI) {
 				ctx.ui.notify(
 					orchestratorOn
-						? "Orchestrator mode on: write/edit/bash stripped, grep/find/ls added; delegate mutations, builds, and git via spawn_agent."
+						? "Orchestrator mode on: write/edit/bash stripped, grep/find/ls added; delegate mutations, builds, and git via agent."
 						: "Orchestrator mode off: write/edit/bash restored.",
 					"info",
 				);
@@ -1244,7 +1244,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		if (!state || state.killed) {
 			throw new Error(
 				`Child agent "${targetId}" not found. Visible agents: ${formatScopedAgentIds(callerId)}. ` +
-				`Call list_agents() for full status.`,
+				`Call agent_list() for full status.`,
 			);
 		}
 		if (!callerId) return state;
@@ -1331,7 +1331,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 	}
 
 	async function answerAgent(callerId: string | undefined, params: { id: string; answers: Array<{ id: string; value: string }>; timeout_seconds?: number }, signal?: AbortSignal, onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void) {
-		if (signal?.aborted) throw new Error(`answer_agent for "${params.id}" aborted before start`);
+		if (signal?.aborted) throw new Error(`agent_answer for "${params.id}" aborted before start`);
 		const state = getAccessibleTarget(callerId, params.id, "answer", false);
 		if (state.locked) throw new Error(`Agent "${params.id}" is busy (a blocking call is in flight).`);
 		if (!state.contract.pendingAsk) throw new Error(`Agent "${params.id}" has no pending questions.`);
@@ -1357,12 +1357,12 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 	function createChildManagementTools(callerId: string, cwd: string, model: Model<any>): AgentTool<any>[] {
 		const spawnTool: AgentTool<typeof spawnSchema> = {
-			name: "spawn_agent",
-			label: "Spawn Agent",
+			name: "agent",
+			label: "Agent",
 			description:
 				"Spawn a descendant agent within your own subtree. Pass `panel` to get a second opinion instead of judging alone: N independent children answer the same contract on different models and the result is an agreement tally. Requires a contract; " +
 				"the descendant's result is its structured contract answers, and it is removed once it answers. " +
-				"Subject to configured maxDepth and maxLiveAgents limits. If the child calls ask_parent instead, this call returns its questions and the agent stays alive (holding context and a maxLiveAgents slot) until answer_agent resumes it or kill_agent removes it.",
+				"Subject to configured maxDepth and maxLiveAgents limits. If the child calls ask_parent instead, this call returns its questions and the agent stays alive (holding context and a maxLiveAgents slot) until agent_answer resumes it or agent_kill removes it.",
 			parameters: spawnSchema,
 			execute: async (_toolCallId, params, signal, onUpdate) => {
 				return params.panel ? await spawnPanel(callerId, params, model, cwd, signal, onUpdate) : await spawnChild(callerId, params, model, cwd, signal, onUpdate);
@@ -1370,7 +1370,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		};
 
 		const answerTool: AgentTool<typeof answerAgentSchema> = {
-			name: "answer_agent", label: "Answer Agent",
+			name: "agent_answer", label: "Answer Agent",
 			description: "Answer questions from a suspended descendant; the call blocks until its contract is fulfilled or it asks again.",
 			parameters: answerAgentSchema,
 			execute: async (_toolCallId, params, signal, onUpdate) => {
@@ -1380,7 +1380,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 
 		const killTool: AgentTool<typeof killSchema> = {
-			name: "kill_agent",
+			name: "agent_kill",
 			label: "Kill Agent",
 			description: "Kill a descendant agent in your subtree. Descendants are killed recursively.",
 			parameters: killSchema,
@@ -1388,7 +1388,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		};
 
 		const listTool: AgentTool<typeof listSchema> = {
-			name: "list_agents",
+			name: "agent_list",
 			label: "List Agents",
 			description: "List agents in your subtree, including yourself.",
 			parameters: listSchema,
@@ -1438,11 +1438,11 @@ export default function multiAgent(pi: ExtensionAPI) {
 		if (signal?.aborted) throw new Error(`spawn of "${params.id}" aborted before start`);
 
 		// Reserve ID and capacity synchronously, before any await, so parallel
-		// spawn_agent calls cannot both pass these checks.
+		// agent calls cannot both pass these checks.
 		if (children.has(params.id) || reservedIds.has(params.id)) {
 			throw new Error(
 				`Child agent "${params.id}" already exists. ` +
-				`Choose a different id, or call list_agents() to inspect active agents.`,
+				`Choose a different id, or call agent_list() to inspect active agents.`,
 			);
 		}
 		const parentState = callerId ? getCallerState(callerId) : undefined;
@@ -1466,7 +1466,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 				);
 			}
 
-			const contract: ContractBox = { questions: normalizeContract(params.contract, `spawn_agent "${params.id}"`) };
+			const contract: ContractBox = { questions: normalizeContract(params.contract, `agent "${params.id}"`) };
 			const reports: string[] = [];
 			const askHolder: { state?: ChildState } = {};
 			const child = buildChildAgent(params.id, params.system_prompt, childModel, cwd, reports, contract, askHolder, allowAsk);
@@ -1572,11 +1572,11 @@ export default function multiAgent(pi: ExtensionAPI) {
 		children.clear();
 	});
 
-	// ── spawn_agent ─────────────────────────────────────────────────────
+	// ── agent ───────────────────────────────────────────────────────────
 
 	pi.registerTool({
-		name: "spawn_agent",
-		label: "Spawn Agent",
+		name: "agent",
+		label: "Agent",
 		description:
 			"Spawn a child agent with its own system prompt, task, and contract. Pass `panel` to get a second opinion instead of judging alone: N independent children answer the same contract on different models and the result is an agreement tally. " +
 			"The contract is the child's deliverable: AskUserQuestion-style questions the child must answer " +
@@ -1584,24 +1584,24 @@ export default function multiAgent(pi: ExtensionAPI) {
 			"Children get read, write, edit, bash, report (progress only), submit_answers, and descendant-scoped orchestration tools. " +
 			"Recursive spawning is bounded by pi-agents.json maxDepth/maxLiveAgents, which also picks the child model. " +
 			"This call blocks until the contract is fulfilled; an unfulfilled contract is nudged up to 10 times, then errors. " +
-			"Multiple spawn_agent calls in the same turn run concurrently. " +
-			"The agent is removed as soon as its contract is fulfilled — spawn is a typed function call: " +
-			"If the child calls ask_parent instead, this call returns its questions and the agent stays alive (holding context and a maxLiveAgents slot) until answer_agent resumes it or kill_agent removes it. " +
+			"Multiple agent calls in the same turn run concurrently. " +
+			"The agent is removed as soon as its contract is fulfilled — this is a typed function call: " +
+			"If the child calls ask_parent instead, this call returns its questions and the agent stays alive (holding context and a maxLiveAgents slot) until agent_answer resumes it or agent_kill removes it. " +
 			"contract in, answers out, agent gone. Follow-ups are new spawns with the prior answers folded into the task. " +
-			"kill_agent aborts a running agent. " +
+			"agent_kill aborts a running agent. " +
 			"On any error (including timeout) the agent subtree is removed from the registry automatically. " +
 			"Use proactively for parallel read-only scouting, and in orchestrator mode for every file mutation. When `panelModels` is configured, omit the panel model list and call `panel: {}`; otherwise pass an explicit `models` list.",
 		parameters: spawnSchema,
 		promptGuidelines: [
 			"In orchestrator mode the main session has no write, edit, or bash: every file mutation, build, test, and git inspection goes through a spawned executor, and its contract answers are the only report you get. read/grep/find/ls are available — ground your contracts with them before spawning.",
-			'Minimal executor spawn: spawn_agent({ id: "executor-1", system_prompt: "You are an executor. Apply the requested change, verify it, then submit your answers.", task: "<the change>", contract: [{ prompt: "What changed, and how was it verified?" }] }).',
-			'Minimal scout spawn: spawn_agent({ id: "scout-1", system_prompt: "You are a read-only scout. Never modify files. Cite file:line evidence.", task: "<the question>", contract: [{ prompt: "Answer, with file:line evidence" }] }).',
-			'If a spawn returns questions, answer with answer_agent({ id, answers: [{ id: "<question id>", value: "<answer>" }] }); the call blocks until the contract is fulfilled.',
-			'Do not self-judge a ship/block, safety, or correctness call — get a second opinion. When the decision is a judgment rather than a lookup, invoke a panel: use `panel: {}` when `panelModels` is configured; otherwise pass an explicit `models` list: spawn_agent({ id: "panel", system_prompt: "You are an independent reviewer. Judge only what the evidence supports; do not defer to the requester.", task: "<the plan or diff to judge>", contract: [{ prompt: "Ship or block?", options: [{ label: "Ship" }, { label: "Block" }] }, { prompt: "Strongest argument against your own verdict" }], panel: {} }). Consensus is only mechanical on questions with options, so always give the panel an enumerated verdict question. Different models disagree for different reasons; N members on one model mostly agree with each other.'
+			'Minimal executor spawn: agent({ id: "executor-1", system_prompt: "You are an executor. Apply the requested change, verify it, then submit your answers.", task: "<the change>", contract: [{ prompt: "What changed, and how was it verified?" }] }).',
+			'Minimal scout spawn: agent({ id: "scout-1", system_prompt: "You are a read-only scout. Never modify files. Cite file:line evidence.", task: "<the question>", contract: [{ prompt: "Answer, with file:line evidence" }] }).',
+			'If a spawn returns questions, answer with agent_answer({ id, answers: [{ id: "<question id>", value: "<answer>" }] }); the call blocks until the contract is fulfilled.',
+			'Do not self-judge a ship/block, safety, or correctness call — get a second opinion. When the decision is a judgment rather than a lookup, invoke a panel: use `panel: {}` when `panelModels` is configured; otherwise pass an explicit `models` list: agent({ id: "panel", system_prompt: "You are an independent reviewer. Judge only what the evidence supports; do not defer to the requester.", task: "<the plan or diff to judge>", contract: [{ prompt: "Ship or block?", options: [{ label: "Ship" }, { label: "Block" }] }, { prompt: "Strongest argument against your own verdict" }], panel: {} }). Consensus is only mechanical on questions with options, so always give the panel an enumerated verdict question. Different models disagree for different reasons; N members on one model mostly agree with each other.'
 		],
 
 		renderCall(args, theme) {
-			return renderAgentCall("spawn_agent", args, theme);
+			return renderAgentCall("agent", args, theme);
 		},
 
 		renderResult(result, options, theme, context) {
@@ -1617,24 +1617,24 @@ export default function multiAgent(pi: ExtensionAPI) {
 		},
 	});
 
-	// ── answer_agent ────────────────────────────────────────────────────
+	// ── agent_answer ────────────────────────────────────────────────────
 
 	pi.registerTool({
-		name: "answer_agent",
+		name: "agent_answer",
 		label: "Answer Agent",
 		description: "Answer a suspended child agent's questions. Validates answers against the questions it asked, resumes it, and blocks until its contract is fulfilled or it asks again.",
 		parameters: answerAgentSchema,
 		renderCall(args, theme) {
-			return new Text(theme.fg("toolTitle", theme.bold("answer_agent ")) + theme.fg("accent", args.id || "...") + theme.fg("muted", ` · ${Array.isArray(args.answers) ? args.answers.length : 0} answers`), 0, 0);
+			return new Text(theme.fg("toolTitle", theme.bold("agent_answer ")) + theme.fg("accent", args.id || "...") + theme.fg("muted", ` · ${Array.isArray(args.answers) ? args.answers.length : 0} answers`), 0, 0);
 		},
 		renderResult(result, options, theme, context) { return renderAgentResult(result, options, theme, context); },
 		async execute(_toolCallId, params, signal, onUpdate) { return answerAgent(undefined, params, signal, onUpdate); },
 	});
 
-	// ── kill_agent ──────────────────────────────────────────────────────
+	// ── agent_kill ──────────────────────────────────────────────────────
 
 	pi.registerTool({
-		name: "kill_agent",
+		name: "agent_kill",
 		label: "Kill Agent",
 		description:
 			"Kill a child agent and free its resources. " +
@@ -1642,7 +1642,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		parameters: killSchema,
 
 		renderCall(args, theme) {
-			return new Text(theme.fg("toolTitle", theme.bold("kill_agent ")) + theme.fg("error", args.id || "..."), 0, 0);
+			return new Text(theme.fg("toolTitle", theme.bold("agent_kill ")) + theme.fg("error", args.id || "..."), 0, 0);
 		},
 
 		renderResult: renderTextResult,
@@ -1652,16 +1652,16 @@ export default function multiAgent(pi: ExtensionAPI) {
 		},
 	});
 
-	// ── list_agents ─────────────────────────────────────────────────────
+	// ── agent_list ──────────────────────────────────────────────────────
 
 	pi.registerTool({
-		name: "list_agents",
+		name: "agent_list",
 		label: "List Agents",
 		description: "List all currently active child agent IDs and their status. Includes depth and parent metadata.",
 		parameters: listSchema,
 
 		renderCall(_args, theme) {
-			return new Text(theme.fg("toolTitle", theme.bold("list_agents")), 0, 0);
+			return new Text(theme.fg("toolTitle", theme.bold("agent_list")), 0, 0);
 		},
 
 		renderResult: renderTextResult,

@@ -1,6 +1,6 @@
 # pi-agents
 
-Multi-agent extension for pi. Root agents get four orchestration tools — `spawn_agent`, `answer_agent`, `kill_agent`, `list_agents` — plus every spawned child gets `read`, `write`, `edit`, `bash`, `report`, `submit_answers`, and descendant-scoped orchestration tools of its own.
+Multi-agent extension for pi. Root agents get four orchestration tools — `agent`, `agent_answer`, `agent_kill`, `agent_list` — plus every spawned child gets `read`, `write`, `edit`, `bash`, `report`, `submit_answers`, and descendant-scoped orchestration tools of its own.
 
 Every invocation carries a **contract**: AskUserQuestion-style questions (options, optional free text) the child must answer via `submit_answers` before its run can end. The tool result is those answers as data — the child behaves like a typed function call, not a chat transcript. `report` is a progress channel only.
 
@@ -61,15 +61,15 @@ Defaults: `maxDepth: 1`, `maxLiveAgents: 6`, no `model` or `panelModels` overrid
 - `"provider/modelId"` — exact, e.g. `"anthropic/claude-haiku-4-5"`, `"vercel-ai-gateway/moonshotai/kimi-k2"` (provider is everything before the first `/`).
 - `"modelId"` — bare id, accepted when exactly one available provider offers it; ambiguous ids are rejected with the list of qualified matches.
 
-Unset means children inherit whatever model the parent session has active. A spec that resolves to nothing fails loudly: the session-start notification reports it and `spawn_agent` throws, rather than silently falling back. Descendants use the same configured model, not their parent's.
+Unset means children inherit whatever model the parent session has active. A spec that resolves to nothing fails loudly: the session-start notification reports it and `agent` throws, rather than silently falling back. Descendants use the same configured model, not their parent's.
 
-Unknown keys in `pi-agents.json` are a hard error, so a typo like `"models"` is reported instead of being silently ignored: a UI notification fires at session start, and `spawn_agent` throws until the config is fixed.
+Unknown keys in `pi-agents.json` are a hard error, so a typo like `"models"` is reported instead of being silently ignored: a UI notification fires at session start, and `agent` throws until the config is fixed.
 
 ## Tools
 
-### `spawn_agent(id, system_prompt, task, contract, [timeout_seconds])`
+### `agent(id, system_prompt, task, contract, [timeout_seconds])`
 
-Creates a new child agent with its own system prompt. The child gets `read`, `write`, `edit`, `bash`, `report`, `submit_answers`, and descendant-scoped `spawn_agent`/`kill_agent`/`list_agents` tools. Blocks until the contract is fulfilled.
+Creates a new child agent with its own system prompt. The child gets `read`, `write`, `edit`, `bash`, `report`, `submit_answers`, and descendant-scoped `agent`/`agent_kill`/`agent_list` tools. Blocks until the contract is fulfilled.
 
 `contract` is a non-empty array of questions: `{ id?, label?, prompt, options?: [{label, value?, description?, recommended?}], allowOther? }`. The host normalizes it (caps: 8 questions, 8 options each, dedupe, derived ids) and appends an "Unable to determine" (`__unable__`) option to every question so the child can punt explicitly instead of fabricating. Zero options + `allowOther` (the default) makes a plain free-text question.
 
@@ -77,7 +77,7 @@ If the child ends a run without a valid `submit_answers` call, it is re-prompted
 
 A child is **removed as soon as its contract is fulfilled** — spawn is a typed function call: contract in, answers out, agent gone. There is no persistent-agent mode; the parent holds the answers as data and folds them into the next spawn's task when work continues.
 
-Multiple `spawn_agent` calls in one turn run concurrently (parallel tool execution). Spawning is rejected when it would exceed configured `maxDepth` or `maxLiveAgents`.
+Multiple `agent` calls in one turn run concurrently (parallel tool execution). Spawning is rejected when it would exceed configured `maxDepth` or `maxLiveAgents`.
 
 - `timeout_seconds` — optional, must be a finite number greater than 0. If the child is still running when the deadline expires it is aborted, removed from the registry, and an error is thrown.
 - `panel` — optional `{ size?: number, models?: string[] }` for an independent panel on one identical contract. Model precedence is explicit `models`, then configured `panelModels`, then configured `model`, then the parent session's model. Omitting `models` uses the configured roster; `panel: {}` uses the whole roster, while `size` takes its first N entries (or creates N clones when no roster is configured). If both explicit `models` and `size` are present they must agree, and the final count must be 2–5. Members run concurrently with ids `<id>-1` through `<id>-N`; the panel id itself is never registered. The result is one aggregate containing a per-question agreement tally, with `DISAGREEMENT` leading when members split. Tallying is mechanical only for questions with enumerated options; free-text answers are listed verbatim, not presented as consensus. Panel members do not receive `ask_parent`: a judge answers or punts with `__unable__` rather than suspending. A partial failure kills surviving members and fails the whole panel.
@@ -86,7 +86,7 @@ Multiple `spawn_agent` calls in one turn run concurrently (parallel tool executi
 
 ### `ask_parent(questions)` (child-only)
 
-Asks the parent for information using the contract question shape: `{ id?, label?, prompt, options?: [{label, value?, description?, recommended?}], allowOther? }`. The questions pass through the same host normalizer as `contract` (including derived ids, deduplication, and the question/option caps), and every question gets the host-added `__unable__` option. Calling again in the same turn revises the pending questions. The child run **suspends rather than ends**; `spawn_agent` returns the pending questions while the child stays alive and registered. The ask budget is capped at 8 asks per child; once exhausted, `ask_parent` errors and the child must submit its contract, using `__unable__` where blocked.
+Asks the parent for information using the contract question shape: `{ id?, label?, prompt, options?: [{label, value?, description?, recommended?}], allowOther? }`. The questions pass through the same host normalizer as `contract` (including derived ids, deduplication, and the question/option caps), and every question gets the host-added `__unable__` option. Calling again in the same turn revises the pending questions. The child run **suspends rather than ends**; `agent` returns the pending questions while the child stays alive and registered. The ask budget is capped at 8 asks per child; once exhausted, `ask_parent` errors and the child must submit its contract, using `__unable__` where blocked.
 
 ### `submit_answers(answers)` (child-only)
 
@@ -96,15 +96,15 @@ The contract's completion path. `answers` is `[{id, value}]`, one entry per cont
 
 Progress channel. Reports stream to the parent via `tool_execution_update` during execution and are appended under the answers in the final result. They are **not** the result — if a child never calls `submit_answers`, the nudge loop kicks in, and after 10 nudges the run errors rather than silently returning prose.
 
-### `answer_agent(id, answers, [timeout_seconds])`
+### `agent_answer(id, answers, [timeout_seconds])`
 
-Answers a suspended descendant's pending questions, then resumes it; the call blocks until the child fulfills its contract or asks again. Answers are checked by the same validator as contract submissions, including the host-added `__unable__` punt, so a parent may also not know. Access is subtree-scoped exactly like `kill_agent`: an agent can answer only descendants in its own subtree. A suspended agent remains registered and holds its `maxLiveAgents` slot until answered or killed.
+Answers a suspended descendant's pending questions, then resumes it; the call blocks until the child fulfills its contract or asks again. Answers are checked by the same validator as contract submissions, including the host-added `__unable__` punt, so a parent may also not know. Access is subtree-scoped exactly like `agent_kill`: an agent can answer only descendants in its own subtree. A suspended agent remains registered and holds its `maxLiveAgents` slot until answered or killed.
 
-### `kill_agent(id)`
+### `agent_kill(id)`
 
 Aborts a running child and frees its resources; descendants are killed recursively. Fulfilled contracts remove agents automatically, so this is the abort lever for stuck or unwanted runs.
 
-### `list_agents()`
+### `agent_list()`
 
 Lists currently active child agent IDs and their status. Because fulfilled contracts auto-remove agents, entries are in-flight runs. The root agent sees the full registry; descendant agents only see their own subtree.
 
@@ -170,7 +170,7 @@ The model is a bare id, following pi's own `/model` picker; the provider is appe
 
 ```
 Parent: "Refactor auth and write tests in parallel"
-├─ spawn_agent("refactor", "You refactor code.", "Refactor the auth module",
+├─ agent("refactor", "You refactor code.", "Refactor the auth module",
 │              contract=[{prompt: "Which files changed?"},
 │                        {prompt: "Behavior preserved?", options: [{label: "Yes"}, {label: "No"}]}])
 │   ├─ child reads files, edits code
@@ -178,7 +178,7 @@ Parent: "Refactor auth and write tests in parallel"
 │   └─ submit_answers([{id: "question-1", value: "auth.ts, session.ts, index.ts"},
 │                      {id: "question-2", value: "yes"}])   ← fulfilled; agent removed
 │
-└─ spawn_agent("tests", "You write tests.", "Write tests for auth",
+└─ agent("tests", "You write tests.", "Write tests for auth",
                contract=[{prompt: "How many tests pass?"}])
     ├─ child reads code, writes test files
     └─ submit_answers([{id: "question-1", value: "12"}])   ← fulfilled; agent removed
@@ -186,29 +186,29 @@ Parent: "Refactor auth and write tests in parallel"
 // Both run concurrently. Parent gets both contracts' answers as data.
 
 Parent: "Ask the worker if the migration needs a compatibility note"
-└─ spawn_agent("worker", ...)
+└─ agent("worker", ...)
     ├─ child calls ask_parent([{prompt: "Is compatibility required?"}])
     └─ returns pending questions; worker stays alive and registered
 Parent: "Compatibility is required"
-└─ answer_agent("worker", [{id: "question-1", value: "yes"}])
+└─ agent_answer("worker", [{id: "question-1", value: "yes"}])
     └─ worker resumes and submit_answers([{id: "question-1", value: "updated migration docs"}])
 
 Parent: "Now update the migration docs for that refactor"
-└─ spawn_agent("docs", "You write docs.",
+└─ agent("docs", "You write docs.",
                "The auth refactor changed auth.ts, session.ts, index.ts; behavior preserved. Update the migration docs.",
                contract=[{prompt: "Docs updated where?"}])
     └─ fresh executor; the prior answers travel in the task, not in agent state
 
 Parent: "Is anything still running?"
-└─ list_agents()
+└─ agent_list()
     └─ • docs — running, depth 1, root child, anthropic/claude-haiku-4-5, 0 reports, contract pending
 
 Parent: "Abort it"
-└─ kill_agent("docs")
+└─ agent_kill("docs")
     └─ running child aborted, subtree freed
 
 Parent: "Is this diff safe to merge?"
-└─ spawn_agent("diff-judge", "You judge diffs.", "Review the auth diff",
+└─ agent("diff-judge", "You judge diffs.", "Review the auth diff",
                contract=[{prompt: "Verdict?", options: [{label: "safe"}, {label: "unsafe"}]}],
                panel={models: ["anthropic/claude-haiku-4-5", "openai/gpt-4o-mini", "google/gemini-2.5-flash"]})
     ├─ diff-judge-1 · claude-haiku-4-5 → safe
@@ -228,7 +228,7 @@ Parent: "Is this diff safe to merge?"
 - **No file-system confinement** — child `read`/`write`/`edit`/`bash` are pi's built-in tools running with the user's OS-level file and network access. The working directory is where relative paths resolve, nothing more.
 - **Minimal allowlisted env for `bash`** — child shell commands receive a small allowlisted environment: `PATH`, `HOME`, `SHELL`, `USER`, `LOGNAME`, locale/timezone variables, `TERM`/`COLORTERM`, `TMPDIR`, `XDG_RUNTIME_DIR`, and TLS/CA certificate variables (`SSL_CERT_FILE`, `SSL_CERT_DIR`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`). This filters which *environment variables* children inherit — it does not protect secrets stored in files, since a child can read them via `bash`. Pass genuinely needed extra variables inline per command.
 - **Child text is sanitized for the terminal** — reports and activity previews have ANSI/OSC escape sequences stripped before rendering, so a child cannot inject terminal control sequences into the TUI.
-- **Suspended children hold capacity** — a child awaiting answers holds a live slot indefinitely; there is no suspension deadline. Kill it with `kill_agent` if it should be abandoned.
+- **Suspended children hold capacity** — a child awaiting answers holds a live slot indefinitely; there is no suspension deadline. Kill it with `agent_kill` if it should be abandoned.
 - **Upward asks are bounded** — each child gets at most 8 `ask_parent` calls; after that it must submit its contract (using `__unable__` where needed).
 - **Contract nudges cost tokens** — a child that ends its run without `submit_answers` is re-prompted up to 10 times before the call errors. A wedged or refusing child burns those turns; `timeout_seconds` bounds the wall clock.
 
