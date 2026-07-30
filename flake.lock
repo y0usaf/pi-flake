@@ -96,22 +96,6 @@
       },
       "parent": []
     },
-    "piKimi": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-kimi",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-kimi",
-        "type": "path"
-      },
-      "parent": []
-    },
     "piRtk": {
       "inputs": {
         "nixpkgs": [
@@ -185,7 +169,6 @@
         "piGeckoWebsearch": "piGeckoWebsearch",
         "piHashline": "piHashline",
         "piInterview": "piInterview",
-        "piKimi": "piKimi",
         "piRtk": "piRtk",
         "piSrc": "piSrc",
         "piToolManagement": "piToolManagement",
