@@ -288,6 +288,38 @@
             };
           };
 
+        # Vendored from upstream pi: packages/coding-agent/examples/extensions/subagent.
+        # See extensions/earendil_pi-subagent/DESIGN.md for the local changes.
+        "pi-subagent" = let
+          subagentPackageJson = builtins.fromJSON (builtins.readFile ./extensions/earendil_pi-subagent/package.json);
+        in
+          pkgs.stdenvNoCC.mkDerivation {
+            pname = "pi-subagent";
+            version = subagentPackageJson.version;
+            src = lib.cleanSource ./extensions/earendil_pi-subagent;
+
+            dontBuild = true;
+
+            installPhase = ''
+              runHook preInstall
+
+              mkdir -p "$out"
+              cp package.json LICENSE README.upstream.md DESIGN.md "$out"/
+              cp -r extensions agents prompts "$out"/
+
+              runHook postInstall
+            '';
+
+            passthru.packageName = subagentPackageJson.name;
+
+            meta = with lib; {
+              description = subagentPackageJson.description;
+              homepage = subagentPackageJson.homepage;
+              license = licenses.mit;
+              platforms = platforms.all;
+            };
+          };
+
         # pi with default extensions pre-bundled.
         pi-full = self.lib.piWithExtensions {
           inherit pkgs;
@@ -326,6 +358,7 @@
         pi-extension-management-build = self.packages.${system}."pi-extension-management";
 
         pi-quiet-build = self.packages.${system}."pi-quiet";
+        pi-subagent-build = self.packages.${system}."pi-subagent";
 
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
@@ -460,6 +493,7 @@
         vcc = self.packages.${system}."pi-vcc";
         caveman = self.packages.${system}."pi-caveman";
         quiet = self.packages.${system}."pi-quiet";
+        subagent = self.packages.${system}."pi-subagent";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.
