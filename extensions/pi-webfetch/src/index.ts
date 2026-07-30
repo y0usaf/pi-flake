@@ -4,7 +4,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, keyHint, truncateHead } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 
@@ -112,6 +112,44 @@ async function safeFetch(url: string, signal?: AbortSignal): Promise<Response> {
 	throw new Error(`Too many redirects (>${MAX_REDIRECTS})`);
 }
 
+// Pi's fallback result renderer prints every content line regardless of the
+// row's expanded state, so a 2000-line page dump floods collapsed rows too.
+// Collapsed rows get a head slice plus an expand hint, matching built-in grep.
+function renderCollapsibleText(
+	result: { content: { type: string; text?: string }[] },
+	options: { expanded: boolean; isPartial: boolean },
+	theme: any,
+	context: any,
+	collapsedLines: number,
+): Text {
+	const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+	const body = result.content.map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("\n");
+
+	if (options.isPartial) {
+		text.setText(theme.fg("muted", body || "…"));
+		return text;
+	}
+	if (context.isError) {
+		text.setText(theme.fg("error", body));
+		return text;
+	}
+
+	const lines = body.split("\n");
+	if (options.expanded || lines.length <= collapsedLines) {
+		text.setText(theme.fg("toolOutput", body));
+		return text;
+	}
+
+	const remaining = lines.length - collapsedLines;
+	text.setText(
+		theme.fg("toolOutput", lines.slice(0, collapsedLines).join("\n")) +
+			theme.fg("muted", `\n... (${remaining} more lines, `) +
+			keyHint("app.tools.expand", "to expand") +
+			theme.fg("muted", ")"),
+	);
+	return text;
+}
+
 // ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
@@ -142,6 +180,10 @@ export default function (pi: ExtensionAPI) {
 			s += theme.fg("muted", args.url);
 			text.setText(s);
 			return text;
+		},
+
+		renderResult(result: any, options: any, theme: any, context: any) {
+			return renderCollapsibleText(result, options, theme, context, 10);
 		},
 
 		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
