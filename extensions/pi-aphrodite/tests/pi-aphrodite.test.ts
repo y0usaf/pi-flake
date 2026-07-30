@@ -31,7 +31,18 @@ mock.module("@earendil-works/pi-coding-agent", () => ({
       return { exitCode: 0 };
     },
   }),
+  keyHint: (_binding: string, description: string) => `ctrl+o ${description}`,
 }));
+
+// Only `Text` is used, and only for its setText/instanceof contract.
+class FakeText {
+  constructor(public text = "") {}
+  setText(value: string) {
+    this.text = value;
+  }
+}
+
+mock.module("@earendil-works/pi-tui", () => ({ Text: FakeText }));
 
 // typebox is only used to declare tool parameters; stub it so tests run
 // without node_modules (the Nix check sandbox has no network).
@@ -49,6 +60,7 @@ const {
   createLocalAphroditeClient,
   detectType,
   engineCandidateRange,
+  formatRetrieveResult,
   parseSkipTools,
   registerPiAphrodite,
 } = await import("../index.ts");
@@ -85,6 +97,12 @@ type FakeTool = {
     params: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<{ content: Array<{ type: string; text: string }> }>;
+  renderResult?(
+    result: { content: unknown; details?: unknown },
+    options: { expanded: boolean; isPartial: boolean },
+    theme: { fg(color: string, value: string): string },
+    context: { lastComponent?: unknown; isError: boolean },
+  ): { text: string };
 };
 
 function makeCtx(
@@ -475,6 +493,73 @@ describe("registerPiAphrodite", () => {
     const missing = await tool!.execute("id", { hash: "nope" });
     expect(missing.content[0]?.text).toContain("aphrodite_retrieve failed");
     client.close();
+  });
+
+  test("aphrodite_retrieve collapses to one summary line and expands to full text", () => {
+    const { pi, tools } = createFakePi();
+    const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
+    registerPiAphrodite(pi as never, client, { tool: 1024, terminal: 1024 });
+
+    const tool = tools.find((t) => t.name === "aphrodite_retrieve");
+    expect(tool?.renderResult).toBeDefined();
+
+    const body = Array.from({ length: 300 }, (_, i) => `line ${i}`).join("\n");
+    const theme = { fg: (_color: string, value: string) => value };
+    const result = {
+      content: [{ type: "text", text: body }],
+      details: { hash: "a".repeat(16) },
+    };
+
+    const collapsed = tool!.renderResult!(
+      result,
+      { expanded: false, isPartial: false },
+      theme,
+      { isError: false },
+    );
+    expect(collapsed.text).toBe("300L 2.5KB · ctrl+o to expand");
+    expect(collapsed.text).not.toContain("line 42");
+
+    const expanded = tool!.renderResult!(
+      result,
+      { expanded: true, isPartial: false },
+      theme,
+      { isError: false },
+    );
+    expect(expanded.text).toContain("line 42");
+    client.close();
+  });
+
+  test("aphrodite_retrieve renders failures in full while collapsed", () => {
+    const { pi, tools } = createFakePi();
+    const client = createLocalAphroditeClient({ dbPath: tempDbPath() });
+    registerPiAphrodite(pi as never, client, { tool: 1024, terminal: 1024 });
+
+    const tool = tools.find((t) => t.name === "aphrodite_retrieve");
+    const rendered = tool!.renderResult!(
+      {
+        content: [{ type: "text", text: "aphrodite_retrieve failed: nope" }],
+        details: { hash: "nope", error: "CCR entry not found: nope" },
+      },
+      { expanded: false, isPartial: false },
+      { fg: (_color: string, value: string) => value },
+      { isError: false },
+    );
+
+    expect(rendered.text).toBe("aphrodite_retrieve failed: nope");
+    client.close();
+  });
+
+  test("formatRetrieveResult keeps the collapsed body to a single line", () => {
+    const theme = { fg: (_color: string, value: string) => value };
+    const collapsed = formatRetrieveResult(
+      "a\nb\nc",
+      { expanded: false, isError: false },
+      theme,
+      "hint",
+    );
+
+    expect(collapsed.split("\n")).toHaveLength(1);
+    expect(collapsed).toBe("3L 5B · hint");
   });
 
   test("/aphrodite off disables compression; status reports state", async () => {

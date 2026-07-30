@@ -86,6 +86,8 @@ The context engine was the load-bearing gap, and it is now closed. The two compr
 
 A footer indicator shows the current state: `aphrodite:on·up` / `aphrodite:on·down` / `aphrodite:on·…` (probing) / `aphrodite:off`. It is published through `ctx.ui.setStatus("pi-aphrodite", …)`, so sidebar extensions that list footer statuses (e.g. pi-atelier's Extensions panel) show store health live.
 
+`aphrodite_retrieve` rows honour pi's expand/collapse toggle (`app.tools.expand`, `ctrl+o` by default): collapsed rows show one summary line (`300L 2.5KB · ctrl+o to expand`), expanded rows show the retrieved text in full, and failures always render in full. Without that renderer pi's fallback prints every retrieved line — up to the 2000-line cap — in collapsed rows too.
+
 ## Install
 
 ### Nix
