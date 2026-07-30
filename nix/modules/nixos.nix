@@ -81,6 +81,7 @@ in {
       review = mkEnableOption "pi-review /review and /end-review code review workflow extension";
       vcc = mkEnableOption "pi-vcc algorithmic conversation compactor and vcc_recall history search";
       caveman = mkEnableOption "pi-caveman terse-response mode extension";
+      "cursor-provider" = mkEnableOption "pi-cursor-provider Cursor models via OAuth and a local OpenAI-compatible gRPC proxy";
       agents = mkEnableOption "pi-agents multi-agent orchestration (spawn, delegate, kill, list in-process child agents)";
     };
 

@@ -54,6 +54,11 @@
     source = "vendored";
     dir = "jonjonrankin_pi-caveman";
   };
+  cursor-provider = {
+    stage = "active";
+    source = "vendored";
+    dir = "ndraiman_pi-cursor-provider";
+  };
 
   quiet = {
     stage = "testing";
