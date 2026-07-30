@@ -14,8 +14,16 @@
 		"package.json"
 	],
 	"type": "module",
+	"homepage": "https://github.com/y0usaf/pi-flake/tree/main/extensions/pi-agents",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/y0usaf/pi-flake.git",
+		"directory": "extensions/pi-agents"
+	},
 	"pi": {
-		"extensions": ["./index.ts"]
+		"extensions": [
+			"./index.ts"
+		]
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-agent-core": "*",
@@ -29,7 +37,8 @@
 		"@earendil-works/pi-ai": "^0.82.0",
 		"@earendil-works/pi-coding-agent": "^0.82.0",
 		"@earendil-works/pi-tui": "^0.82.0",
-		"@sinclair/typebox": "^0.34.33"
+		"@sinclair/typebox": "^0.34.33",
+		"typescript": "^7.0.2"
 	},
 	"license": "MIT"
 }
