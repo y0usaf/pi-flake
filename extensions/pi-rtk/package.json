@@ -1,7 +1,7 @@
 {
   "name": "@sherif-fanous/pi-rtk",
   "version": "0.4.0",
-  "description": "Pi extension that routes bash commands through rtk (Rust Token Killer) for LLM token savings",
+  "description": "Pi extension that best-effort routes bash commands through rtk",
   "keywords": [
     "pi",
     "pi-coding-agent",

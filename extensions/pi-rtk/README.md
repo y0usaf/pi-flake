@@ -1,6 +1,6 @@
 # pi-rtk
 
-[Pi](https://github.com/earendil-works/pi) coding agent extension that uses [rtk](https://github.com/rtk-ai/rtk) to reduce LLM token usage for shell command execution.
+[Pi](https://github.com/earendil-works/pi) coding agent extension that uses [rtk](https://github.com/rtk-ai/rtk) for best-effort shell command rewriting.
 
 When `pi-rtk` is loaded, it participates in two Pi shell paths:
 
@@ -13,7 +13,7 @@ In both cases, `pi-rtk` asynchronously attempts to rewrite the command with:
 rtk rewrite "<original command>"
 ```
 
-If rewrite succeeds and returns a different, non-empty command, Pi executes the rewritten command. If rewrite fails for any reason, `pi-rtk` falls back silently so normal Pi shell behavior continues.
+If rewrite succeeds and returns a different, non-empty command, Pi executes the rewritten command. If rewrite fails for any reason, `pi-rtk` notifies once per failure kind per session, then falls back so normal Pi shell behavior continues.
 
 Commands entered with `!!<cmd>` are intentionally not intercepted. They continue through Pi's normal context-excluded shell execution path unchanged.
 
