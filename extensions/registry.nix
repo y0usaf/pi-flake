@@ -67,7 +67,7 @@
   };
 
   agents = {
-    stage = "testing";
+    stage = "active";
     source = "subflake";
   };
 }
