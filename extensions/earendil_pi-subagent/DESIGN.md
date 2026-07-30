@@ -55,14 +55,30 @@ decided.
 - **2026-08-12 — model split rides on chain mode, not on parent orchestration.**
   `planner` is `claude-opus-4-8` ($5/$25 per Mtok), `worker` is
   `openai/gpt-5.6-luna` on `vercel-ai-gateway` ($1/$6, cache read $0.10, 1.05M
-  context), `scout` stays `claude-haiku-4-5` ($1/$5), `reviewer` stays
-  `claude-sonnet-4-5` ($3/$15). This is only affordable because chain mode returns
-  *one* blob to the parent: `extensions/index.ts:578` sends
+  context), `scout` was `claude-haiku-4-5` ($1/$5) and `reviewer` was
+  `claude-sonnet-4-5` ($3/$15), both superseded by the next entry. This split is
+  only affordable because chain mode returns
+  *one* blob to the parent: `extensions/index.ts:583` sends
   `getFinalOutput(results[results.length - 1].messages)` as tool `content` and
   parks every intermediate step in `details`, which renders in the TUI and never
   enters the model's context. Issuing three separate `subagent` calls instead
   pushes all three outputs into the expensive parent's transcript, which is
   re-billed as input on every subsequent turn.
+
+- **2026-07-29 — `scout` and `reviewer` also run `openai/gpt-5.6-luna` on
+  `vercel-ai-gateway`.** Both roles are read-and-report: they burn input tokens on
+  files and diffs and emit one structured report the parent acts on once. luna is
+  $1/$6 per Mtok with $0.10 cache reads and 1.05M context, against
+  `claude-sonnet-4-5` at $3/$15 for `reviewer` and `claude-haiku-4-5` at $1/$5 for
+  `scout` — cheaper per output token than sonnet, and an order of magnitude more
+  context than haiku at the same input price. `planner` keeps `claude-opus-4-8`
+  because the plan is the one artifact whose wording the parent follows literally.
+  Rejected smaller thing: a second `luna-reviewer` agent file beside the existing
+  one — zero lines changed in the vendored tree, but two agents differing only by
+  model push the choice back to every call site, and a data file exists so the
+  choice is made once. `[[canon:least-power]]` rung 3. Reversed if a luna review
+  pass misses a finding a Claude model caught; that is a judgement call and gets
+  recorded here when it happens.
 
 - **2026-08-12 — agents may name a `provider`, and it is passed as `--provider`.**
   Upstream passes only `--model` (`extensions/index.ts:295`). The id
