@@ -80,6 +80,7 @@ A child is **removed as soon as its contract is fulfilled** — spawn is a typed
 Multiple `spawn_agent` calls in one turn run concurrently (parallel tool execution). Spawning is rejected when it would exceed configured `maxDepth` or `maxLiveAgents`.
 
 - `timeout_seconds` — optional, must be a finite number greater than 0. If the child is still running when the deadline expires it is aborted, removed from the registry, and an error is thrown.
+- `panel` — optional `{ size?: number, models?: string[] }` for an independent panel on one identical contract. `models` gives each member its own model spec, resolved by the same resolver used for configured models; its length sets the member count. `size` alone makes that many clones. If both are present they must agree, and the final count must be 2–5. Members run concurrently with ids `<id>-1` through `<id>-N`; the panel id itself is never registered. The result is one aggregate containing a per-question agreement tally, with `DISAGREEMENT` leading when members split. Tallying is mechanical only for questions with enumerated options; free-text answers are listed verbatim, not presented as consensus. Panel members do not receive `ask_parent`: a judge answers or punts with `__unable__` rather than suspending. A partial failure kills surviving members and fails the whole panel.
 
 **File-system access:** child `read`, `write`, `edit`, and `bash` are pi's built-in tools, created against the child's inherited working directory. None of them are confined to that tree — absolute paths outside it are accepted, and `bash` has the same OS-level file and network access as the user running pi. There is no sandbox; the working directory is a default, not a boundary.
 
@@ -206,8 +207,21 @@ Parent: "Abort it"
 └─ kill_agent("docs")
     └─ running child aborted, subtree freed
 
+Parent: "Is this diff safe to merge?"
+└─ spawn_agent("diff-judge", "You judge diffs.", "Review the auth diff",
+               contract=[{prompt: "Verdict?", options: [{label: "safe"}, {label: "unsafe"}]}],
+               panel={models: ["anthropic/claude-haiku-4-5", "openai/gpt-4o-mini", "google/gemini-2.5-flash"]})
+    ├─ diff-judge-1 · claude-haiku-4-5 → safe
+    ├─ diff-judge-2 · gpt-4o-mini → unsafe
+    └─ diff-judge-3 · gemini-2.5-flash → safe
+    └─ result: DISAGREEMENT — safe: 2, unsafe: 1
+```
+
 ## Caveats / Known Limitations
 
+- **One model for ordinary spawns** — `model` in `pi-agents.json` applies to every ordinary child and descendant; panels may provide per-member `models` instead. Unset means ordinary children use the parent session's active model.
+- **Panel lifecycle and cost** — killing a panel means killing member ids `<id>-1` through `<id>-N`; the panel id is never registered. A panel multiplies token cost by N, and each member counts individually against `maxLiveAgents`.
+- **Panel consensus is narrow** — consensus is mechanical only on questions with enumerated options; free-text answers are listed verbatim rather than tallied.
 - **Children run in-process** — they are not isolated processes; a crash or infinite loop in a child can affect the parent session.
 - **Recursive spawning is config-bounded** — descendants may spawn more descendants only while doing so stays within configured `maxDepth` and `maxLiveAgents`.
 - **Subtree-scoped control** — descendant agents can only manage agents in their own subtree; they cannot spawn into or kill arbitrary siblings' branches.
