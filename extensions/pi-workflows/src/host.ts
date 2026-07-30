@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type, type Api, type Model } from "@earendil-works/pi-ai";
-import { copyToClipboard, defineTool, getAgentDir, ModelSelectorComponent, SettingsManager, truncateToVisualLines, type ExtensionAPI, type ExtensionUIContext, type ModelRuntime, type Theme } from "@earendil-works/pi-coding-agent";
+import { copyToClipboard, defineTool, getAgentDir, ModelSelectorComponent, SettingsManager, truncateToVisualLines, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext, type ModelRuntime, type Theme } from "@earendil-works/pi-coding-agent";
 import { FairAgentScheduler, WorkflowAgentExecutor, localAgentTransport, type AgentActivity, type AgentAttempt, type AgentDefinition, type AgentProgress, type AgentProviderFailure, type AgentProviderRecovery } from "./agent-execution.js";
 import { acquireSessionLease, listPersistedSessionIds, listRunIds, RunStore, SessionLease, structuralPath as operationPath } from "./persistence.js";
 import type { AwaitingCheckpoint, PersistedRun, WorktreeReference } from "./persistence.js";
@@ -1591,6 +1591,30 @@ function sessionContextSpec(value: unknown, specPath: string): SessionContextSpe
   if (typeof maxChars !== "number" || !Number.isInteger(maxChars) || maxChars <= 0) throw new WorkflowError("INVALID_METADATA", `Workflow command at ${specPath} sessionContext.maxChars must be a positive integer`);
   return { key: key.trim(), maxChars };
 }
+type PackQuestion = { key: string; prompt: string; options?: readonly string[]; free: boolean; placeholder?: string };
+// Questions a pack asks before it launches. Data, not a code path: the picker
+// reads them, asks them, and hands the answers to the workflow as `args`. Mid-run
+// questions remain `checkpoint()`'s approve-or-reject.
+function packQuestions(value: unknown, specPath: string): readonly PackQuestion[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length === 0) throw new WorkflowError("INVALID_METADATA", `Workflow command at ${specPath} questions must be a non-empty array`);
+  return value.map((raw: unknown, index: number) => {
+    const at = `${specPath} questions[${String(index)}]`;
+    if (!object(raw) || Object.keys(raw).some((key) => !["key", "prompt", "options", "free", "placeholder"].includes(key))) throw new WorkflowError("INVALID_METADATA", `${at} must be an object with key, prompt, and optional options, free and placeholder`);
+    if (typeof raw.key !== "string" || !/^[A-Za-z_$][\w$]*$/.test(raw.key)) throw new WorkflowError("INVALID_METADATA", `${at}.key must be an identifier`);
+    if (typeof raw.prompt !== "string" || !raw.prompt.trim()) throw new WorkflowError("INVALID_METADATA", `${at}.prompt must be a non-empty string`);
+    if (raw.placeholder !== undefined && (typeof raw.placeholder !== "string" || !raw.placeholder.trim())) throw new WorkflowError("INVALID_METADATA", `${at}.placeholder must be a non-empty string`);
+    if (raw.free !== undefined && typeof raw.free !== "boolean") throw new WorkflowError("INVALID_METADATA", `${at}.free must be a boolean`);
+    if (raw.options !== undefined && (!Array.isArray(raw.options) || raw.options.length === 0 || raw.options.some((option: unknown) => typeof option !== "string" || !option.trim()))) throw new WorkflowError("INVALID_METADATA", `${at}.options must be a non-empty array of non-empty strings`);
+    return {
+      key: raw.key,
+      prompt: raw.prompt.trim(),
+      ...(Array.isArray(raw.options) ? { options: (raw.options as string[]).map((option) => option.trim()) } : {}),
+      free: raw.free === true,
+      ...(typeof raw.placeholder === "string" ? { placeholder: raw.placeholder.trim() } : {}),
+    };
+  });
+}
 function sessionEntryText(carrier: Record<string, unknown>): string {
   if (typeof carrier.content === "string") return carrier.content.trim();
   if (!Array.isArray(carrier.content)) return "";
@@ -2726,9 +2750,28 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
     },
   });
   if (exposeWorkflowTools) pi.registerTool(workflowTool);
-  type WorkflowCommandSpec = { name: string; description?: string; script?: string; args?: JsonValue; argKey?: string; sessionContext?: JsonValue };
+  type WorkflowCommandSpec = { name: string; description?: string; script?: string; args?: JsonValue; argKey?: string; sessionContext?: JsonValue; questions?: JsonValue };
+  type WorkflowPack = { spec: WorkflowCommandSpec; scriptPath: string; sessionContext?: SessionContextSpec; questions: readonly PackQuestion[] };
   const workflowCommandRoots = [join(dirname(fileURLToPath(import.meta.url)), "../workflows"), join(dirname(fileURLToPath(import.meta.url)), "../../workflows"), join(extensionAgentDir, "workflows")];
   const seenWorkflowCommands = new Set<string>();
+  const workflowPacks: WorkflowPack[] = [];
+  // Only an object (or absent) argument can carry the extra key; a scalar launch is
+  // left exactly as it was rather than silently reshaped. Applied on every launch
+  // path, typed or picked, so a pack that wants the conversation gets it without
+  // the caller knowing.
+  const packLaunchArgs = (pack: WorkflowPack, workflowArgs: JsonValue, ctx: ExtensionContext): JsonValue => {
+    if (!pack.sessionContext) return workflowArgs;
+    const transcript = sessionTranscript(ctx.sessionManager, pack.sessionContext.maxChars);
+    if (!transcript || !(workflowArgs === null || object(workflowArgs))) return workflowArgs;
+    const withSession: Record<string, JsonValue> = object(workflowArgs) ? { ...(workflowArgs as Record<string, JsonValue>) } : {};
+    if (withSession[pack.sessionContext.key] === undefined) withSession[pack.sessionContext.key] = transcript;
+    return withSession;
+  };
+  const runPack = async (pack: WorkflowPack, workflowArgs: JsonValue, ctx: ExtensionContext): Promise<void> => {
+    const result = await workflowTool.execute(`command-${pack.spec.name}`, { name: pack.spec.name, scriptPath: pack.scriptPath, args: packLaunchArgs(pack, workflowArgs, ctx) }, undefined, undefined, ctx);
+    const details = result.details as { runId?: string } | undefined;
+    ctx.ui.notify(`Started workflow ${pack.spec.name}${details?.runId ? ` (${details.runId})` : ""}. Control it with /workflow.`, "info");
+  };
   for (const root of workflowCommandRoots) {
     if (!existsSync(root)) continue;
     for (const entry of readdirSync(root, { withFileTypes: true })) {
@@ -2744,11 +2787,14 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
       if (typeof spec.name !== "string" || !/^[a-zA-Z0-9][\w-]*$/.test(spec.name)) throw new WorkflowError("INVALID_METADATA", `Workflow command at ${specPath} requires a name matching /^[a-zA-Z0-9][\\w-]*$/`);
       if (spec.argKey !== undefined && typeof spec.argKey !== "string") throw new WorkflowError("INVALID_METADATA", `Workflow command at ${specPath} argKey must be a string`);
       const sessionContext = sessionContextSpec(spec.sessionContext, specPath);
+      const questions = packQuestions(spec.questions, specPath);
       if (seenWorkflowCommands.has(spec.name)) continue;
       const scriptFile = spec.script ?? "workflow.js";
       const scriptPath = join(dir, scriptFile);
       if (!existsSync(scriptPath)) throw new WorkflowError("INVALID_METADATA", `Workflow command ${spec.name} script not found: ${scriptPath}`);
       seenWorkflowCommands.add(spec.name);
+      const pack: WorkflowPack = { spec, scriptPath, ...(sessionContext ? { sessionContext } : {}), questions };
+      workflowPacks.push(pack);
       pi.registerCommand(spec.name, {
         description: spec.description ?? `Run the ${spec.name} workflow`,
         handler: async (args, ctx) => {
@@ -2761,30 +2807,70 @@ export default function workflowExtension(pi: ExtensionAPI, home?: string, clipb
             ctx.ui.notify(`Usage: /${spec.name} <${spec.argKey}> or /${spec.name} '{ "${spec.argKey}": "..." }'`, "warning");
             return;
           }
-          if (sessionContext) {
-            const transcript = sessionTranscript(ctx.sessionManager, sessionContext.maxChars);
-            // A bare command in an empty session has nothing to work from, and a
-            // workflow launched with neither argument nor transcript would fail
-            // deep inside the child. Refuse where the user typed it instead.
-            if (!transcript && !trimmed && spec.args === undefined && spec.argKey) {
-              ctx.ui.notify(`/${spec.name} needs something to work from: this session has no conversation yet. Try /${spec.name} <${spec.argKey}>`, "warning");
-              return;
-            }
-            // Only object (or absent) arguments can carry the extra key; a scalar
-            // launch is left exactly as it was rather than silently reshaped.
-            if (transcript && (workflowArgs === null || object(workflowArgs))) {
-              const withSession: Record<string, JsonValue> = object(workflowArgs) ? { ...(workflowArgs as Record<string, JsonValue>) } : {};
-              if (withSession[sessionContext.key] === undefined) withSession[sessionContext.key] = transcript;
-              workflowArgs = withSession;
-            }
+          // A bare command in an empty session has nothing to work from, and a
+          // workflow launched with neither argument nor transcript would fail
+          // deep inside the child. Refuse where the user typed it instead.
+          if (sessionContext && !trimmed && spec.args === undefined && spec.argKey && !sessionTranscript(ctx.sessionManager, sessionContext.maxChars)) {
+            ctx.ui.notify(`/${spec.name} needs something to work from: this session has no conversation yet. Try /${spec.name} <${spec.argKey}>`, "warning");
+            return;
           }
-          const result = await workflowTool.execute(`command-${spec.name}`, { name: spec.name, scriptPath, args: workflowArgs }, undefined, undefined, ctx);
-          const details = result.details as { runId?: string } | undefined;
-          ctx.ui.notify(`Started workflow ${spec.name}${details?.runId ? ` (${details.runId})` : ""}. Control it with /workflow.`, "info");
+          await runPack(pack, workflowArgs, ctx);
         },
       });
     }
   }
+  // A pack with no declared questions still has one input worth asking for: the
+  // argKey its slash command would have demanded. Synthesizing it means every
+  // existing pack is pickable without editing its command.json.
+  const PACK_FREE_TEXT = "Type an answer";
+  const packPrompts = (pack: WorkflowPack): readonly PackQuestion[] => pack.questions.length
+    ? pack.questions
+    : pack.spec.argKey
+      ? [{ key: pack.spec.argKey, prompt: `${pack.spec.name}: ${pack.spec.argKey}`, free: true }]
+      : [];
+  const askPack = async (pack: WorkflowPack, ctx: ExtensionContext): Promise<JsonValue | undefined> => {
+    const answers: Record<string, JsonValue> = object(pack.spec.args) ? { ...(pack.spec.args as Record<string, JsonValue>) } : {};
+    for (const question of packPrompts(pack)) {
+      const picked = question.options ? await ctx.ui.select(question.prompt, [...question.options, ...(question.free ? [PACK_FREE_TEXT] : [])]) : undefined;
+      if (question.options && picked === undefined) return undefined;
+      const answer = !question.options || picked === PACK_FREE_TEXT
+        ? await ctx.ui.input(question.prompt, question.placeholder ?? "Leave empty for the workflow default")
+        : picked;
+      if (answer === undefined) return undefined;
+      if (answer.trim()) answers[question.key] = answer.trim();
+    }
+    return Object.keys(answers).length ? answers : (pack.spec.args ?? null);
+  };
+  const packLabel = (pack: WorkflowPack): string => {
+    const summary = (pack.spec.description ?? "").split(/(?<=\.)\s|\n/)[0]?.trim() ?? "";
+    if (!summary) return pack.spec.name;
+    return `${pack.spec.name} — ${summary.length > 72 ? `${summary.slice(0, 71)}…` : summary}`;
+  };
+  const pickPack = async (ctx: ExtensionContext): Promise<void> => {
+    if (!workflowPacks.length) { ctx.ui.notify(`No workflow packs found. Add a directory holding command.json under ${join(extensionAgentDir, "workflows")}.`, "warning"); return; }
+    const labels = workflowPacks.map(packLabel);
+    const choice = await ctx.ui.select("Workflow", labels);
+    if (choice === undefined) return;
+    const pack = workflowPacks[labels.indexOf(choice)];
+    if (!pack) return;
+    const workflowArgs = await askPack(pack, ctx);
+    if (workflowArgs === undefined) return;
+    await runPack(pack, workflowArgs, ctx);
+  };
+  pi.registerCommand("workflows", {
+    description: "Pick a workflow to run",
+    handler: async (_args, ctx) => { await pickPack(ctx); },
+  });
+  // Offer the list at startup, deferred to a macrotask on purpose. Other extensions
+  // install their editor and widgets from their own session_start handlers, and pi
+  // implements ui.setEditorComponent as a container clear plus a focus change, which
+  // evicts an overlay opened inside that window (pi-interview documents the same
+  // hazard). Opening after every handler has returned avoids the race instead of
+  // fighting it with a focus loop.
+  pi.on("session_start", (_event, ctx) => {
+    if (!ctx.hasUI || !workflowPacks.length) return;
+    setTimeout(() => { void pickPack(ctx).catch(() => undefined); }, 0).unref?.();
+  });
   pi.registerCommand("workflow", {
     description: "Inspect and control workflows for this Pi session",
     handler: async (args, ctx) => {
