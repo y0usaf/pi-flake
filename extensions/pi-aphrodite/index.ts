@@ -82,7 +82,8 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { createLocalBashOperations } from "@earendil-works/pi-coding-agent";
+import { createLocalBashOperations, keyHint } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 const DEFAULT_TOOL_THRESHOLD_BYTES = 16_384;
@@ -444,6 +445,34 @@ export function renderCompressedResult(
     `<<<CCR:${stored.hash}|${type}|${stored.originalSize}>>>`,
     `Full output (${formatBytes(stored.originalSize)}) stored by pi-aphrodite. Use the aphrodite_retrieve tool with hash "${stored.hash}" to fetch it.`,
   ].join("\n");
+}
+
+type ThemeLike = { fg(color: string, value: string): string };
+
+/**
+ * TUI body for an `aphrodite_retrieve` row. Pi's fallback result renderer
+ * ignores `expanded` and prints every content line, so a retrieve of up to
+ * RETRIEVE_LINE_CAP lines floods the transcript in collapsed rows too.
+ * Collapsed rows get one summary line instead, matching the built-in `read`
+ * tool; errors always render in full.
+ */
+export function formatRetrieveResult(
+  text: string,
+  options: { expanded: boolean; isError: boolean },
+  theme: ThemeLike,
+  expandHint: string,
+): string {
+  if (options.isError) {
+    return theme.fg("error", text);
+  }
+
+  if (options.expanded) {
+    return `\n${theme.fg("toolOutput", text)}`;
+  }
+
+  const lines = text.length === 0 ? 0 : text.split("\n").length;
+  const summary = `${lines}L ${formatBytes(Buffer.byteLength(text, "utf8"))} · `;
+  return theme.fg("muted", summary) + expandHint;
 }
 
 function extractText(content: unknown): string | undefined {
@@ -823,6 +852,34 @@ export function registerPiAphrodite(
           details: { hash: params.hash, error: message },
         };
       }
+    },
+
+    // Without this, pi falls back to printing every content line regardless
+    // of the row's expanded state — a 2000-line retrieve in a collapsed row.
+    renderResult(result, options, theme, context) {
+      const component =
+        context.lastComponent instanceof Text
+          ? context.lastComponent
+          : new Text("", 0, 0);
+
+      if (options.isPartial) {
+        component.setText(theme.fg("muted", "retrieving…"));
+        return component;
+      }
+
+      const details = result.details as { error?: string } | undefined;
+      component.setText(
+        formatRetrieveResult(
+          extractText(result.content) ?? "",
+          {
+            expanded: options.expanded,
+            isError: context.isError || details?.error !== undefined,
+          },
+          theme,
+          keyHint("app.tools.expand", "to expand"),
+        ),
+      );
+      return component;
     },
   });
 
