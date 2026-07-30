@@ -5,11 +5,13 @@ that remains carries a small ASCII face:
 
 - **Agent run active** → no loader row; the editor's whole top border
   pulses `dim → muted → accent → muted` until pi is done.
-- **Tool rows** → `(>_o) bash $ make`, `(^-^) write`, `(o_O) grep`,
-  `(@_@) find`, `(-_-) ls`; a failed row flips to `(x_x)` in the error
-  color. Results keep pi's builtin rendering: diffs, highlighting,
-  ctrl+o, plus the builtin prompt snippets and guidelines. read/edit are
-  untouched — pi-hashline registers those tool names.
+- **Tool rows** → dim while running, then `(>_o) bash $ make · ok ·
+  ctrl+o`, `(o_O) grep · 14 hits · ctrl+o`, `(@_@) find · 7 found`,
+  `(-_-) ls · 12 entries`: success is one line, output hidden behind
+  ctrl+o (expanded output sits under a thin `  │ ` rail). A failed row
+  flips to `(x_x)` and speaks: full output under an error-colored rail.
+  write keeps pi's builtin diff rendering — diffs beat quiet. read/edit
+  are untouched — pi-hashline registers those tool names.
 - **Editor (idle)** → `(^-^) ─────` as the top border, bottom border
   gone. The face wears the editor border color, which pi drives from the
   thinking level — the smiley doubles as your thinking indicator.
