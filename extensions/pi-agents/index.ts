@@ -173,7 +173,7 @@ const spawnSchema = Type.Object({
 	panel: Type.Optional(Type.Object({
 		size: Type.Optional(Type.Number({ description: "Number of independent panel members (2-5)" })),
 		models: Type.Optional(Type.Array(Type.String(), { description: "One model spec per panel member" })),
-	}, { description: "Consult a panel: spawn N independent children on this same contract and return an agreement tally. Members get ids <id>-1..N and no ask_parent tool. `models` gives each member its own model spec (\"provider/modelId\" or a bare id) — model diversity is the point; N clones of one model agree because they are the same function, not because the answer is right." })),
+	}, { description: "Consult a panel: spawn N independent children on this same contract and return an agreement tally. Members get ids <id>-1..N and no ask_parent tool. `models` gives each member its own model spec (\"provider/modelId\" or a bare id); when omitted, the configured `panelModels` roster is used if present, and `panel: {}` is legal and uses the whole roster. Model diversity is the point; N clones of one model agree because they are the same function, not because the answer is right." })),
 });
 
 const killSchema = Type.Object({
@@ -199,6 +199,8 @@ interface PiAgentsConfig {
 	maxLiveAgents: number;
 	/** Model for spawned children: "provider/modelId" or a bare modelId. Unset = inherit the parent session's model. */
 	model?: string;
+	/** Default panel member models, one spec per member ("provider/modelId" or a bare modelId). Used when spawn_agent's panel omits models. */
+	panelModels?: string[];
 	/** Strip write/edit from the main session so mutations route through spawned executors. Toggle with /orchestrate. */
 	orchestrator: boolean;
 }
@@ -222,6 +224,14 @@ const CONFIG_VALIDATORS: Record<keyof PiAgentsConfig, (value: unknown, key: stri
 		const spec = typeof value === "string" ? value.trim() : "";
 		if (spec === "") throw new Error(`${path}: "${key}" must be a non-empty string ("provider/modelId" or "modelId")`);
 		return spec;
+	},
+	panelModels: (value, key, path) => {
+		if (!Array.isArray(value)) throw new Error(`${path}: "${key}" must be an array`);
+		if (value.length < 2 || value.length > 5) throw new Error(`${path}: "${key}" must contain between 2 and 5 models`);
+		return value.map((spec, index) => {
+			if (typeof spec !== "string" || spec.trim() === "") throw new Error(`${path}: "${key}" element ${index} must be a non-empty string`);
+			return spec.trim();
+		});
 	},
 	orchestrator: (value, key, path) => {
 		if (typeof value !== "boolean") throw new Error(`${path}: "${key}" must be a boolean`);
@@ -268,6 +278,7 @@ async function loadPiAgentsConfig(cwd: string): Promise<PiAgentsConfig> {
 		maxDepth: projectConfig.maxDepth ?? globalConfig.maxDepth ?? DEFAULT_MAX_DEPTH,
 		maxLiveAgents: projectConfig.maxLiveAgents ?? globalConfig.maxLiveAgents ?? DEFAULT_MAX_LIVE_AGENTS,
 		model: projectConfig.model ?? globalConfig.model,
+		panelModels: projectConfig.panelModels ?? globalConfig.panelModels,
 		orchestrator: projectConfig.orchestrator ?? globalConfig.orchestrator ?? false,
 	};
 }
@@ -1525,13 +1536,18 @@ export default function multiAgent(pi: ExtensionAPI) {
 		const models = params.panel?.models;
 		const size = params.panel?.size;
 		if (models && size !== undefined && models.length !== size) throw new Error(`Panel models length ${models.length} does not match size ${size}`);
-		const n = models?.length ?? size;
+		let resolvedSpecs = models;
+		if (!models && config.panelModels) {
+			if (size !== undefined && size > config.panelModels.length) throw new Error(`Panel size ${size} exceeds configured panelModels length ${config.panelModels.length}`);
+			resolvedSpecs = size === undefined ? config.panelModels : config.panelModels.slice(0, size);
+		}
+		const n = resolvedSpecs?.length ?? size;
 		if (n === undefined) throw new Error("Panel requires size or models");
 		if (!Number.isInteger(n) || n < 2 || n > 5) throw new Error(`Panel size ${n} must be between 2 and 5`);
 		if (children.size + reservedIds.size + n > config.maxLiveAgents) throw new Error(`Panel of ${n} exceeds maxLiveAgents cap ${config.maxLiveAgents} (live count ${children.size + reservedIds.size})`);
-		if (models && !cachedRegistry) throw new Error("pi-agents: cannot resolve panel models because the model registry is not available");
-		// Precedence: explicit per-member models, then configured child model, then inherited parent model.
-		const memberModels = models ? models.map((spec) => resolveChildModel(spec, cachedRegistry as ModelRegistry)) : Array(n).fill(config.model && cachedRegistry ? resolveChildModel(config.model, cachedRegistry) : model);
+		if (resolvedSpecs && !cachedRegistry) throw new Error("pi-agents: cannot resolve panel models because the model registry is not available");
+		// Precedence: explicit per-member models, configured panelModels, configured child model, then inherited parent model.
+		const memberModels = resolvedSpecs ? resolvedSpecs.map((spec) => resolveChildModel(spec, cachedRegistry as ModelRegistry)) : Array(n).fill(config.model && cachedRegistry ? resolveChildModel(config.model, cachedRegistry) : model);
 		const memberParams = Array.from({ length: n }, (_, i) => ({ ...params, id: `${params.id}-${i + 1}`, panel: undefined }));
 		let finished = 0;
 		// Each member's spawnChild already aborts its agent on the shared signal.
@@ -1572,6 +1588,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		try {
 			const config = await getConfig(ctx.cwd);
 			if (config.model) resolveChildModel(config.model, ctx.modelRegistry);
+			for (const spec of config.panelModels ?? []) resolveChildModel(spec, ctx.modelRegistry);
 			if (config.orchestrator) applyOrchestrator(true, ctx);
 		} catch (err) {
 			if (ctx.hasUI) {
@@ -1610,14 +1627,14 @@ export default function multiAgent(pi: ExtensionAPI) {
 			"contract in, answers out, agent gone. Follow-ups are new spawns with the prior answers folded into the task. " +
 			"kill_agent aborts a running agent. " +
 			"On any error (including timeout) the agent subtree is removed from the registry automatically. " +
-			"Use proactively for parallel read-only scouting, and in orchestrator mode for every file mutation.",
+			"Use proactively for parallel read-only scouting, and in orchestrator mode for every file mutation. When `panelModels` is configured, omit the panel model list and call `panel: {}`; otherwise pass an explicit `models` list.",
 		parameters: spawnSchema,
 		promptGuidelines: [
 			"Before every bash call in orchestrator mode, classify it: if it can create, modify, or delete any file (redirects, tee, sed/perl -i, mv/cp/rm, or any script that writes), do not run it — spawn an executor instead. bash is for reading and verification only.",
 			'Minimal executor spawn: spawn_agent({ id: "executor-1", system_prompt: "You are an executor. Apply the requested change, verify it, then submit your answers.", task: "<the change>", contract: [{ prompt: "What changed, and how was it verified?" }] }).',
 			'Minimal scout spawn: spawn_agent({ id: "scout-1", system_prompt: "You are a read-only scout. Never modify files. Cite file:line evidence.", task: "<the question>", contract: [{ prompt: "Answer, with file:line evidence" }] }).',
 			'If a spawn returns questions, answer with answer_agent({ id, answers: [{ id: "<question id>", value: "<answer>" }] }); the call blocks until the contract is fulfilled.',
-			'Do not self-judge a ship/block, safety, or correctness call — get a second opinion. When the decision is a judgment rather than a lookup, invoke a panel: spawn_agent({ id: "panel", system_prompt: "You are an independent reviewer. Judge only what the evidence supports; do not defer to the requester.", task: "<the plan or diff to judge>", contract: [{ prompt: "Ship or block?", options: [{ label: "Ship" }, { label: "Block" }] }, { prompt: "Strongest argument against your own verdict" }], panel: { models: ["<modelA>", "<modelB>", "<modelC>"] } }). Consensus is only mechanical on questions with options, so always give the panel an enumerated verdict question. Different models disagree for different reasons; N members on one model mostly agree with each other.'
+			'Do not self-judge a ship/block, safety, or correctness call — get a second opinion. When the decision is a judgment rather than a lookup, invoke a panel: use `panel: {}` when `panelModels` is configured; otherwise pass an explicit `models` list: spawn_agent({ id: "panel", system_prompt: "You are an independent reviewer. Judge only what the evidence supports; do not defer to the requester.", task: "<the plan or diff to judge>", contract: [{ prompt: "Ship or block?", options: [{ label: "Ship" }, { label: "Block" }] }, { prompt: "Strongest argument against your own verdict" }], panel: {} }). Consensus is only mechanical on questions with options, so always give the panel an enumerated verdict question. Different models disagree for different reasons; N members on one model mostly agree with each other.'
 		],
 
 		renderCall(args, theme) {

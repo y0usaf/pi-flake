@@ -40,6 +40,7 @@ Example:
   "maxDepth": 1,
   "maxLiveAgents": 6,
   "model": "anthropic/claude-haiku-4-5",
+  "panelModels": ["anthropic/claude-haiku-4-5", "openai/gpt-4o-mini"],
   "orchestrator": false
 }
 ```
@@ -52,7 +53,7 @@ Depth is counted from the root session at depth `0`:
 
 `maxLiveAgents` caps the total number of live agents kept in the in-memory registry at once.
 
-Defaults: `maxDepth: 1`, `maxLiveAgents: 6`, no `model` override, `orchestrator: false`.
+Defaults: `maxDepth: 1`, `maxLiveAgents: 6`, no `model` or `panelModels` override, `orchestrator: false`.
 
 `orchestrator: true` strips `write`/`edit` from the main session at session start, so file mutations route through spawned executor agents; `read`/`bash` stay for context-gathering and verification. The `/orchestrate` command toggles the same mode at runtime. `bash` is a deliberate escape hatch — this is a delegation default, not a sandbox.
 
@@ -80,7 +81,7 @@ A child is **removed as soon as its contract is fulfilled** — spawn is a typed
 Multiple `spawn_agent` calls in one turn run concurrently (parallel tool execution). Spawning is rejected when it would exceed configured `maxDepth` or `maxLiveAgents`.
 
 - `timeout_seconds` — optional, must be a finite number greater than 0. If the child is still running when the deadline expires it is aborted, removed from the registry, and an error is thrown.
-- `panel` — optional `{ size?: number, models?: string[] }` for an independent panel on one identical contract. Model precedence is `models` per member, otherwise the `model` configured in `pi-agents.json`, otherwise the parent session's model. A panel without `models` runs N copies of one model, so its agreement is weak evidence; `models` is what makes a panel informative. `models` gives each member its own model spec, resolved by the same resolver used for configured models; its length sets the member count. `size` alone makes that many clones. If both are present they must agree, and the final count must be 2–5. Members run concurrently with ids `<id>-1` through `<id>-N`; the panel id itself is never registered. The result is one aggregate containing a per-question agreement tally, with `DISAGREEMENT` leading when members split. Tallying is mechanical only for questions with enumerated options; free-text answers are listed verbatim, not presented as consensus. Panel members do not receive `ask_parent`: a judge answers or punts with `__unable__` rather than suspending. A partial failure kills surviving members and fails the whole panel.
+- `panel` — optional `{ size?: number, models?: string[] }` for an independent panel on one identical contract. Model precedence is explicit `models`, then configured `panelModels`, then configured `model`, then the parent session's model. Omitting `models` uses the configured roster; `panel: {}` uses the whole roster, while `size` takes its first N entries (or creates N clones when no roster is configured). If both are present they must agree, and the final count must be 2–5. Members run concurrently with ids `<id>-1` through `<id>-N`; the panel id itself is never registered. The result is one aggregate containing a per-question agreement tally, with `DISAGREEMENT` leading when members split. Tallying is mechanical only for questions with enumerated options; free-text answers are listed verbatim, not presented as consensus. Panel members do not receive `ask_parent`: a judge answers or punts with `__unable__` rather than suspending. A partial failure kills surviving members and fails the whole panel. `models` gives each member its own model spec, resolved by the same resolver used for configured models; its length sets the member count. `size` alone makes that many clones. If both are present they must agree, and the final count must be 2–5. Members run concurrently with ids `<id>-1` through `<id>-N`; the panel id itself is never registered. The result is one aggregate containing a per-question agreement tally, with `DISAGREEMENT` leading when members split. Tallying is mechanical only for questions with enumerated options; free-text answers are listed verbatim, not presented as consensus. Panel members do not receive `ask_parent`: a judge answers or punts with `__unable__` rather than suspending. A partial failure kills surviving members and fails the whole panel.
 
 **File-system access:** child `read`, `write`, `edit`, and `bash` are pi's built-in tools, created against the child's inherited working directory. None of them are confined to that tree — absolute paths outside it are accepted, and `bash` has the same OS-level file and network access as the user running pi. There is no sandbox; the working directory is a default, not a boundary.
 
@@ -219,7 +220,7 @@ Parent: "Is this diff safe to merge?"
 
 ## Caveats / Known Limitations
 
-- **One model for ordinary spawns** — `model` in `pi-agents.json` applies to every ordinary child and descendant; panels may provide per-member `models` instead. Unset means ordinary children use the parent session's active model.
+- **One model for ordinary spawns** — `model` in `pi-agents.json` applies to every ordinary child and descendant; panels use explicit per-member `models` when supplied, otherwise the configured `panelModels` roster, then `model`. Unset means ordinary children use the parent session's active model.
 - **Panel lifecycle and cost** — killing a panel means killing member ids `<id>-1` through `<id>-N`; the panel id is never registered. A panel multiplies token cost by N, and each member counts individually against `maxLiveAgents`.
 - **Panel consensus is narrow** — consensus is mechanical only on questions with enumerated options; free-text answers are listed verbatim rather than tallied.
 - **Children run in-process** — they are not isolated processes; a crash or infinite loop in a child can affect the parent session.
