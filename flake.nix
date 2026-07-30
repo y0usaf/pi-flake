@@ -428,6 +428,20 @@
             }}/bin/pi
             touch $out
           '';
+
+        # Static gate for the packs in workflows/. They ship as raw .js that the
+        # engine evaluates as an async function body, so top-level `return` and
+        # `await` are legal there and a parse error to every other parser: the
+        # TypeScript build never sees them and biome cannot lint them. This check
+        # parses them the way the engine does and validates each command.json
+        # against the fields host.ts reads.
+        workflow-packs =
+          pkgs.runCommand "pi-flake-workflow-packs" {
+            nativeBuildInputs = [pkgs.nodejs];
+          } ''
+            node ${./nix/checks/workflow-packs.mjs} ${./workflows}
+            touch $out
+          '';
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;
