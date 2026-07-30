@@ -96,6 +96,10 @@ export function createDisabledListStore(opts: { fileName: string; field: string;
 		get lastSaveError(): string | undefined {
 			return lastSaveError;
 		},
+		/** Report a domain-specific load problem through the shared warning channel. */
+		warn(message: string): void {
+			reportLoadWarning(message);
+		},
 
 		async load(): Promise<void> {
 			let raw: string;

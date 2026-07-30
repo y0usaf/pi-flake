@@ -57,7 +57,8 @@ function readManifestEntries(dir: string): string[] | undefined {
 		if (!Array.isArray(entries) || entries.length === 0) return undefined;
 		const resolved = entries.map((e) => join(dir, e)).filter((p) => existsSync(p));
 		return resolved.length > 0 ? resolved : undefined;
-	} catch {
+	} catch (e) {
+		store.warn(`Failed to parse extension manifest ${pkgPath}: ${e instanceof Error ? e.message : String(e)}`);
 		return undefined;
 	}
 }
@@ -68,7 +69,8 @@ function discoverInDir(dir: string): { name: string; entry: string }[] {
 	let entries;
 	try {
 		entries = readdirSync(dir, { withFileTypes: true });
-	} catch {
+	} catch (e) {
+		store.warn(`Failed to read extension directory ${dir}: ${e instanceof Error ? e.message : String(e)}`);
 		return [];
 	}
 	for (const entry of entries) {
