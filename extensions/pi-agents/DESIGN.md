@@ -1,11 +1,12 @@
 # pi-agents DESIGN
 
-Multi-agent orchestration for pi: root tools `spawn_agent`, `answer_agent`,
-`kill_agent`, `list_agents`; in-process child `Agent` instances whose lifetime is exactly
+Multi-agent orchestration for pi: root tools `agent`, `agent_answer`,
+`agent_kill`, `agent_list`; in-process child `Agent` instances whose lifetime is exactly
 one contract — spawn, answer, removed.
 
 ## Locked decisions
 
+- **2026-08 — Root tools are a noun-prefix family: `agent`, `agent_answer`, `agent_kill`, `agent_list`.** `spawn` was the inaccurate part: it promises a background handle this extension explicitly does not have. The call blocks and the agent is removed when it returns, and background spawn / handle polling is listed under Deferred. Noun-prefix grouping keeps the four tools adjacent wherever tools are listed alphabetically. Precedent: Kimi Code CLI groups the same way (`Agent`/`AgentSwarm`, `TaskOutput`/`TaskStop`, `CronList`), as do modern CLIs (`docker container ls`, `gh pr create`). Bare `agent` matches Claude Code, which renamed its subagent tool `Task` to `Agent` in v2.1.63, and OpenCode's `task`; it also matches pi's own bare-word built-ins (`read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`), against which `spawn_agent` was the outlier. The smaller thing rejected, per `[[canon:least-code]]`: renaming only the spawn tool and leaving three verb_noun siblings — same churn, no grouping benefit. Panel plurality is deliberately not addressed by the name. A panel is still one delegation act with a strategy parameter; a separate swarm tool would relitigate the 2026-08 panels-as-a-parameter decision. Reversal condition: if models measurably mis-select the verb-less `agent` tool, restore a verb.
 - **2026-08 — Panel roster is config data, not per-call LLM output.** Model choice moves down the least-power ladder from generated string to config file; explicit per-call `models` still wins because config is a default, not a lock. A smaller `size` takes the first N configured models, making list order a priority order, and the roster is validated at session start. Reversal condition: if per-call model choice proves necessary for panel quality, revisit the default roster.
 - **2026-08 — Child tools are pi's built-ins, not bespoke copies.** Children
   get `createReadTool`/`createWriteTool`/`createEditTool`/`createBashTool`
@@ -20,7 +21,7 @@ one contract — spawn, answer, removed.
   Reversal condition: children move to real process/OS isolation, at which
   point confinement becomes enforceable and worth restoring.
 - **2026-08 — Spawn reserves synchronously, teardown is identity-checked.**
-  `reservedIds` is added before any `await` so parallel `spawn_agent` calls
+  `reservedIds` is added before any `await` so parallel `agent` calls
   cannot both pass the capacity/duplicate checks. `killSubtree` marks states
   killed and aborts them, but only deletes idle states; an in-flight
   spawn removes its own state in `finally` once the prompt settles,
@@ -34,7 +35,7 @@ one contract — spawn, answer, removed.
 - **2026-08 — Child-controlled text is sanitized before rendering.** Reports
   and activity previews pass through `stripControlSequences` (OSC, CSI, C0)
   so a prompt-injected child cannot write terminal escapes into the TUI.
-- **2026-07 — Contract-first invocations; the result is data.** `spawn_agent`
+- **2026-07 — Contract-first invocations; the result is data.** `agent`
   requires an AskUserQuestion-style contract (questions, options,
   `allowOther`). The child gets a `submit_answers` tool; the run
   completes only once it has been called, and the tool result is the
@@ -64,15 +65,15 @@ one contract — spawn, answer, removed.
   suspension decision below.
 - **2026-08 — Upward asks suspend, not terminate.** Children get `ask_parent`
   with the same question shape, normalized by the same `normalizeContract`, and
-  parents answer via `answer_agent`, validated by the same
+  parents answer via `agent_answer`, validated by the same
   `validateContractAnswers`, including the host-added `__unable__` punt (a
   parent may not know either). Context preservation is the point: punt-plus-
   respawn already covered the terminal case. Suspended agents stay registered
   and count against `maxLiveAgents` because they hold context and memory.
   `MAX_ASKS` bounds parent round-trips, with the nudge cap as ultimate watchdog.
-  `answer_agent` is subtree-scoped exactly like `kill_agent`; ancestor answering
+  `agent_answer` is subtree-scoped exactly like `agent_kill`; ancestor answering
   is legitimate. There is no suspension deadline: idle suspension costs
-  nothing, while `kill_agent` and visible `awaiting answers` status cover
+  nothing, while `agent_kill` and visible `awaiting answers` status cover
   abandonment. Reversal: add a deadline if abandoned suspended agents appear;
   restrict to direct-parent-only answering if ancestor answering causes confusion.
 - **2026-08 — Orchestrator mode: the main session delegates mutations.**
@@ -114,7 +115,7 @@ one contract — spawn, answer, removed.
   behavior; magic-string dispatch fails silent. Reversal condition: delegation
   still failing to occur after the gate and tripwire have had a fair trial.
 - **2026-08 — Panels are a spawn parameter, not a separate consult tool.** A
-  panel belongs on `spawn_agent`: aggregation already has a home in the
+  panel belongs on `agent`: aggregation already has a home in the
   existing result builder, while a second orchestration tool would trigger the
   registry extraction this document already names as the condition for
   splitting the module. The smaller thing rejected, per `[[canon:least-code]]`,
@@ -131,7 +132,7 @@ one contract — spawn, answer, removed.
   which model a child runs on. If a third distinct multi-agent shape beyond
   fan-out/join and executor delegation is being hand-repeated in prose across
   sessions, extract a declarative workflow format instead of growing more
-  `spawn_agent` parameters.
+  `agent` parameters.
 - **2026-08 — The orchestrator reads but never executes.** `bash` joins
   `write`/`edit` in `ORCHESTRATOR_STRIPPED`, and orchestrator mode adds pi's
   built-in `grep`/`find`/`ls` to the active set. Search was the only thing
@@ -207,7 +208,7 @@ blackboard) appears, extract a registry module both use.
   bash via `spawnHook`, Linux-only. Now the reversal path rather than the
   tripwire's escalation: it lands only if removing `bash` outright costs more
   in delegated verification than a sandboxed shell would cost in machinery.
-- **Suspension deadline / requestId tokens** — duplicate or late answer_agent calls already fail loudly (claim lock, cleared pendingAsk); deadlines and generation tokens land only if abandonment or answer races are observed.
+- **Suspension deadline / requestId tokens** — duplicate or late agent_answer calls already fail loudly (claim lock, cleared pendingAsk); deadlines and generation tokens land only if abandonment or answer races are observed.
 
 ## Roadmap
 
