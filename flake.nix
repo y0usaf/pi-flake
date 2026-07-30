@@ -32,9 +32,6 @@
     piHashline.url = "path:./extensions/pi-hashline";
     piHashline.inputs.nixpkgs.follows = "nixpkgs";
 
-    piChronoBreak.url = "path:./extensions/pi-chrono-break";
-    piChronoBreak.inputs.nixpkgs.follows = "nixpkgs";
-
     piKimi.url = "path:./extensions/pi-kimi";
     piKimi.inputs.nixpkgs.follows = "nixpkgs";
   };
@@ -51,7 +48,6 @@
     piExtensionManagement,
     piWebfetch,
     piHashline,
-    piChronoBreak,
     piKimi,
     ...
   }: let
@@ -145,7 +141,6 @@
         "pi-extension-management" = piExtensionManagement.packages.${system}.default;
         "pi-webfetch" = piWebfetch.packages.${system}.default;
         "pi-hashline" = piHashline.packages.${system}.default;
-        "pi-chrono-break" = piChronoBreak.packages.${system}.default;
 
         "pi-advisor" = let
           advisorPackageJson = builtins.fromJSON (builtins.readFile ./extensions/RimuruW_pi-advisor/package.json);
@@ -335,7 +330,6 @@
         pi-aphrodite-test = piAphrodite.checks.${system}.test;
         pi-interview-test = piInterview.checks.${system}.test;
         pi-hashline-test = piHashline.checks.${system}.test;
-        pi-chrono-break-test = piChronoBreak.checks.${system}.test;
         biome-lint = pkgs.stdenvNoCC.mkDerivation {
           pname = "pi-flake-biome-lint";
           version = "1";
@@ -460,7 +454,6 @@
         "extension-management" = self.packages.${system}."pi-extension-management";
         webfetch = self.packages.${system}."pi-webfetch";
         hashline = self.packages.${system}."pi-hashline";
-        "chrono-break" = self.packages.${system}."pi-chrono-break";
 
         advisor = self.packages.${system}."pi-advisor";
         review = self.packages.${system}."pi-review";
