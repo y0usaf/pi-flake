@@ -83,6 +83,28 @@ to `host.ts`; when a change must touch `host.ts`, say so in the commit message s
 the re-sync cost is visible where it is incurred. The picker is such a change,
 because the pack scan it extends already lives there.
 
+**2026-07-30 — Packs shipped in this flake are generic; personal packs live in
+the consumer's flake.** `workflows/` in the flake root holds `pie`, `review` and
+`debug`: they assume a git repository and nothing else. Packs that name a
+particular `PLAN.md`, skill or model alias (`ideation`, `loop-next`) moved to
+`nixos/modules/dev/pi/workflows/` and are placed from there. The engine scans one
+directory, so both sources land in `<agentDir>/workflows/` at runtime and the
+picker cannot tell them apart. The alternative — keeping personal packs here
+behind a flag — would have made every consumer of this flake carry a pack that
+cannot work for them. `[[canon:least-code]]`.
+
+**2026-07-30 — Packs are gated by a parse check, not by the TypeScript build or
+biome.** A pack is evaluated by the engine as an async *function body*
+(`src/execution.ts`), which makes top-level `await` and top-level `return` legal
+inside it and a syntax error to every ordinary parser: `node --check` and `biome
+lint` both reject a valid pack. `nix/checks/workflow-packs.mjs` therefore parses
+each pack with `AsyncFunction` in the engine's scope and validates each
+`command.json` against the fields `host.ts` reads, plus two runtime-only engine
+constraints — a checkpoint name must be a literal, and the sandbox has no
+`require`, `import`, `process` or timers. Wired as the `workflow-packs` flake
+check. `[[canon:least-power]]`: the pack rules are a table in one file rather
+than lore in a README.
+
 ## Architecture
 
 Two extension entry points, declared in `package.json` under `pi.extensions`:

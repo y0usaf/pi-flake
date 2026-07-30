@@ -1,0 +1,27 @@
+{
+  "name": "pie",
+  "description": "Plan, implement, evaluate: three fresh contexts, a checkpoint after the plan and before every retry. Usage: /pie <task>, or /pie '{ \"task\": \"...\", \"gate\"?, \"maxAttempts\"? }'",
+  "script": "pie.js",
+  "argKey": "task",
+  "sessionContext": { "key": "sessionContext", "maxChars": 8000 },
+  "questions": [
+    {
+      "key": "task",
+      "prompt": "pie: what should this loop build?",
+      "free": true,
+      "placeholder": "Leave empty to use what this session is already circling"
+    },
+    {
+      "key": "gate",
+      "prompt": "pie: verification gate the evaluator must see pass",
+      "options": ["nix flake check", "nix build", "cargo test", "npm test", "none"],
+      "free": true
+    },
+    {
+      "key": "maxAttempts",
+      "prompt": "pie: implement/evaluate attempts before stopping",
+      "options": ["1", "2", "3"],
+      "free": true
+    }
+  ]
+}

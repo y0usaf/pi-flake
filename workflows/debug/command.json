@@ -1,0 +1,27 @@
+{
+  "name": "debug",
+  "description": "Rank hypotheses for a symptom, test them one per fresh context until one is confirmed, then fix only after a checkpoint. Usage: /debug <symptom>, or /debug '{ \"symptom\": \"...\", \"repro\"?, \"maxHypotheses\"? }'",
+  "script": "debug.js",
+  "argKey": "symptom",
+  "sessionContext": { "key": "sessionContext", "maxChars": 8000 },
+  "questions": [
+    {
+      "key": "symptom",
+      "prompt": "debug: what is going wrong?",
+      "free": true,
+      "placeholder": "Leave empty to use the failure this session was already discussing"
+    },
+    {
+      "key": "repro",
+      "prompt": "debug: command that reproduces it (exit 0 means fixed)",
+      "free": true,
+      "placeholder": "Leave empty if there is no single command"
+    },
+    {
+      "key": "maxHypotheses",
+      "prompt": "debug: how many hypotheses to test before giving up?",
+      "options": ["2", "3", "5"],
+      "free": true
+    }
+  ]
+}
