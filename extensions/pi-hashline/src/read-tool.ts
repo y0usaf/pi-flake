@@ -95,10 +95,17 @@ export function registerReadTool(pi: ExtensionAPI): void {
       return text;
     },
 
-    renderResult(result, { isPartial }, theme, context) {
+    renderResult(result, { expanded, isPartial }, theme, context) {
       const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
       if (isPartial) {
         text.setText(theme.fg("warning", "Reading..."));
+        return text;
+      }
+      // Collapsed rows render nothing, matching Pi's built-in read tool. The
+      // hashline body is a whole file region; printing it in every collapsed
+      // row floods the transcript. Errors always render.
+      if (!expanded && !context.isError) {
+        text.setText("");
         return text;
       }
       const body = result.content
