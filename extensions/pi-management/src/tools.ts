@@ -1,14 +1,8 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { getSettingsListTheme, getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getSettingsListTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
+import { createDisabledListStore, isRecord, statusDiagnostics, statusSeverity, uniqueSorted } from "./store";
 
 // ── Types & constants ──────────────────────────────────────────────
-
-interface ToolSettingsFile {
-	version: number;
-	disabledTools: string[];
-}
 
 interface ToolRecord {
 	name: string;
@@ -18,21 +12,20 @@ interface ToolRecord {
 	};
 }
 
-const SETTINGS_VERSION = 1;
-const SETTINGS_PATH = join(getAgentDir(), "tool-settings.json");
 const ALLOWED = "allowed";
 const BLOCKED = "blocked";
 const BLOCKED_EXTERNALLY = "blocked (external)";
 
-// ── Helpers ────────────────────────────────────────────────────────
+const store = createDisabledListStore({
+	fileName: "tool-settings.json",
+	field: "disabledTools",
+	logPrefix: "[pi-management/tools]",
+});
 
-function uniqueSorted(arr: string[]): string[] {
-	return [...new Set(arr)].sort((a, b) => a.localeCompare(b));
-}
+/** Tools we removed from the active set, kept so they can be restored. */
+let removedByUs = new Set<string>();
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+// ── Discovery ──────────────────────────────────────────────────────
 
 function normalizeTool(tool: unknown): ToolRecord | undefined {
 	if (typeof tool === "string") {
@@ -44,10 +37,12 @@ function normalizeTool(tool: unknown): ToolRecord | undefined {
 	const name = tool.name.trim();
 	if (!name) return undefined;
 
-	const sourceInfo = isRecord(tool.sourceInfo) ? {
-		source: typeof tool.sourceInfo.source === "string" ? tool.sourceInfo.source : undefined,
-		scope: typeof tool.sourceInfo.scope === "string" ? tool.sourceInfo.scope : undefined,
-	} : undefined;
+	const sourceInfo = isRecord(tool.sourceInfo)
+		? {
+				source: typeof tool.sourceInfo.source === "string" ? tool.sourceInfo.source : undefined,
+				scope: typeof tool.sourceInfo.scope === "string" ? tool.sourceInfo.scope : undefined,
+			}
+		: undefined;
 
 	return sourceInfo ? { name, sourceInfo } : { name };
 }
@@ -67,110 +62,6 @@ function getAllToolRecords(pi: ExtensionAPI): ToolRecord[] {
 	return tools;
 }
 
-// ── Settings I/O ───────────────────────────────────────────────────
-
-type SettingsParseResult =
-	| { settings: ToolSettingsFile }
-	| { warning: string };
-
-let disabledTools = new Set<string>();
-let removedByUs = new Set<string>();
-let lastWarning: string | undefined;
-let lastReportedWarning: string | undefined;
-let lastSaveError: string | undefined;
-let saveSequence = 0;
-let saveQueue = Promise.resolve();
-
-function reportLoadWarning(message: string): void {
-	lastWarning = message;
-	if (lastReportedWarning === message) return;
-	lastReportedWarning = message;
-	console.warn(`[pi-tool-management] ${message}`);
-}
-
-function clearLoadWarning(): void {
-	lastWarning = undefined;
-	lastReportedWarning = undefined;
-}
-
-function parseSettings(raw: string): SettingsParseResult {
-	const parsed: unknown = JSON.parse(raw);
-	if (!isRecord(parsed)) {
-		return { warning: `Ignoring invalid settings in ${SETTINGS_PATH}: expected object` };
-	}
-	if (parsed.version !== SETTINGS_VERSION) {
-		return { warning: `Ignoring unsupported settings version in ${SETTINGS_PATH}: ${String(parsed.version)}` };
-	}
-	if (!Array.isArray(parsed.disabledTools) || parsed.disabledTools.some((value) => typeof value !== "string" || !value.trim())) {
-		return { warning: `Ignoring invalid settings in ${SETTINGS_PATH}: disabledTools must be an array of non-empty strings` };
-	}
-
-	return {
-		settings: {
-			version: SETTINGS_VERSION,
-			disabledTools: uniqueSorted(parsed.disabledTools.map((name) => name.trim())),
-		},
-	};
-}
-
-async function loadSettings(): Promise<void> {
-	let raw: string;
-	try {
-		raw = await readFile(SETTINGS_PATH, "utf-8");
-	} catch (e) {
-		const err = e as NodeJS.ErrnoException;
-		if (err?.code === "ENOENT") {
-			disabledTools = new Set();
-			clearLoadWarning();
-			return;
-		}
-		reportLoadWarning(`Failed to load ${SETTINGS_PATH}: ${err.message}`);
-		return;
-	}
-
-	let result: SettingsParseResult;
-	try {
-		result = parseSettings(raw);
-	} catch (e) {
-		reportLoadWarning(`Failed to parse ${SETTINGS_PATH}: ${e instanceof Error ? e.message : String(e)}`);
-		return;
-	}
-	if ("warning" in result) {
-		reportLoadWarning(result.warning);
-		return;
-	}
-
-	disabledTools = new Set(result.settings.disabledTools);
-	clearLoadWarning();
-}
-
-async function persistSettings(file: ToolSettingsFile): Promise<void> {
-	const tempPath = `${SETTINGS_PATH}.${process.pid}.${saveSequence++}.tmp`;
-	try {
-		await mkdir(getAgentDir(), { recursive: true });
-		await writeFile(tempPath, `${JSON.stringify(file, null, 2)}\n`, "utf-8");
-		await rename(tempPath, SETTINGS_PATH);
-		lastSaveError = undefined;
-		clearLoadWarning();
-	} catch (e) {
-		let detail = e instanceof Error ? e.message : String(e);
-		try {
-			await rm(tempPath, { force: true });
-		} catch (cleanupError) {
-			detail += `; failed to remove temporary file: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`;
-		}
-		const message = `Failed to save ${SETTINGS_PATH}: ${detail}`;
-		lastSaveError = message;
-		console.error(`[pi-tool-management] ${message}`);
-	}
-}
-
-function saveSettings(): Promise<void> {
-	const file: ToolSettingsFile = { version: SETTINGS_VERSION, disabledTools: uniqueSorted([...disabledTools]) };
-	saveQueue = saveQueue.then(() => persistSettings(file));
-	return saveQueue;
-}
-
 // ── Tool sorting & enforcement ─────────────────────────────────────
 
 function getToolCategory(tool: ToolRecord): string {
@@ -183,15 +74,20 @@ function getToolCategory(tool: ToolRecord): string {
 
 function sortTools(tools: ToolRecord[]): ToolRecord[] {
 	const rank = (t: ToolRecord) =>
-		t.sourceInfo?.source === "builtin" ? 0 :
-		t.sourceInfo?.source === "sdk" ? 1 :
-		t.sourceInfo?.scope === "project" ? 2 :
-		t.sourceInfo?.scope === "user" ? 3 : 4;
+		t.sourceInfo?.source === "builtin"
+			? 0
+			: t.sourceInfo?.source === "sdk"
+				? 1
+				: t.sourceInfo?.scope === "project"
+					? 2
+					: t.sourceInfo?.scope === "user"
+						? 3
+						: 4;
 	return [...tools].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
 }
 
 function getToolValue(name: string, activeTools: Set<string>): string {
-	if (disabledTools.has(name)) return BLOCKED;
+	if (store.names.has(name)) return BLOCKED;
 	if (!activeTools.has(name)) return BLOCKED_EXTERNALLY;
 	return ALLOWED;
 }
@@ -215,13 +111,13 @@ async function enforceDisabledTools(pi: ExtensionAPI): Promise<void> {
 	}
 
 	// Restore tools we removed that are allowed again (appended at end)
-	const restored = [...removedByUs].filter((n) => !disabledTools.has(n));
+	const restored = [...removedByUs].filter((n) => !store.names.has(n));
 	for (const name of restored) removedByUs.delete(name);
 
 	// Filter out currently disabled tools and record that we removed them
-	const filtered = active.filter((n) => !disabledTools.has(n));
+	const filtered = active.filter((n) => !store.names.has(n));
 	for (const name of active) {
-		if (disabledTools.has(name)) removedByUs.add(name);
+		if (store.names.has(name)) removedByUs.add(name);
 	}
 
 	const next = [...filtered, ...restored];
@@ -231,16 +127,16 @@ async function enforceDisabledTools(pi: ExtensionAPI): Promise<void> {
 }
 
 async function reloadAndEnforce(pi: ExtensionAPI): Promise<void> {
-	await loadSettings();
+	await store.load();
 	await enforceDisabledTools(pi);
 }
 
-// ── Extension entry point ──────────────────────────────────────────
+// ── Commands ───────────────────────────────────────────────────────
 
-export default function toolManagementExtension(pi: ExtensionAPI) {
+export function registerToolCommands(pi: ExtensionAPI) {
 	// /tools command — interactive SettingsList UI
 	pi.registerCommand("tools", {
-		description: "Manage this extension's global disabled-tools list (~/.pi/agent/tool-settings.json)",
+		description: `Manage the global disabled-tools list (${store.path})`,
 		handler: async (_args, ctx) => {
 			await reloadAndEnforce(pi);
 
@@ -254,16 +150,14 @@ export default function toolManagementExtension(pi: ExtensionAPI) {
 				const activeTools = new Set(pi.getActiveTools());
 				const blockedExternallyNames = allTools
 					.map((tool) => tool.name)
-					.filter((name) => !disabledTools.has(name) && !activeTools.has(name));
+					.filter((name) => !store.names.has(name) && !activeTools.has(name));
 				const items: SettingItem[] = allTools.map((tool) => {
 					const currentValue = getToolValue(tool.name, activeTools);
 					const isBlockedExternally = currentValue === BLOCKED_EXTERNALLY;
 					return {
 						id: tool.name,
 						label: `${tool.name} · ${getToolCategory(tool)}`,
-						description: isBlockedExternally
-							? "Blocked (external)."
-							: undefined,
+						description: isBlockedExternally ? "Blocked (external)." : undefined,
 						currentValue,
 						values: getToolValues(currentValue),
 					};
@@ -271,14 +165,25 @@ export default function toolManagementExtension(pi: ExtensionAPI) {
 
 				const container = new Container();
 				container.addChild(new Text(theme.fg("accent", theme.bold("Tool Management"))));
-				container.addChild(new Text(theme.fg("dim", SETTINGS_PATH)));
+				container.addChild(new Text(theme.fg("dim", store.path)));
 				container.addChild(new Text(theme.fg("muted", "This menu edits this extension's global disabled-tools list.")));
-				container.addChild(new Text(theme.fg("muted", "Blocked = disabled by this extension. Blocked (external) = hidden by another extension or runtime mode.")));
+				container.addChild(
+					new Text(
+						theme.fg(
+							"muted",
+							"Blocked = disabled by this extension. Blocked (external) = hidden by another extension or runtime mode.",
+						),
+					),
+				);
 				if (blockedExternallyNames.length > 0) {
-					container.addChild(new Text(theme.fg("warning", `Blocked (external) now: ${blockedExternallyNames.join(", ")}`)));
+					container.addChild(
+						new Text(theme.fg("warning", `Blocked (external) now: ${blockedExternallyNames.join(", ")}`)),
+					);
 				}
 				container.addChild(new Text(theme.fg("muted", "Scans built-in + extension tools each time this menu opens.")));
-				container.addChild(new Text(theme.fg("muted", "Close + reopen to refresh tools added while this menu is open.")));
+				container.addChild(
+					new Text(theme.fg("muted", "Close + reopen to refresh tools added while this menu is open.")),
+				);
 
 				const settingsList = new SettingsList(
 					items,
@@ -286,9 +191,9 @@ export default function toolManagementExtension(pi: ExtensionAPI) {
 					getSettingsListTheme(),
 					(id, newValue) => {
 						if (newValue === BLOCKED) {
-							disabledTools.add(id);
+							store.names.add(id);
 						} else {
-							disabledTools.delete(id);
+							store.names.delete(id);
 						}
 
 						void enforceDisabledTools(pi)
@@ -299,8 +204,10 @@ export default function toolManagementExtension(pi: ExtensionAPI) {
 							.catch((e) => {
 								ctx.ui.notify(`Failed to apply tool changes: ${e instanceof Error ? e.message : String(e)}`, "error");
 							});
-						void saveSettings().then(() => {
-							if (lastSaveError) ctx.ui.notify(`${lastSaveError}\nChanges remain applied in this session.`, "error");
+						void store.save().then(() => {
+							if (store.lastSaveError) {
+								ctx.ui.notify(`${store.lastSaveError}\nChanges remain applied in this session.`, "error");
+							}
 						});
 					},
 					() => done(undefined),
@@ -312,7 +219,10 @@ export default function toolManagementExtension(pi: ExtensionAPI) {
 				return {
 					render: (width: number) => container.render(width),
 					invalidate: () => container.invalidate(),
-					handleInput: (data: string) => { settingsList.handleInput?.(data); tui.requestRender(); },
+					handleInput: (data: string) => {
+						settingsList.handleInput?.(data);
+						tui.requestRender();
+					},
 				};
 			});
 		},
@@ -328,24 +238,23 @@ export default function toolManagementExtension(pi: ExtensionAPI) {
 			const activeTools = new Set(pi.getActiveTools());
 			const knownNames = new Set(allTools.map((t) => t.name));
 			const activeKnown = [...activeTools].filter((n) => knownNames.has(n));
-			const disabled = uniqueSorted([...disabledTools]);
+			const disabled = uniqueSorted([...store.names]);
 			const unresolved = disabled.filter((n) => !knownNames.has(n));
 			const blockedExternallyNames = allTools
 				.map((tool) => tool.name)
-				.filter((name) => !disabledTools.has(name) && !activeTools.has(name));
+				.filter((name) => !store.names.has(name) && !activeTools.has(name));
 
 			const lines = [
-				`settings: ${SETTINGS_PATH}`,
+				`settings: ${store.path}`,
 				`currentlyActiveAfterAllFilters: ${activeKnown.length}/${allTools.length}`,
 				`disabledTools: ${disabled.join(", ") || "(none)"}`,
 				`blockedExternally: ${blockedExternallyNames.join(", ") || "(none)"}`,
 				"note: blockedExternally means a known tool this extension allows is shown as blocked (external) when it is absent from the current runtime active-tool set (another extension or runtime mode may be hiding it)",
 			];
 			if (unresolved.length > 0) lines.push(`unresolvedDisabledTools: ${unresolved.join(", ")}`);
-			if (lastWarning) lines.push(`loadWarning: ${lastWarning}`);
-			if (lastSaveError) lines.push(`saveError: ${lastSaveError}`);
+			lines.push(...statusDiagnostics(store));
 
-			ctx.ui.notify(lines.join("\n"), lastSaveError ? "error" : lastWarning ? "warning" : "info");
+			ctx.ui.notify(lines.join("\n"), statusSeverity(store));
 		},
 	});
 

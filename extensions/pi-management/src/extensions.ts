@@ -1,15 +1,10 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { getAgentDir, getSettingsListTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
+import { createDisabledListStore, isRecord, statusDiagnostics, statusSeverity, uniqueSorted } from "./store";
 
 // ── Types & constants ──────────────────────────────────────────────
-
-interface ExtensionSettingsFile {
-	version: number;
-	disabledExtensions: string[];
-}
 
 interface ExtensionCandidate {
 	/** Stable identity: bundle dir name, or settings-pattern for dir entries. */
@@ -22,14 +17,23 @@ interface ExtensionCandidate {
 	label: string;
 }
 
-const SETTINGS_VERSION = 1;
-const SETTINGS_PATH = join(getAgentDir(), "extension-settings.json");
 const ENABLED = "enabled";
 const DISABLED = "disabled";
-/** Own bundle name. Never shown as toggleable: disabling the manager locks you out. */
-const SELF_NAME = "extension-management";
+/**
+ * Own bundle dir name. Never shown as toggleable: disabling the manager locks
+ * you out of both /tools and /extensions, recoverable only by hand-editing
+ * extension-settings.json. MUST match the bundle attribute name in the root
+ * flake.nix `bundledExtensions` map.
+ */
+const SELF_NAME = "management";
 const ENV_DISABLED = "PI_EXT_DISABLED";
 const ENV_DEFAULT_PACKAGES = "PI_DEFAULT_PACKAGES";
+
+const store = createDisabledListStore({
+	fileName: "extension-settings.json",
+	field: "disabledExtensions",
+	logPrefix: "[pi-management/extensions]",
+});
 
 // ── Discovery ──────────────────────────────────────────────────────
 // pi itself discovers extensions from three places, mirrored here:
@@ -132,122 +136,6 @@ function scanExtensions(cwd: string): ExtensionCandidate[] {
 	return out.sort((a, b) => a.label.localeCompare(b.label));
 }
 
-// ── Settings I/O (own JSON store) ──────────────────────────────────
-
-type SettingsParseResult = { settings: ExtensionSettingsFile } | { warning: string };
-
-let disabledExtensions = new Set<string>();
-let lastWarning: string | undefined;
-let lastReportedWarning: string | undefined;
-let lastSaveError: string | undefined;
-let saveSequence = 0;
-let saveQueue = Promise.resolve();
-
-function uniqueSorted(arr: string[]): string[] {
-	return [...new Set(arr)].sort((a, b) => a.localeCompare(b));
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function reportLoadWarning(message: string): void {
-	lastWarning = message;
-	if (lastReportedWarning === message) return;
-	lastReportedWarning = message;
-	console.warn(`[pi-extension-management] ${message}`);
-}
-
-function clearLoadWarning(): void {
-	lastWarning = undefined;
-	lastReportedWarning = undefined;
-}
-
-function parseSettings(raw: string): SettingsParseResult {
-	const parsed: unknown = JSON.parse(raw);
-	if (!isRecord(parsed)) {
-		return { warning: `Ignoring invalid settings in ${SETTINGS_PATH}: expected object` };
-	}
-	if (parsed.version !== SETTINGS_VERSION) {
-		return { warning: `Ignoring unsupported settings version in ${SETTINGS_PATH}: ${String(parsed.version)}` };
-	}
-	if (
-		!Array.isArray(parsed.disabledExtensions) ||
-		parsed.disabledExtensions.some((value) => typeof value !== "string" || !value.trim())
-	) {
-		return {
-			warning: `Ignoring invalid settings in ${SETTINGS_PATH}: disabledExtensions must be an array of non-empty strings`,
-		};
-	}
-	return {
-		settings: {
-			version: SETTINGS_VERSION,
-			disabledExtensions: uniqueSorted(parsed.disabledExtensions.map((name) => name.trim())),
-		},
-	};
-}
-
-async function loadSettings(): Promise<void> {
-	let raw: string;
-	try {
-		raw = await readFile(SETTINGS_PATH, "utf-8");
-	} catch (e) {
-		const err = e as NodeJS.ErrnoException;
-		if (err?.code === "ENOENT") {
-			disabledExtensions = new Set();
-			clearLoadWarning();
-			return;
-		}
-		reportLoadWarning(`Failed to load ${SETTINGS_PATH}: ${err.message}`);
-		return;
-	}
-
-	let result: SettingsParseResult;
-	try {
-		result = parseSettings(raw);
-	} catch (e) {
-		reportLoadWarning(`Failed to parse ${SETTINGS_PATH}: ${e instanceof Error ? e.message : String(e)}`);
-		return;
-	}
-	if ("warning" in result) {
-		reportLoadWarning(result.warning);
-		return;
-	}
-
-	disabledExtensions = new Set(result.settings.disabledExtensions);
-	clearLoadWarning();
-}
-
-async function persistSettings(file: ExtensionSettingsFile): Promise<void> {
-	const tempPath = `${SETTINGS_PATH}.${process.pid}.${saveSequence++}.tmp`;
-	try {
-		await mkdir(getAgentDir(), { recursive: true });
-		await writeFile(tempPath, `${JSON.stringify(file, null, 2)}\n`, "utf-8");
-		await rename(tempPath, SETTINGS_PATH);
-		lastSaveError = undefined;
-		clearLoadWarning();
-	} catch (e) {
-		let detail = e instanceof Error ? e.message : String(e);
-		try {
-			await rm(tempPath, { force: true });
-		} catch (cleanupError) {
-			detail += `; failed to remove temporary file: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`;
-		}
-		const message = `Failed to save ${SETTINGS_PATH}: ${detail}`;
-		lastSaveError = message;
-		console.error(`[pi-extension-management] ${message}`);
-	}
-}
-
-function saveSettings(): Promise<void> {
-	const file: ExtensionSettingsFile = {
-		version: SETTINGS_VERSION,
-		disabledExtensions: uniqueSorted([...disabledExtensions]),
-	};
-	saveQueue = saveQueue.then(() => persistSettings(file));
-	return saveQueue;
-}
-
 // ── Projections ────────────────────────────────────────────────────
 // The JSON file is the truth. Two levers read projections of it:
 //  - bundle extensions: PI_EXT_DISABLED env var, read by the Nix-generated
@@ -256,7 +144,7 @@ function saveSettings(): Promise<void> {
 //    settings.json extensions array (same lever `pi config` uses).
 
 function syncEnv(): void {
-	const names = uniqueSorted([...disabledExtensions]);
+	const names = uniqueSorted([...store.names]);
 	if (names.length === 0) {
 		delete process.env[ENV_DISABLED];
 	} else {
@@ -287,22 +175,22 @@ function writePiExtensionPattern(source: "user" | "project", cwd: string, patter
 	writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf-8");
 }
 
-// ── Extension entry point ──────────────────────────────────────────
+// ── Commands ───────────────────────────────────────────────────────
 
-export default function extensionManagementExtension(pi: ExtensionAPI) {
+export function registerExtensionCommands(pi: ExtensionAPI) {
 	// Seed env from the persisted list on load. Gate shims read this env var
 	// on every /reload; the file is read again on session_start.
 	syncEnv();
 
 	pi.on("session_start", async () => {
-		await loadSettings();
+		await store.load();
 		syncEnv();
 	});
 
 	pi.registerCommand("extensions", {
-		description: "Manage the disabled-extensions list (~/.pi/agent/extension-settings.json)",
+		description: `Manage the disabled-extensions list (${store.path})`,
 		handler: async (_args, ctx) => {
-			await loadSettings();
+			await store.load();
 
 			const candidates = scanExtensions(ctx.cwd);
 			if (candidates.length === 0) {
@@ -312,7 +200,7 @@ export default function extensionManagementExtension(pi: ExtensionAPI) {
 
 			await ctx.ui.custom((tui, theme, _kb, done) => {
 				const items: SettingItem[] = candidates.map((ext) => {
-					const currentValue = disabledExtensions.has(ext.id) ? DISABLED : ENABLED;
+					const currentValue = store.names.has(ext.id) ? DISABLED : ENABLED;
 					return {
 						id: ext.id,
 						label: `${ext.label} · ${ext.source}`,
@@ -324,7 +212,7 @@ export default function extensionManagementExtension(pi: ExtensionAPI) {
 
 				const container = new Container();
 				container.addChild(new Text(theme.fg("accent", theme.bold("Extension Management"))));
-				container.addChild(new Text(theme.fg("dim", SETTINGS_PATH)));
+				container.addChild(new Text(theme.fg("dim", store.path)));
 				container.addChild(
 					new Text(theme.fg("muted", "Toggling writes settings, updates PI_EXT_DISABLED, then reloads pi.")),
 				);
@@ -342,9 +230,9 @@ export default function extensionManagementExtension(pi: ExtensionAPI) {
 						const enabled = newValue === ENABLED;
 
 						if (enabled) {
-							disabledExtensions.delete(id);
+							store.names.delete(id);
 						} else {
-							disabledExtensions.add(id);
+							store.names.add(id);
 						}
 
 						// Projections: own env for bundle gates, pi settings for dir entries.
@@ -353,10 +241,7 @@ export default function extensionManagementExtension(pi: ExtensionAPI) {
 							try {
 								writePiExtensionPattern(ext.source, ctx.cwd, id, enabled);
 							} catch (e) {
-								ctx.ui.notify(
-									`Failed to write pi settings: ${e instanceof Error ? e.message : String(e)}`,
-									"error",
-								);
+								ctx.ui.notify(`Failed to write pi settings: ${e instanceof Error ? e.message : String(e)}`, "error");
 								return;
 							}
 						}
@@ -370,9 +255,9 @@ export default function extensionManagementExtension(pi: ExtensionAPI) {
 						// waitForIdle, because ctx.reload() silently no-ops while the
 						// agent is streaming or compacting.
 						void (async () => {
-							await saveSettings();
-							if (lastSaveError) {
-								ctx.ui.notify(`${lastSaveError}\nChanges remain applied in this session.`, "error");
+							await store.save();
+							if (store.lastSaveError) {
+								ctx.ui.notify(`${store.lastSaveError}\nChanges remain applied in this session.`, "error");
 							}
 							await ctx.waitForIdle();
 							// Must be the last action: the captured ctx goes stale on reload.
@@ -402,25 +287,24 @@ export default function extensionManagementExtension(pi: ExtensionAPI) {
 	pi.registerCommand("extensions-status", {
 		description: "Show extension-settings.json status",
 		handler: async (_args, ctx) => {
-			await loadSettings();
+			await store.load();
 
 			const candidates = scanExtensions(ctx.cwd);
 			const knownIds = new Set(candidates.map((c) => c.id));
-			const disabled = uniqueSorted([...disabledExtensions]);
+			const disabled = uniqueSorted([...store.names]);
 			const unresolved = disabled.filter((id) => !knownIds.has(id));
 
 			const lines = [
-				`settings: ${SETTINGS_PATH}`,
+				`settings: ${store.path}`,
 				`env ${ENV_DISABLED}: ${process.env[ENV_DISABLED] ?? "(unset)"}`,
 				`bundleRoots: ${bundleRoots().join(", ") || "(none)"}`,
 				`discovered: ${candidates.length} (${candidates.map((c) => `${c.label}[${c.source}]`).join(", ") || "none"})`,
 				`disabledExtensions: ${disabled.join(", ") || "(none)"}`,
 			];
 			if (unresolved.length > 0) lines.push(`unresolvedDisabled: ${unresolved.join(", ")}`);
-			if (lastWarning) lines.push(`loadWarning: ${lastWarning}`);
-			if (lastSaveError) lines.push(`saveError: ${lastSaveError}`);
+			lines.push(...statusDiagnostics(store));
 
-			ctx.ui.notify(lines.join("\n"), lastSaveError ? "error" : lastWarning ? "warning" : "info");
+			ctx.ui.notify(lines.join("\n"), statusSeverity(store));
 		},
 	});
 }

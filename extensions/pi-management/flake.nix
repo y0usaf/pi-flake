@@ -1,5 +1,5 @@
 {
-  description = "Nix flake for pi-extension-management";
+  description = "Nix flake for pi-management";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -24,8 +24,8 @@
       lib = pkgs.lib;
       packageJson = builtins.fromJSON (builtins.readFile ./package.json);
     in {
-      pi-extension-management = pkgs.stdenvNoCC.mkDerivation {
-        pname = "pi-extension-management";
+      pi-management = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-management";
         version = packageJson.version;
         src = lib.cleanSource ./.;
 
@@ -44,13 +44,13 @@
         };
 
         meta = with lib; {
-          description = "Pi extension that manages a global disabled-extensions list with persistent settings";
+          description = packageJson.description;
           license = licenses.mit;
           platforms = platforms.all;
         };
       };
 
-      default = self.packages.${system}.pi-extension-management;
+      default = self.packages.${system}.pi-management;
     });
 
     devShells = forAllSystems (system: let
@@ -62,7 +62,7 @@
         ];
 
         shellHook = ''
-          echo "pi-extension-management dev shell — node $(node --version)"
+          echo "pi-management dev shell — node $(node --version)"
         '';
       };
     });

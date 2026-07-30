@@ -21,11 +21,8 @@
     piInterview.url = "path:./extensions/pi-interview";
     piInterview.inputs.nixpkgs.follows = "nixpkgs";
 
-    piToolManagement.url = "path:./extensions/pi-tool-management";
-    piToolManagement.inputs.nixpkgs.follows = "nixpkgs";
-
-    piExtensionManagement.url = "path:./extensions/pi-extension-management";
-    piExtensionManagement.inputs.nixpkgs.follows = "nixpkgs";
+    piManagement.url = "path:./extensions/pi-management";
+    piManagement.inputs.nixpkgs.follows = "nixpkgs";
 
     piWebfetch.url = "path:./extensions/pi-webfetch";
     piWebfetch.inputs.nixpkgs.follows = "nixpkgs";
@@ -41,8 +38,7 @@
     piRtk,
     piAphrodite,
     piInterview,
-    piToolManagement,
-    piExtensionManagement,
+    piManagement,
     piWebfetch,
     piHashline,
     ...
@@ -132,8 +128,7 @@
       "pi-rtk" = piRtk.packages.${system}.default;
       "pi-aphrodite" = piAphrodite.packages.${system}.default;
       "pi-interview" = piInterview.packages.${system}.default;
-      "pi-tool-management" = piToolManagement.packages.${system}.default;
-      "pi-extension-management" = piExtensionManagement.packages.${system}.default;
+      "pi-management" = piManagement.packages.${system}.default;
       "pi-webfetch" = piWebfetch.packages.${system}.default;
       "pi-hashline" = piHashline.packages.${system}.default;
 
@@ -303,7 +298,7 @@
       pi-rtk-build = self.packages.${system}."pi-rtk";
       pi-rtk-test = piRtk.checks.${system}.test;
       pi-aphrodite-build = self.packages.${system}."pi-aphrodite";
-      pi-extension-management-build = self.packages.${system}."pi-extension-management";
+      pi-management-build = self.packages.${system}."pi-management";
 
       pi-quiet-build = self.packages.${system}."pi-quiet";
       pi-subagent-build = self.packages.${system}."pi-subagent";
@@ -428,8 +423,7 @@
         rtk = self.packages.${system}."pi-rtk";
         aphrodite = self.packages.${system}."pi-aphrodite";
         interview = self.packages.${system}."pi-interview";
-        "tool-management" = self.packages.${system}."pi-tool-management";
-        "extension-management" = self.packages.${system}."pi-extension-management";
+        management = self.packages.${system}."pi-management";
         webfetch = self.packages.${system}."pi-webfetch";
         hashline = self.packages.${system}."pi-hashline";
 
@@ -509,7 +503,7 @@
 
                   # Create extension subdirectories, copy content, and prepend a
                   # .pi-gate.ts shim per extension. The gate returns early when its
-                  # name appears in PI_EXT_DISABLED, so pi-extension-management can
+                  # name appears in PI_EXT_DISABLED, so pi-management can
                   # switch a bundled extension off for the session (pi clears its
                   # module cache on /reload, so the gate re-reads the env var).
                   ${pkgs.lib.concatStringsSep "\n" (pkgs.lib.mapAttrsToList (name: ext: ''

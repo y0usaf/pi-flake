@@ -75,8 +75,7 @@ in {
       aphrodite = mkEnableOption "pi-aphrodite Aphrodite CCR tool-output compression extension";
 
       interview = mkEnableOption "pi-interview ask-user questionnaire extension";
-      "tool-management" = mkEnableOption "pi-tool-management persistent disabled-tools UI extension";
-      "extension-management" = mkEnableOption "pi-extension-management persistent disabled-extensions UI extension";
+      management = mkEnableOption "pi-management persistent disabled-tools + disabled-extensions UI extension";
       webfetch = mkEnableOption "pi-webfetch extension";
       hashline = mkEnableOption "pi-hashline v3 read/edit tool override";
       review = mkEnableOption "pi-review /review and /end-review code review workflow extension";
