@@ -36,6 +36,26 @@ tools and conversation history.
 - **2026-08 — Child-controlled text is sanitized before rendering.** Reports
   and activity previews pass through `stripControlSequences` (OSC, CSI, C0)
   so a prompt-injected child cannot write terminal escapes into the TUI.
+- **2026-07 — Contract-first invocations; the result is data.** `spawn_agent`
+  and `delegate` require an AskUserQuestion-style contract (questions,
+  options, `allowOther`). The child gets a `submit_answers` tool; the run
+  completes only once it has been called, and the tool result is the
+  validated answers — `report` is demoted to a progress channel. Prose
+  results were unparseable and had no mechanical done-check; answers-as-data
+  moves the result down the least-power ladder (`[[canon:least-power]]`).
+  Normalization is ported from pi-interview `protocol.ts`, not shared:
+  second consumer, extract a shared module when a third appears.
+- **2026-07 — Contract enforcement is a capped nudge loop.** A model cannot
+  be prevented from ending its turn, so an unfulfilled contract is re-prompted,
+  at most `MAX_CONTRACT_NUDGES` (10) times — the watchdog bound; abort,
+  timeout, and kill still interrupt it. A model refusing at nudge 10 refuses
+  at 500. After the cap: error — spawn tears the child down (prior decision),
+  delegate keeps it.
+- **2026-07 — Contract schema diverges from pi-interview deliberately.**
+  Zero options plus `allowOther` is a legal free-text question (edit-style
+  tasks have no enumerable options); the host-added option is "Unable to
+  determine" (`__unable__`) — an explicit punt beats fabrication; free-text
+  answers cap at 2000 chars (agents write more than users).
 
 ## Architecture
 
@@ -44,6 +64,8 @@ Single-file extension (`index.ts`). Sections, in order:
 - env allowlist — data
 - schemas + config load/validate — decision-making (what limits apply,
   which model children run)
+- contract normalization, answer validation, prompt rendering, nudge loop —
+  decision-making (pure except the loop's prompts)
 - `stripControlSequences`, timeout helpers, activity formatting — machinery
 - `createChildTools` — thin wrappers over pi built-ins — machinery
 - child state, `subscribeChild`, `collectResult` — machinery
