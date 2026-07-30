@@ -23,6 +23,7 @@ import {
   isToolCallEventType,
 } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 const RTK_COMMAND = "rtk";
 const REWRITE_TIMEOUT_MS = 5000;
@@ -56,37 +57,21 @@ export interface RtkRewriterOptions {
   probeTimeoutMs?: number;
 }
 
-interface ExecFileTextOptions {
-  timeoutMs: number;
-  signal?: AbortSignal;
-}
+const execFileAsync = promisify(execFile);
 
-function execFileText(
+async function execFileText(
   file: string,
   args: string[],
-  options: ExecFileTextOptions,
+  options: { timeoutMs: number; signal?: AbortSignal },
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      file,
-      args,
-      {
-        encoding: "utf8",
-        killSignal: "SIGTERM",
-        maxBuffer: MAX_OUTPUT_BYTES,
-        signal: options.signal,
-        timeout: options.timeoutMs,
-      },
-      (error, stdout) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-
-        resolve(String(stdout).trimEnd());
-      },
-    );
+  const { stdout } = await execFileAsync(file, args, {
+    encoding: "utf8",
+    killSignal: "SIGTERM",
+    maxBuffer: MAX_OUTPUT_BYTES,
+    signal: options.signal,
+    timeout: options.timeoutMs,
   });
+  return String(stdout).trimEnd();
 }
 
 function classifyError(error: unknown): RtkFailureKind {
