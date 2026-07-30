@@ -1,8 +1,8 @@
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { getAgentDir, getSettingsListTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, getAgentDir, getSettingsListTheme, SettingsManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
-import { createDisabledListStore, isRecord, statusDiagnostics, statusSeverity, uniqueSorted } from "./store";
+import { createDisabledListStore, statusDiagnostics, statusSeverity, uniqueSorted } from "./store";
 
 // ── Types & constants ──────────────────────────────────────────────
 
@@ -123,7 +123,7 @@ function scanExtensions(cwd: string): ExtensionCandidate[] {
 	// pattern pi would match: path relative to the base dir that pi uses.
 	const dirSources: { dir: string; base: string; source: "user" | "project" }[] = [
 		{ dir: join(getAgentDir(), "extensions"), base: getAgentDir(), source: "user" },
-		{ dir: join(cwd, ".pi", "extensions"), base: join(cwd, ".pi"), source: "project" },
+		{ dir: join(cwd, CONFIG_DIR_NAME, "extensions"), base: join(cwd, CONFIG_DIR_NAME), source: "project" },
 	];
 	for (const { dir, base, source } of dirSources) {
 		for (const { name, entry } of discoverInDir(dir)) {
@@ -152,27 +152,20 @@ function syncEnv(): void {
 	}
 }
 
-function settingsPathFor(source: "user" | "project", cwd: string): string {
-	return source === "project" ? join(cwd, ".pi", "settings.json") : join(getAgentDir(), "settings.json");
-}
-
 function writePiExtensionPattern(source: "user" | "project", cwd: string, pattern: string, enabled: boolean): void {
-	const settingsPath = settingsPathFor(source, cwd);
-	let settings: Record<string, unknown> = {};
-	try {
-		settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>;
-		if (!isRecord(settings)) settings = {};
-	} catch {
-		settings = {};
-	}
-	const current = Array.isArray(settings.extensions) ? (settings.extensions as string[]) : [];
+	// SettingsManager owns settings.json: file locking, migration, and the
+	// write queue. A raw read-modify-writeFileSync here can clobber concurrent
+	// settings writes from pi itself.
+	const manager = SettingsManager.create(cwd);
+	const scoped = source === "project" ? manager.getProjectSettings() : manager.getGlobalSettings();
+	const current = scoped.extensions ?? [];
 	const updated = current.filter((p) => {
 		const stripped = p.startsWith("!") || p.startsWith("+") || p.startsWith("-") ? p.slice(1) : p;
 		return stripped !== pattern;
 	});
 	updated.push(`${enabled ? "+" : "-"}${pattern}`);
-	settings.extensions = updated;
-	writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf-8");
+	if (source === "project") manager.setProjectExtensionPaths(updated);
+	else manager.setExtensionPaths(updated);
 }
 
 // ── Commands ───────────────────────────────────────────────────────
