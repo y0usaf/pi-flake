@@ -103,9 +103,8 @@ blackboard) appears, extract a registry module both use.
 
 ## Roadmap
 
-- **Phase 1 (current): testing stage.** Built and checked, excluded from
-  `pi-full`. Criterion for leaving: orchestration exercised end to end in
-  real sessions with no orphaned agents after timeout/kill, then set
-  `stage = "active"` in `extensions/registry.nix`.
-- **Phase 2: active stage.** Ships in the default bundle. Criterion: one
-  full week of regular use without a lifecycle bug report.
+- **Phase 1 (done 2026-07): testing stage.** Built and checked, excluded from
+  `pi-full`. Exit criterion met: contract orchestration exercised end to end
+  (spawn → contract → submit_answers → auto-removal) with no orphaned agents.
+- **Phase 2 (current): active stage.** Ships in the default bundle. Criterion:
+  one full week of regular use without a lifecycle bug report.
