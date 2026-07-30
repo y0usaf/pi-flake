@@ -16,6 +16,22 @@
         "type": "github"
       }
     },
+    "piAgents": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./extensions/pi-agents",
+        "type": "path"
+      },
+      "original": {
+        "path": "./extensions/pi-agents",
+        "type": "path"
+      },
+      "parent": []
+    },
     "piAphrodite": {
       "inputs": {
         "nixpkgs": [
@@ -148,6 +164,7 @@
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
+        "piAgents": "piAgents",
         "piAphrodite": "piAphrodite",
         "piGeckoWebsearch": "piGeckoWebsearch",
         "piHashline": "piHashline",

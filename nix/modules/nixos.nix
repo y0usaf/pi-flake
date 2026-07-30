@@ -81,7 +81,7 @@ in {
       review = mkEnableOption "pi-review /review and /end-review code review workflow extension";
       vcc = mkEnableOption "pi-vcc algorithmic conversation compactor and vcc_recall history search";
       caveman = mkEnableOption "pi-caveman terse-response mode extension";
-      subagent = mkEnableOption "pi-subagent planner/executor delegation (single, parallel, chain modes)";
+      agents = mkEnableOption "pi-agents multi-agent orchestration (spawn, delegate, kill, list in-process child agents)";
     };
 
     extraExtensions = mkOption {
