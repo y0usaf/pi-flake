@@ -1,25 +1,25 @@
 /**
  * Multi-Agent Extension for pi
  *
- * Parent tools: spawn_agent, delegate, kill_agent, list_agents.
+ * Parent tools: spawn_agent, kill_agent, list_agents.
  * Children additionally get pi's built-in read/write/edit/bash tools, a
  * progress-only report tool, a submit_answers tool, and descendant-scoped
  * orchestration tools bounded by maxDepth/maxLiveAgents from pi-agents.json.
  *
- * Every spawn/delegate carries an AskUserQuestion-style contract (questions,
+ * Every spawn carries an AskUserQuestion-style contract (questions,
  * options, allowOther). The run completes only after the child calls
  * submit_answers; the tool result is those answers as data. Enforcement is a
  * re-prompt loop capped at MAX_CONTRACT_NUDGES.
  *
- * Children are in-process Agent instances that persist across interactions.
- * spawn_agent and delegate block until the child finishes its current run;
- * multiple calls in one turn run concurrently.
+ * An agent's lifetime is its contract: spawn_agent blocks until the child
+ * fulfills it, returns the answers as data, and removes the child — a typed
+ * function call. Multiple calls in one turn run concurrently.
  *
  * Concurrency invariants (see DESIGN.md):
  * - Spawn capacity and ID uniqueness are reserved synchronously before any
  *   await, so parallel spawn_agent calls cannot both pass the checks.
  * - killSubtree marks states killed and aborts them, but only removes states
- *   with no active run. A running spawn/delegate removes its own state in its
+ *   with no active run. A running spawn removes its own state in its
  *   finally block once the prompt has settled, so no work continues against
  *   an unregistered agent.
  * - Teardown is identity-checked: callers only remove the exact ChildState
@@ -161,15 +161,6 @@ const spawnSchema = Type.Object({
 	system_prompt: Type.String({ description: "System prompt defining the child agent's role and behavior" }),
 	task: Type.String({ description: "Initial task to assign to the child agent" }),
 	contract: contractSchema,
-	keep: Type.Optional(Type.Boolean({ description: "Keep the agent alive after its contract is fulfilled so it can take delegate calls; default false — the agent (and its subtree) is removed once it answers, like a tool call returning." })),
-	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds to wait for the agent to finish (must be > 0). If the deadline expires the agent is aborted, removed from the registry, and an error is thrown." })),
-});
-
-const delegateSchema = Type.Object({
-	id: Type.String({ description: "ID of an existing child agent" }),
-	message: Type.String({ description: "Follow-up task or message to send to the child" }),
-	contract: contractSchema,
-	keep: Type.Optional(Type.Boolean({ description: "Keep the agent alive after this contract is fulfilled; default false — the agent (and its subtree) is removed once it answers." })),
 	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds to wait for the agent to finish (must be > 0). If the deadline expires the agent is aborted, removed from the registry, and an error is thrown." })),
 });
 
@@ -564,7 +555,7 @@ function normalizeContract(raw: unknown, label: string): ContractQuestion[] {
 	return questions;
 }
 
-/** Rendered into every spawn/delegate prompt so the child knows its deliverable. */
+/** Rendered into every spawn prompt so the child knows its deliverable. */
 function renderContractBlock(questions: ContractQuestion[]): string {
 	const lines: string[] = [
 		"## Contract",
@@ -700,9 +691,9 @@ interface ChildState {
 	modelDisplay: string;
 	reports: string[];
 	activity: ActivityItem[];
-	/** The deliverable for the current run; delegate replaces it per call. */
+	/** The deliverable for this agent's single run. */
 	contract: ContractBox;
-	/** Set while a spawn/delegate run is in flight; blocks concurrent delegate. */
+	/** Set while the spawn run is in flight; guards teardown ordering. */
 	locked: boolean;
 	/** Set by killSubtree. The owning run removes this state once its prompt settles. */
 	killed: boolean;
@@ -858,7 +849,7 @@ function collectResult(childId: string, state: ChildState, reportStartIdx: numbe
 }
 
 // ---------------------------------------------------------------------------
-// Renderers (shared by spawn_agent and delegate)
+// Renderers (spawn_agent)
 // ---------------------------------------------------------------------------
 
 function renderAgentCall(
@@ -1193,80 +1184,17 @@ export default function multiAgent(pi: ExtensionAPI) {
 		return { content: [{ type: "text", text }], details: { agents } };
 	}
 
-	async function delegateToChild(
-		callerId: string | undefined,
-		params: { id: string; message: string; timeout_seconds?: number; contract: unknown; keep?: boolean },
-		signal?: AbortSignal,
-		onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void,
-	): Promise<AgentToolResult<AgentToolDetails>> {
-		const questions = normalizeContract(params.contract, `delegate "${params.id}"`);
-		const state = getAccessibleTarget(callerId, params.id, "delegate to");
-		if (state.agent.state.isStreaming || state.locked) {
-			throw new Error(
-				`Child agent "${params.id}" is still running. ` +
-				`Wait for the current spawn_agent or delegate call to complete before sending more work.`,
-			);
-		}
-
-		if (signal?.aborted) throw new Error(`delegate to "${params.id}" aborted before start`);
-
-		const reportStart = state.reports.length;
-		state.activity = [];
-		state.contract.questions = questions;
-		state.contract.answers = undefined;
-
-		const onAbort = () => state.agent.abort();
-		signal?.addEventListener("abort", onAbort, { once: true });
-
-		const unsub = subscribeChild(state.agent, params.id, state, onUpdate);
-		state.locked = true;
-
-		try {
-			const runPromise = runUntilContractFulfilled(state, `${params.message}\n\n${renderContractBlock(questions)}`, signal);
-			await withOptionalTimeout(state.agent, params.id, runPromise, params.timeout_seconds);
-			if (state.killed) {
-				throw new Error(`Agent "${params.id}" was killed while running`);
-			}
-		} catch (err) {
-			if (err instanceof AgentTimeoutError) {
-				state.killed = true;
-				killSubtree(params.id);
-			}
-			throw err;
-		} finally {
-			state.locked = false;
-			unsub();
-			signal?.removeEventListener("abort", onAbort);
-			if (state.killed) removeStateIfCurrent(state);
-		}
-
-		const result = collectResult(params.id, state, reportStart);
-		// Agent-as-tool: a fulfilled contract ends the agent unless the caller asked to keep it.
-		if (!params.keep) killSubtree(params.id);
-		return result;
-	}
-
 	function createChildManagementTools(callerId: string, cwd: string, model: Model<any>): AgentTool<any>[] {
 		const spawnTool: AgentTool<typeof spawnSchema> = {
 			name: "spawn_agent",
 			label: "Spawn Agent",
 			description:
 				"Spawn a descendant agent within your own subtree. Requires a contract; " +
-				"the descendant's result is its structured contract answers, and it is removed once it answers " +
-				"unless keep: true. Subject to configured maxDepth and maxLiveAgents limits.",
+				"the descendant's result is its structured contract answers, and it is removed once it answers. " +
+				"Subject to configured maxDepth and maxLiveAgents limits.",
 			parameters: spawnSchema,
 			execute: async (_toolCallId, params, signal, onUpdate) => {
 				return await spawnChild(callerId, params, model, cwd, signal, onUpdate);
-			},
-		};
-
-		const delegateTool: AgentTool<typeof delegateSchema> = {
-			name: "delegate",
-			label: "Delegate",
-			description: "Send follow-up work with a fresh contract to a kept descendant agent in your subtree; it is removed after answering unless keep: true.",
-			parameters: delegateSchema,
-			execute: async (_toolCallId, params, signal, onUpdate) => {
-				return await delegateToChild(callerId, params, signal, onUpdate);
 			},
 		};
 
@@ -1293,7 +1221,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			execute: async () => listAgentsResult(callerId),
 		};
 
-		return [spawnTool as AgentTool<any>, delegateTool as AgentTool<any>, killTool as AgentTool<any>, listTool as AgentTool<any>];
+		return [spawnTool as AgentTool<any>, killTool as AgentTool<any>, listTool as AgentTool<any>];
 	}
 
 	function buildChildAgent(
@@ -1321,7 +1249,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 	async function spawnChild(
 		callerId: string | undefined,
-		params: { id: string; system_prompt: string; task: string; timeout_seconds?: number; contract: unknown; keep?: boolean },
+		params: { id: string; system_prompt: string; task: string; timeout_seconds?: number; contract: unknown },
 		model: Model<any>,
 		cwd: string,
 		signal?: AbortSignal,
@@ -1334,7 +1262,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		if (children.has(params.id) || reservedIds.has(params.id)) {
 			throw new Error(
 				`Child agent "${params.id}" already exists. ` +
-				`Use delegate("${params.id}", …) to send it more work, or call list_agents() to inspect active agents.`,
+				`Choose a different id, or call list_agents() to inspect active agents.`,
 			);
 		}
 		const parentState = callerId ? getCallerState(callerId) : undefined;
@@ -1389,8 +1317,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 					throw new Error(`Agent "${params.id}" was killed while running`);
 				}
 			} catch (err) {
-				// spawn removes the subtree on any error; delegate keeps the child
-				// for ordinary errors and only removes it on timeout.
+				// The subtree is removed on any error; nothing outlives a failed run.
 				state.killed = true;
 				killSubtree(params.id);
 				throw err;
@@ -1402,8 +1329,8 @@ export default function multiAgent(pi: ExtensionAPI) {
 			}
 
 			const result = collectResult(params.id, state, 0);
-			// Agent-as-tool: a fulfilled contract ends the agent unless the caller asked to keep it.
-			if (!params.keep) killSubtree(params.id);
+			// Agent-as-tool: a fulfilled contract ends the agent.
+			killSubtree(params.id);
 			return result;
 		} finally {
 			reservedIds.delete(params.id);
@@ -1451,8 +1378,9 @@ export default function multiAgent(pi: ExtensionAPI) {
 			"Recursive spawning is bounded by pi-agents.json maxDepth/maxLiveAgents, which also picks the child model. " +
 			"This call blocks until the contract is fulfilled; an unfulfilled contract is nudged up to 10 times, then errors. " +
 			"Multiple spawn_agent calls in the same turn run concurrently. " +
-			"By default the agent is removed as soon as its contract is fulfilled (a tool call that returns); " +
-			"pass keep: true to retain it for delegate follow-ups, and kill_agent to free a kept agent. " +
+			"The agent is removed as soon as its contract is fulfilled — spawn is a typed function call: " +
+			"contract in, answers out, agent gone. Follow-ups are new spawns with the prior answers folded into the task. " +
+			"kill_agent aborts a running agent. " +
 			"On any error (including timeout) the agent subtree is removed from the registry automatically.",
 		parameters: spawnSchema,
 
@@ -1500,31 +1428,6 @@ export default function multiAgent(pi: ExtensionAPI) {
 				content: [{ type: "text", text: `Killed ${killedIds.length} agent(s): ${killedIds.join(", ")}.` }],
 				details: { childId: state.id, killedIds, reportCount },
 			};
-		},
-	});
-
-	// ── delegate ────────────────────────────────────────────────────────
-
-	pi.registerTool({
-		name: "delegate",
-		label: "Delegate",
-		description:
-			"Send a follow-up task with a fresh contract to an existing kept child agent (spawned with keep: true). " +
-			"The child resumes with its full conversation history and tools intact; the new contract " +
-			"replaces the old one, and the call blocks until the child fulfills it via submit_answers. " +
-			"The child is removed after answering unless this call also passes keep: true.",
-		parameters: delegateSchema,
-
-		renderCall(args, theme, context) {
-			return renderAgentCall("delegate", args, theme, context);
-		},
-
-		renderResult(result, options, theme, context) {
-			return renderAgentResult(result, options, theme, context);
-		},
-
-		async execute(_toolCallId, params, signal, onUpdate) {
-			return await delegateToChild(undefined, params, signal, onUpdate);
 		},
 	});
 
