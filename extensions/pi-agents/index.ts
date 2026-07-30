@@ -182,13 +182,15 @@ const CONFIG_FILE_NAME = "pi-agents.json";
 const DEFAULT_MAX_DEPTH = 1;
 const DEFAULT_MAX_LIVE_AGENTS = 6;
 
-const CONFIG_KEYS = new Set(["maxDepth", "maxLiveAgents", "model"]);
+const CONFIG_KEYS = new Set(["maxDepth", "maxLiveAgents", "model", "orchestrator"]);
 
 interface PiAgentsConfig {
 	maxDepth: number;
 	maxLiveAgents: number;
 	/** Model for spawned children: "provider/modelId" or a bare modelId. Unset = inherit the parent session's model. */
 	model?: string;
+	/** Strip write/edit from the main session so mutations route through spawned executors. Toggle with /orchestrate. */
+	orchestrator: boolean;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -215,6 +217,13 @@ function normalizeModelSpec(value: unknown, key: string, path: string): string {
 		throw new Error(`${path}: "${key}" must be a non-empty string ("provider/modelId" or "modelId")`);
 	}
 	return spec;
+}
+
+function normalizeBoolean(value: unknown, key: string, path: string): boolean {
+	if (typeof value !== "boolean") {
+		throw new Error(`${path}: "${key}" must be a boolean`);
+	}
+	return value;
 }
 
 async function readConfigFragment(path: string): Promise<Partial<PiAgentsConfig>> {
@@ -252,6 +261,9 @@ async function readConfigFragment(path: string): Promise<Partial<PiAgentsConfig>
 	if ("model" in parsed) {
 		config.model = normalizeModelSpec(parsed.model, "model", path);
 	}
+	if ("orchestrator" in parsed) {
+		config.orchestrator = normalizeBoolean(parsed.orchestrator, "orchestrator", path);
+	}
 	return config;
 }
 
@@ -262,6 +274,7 @@ async function loadPiAgentsConfig(cwd: string): Promise<PiAgentsConfig> {
 		maxDepth: projectConfig.maxDepth ?? globalConfig.maxDepth ?? DEFAULT_MAX_DEPTH,
 		maxLiveAgents: projectConfig.maxLiveAgents ?? globalConfig.maxLiveAgents ?? DEFAULT_MAX_LIVE_AGENTS,
 		model: projectConfig.model ?? globalConfig.model,
+		orchestrator: projectConfig.orchestrator ?? globalConfig.orchestrator ?? false,
 	};
 }
 
@@ -1068,6 +1081,46 @@ export default function multiAgent(pi: ExtensionAPI) {
 		cachedConfigError = undefined;
 	}
 
+	// ── Orchestrator mode ───────────────────────────────────────────────
+	// Strip write/edit from the main session so mutations route through
+	// spawned executors; read/bash stay for context-gathering and
+	// verification. Removing the tools from the schema (setActiveTools)
+	// beats blocking tool_call: the model never sees them, so no turns are
+	// burned on rejections. bash remains an escape hatch (sed -i) — this
+	// is a strong default, not a sandbox.
+
+	const ORCHESTRATOR_STRIPPED = new Set(["write", "edit"]);
+	let orchestratorOn = false;
+	let toolsBeforeOrchestrator: string[] | undefined;
+
+	function applyOrchestrator(on: boolean, ctx: { hasUI: boolean; ui: any }): void {
+		if (on === orchestratorOn) return;
+		orchestratorOn = on;
+		if (on) {
+			toolsBeforeOrchestrator ??= pi.getActiveTools();
+			pi.setActiveTools(toolsBeforeOrchestrator.filter((name) => !ORCHESTRATOR_STRIPPED.has(name)));
+		} else {
+			if (toolsBeforeOrchestrator) pi.setActiveTools(toolsBeforeOrchestrator);
+			toolsBeforeOrchestrator = undefined;
+		}
+		if (ctx.hasUI) ctx.ui.setStatus("pi-agents", on ? "orchestrator" : undefined);
+	}
+
+	pi.registerCommand("orchestrate", {
+		description: "Toggle orchestrator mode (strip write/edit; delegate mutations via spawn_agent)",
+		handler: async (_args, ctx) => {
+			applyOrchestrator(!orchestratorOn, ctx);
+			if (ctx.hasUI) {
+				ctx.ui.notify(
+					orchestratorOn
+						? "Orchestrator mode on: write/edit stripped from the main session; delegate mutations via spawn_agent."
+						: "Orchestrator mode off: write/edit restored.",
+					"info",
+				);
+			}
+		},
+	});
+
 	function getCallerState(callerId: string): ChildState {
 		const state = children.get(callerId);
 		if (!state) throw new Error(`Caller agent "${callerId}" is no longer active.`);
@@ -1339,11 +1392,14 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		clearConfigCache();
+		orchestratorOn = false;
+		toolsBeforeOrchestrator = undefined;
 		cachedRegistry ??= ctx.modelRegistry;
 		cachedGetApiKey ??= (provider: string) => ctx.modelRegistry.getApiKeyForProvider(provider);
 		try {
 			const config = await getConfig(ctx.cwd);
 			if (config.model) resolveChildModel(config.model, ctx.modelRegistry);
+			if (config.orchestrator) applyOrchestrator(true, ctx);
 		} catch (err) {
 			if (ctx.hasUI) {
 				ctx.ui.notify(`pi-agents config error: ${(err as Error).message}`, "error");
@@ -1383,6 +1439,9 @@ export default function multiAgent(pi: ExtensionAPI) {
 			"kill_agent aborts a running agent. " +
 			"On any error (including timeout) the agent subtree is removed from the registry automatically.",
 		parameters: spawnSchema,
+		promptGuidelines: [
+			"When write and edit are unavailable (orchestrator mode), perform all file mutations by spawning executor agents via spawn_agent; keep using read and bash directly for context and verification.",
+		],
 
 		renderCall(args, theme, context) {
 			return renderAgentCall("spawn_agent", args, theme, context);

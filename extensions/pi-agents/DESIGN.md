@@ -59,6 +59,20 @@ one contract — spawn, answer, removed.
   contract answers already travel as data into the next spawn's task.
   Reversal condition: executors demonstrably rebuilding large context every
   spawn — then revisit persistence, not before.
+- **2026-08 — Orchestrator mode: the main session delegates mutations.**
+  The `orchestrator` config key (default false) and the `/orchestrate`
+  command strip `write`/`edit` from the main session via
+  `pi.setActiveTools`; schema removal beats a `tool_call` block, which
+  leaves the tool visible and burns turns on rejections. `read`/`bash`
+  stay so the orchestrator can gather context and verify; `bash` is a
+  known escape hatch (`sed -i`), so this is a strong default, not a
+  sandbox. `maxDepth` stays 1: the evidenced pattern is one orchestrator
+  with parallel workers (Anthropic's research system; Cognition's
+  context-loss argument against deep delegation) — each extra hop
+  re-summarizes the task in prose, and blocking spawns make a deep chain
+  serialize while consuming the shared maxLiveAgents budget. Reversal: a
+  demonstrated executor→verifier need raises maxDepth per-project, not
+  the default.
 
 ## Architecture
 
