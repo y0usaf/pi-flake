@@ -219,16 +219,35 @@ export function registerPiRtk(
 ): void {
   const localBashOperations = createLocalBashOperations();
   let enabled = true;
+  const notifiedFailures = new Set<RtkFailureKind>();
+
+  function notifyFailure(ctx: ExtensionContext, failure: RtkFailureKind): void {
+    if (!ctx.hasUI || notifiedFailures.has(failure)) {
+      return;
+    }
+
+    notifiedFailures.add(failure);
+    ctx.ui.notify(
+      `rtk rewrite ${failure}; using the original command`,
+      "warning",
+    );
+  }
 
   async function rewriteIfEnabled(
     command: string,
-    signal?: AbortSignal,
+    ctx: ExtensionContext,
   ): Promise<string | undefined> {
     if (!enabled) {
       return undefined;
     }
 
-    return rewriter.rewrite(command, signal);
+    const failures = rewriter.getStatus().failures;
+    const rewritten = await rewriter.rewrite(command, ctx.signal);
+    const status = rewriter.getStatus();
+    if (status.failures > failures && status.lastFailure) {
+      notifyFailure(ctx, status.lastFailure);
+    }
+    return rewritten;
   }
 
   pi.registerCommand("rtk", {
@@ -245,7 +264,12 @@ export function registerPiRtk(
       const action = args.trim().toLowerCase();
 
       if (action === "status") {
+        const failures = rewriter.getStatus().failures;
         const availability = await rewriter.probe(ctx.signal);
+        const status = rewriter.getStatus();
+        if (status.failures > failures && status.lastFailure) {
+          notifyFailure(ctx, status.lastFailure);
+        }
         ctx.ui.notify(
           formatStatus(enabled, { ...rewriter.getStatus(), availability }),
           "info",
@@ -281,7 +305,7 @@ export function registerPiRtk(
       return;
     }
 
-    const rewritten = await rewriteIfEnabled(event.input.command, ctx.signal);
+    const rewritten = await rewriteIfEnabled(event.input.command, ctx);
     if (rewritten && enabled) {
       event.input.command = rewritten;
     }
@@ -292,7 +316,7 @@ export function registerPiRtk(
       return;
     }
 
-    const rewritten = await rewriteIfEnabled(event.command, ctx.signal);
+    const rewritten = await rewriteIfEnabled(event.command, ctx);
     if (!rewritten || !enabled) {
       return;
     }
