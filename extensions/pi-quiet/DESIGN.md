@@ -18,39 +18,29 @@
   Reversed if pi ever treats an empty label as "add no child". ctrl+t
   still reveals full thinking: the toggle rebuilds chat from untouched
   session messages.
-- **2026-08-11 — tool rows get faces, results stay builtin.** (Supersedes
-  same-day "chrome only, no tool-render override": in use, tool rows were
-  the loudest chrome left.) Overrides re-register builtins with a custom
-  `renderCall` only; `renderResult` is omitted, so builtin result
-  rendering (diffs, syntax highlight, ctrl+o expansion) is inherited per
-  extensions.md "Rendering: resolved per slot". Rejected smaller thing:
-  minimal-mode.ts-style full re-render, ~6x the code for worse results.
-- **2026-07-29 — quiet rows: success is silent, failure speaks.**
-  (Supersedes "results stay builtin" in the 2026-08-11 faces entry: user
-  direction — minimalism outranks builtin result fidelity.) bash, grep,
-  find, ls set `renderShell: "self"` (no Box padding/status bg) and
-  override `renderResult`: a successful result renders an empty Container
-  and parks a dim digest on the call row instead (` · ok · ctrl+o`,
-  ` · 14 hits · ctrl+o`); ctrl+o expands to the full output under a dim
-  rail `  │ `; a failed result renders its full output under an
-  error-colored rail — bash throws on non-zero exit, so the thrown
-  message (output + "Command exited with code N") IS the failure rail.
-  Digests count non-empty result-text lines (details carry only
-  truncation metadata; exit codes never reach the renderer). The call row
-  doubles as state indicator: dim face while running, accent once the
-  digest lands, `(x_x)` on error. Digest handoff: `renderResult` writes
-  `context.state.digest` and re-invalidates via `queueMicrotask` (the
-  call slot renders first in a pass; the microtask re-render picks the
-  digest up, guarded by an equality check so it cannot loop). write keeps
-  builtin result rendering — its diff view beats quiet. Rejected:
-  duration in the digest (`executionStarted` is a boolean, not a
-  timestamp); uniform face column (user kept per-tool personality).
-- **2026-08-11 — quiet never faces a tool another extension owns.**
-  Registering a tool name is exclusive: two extensions claiming one name
-  is a hard load error (pi refused to start when quiet and pi-hashline
-  both registered read/edit). So TOOL_ROWS covers only bash, write,
-  grep, find, ls; hashline's read/edit render plain. Reversed if pi ever
-  grows a render-only override that does not claim the name.
+- **2026-07-29 — tool rows are pi's own; quiet registers no tools.**
+  (Supersedes four entries that together described a tool-override layer
+  that is now deleted: same-day "quiet rows: success is silent, failure
+  speaks", 2026-08-11 "tool rows get faces, results stay builtin",
+  2026-07-29 "override the builtin *definitions*", 2026-07-29 "error face
+  `(x_x)` lives in `renderCall`", and 2026-08-11 "quiet never faces a tool
+  another extension owns".) In use the quiet rows looked worse than pi's
+  defaults, and the override cost more than looks. Two mechanical reasons,
+  both verified in pi 0.82.1: (1) `renderCall` and `renderResult` for one
+  tool share `context.state`, so replacing one slot breaks its partner —
+  `src/core/tools/bash.ts:459` writes `state.startedAt` in `renderCall`
+  and reads it in `renderResult` for the elapsed timer and its 1s refresh
+  interval, both silently lost under a custom `renderCall`; (2) a tool
+  name is claimed by the first extension that registers it
+  (`extensions/runner.ts:450`, first-wins, no error), so quiet could only
+  ever reach the five names nobody else owned — pi-hashline's read/edit,
+  every extension tool, and the hard-wired skill block
+  (`SkillInvocationMessageComponent`) kept the default boxed shell, and
+  the transcript came out half quiet, half boxed. Deleting the layer buys
+  uniform rows, ~120 LoC, and pi's diffs, syntax highlight, streaming and
+  ctrl+o expansion back. Reversed if pi grows a render-only override that
+  applies to every row without claiming a tool name — that, not per-tool
+  registration, is what quiet tool rows would need.
 - **2026-08-11 — colors stay in themes.** Border/accent muting is theme
   JSON (data), not code. This extension touches only surfaces a theme
   cannot reach.
@@ -59,12 +49,12 @@
   already minimal and its info density won; the face belongs on the
   editor, where the thinking-level color gives it meaning.
 - **2026-08-11 — personality is data, not machinery.** Bare removal read
-  as boring in use, so every remaining surface carries an ASCII face:
-  blink spinner, tool-row faces, editor-border face, random
-  hidden-thinking label. Each is a constant table; no timers, no event
-  subscriptions. ASCII only — full-width kaomoji risk misalignment.
-  Pacing animation rejected in use: motion without meaning; a blink is
-  enough.
+  as boring in use, so the one surface quiet still draws carries an ASCII
+  face: `EDITOR_FACE` in the editor border. A constant, not a code path.
+  ASCII only — full-width kaomoji risk misalignment. Rejected in use:
+  blink-glyph spinner (motion without meaning), per-tool faces (see the
+  tool-rows entry), random hidden-thinking label (hidden should mean
+  hidden).
 - **2026-08-11 — editor keeps one border, face rides its color.**
   (Supersedes same-day deferral of editor changes.) `QuietEditor extends
   CustomEditor` post-processes `super.render()`: `(^-^)` embedded in the
@@ -73,21 +63,6 @@
   thinking-level (or bash-mode) color — the face doubles as the thinking
   indicator for free. Top border stays because the transcript/editor
   boundary must survive; fully borderless blends when idle.
-- **2026-07-29 — override the builtin *definitions*, not the wrapped
-  tools.** `createLsTool(cwd)` and friends return `AgentTool`, which
-  `wrapToolDefinition` builds without `promptSnippet`/`promptGuidelines`
-  (bash is the lone exception: it re-attaches them by hand). Registering
-  those wrappers dropped write/grep/find/ls prompt metadata from the
-  system prompt — `agent-session.ts` builds `_toolPromptSnippets` from
-  the override registry, and extensions.md states prompt metadata is not
-  inherited. TOOL_ROWS now carries `create*ToolDefinition`.
-- **2026-07-29 — error face `(x_x)` lives in `renderCall`.** (Supersedes
-  the Deferred entry that called this impossible.) `ToolRenderContext`
-  carries `isError` into the call slot as well: `tool-execution.ts`
-  rebuilds the render context on every `updateDisplay()`, and result
-  arrival triggers one. (Its "no `renderResult` override" clause is
-  superseded by the 2026-07-29 quiet-rows entry above: digest rows now
-  override `renderResult`; write still inherits builtin rendering.)
 - **2026-07-29 — editor border is the working indicator.** (Supersedes
   "no timers, no subscriptions" in the 2026-08-11 personality entry.)
   `setWorkingVisible(false)` removes the loader row; while the agent run
@@ -104,17 +79,14 @@
 
 ## Architecture
 
-- `extensions/quiet.ts` — one file. Decision tables (PULSE, TOOL_ROWS,
-  EDITOR_FACE, ERROR_FACE, EMPTY_RESULT) up top; machinery below: a
-  generic tool-override loop over per-cwd memoized builtin definitions
-  (digest rows add self-shell + railed `renderResult`, digest parked in
-  row-local `context.state`), a `QuietEditor` render post-pass with pulse
-  paint, module-level agent state (`agentActive`, `pulseTimer`,
-  `pulseFrame`, `editor`), and hooks: `session_start` (`setHeader`,
-  `setWorkingVisible(false)`, `setHiddenThinkingLabel("")`,
-  `setEditorComponent`) plus
-  `agent_start`/`agent_end`/`agent_settled`/`session_shutdown` driving
-  the pulse. No commands, no config.
+- `extensions/quiet.ts` — one file, chrome only. Decision constants
+  (PULSE, PULSE_MS, EDITOR_FACE) up top; machinery below: a `QuietEditor`
+  render post-pass with pulse paint, module-level agent state
+  (`agentActive`, `pulseTimer`, `pulseFrame`, `editor`), and hooks:
+  `session_start` (`setHeader`, `setWorkingVisible(false)`,
+  `setHiddenThinkingLabel("")`, `setEditorComponent`) plus
+  `agent_start`/`agent_end`/`agent_settled`/`session_shutdown` driving the
+  pulse. No tools, no commands, no config.
 - `[[canon:no-privileged-path]]` n/a: single-file extension, no plugin
   surface of its own; reversed if it ever grows per-surface toggles.
 
@@ -122,13 +94,16 @@
 
 - Toggle command (`/quiet`) — add when someone actually wants default
   chrome back mid-session; until then restart without the extension.
-- Muted theme companion file — separate concern, ships as a theme if at
-  all.
+- Transparent tool and skill boxes — the boxed background behind every
+  tool row and skill block is theme data (`toolPendingBg`,
+  `toolSuccessBg`, `toolErrorBg`, `customMessageBg`), and `""` resolves to
+  `\x1b[49m`, the terminal's own background, in `theme.ts:bgAnsi`. So it
+  ships as a theme file if it ships at all — never as code here.
 
 ## Roadmap
 
 - Phase 1 (done when `nix build .#pi-quiet` passes and the TUI shows no
-  header, no loader row, face tool rows, pulsing editor border during
-  agent runs, default footer): ship as `testing`.
+  header, no loader row, pi's own tool rows, a pulsing editor border
+  during agent runs, default footer): ship as `testing`.
 - Phase 2 (done when it has survived two weeks of daily use without
   wanting default chrome back): promote to `active` in registry.nix.
