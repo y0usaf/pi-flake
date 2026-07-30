@@ -205,6 +205,7 @@ export function registerEditTool(pi: ExtensionAPI): void {
     ],
     parameters: editSchema,
     prepareArguments: prepareEditArguments,
+    renderShell: "default",
 
     renderCall(args, theme, context) {
       const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
