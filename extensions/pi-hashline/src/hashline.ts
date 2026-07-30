@@ -81,12 +81,6 @@ export function getVisibleLines(text: string): string[] {
   return lines;
 }
 
-function joinVisibleLines(lines: string[], preserveTerminalNewline: boolean): string {
-  if (lines.length === 0) return "";
-  const joined = lines.join("\n");
-  return preserveTerminalNewline ? `${joined}\n` : joined;
-}
-
 export function formatHashlineRegion(lines: string[], startLine: number): string {
   return lines
     .map((line, index) => `${startLine + index}${computeLineHash(line)}|${line}`)
@@ -261,14 +255,6 @@ function resolveLineEdits(edits: RawEdit[], fileLines: string[]): LineEdit[] {
   }
 
   return sorted;
-}
-
-function applyLineEdits(originalLines: string[], edits: LineEdit[]): string[] {
-  const next = [...originalLines];
-  for (const edit of [...edits].sort((a, b) => b.start - a.start || b.end - a.end)) {
-    next.splice(edit.start, edit.end - edit.start, ...edit.lines);
-  }
-  return next;
 }
 
 type NonEmptyLineTerminator = Exclude<LineTerminator, "">;
