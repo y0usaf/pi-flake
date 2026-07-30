@@ -12,7 +12,7 @@ Minimalist chrome. The logo header is gone; what remains:
 - **Tool rows** → untouched. Quiet registers no tools, so builtin rows
   keep their diffs, syntax highlight, bash elapsed timer and `ctrl+o`
   expansion, and rows owned by other extensions stay consistent with
-  them. See DESIGN.md for why the old face/digest rows were deleted.
+  them.
 
 Footer stays pi's default. Constants at the top of `quiet.ts` hold the
 face and the pulse ramp; one interval drives the border pulse while a run

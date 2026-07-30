@@ -242,7 +242,7 @@
               runHook preInstall
 
               mkdir -p "$out"
-              cp package.json README.md DESIGN.md "$out"/
+              cp package.json README.md "$out"/
               cp -r extensions "$out"/
 
               runHook postInstall
@@ -259,7 +259,6 @@
           };
 
         # Vendored from upstream pi: packages/coding-agent/examples/extensions/subagent.
-        # See extensions/earendil_pi-subagent/DESIGN.md for the local changes.
         "pi-subagent" = let
           subagentPackageJson = builtins.fromJSON (builtins.readFile ./extensions/earendil_pi-subagent/package.json);
         in
@@ -274,7 +273,7 @@
               runHook preInstall
 
               mkdir -p "$out"
-              cp package.json LICENSE README.upstream.md DESIGN.md "$out"/
+              cp package.json LICENSE README.upstream.md "$out"/
               cp -r extensions agents prompts "$out"/
 
               runHook postInstall
