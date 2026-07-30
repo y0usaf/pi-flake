@@ -84,6 +84,7 @@ function buildSafeEnv(): NodeJS.ProcessEnv {
 /** Host-added answer value: the child's explicit punt, better than fabrication. */
 const UNABLE_VALUE = "__unable__";
 /** Distinct tally value for a member that never answered this question. */
+const NO_ANSWER_VALUE = "__no_answer__";
 const MAX_CONTRACT_QUESTIONS = 8;
 /** Per question, including the host-added "Unable to determine" option. */
 const MAX_CONTRACT_OPTIONS = 8;
@@ -168,7 +169,12 @@ const spawnSchema = Type.Object({
 	system_prompt: Type.String({ description: "System prompt defining the child agent's role and behavior" }),
 	task: Type.String({ description: "Initial task to assign to the child agent" }),
 	contract: contractSchema,
-	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds to wait for the agent to finish (must be > 0). If the deadline expires the agent is aborted, removed from the registry, and an error is thrown." })),});
+	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds to wait for the agent to finish (must be > 0). If the deadline expires the agent is aborted, removed from the registry, and an error is thrown." })),
+	panel: Type.Optional(Type.Object({
+		size: Type.Optional(Type.Number({ description: "Number of independent panel members (2-5)" })),
+		models: Type.Optional(Type.Array(Type.String(), { description: "One model spec per panel member" })),
+	}, { description: "Consult a panel: spawn N independent children on this same contract and return an agreement tally. Members get ids <id>-1..N and no ask_parent tool. `models` gives each member its own model spec (\"provider/modelId\" or a bare id) — model diversity is the point; N clones of one model agree because they are the same function, not because the answer is right." })),
+});
 
 const killSchema = Type.Object({
 	id: Type.String({ description: "ID of the child agent to kill" }),
@@ -311,9 +317,33 @@ interface AgentToolDetails {
 	pendingAsk?: ContractQuestion[];
 	error?: string;
 	done: boolean;
+	panel?: { members: { id: string; model: string; answers: ContractAnswer[] | undefined; reports: string[] }[]; tally: PanelTally };
 }
 
+interface PanelTallyQuestion { questionId: string; prompt: string; freeText: boolean; unanimous: boolean; groups: { value: string; label: string; memberIds: string[]; count: number }[]; }
+interface PanelTally { questions: PanelTallyQuestion[]; disagreementCount: number; }
+
 const modelLabel = (agent: Agent): string => `${agent.state.model.provider}/${agent.state.model.id}`;
+
+/** Pure tally; free-text questions are never treated as consensus. */
+function tallyPanel(questions: ContractQuestion[], members: { id: string; model: string; answers: ContractAnswer[] | undefined }[]): PanelTally {
+	let disagreementCount = 0;
+	const result = questions.map((question) => {
+		const freeText = question.options.filter((o) => o.value !== UNABLE_VALUE).length === 0;
+		const groups = new Map<string, { value: string; label: string; memberIds: string[]; count: number }>();
+		for (const member of members) {
+			const answer = member.answers?.find((a) => a.id === question.id);
+			const value = answer ? answer.value : NO_ANSWER_VALUE;
+			const label = value === NO_ANSWER_VALUE ? "no answer" : value === UNABLE_VALUE ? "unable to determine" : (answer?.label ?? value);
+			const group = groups.get(value) ?? { value, label, memberIds: [], count: 0 };
+			group.memberIds.push(member.id); group.count++; groups.set(value, group);
+		}
+		const unanimous = groups.size === 1 && !groups.has(NO_ANSWER_VALUE);
+		if (!freeText && !unanimous) disagreementCount++;
+		return { questionId: question.id, prompt: question.prompt, freeText, unanimous, groups: [...groups.values()] };
+	});
+	return { questions: result, disagreementCount };
+}
 
 /**
  * Bare model id, with pi's muted "[provider]" badge (as /model renders it) only
@@ -716,6 +746,7 @@ interface ChildState {
 	modelDisplay: string;
 	reports: string[];
 	activity: ActivityItem[];
+	panelMember?: boolean;
 	/** The deliverable for this agent's single run. */
 	contract: ContractBox;
 	/** Set while the spawn run is in flight; guards teardown ordering. */
@@ -862,7 +893,7 @@ function collectResult(childId: string, state: ChildState, reportStartIdx: numbe
 
 function renderAgentCall(
 	toolLabel: string,
-	args: { id?: string; system_prompt?: string; task?: string; message?: string; contract?: unknown },
+	args: { id?: string; system_prompt?: string; task?: string; message?: string; contract?: unknown; panel?: { size?: number; models?: string[] } },
 	theme: Theme,
 ) {
 	const id = args.id || "...";
@@ -870,6 +901,7 @@ function renderAgentCall(
 	const preview = truncateToWidth(taskText, 70);
 	let text = theme.fg("toolTitle", theme.bold(`${toolLabel} `)) + theme.fg("accent", id);
 	if (Array.isArray(args.contract)) text += theme.fg("muted", ` · contract: ${args.contract.length}q`);
+	if (args.panel) text += theme.fg("muted", ` · panel ${args.panel.size ?? args.panel.models?.length ?? "?"}`);
 	text += "\n  " + theme.fg("dim", preview);
 	return new Text(text, 0, 0);
 }
@@ -937,6 +969,39 @@ function renderAgentResult(
 	}
 
 	const { expanded, isPartial } = options;
+
+	// -- panel summary --
+	const panel = details.panel;
+	const panelWellFormed = panel && Array.isArray(panel.members) && panel.members.every((member) =>
+		member && typeof member.id === "string" && typeof member.model === "string" && Array.isArray(member.reports) && member.reports.every((report) => typeof report === "string") &&
+		(member.answers === undefined || Array.isArray(member.answers) && member.answers.every((answer) => answer && typeof answer.id === "string" && typeof answer.value === "string" && (answer.label === undefined || typeof answer.label === "string"))),
+	) && panel.tally && Array.isArray(panel.tally.questions) && panel.tally.questions.every((question) =>
+		question && typeof question.questionId === "string" && typeof question.prompt === "string" && typeof question.freeText === "boolean" && typeof question.unanimous === "boolean" && Array.isArray(question.groups) && question.groups.every((group) =>
+			group && typeof group.value === "string" && typeof group.label === "string" && typeof group.count === "number" && Array.isArray(group.memberIds) && group.memberIds.every((id) => typeof id === "string"),
+		),
+	) && typeof panel.tally.disagreementCount === "number";
+	if (panelWellFormed) {
+		const icon = theme.fg("success", "✓");
+		const header = `${icon} ${theme.fg("toolTitle", theme.bold(stripControlSequences(details.childId)))} · panel ${panel.members.length} · ${panel.tally.disagreementCount} disagreement(s) · ${new Set(panel.members.map((m) => stripControlSequences(m.model))).size} models`;
+		const lines = panel.tally.questions.map((q) => {
+				const mark = q.freeText ? theme.fg("warning", "◌") : q.unanimous ? theme.fg("success", "•") : theme.fg("warning", "⚠");
+				const summary = q.groups.map((g) => `${stripControlSequences(g.label)} (${g.count})`).join(" vs ");
+				return `  ${mark} ${theme.fg("accent", truncateToWidth(stripControlSequences(q.prompt), 55))} — ${q.freeText ? "free-text — compare manually, not a consensus" : q.unanimous ? "unanimous" : "split"}: ${summary}`;
+			});
+		if (!expanded) return new Text([header, ...lines].join("\n"), 0, 0);
+		const container = new Container();
+		container.addChild(new Text(header, 0, 0));
+		for (const q of panel.tally.questions) {
+			const mark = q.freeText ? theme.fg("warning", "◌") : q.unanimous ? theme.fg("success", "•") : theme.fg("warning", "⚠");
+			container.addChild(new Text(`  ${mark} ${theme.fg("accent", truncateToWidth(stripControlSequences(q.prompt), 55))}`, 0, 0));
+			for (const g of q.groups) for (const id of g.memberIds) {
+				const member = panel.members.find((m) => m.id === id); const answer = member?.answers?.find((a) => a.id === q.questionId);
+				container.addChild(new Text(`    ${stripControlSequences(id)} [${stripControlSequences(member?.model ?? "?")}]: ${stripControlSequences(answer ? (answer.label ?? answer.value) : "no answer")}`, 0, 0));
+			}
+		}
+		for (const member of panel.members) for (const report of member.reports || []) container.addChild(new Text(`    ${stripControlSequences(member.id)}: ${stripControlSequences(report)}`, 0, 0));
+		return container;
+	}
 
 	// -- still running: spinner + live activity feed --
 	if (isPartial && !details.done) {
@@ -1279,7 +1344,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		const onAbort = () => state.agent.abort();
 		signal?.addEventListener("abort", onAbort, { once: true });
 		const unsub = subscribeChild(state.agent, state.id, state, onUpdate);
-		try { await withOptionalTimeout(state.agent, state.id, runUntilContractFulfilled(state, prompt, signal), timeoutSeconds); }
+		try { await withOptionalTimeout(state.agent, state.id, runUntilContractFulfilled(state, prompt, signal, !state.panelMember), timeoutSeconds); }
 		catch (err) { state.killed = true; killSubtree(state.id); throw err; }
 		finally { state.locked = false; unsub(); signal?.removeEventListener("abort", onAbort); if (state.killed) removeStateIfCurrent(state); }
 		if (state.killed) throw new Error(`Agent "${state.id}" was killed while running`);
@@ -1319,12 +1384,12 @@ export default function multiAgent(pi: ExtensionAPI) {
 			name: "spawn_agent",
 			label: "Spawn Agent",
 			description:
-				"Spawn a descendant agent within your own subtree. Requires a contract; " +
+				"Spawn a descendant agent within your own subtree. Pass `panel` to get a second opinion instead of judging alone: N independent children answer the same contract on different models and the result is an agreement tally. Requires a contract; " +
 				"the descendant's result is its structured contract answers, and it is removed once it answers. " +
 				"Subject to configured maxDepth and maxLiveAgents limits. If the child calls ask_parent instead, this call returns its questions and the agent stays alive (holding context and a maxLiveAgents slot) until answer_agent resumes it or kill_agent removes it.",
 			parameters: spawnSchema,
 			execute: async (_toolCallId, params, signal, onUpdate) => {
-				return await spawnChild(callerId, params, model, cwd, signal, onUpdate);
+				return params.panel ? await spawnPanel(callerId, params, model, cwd, signal, onUpdate) : await spawnChild(callerId, params, model, cwd, signal, onUpdate);
 			},
 		};
 
@@ -1421,7 +1486,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			if (reservedLive >= config.maxLiveAgents) {
 				throw new Error(
 					`Cannot spawn agent "${params.id}": maxLiveAgents ${config.maxLiveAgents} reached. ` +
-					`Kill or reuse an existing agent before spawning another one.`,
+					`Answer or kill suspended agents, or kill others.`, 
 				);
 			}
 
@@ -1455,6 +1520,47 @@ export default function multiAgent(pi: ExtensionAPI) {
 		}
 	}
 
+	async function spawnPanel(callerId: string | undefined, params: { id: string; system_prompt: string; task: string; timeout_seconds?: number; contract: unknown; panel?: { size?: number; models?: string[] } }, model: Model<any>, cwd: string, signal?: AbortSignal, onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void): Promise<AgentToolResult<AgentToolDetails>> {
+		const config = await getConfig(cwd);
+		const models = params.panel?.models;
+		const size = params.panel?.size;
+		if (models && size !== undefined && models.length !== size) throw new Error(`Panel models length ${models.length} does not match size ${size}`);
+		const n = models?.length ?? size;
+		if (n === undefined) throw new Error("Panel requires size or models");
+		if (!Number.isInteger(n) || n < 2 || n > 5) throw new Error(`Panel size ${n} must be between 2 and 5`);
+		if (children.size + reservedIds.size + n > config.maxLiveAgents) throw new Error(`Panel of ${n} exceeds maxLiveAgents cap ${config.maxLiveAgents} (live count ${children.size + reservedIds.size})`);
+		if (models && !cachedRegistry) throw new Error("pi-agents: cannot resolve panel models because the model registry is not available");
+		const memberModels = models ? models.map((spec) => resolveChildModel(spec, cachedRegistry as ModelRegistry)) : Array(n).fill(model);
+		const memberParams = Array.from({ length: n }, (_, i) => ({ ...params, id: `${params.id}-${i + 1}`, panel: undefined }));
+		let finished = 0;
+		// Each member's spawnChild already aborts its agent on the shared signal.
+		let firstFailure: unknown;
+		let failureSeen = false;
+		let teardownStarted = false;
+		const promises = memberParams.map((p, i) => spawnChild(callerId, p, model, cwd, signal, undefined, memberModels[i], false).catch((reason: unknown) => {
+			if (!teardownStarted) {
+				teardownStarted = true;
+				firstFailure = reason;
+				failureSeen = true;
+				for (const other of memberParams) if (other.id !== p.id) killSubtree(other.id);
+			}
+			throw reason;
+		}).finally(() => {
+			finished++;
+			onUpdate?.({ content: [{ type: "text", text: `Panel ${params.id}: ${finished}/${n} members finished` }], details: { childId: params.id, activity: [], reports: [], done: false } });
+		}));
+		const settled = await Promise.allSettled(promises);
+		if (failureSeen) throw new Error(`Panel member failed: ${firstFailure instanceof Error ? firstFailure.message : String(firstFailure)}`);
+		const results = settled.map((r) => (r as PromiseFulfilledResult<AgentToolResult<AgentToolDetails>>).value);
+		const members = results.map((r, i) => ({ id: memberParams[i].id, model: `${memberModels[i].provider}/${memberModels[i].id}`, answers: r.details?.answers, reports: r.details?.reports ?? [] }));
+		const questions = normalizeContract(params.contract, `panel "${params.id}"`);
+		const tally = tallyPanel(questions, members);
+		const lines = [`Panel "${params.id}": ${n} members, ${new Set(members.map((m) => m.model)).size} distinct models`];
+		if (tally.disagreementCount) lines.unshift(`DISAGREEMENT on ${tally.disagreementCount}/${tally.questions.filter((q) => !q.freeText).length} tallyable question(s)`);
+		for (const q of tally.questions) { lines.push(`${q.prompt} — ${q.freeText ? "[free-text — compare manually, not a consensus]" : q.unanimous ? "[unanimous]" : "[split]"}`); for (const g of q.groups) { lines.push(`  ${g.value} (${g.count}): ${g.memberIds.join(", ")} [${g.memberIds.map((id) => members.find((m) => m.id === id)?.model).join(", ")}]`); if (q.freeText || !q.unanimous) for (const id of g.memberIds) { const a = members.find((m) => m.id === id)?.answers?.find((a) => a.id === q.questionId); lines.push(`    ${id}: ${stripControlSequences(a ? (a.label ?? a.value) : "no answer")}`); } } }
+		for (const member of members) for (const report of member.reports) lines.push(`  ${member.id}: ${stripControlSequences(report)}`);
+		return { content: [{ type: "text", text: lines.join("\n") }], details: { childId: params.id, activity: [], reports: [], contract: questions, done: true, panel: { members, tally } } };
+	}
 
 	pi.on("session_start", async (_event, ctx) => {
 		configCache = undefined;
@@ -1491,7 +1597,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		name: "spawn_agent",
 		label: "Spawn Agent",
 		description:
-			"Spawn a child agent with its own system prompt, task, and contract. " +
+			"Spawn a child agent with its own system prompt, task, and contract. Pass `panel` to get a second opinion instead of judging alone: N independent children answer the same contract on different models and the result is an agreement tally. " +
 			"The contract is the child's deliverable: AskUserQuestion-style questions the child must answer " +
 			"via its submit_answers tool before its run can end; the tool result is those answers as data. " +
 			"Children get read, write, edit, bash, report (progress only), submit_answers, and descendant-scoped orchestration tools. " +
@@ -1510,6 +1616,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			'Minimal executor spawn: spawn_agent({ id: "executor-1", system_prompt: "You are an executor. Apply the requested change, verify it, then submit your answers.", task: "<the change>", contract: [{ prompt: "What changed, and how was it verified?" }] }).',
 			'Minimal scout spawn: spawn_agent({ id: "scout-1", system_prompt: "You are a read-only scout. Never modify files. Cite file:line evidence.", task: "<the question>", contract: [{ prompt: "Answer, with file:line evidence" }] }).',
 			'If a spawn returns questions, answer with answer_agent({ id, answers: [{ id: "<question id>", value: "<answer>" }] }); the call blocks until the contract is fulfilled.',
+			'Do not self-judge a ship/block, safety, or correctness call — get a second opinion. When the decision is a judgment rather than a lookup, invoke a panel: spawn_agent({ id: "panel", system_prompt: "You are an independent reviewer. Judge only what the evidence supports; do not defer to the requester.", task: "<the plan or diff to judge>", contract: [{ prompt: "Ship or block?", options: [{ label: "Ship" }, { label: "Block" }] }, { prompt: "Strongest argument against your own verdict" }], panel: { models: ["<modelA>", "<modelB>", "<modelC>"] } }). Consensus is only mechanical on questions with options, so always give the panel an enumerated verdict question. Different models disagree for different reasons; N members on one model mostly agree with each other.'
 		],
 
 		renderCall(args, theme) {
@@ -1525,7 +1632,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			if (!model) throw new Error("No model selected");
 
 			adoptSessionContext(ctx);
-			return await spawnChild(undefined, params, model, ctx.cwd, signal, onUpdate);
+			return params.panel ? await spawnPanel(undefined, params, model, ctx.cwd, signal, onUpdate) : await spawnChild(undefined, params, model, ctx.cwd, signal, onUpdate);
 		},
 	});
 

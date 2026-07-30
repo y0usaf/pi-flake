@@ -109,6 +109,22 @@ one contract — spawn, answer, removed.
   system prompt by convention. The extension never parses agent ids for
   behavior; magic-string dispatch fails silent. Reversal condition: delegation
   still failing to occur after the gate and tripwire have had a fair trial.
+- **2026-08 — Panels are a spawn parameter, not a separate consult tool.** A
+  panel belongs on `spawn_agent`: aggregation already has a home in the
+  existing result builder, while a second orchestration tool would trigger the
+  registry extraction this document already names as the condition for
+  splitting the module. The smaller thing rejected, per `[[canon:least-code]]`,
+  is a separate `consult` tool. Model diversity is the feature, not panel size:
+  N samples from one model correlate because they are the same function, not
+  because the answer is right, so `models` is first-class and `size` alone is
+  the degenerate case. Consensus is mechanical only for enumerated options;
+  free-text answers are listed verbatim and never tallied, because exact
+  string matches across free text are meaningless. Panel members have no
+  `ask_parent`: a judge's job is a verdict under uncertainty, and
+  `__unable__` already expresses "cannot determine" without holding a slot
+  open. If a third distinct multi-agent shape beyond fan-out/join and executor
+  delegation is being hand-repeated in prose across sessions, extract a
+  declarative workflow format instead of growing more `spawn_agent` parameters.
 
 ## Architecture
 
@@ -127,7 +143,7 @@ Single-file extension (`index.ts`). Sections, in order:
   authorization, spawn/kill lifecycle — decision-making
 
 The registry owns child lifecycle. The extension boundary is
-`createChildTools` + `createChildManagementTools`: everything a child can
+`createChildTools` + `createChildManagementTools` (including ask_parent/answer_agent): everything a child can
 invoke is declared there. `[[canon:no-privileged-path]]` is `n/a` beyond
 that — the extension *is* the feature; there is no builtins layer to split
 out. Reversal: if a second orchestration feature (e.g. teams, shared
@@ -135,9 +151,11 @@ blackboard) appears, extract a registry module both use.
 
 ## Deferred
 
-- **Per-spawn model override** — config sets one model for all children.
-  Deferred until per-role models are actually needed; the tool schema is the
-  obvious extension point.
+- **Per-spawn model override** — config sets one model for ordinary
+  non-panel children. A per-member model is available for panels because
+  model diversity is their purpose; a per-spawn override for an ordinary
+  non-panel child remains deferred, with the tool schema as the obvious
+  extension point.
 - **Background spawn / handle polling** — blocking semantics plus parallel
   tool calls cover current use. A `wait_agent`/`status` split is the planned
   shape if long-running children become common.
@@ -163,4 +181,5 @@ blackboard) appears, extract a registry module both use.
 - **Phase 3 — incentive alignment.** Criterion: one week of orchestrator-mode
   use in which every file mutation either went through a spawned executor or
   tripped a visible correction.
+- **Phase 4 — panel judgment.** Criterion: panels are used for at least one
   documented judgment call with a split verdict rendered as an option tally.
