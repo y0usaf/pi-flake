@@ -9,16 +9,13 @@ import {
   joinTextLineRecords,
   loadTextFile,
   normalizeToLF,
-  restoreLineEnding,
   splitTextLineRecords,
   stripBom,
 } from "../src/text-file";
 
 describe("line endings and BOM", () => {
-  test("normalizes and restores line endings", () => {
+  test("normalizes line endings", () => {
     expect(normalizeToLF("a\r\nb\rc")).toBe("a\nb\nc");
-    expect(restoreLineEnding("a\nb", "\n")).toBe("a\nb");
-    expect(restoreLineEnding("a\nb", "\r\n")).toBe("a\r\nb");
   });
 
   test("splits and joins mixed line endings", () => {

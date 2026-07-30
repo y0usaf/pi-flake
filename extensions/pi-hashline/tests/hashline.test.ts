@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { HASHLINE_BIGRAMS } from "../src/constants";
 import {
-  applyEditsToContent,
   applyEditsToRawContentPreservingLineEndings,
   buildChangedAnchorResponse,
   computeEditLineMetrics,
@@ -11,14 +11,10 @@ import {
 } from "../src/hashline";
 
 function anchor(lineNumber: number, line: string): string {
-  return `${lineNumber}${computeLineHash(lineNumber, line)}`;
+  return `${lineNumber}${computeLineHash(line)}`;
 }
 
 function apply(original: string, edits: RawEdit[]): string {
-  return applyEditsToContent(original, edits);
-}
-
-function applyRaw(original: string, edits: RawEdit[]): string {
   return applyEditsToRawContentPreservingLineEndings(original, edits);
 }
 
@@ -30,22 +26,27 @@ describe("hashline formatting", () => {
     expect(getVisibleLines("a\n\nb\n")).toEqual(["a", "", "b"]);
   });
 
-  test("hashes use two BPE-friendly bigrams", () => {
-    const hash = computeLineHash(12, "  return value;");
-    expect(hash).toMatch(/^[a-z]{4}$/);
-    expect(computeLineHash(12, "  return value;")).toBe(hash);
+  test("generated bigram table matches the original hand-written table", () => {
+    // Pinned against the pre-generation implementation. Any change here means
+    // every emitted anchor changes and stored sessions get stale-anchor errors.
+    expect(HASHLINE_BIGRAMS.length).toBe(647);
+    expect(HASHLINE_BIGRAMS[0]).toBe("aa");
+    expect(HASHLINE_BIGRAMS[646]).toBe("zz");
+    expect(computeLineHash("  return value;")).toBe("dqhk");
+    expect(computeLineHash("")).toBe("duyy");
+    expect(computeLineHash("const x = 1;")).toBe("heah");
   });
 
-  test("hashes every line's exact content without position shortcuts", () => {
-    expect(computeLineHash(1, "}")).toBe(computeLineHash(2, "}"));
-    expect(computeLineHash(1, "}")).not.toBe(computeLineHash(1, "{"));
-    expect(computeLineHash(1, "value")).not.toBe(computeLineHash(1, "value "));
-    expect(computeLineHash(1, "")).not.toBe(computeLineHash(1, " "));
+  test("hashes exact content", () => {
+    expect(computeLineHash("}")).toMatch(/^[a-z]{4}$/);
+    expect(computeLineHash("}")).not.toBe(computeLineHash("{"));
+    expect(computeLineHash("value")).not.toBe(computeLineHash("value "));
+    expect(computeLineHash("")).not.toBe(computeLineHash(" "));
   });
 
   test("formatted region prefixes LINEID|content", () => {
     expect(formatHashlineRegion(["alpha", "beta"], 10)).toBe(
-      `10${computeLineHash(10, "alpha")}|alpha\n11${computeLineHash(11, "beta")}|beta`,
+      `10${computeLineHash("alpha")}|alpha\n11${computeLineHash("beta")}|beta`,
     );
   });
 });
@@ -54,127 +55,108 @@ describe("anchor edits", () => {
   test("replace, append, prepend, and delete apply to original snapshot", () => {
     const original = "a\nb\nc\nd\n";
     const result = apply(original, [
-      { op: "replace", pos: anchor(2, "b"), lines: ["B"] },
-      { op: "append", pos: anchor(4, "d"), lines: ["e"] },
+      { loc: { range: { pos: anchor(2, "b"), end: anchor(2, "b") } }, content: ["B"] },
+      { loc: { append: anchor(4, "d") }, content: ["e"] },
     ]);
     expect(result).toBe("a\nB\nc\nd\ne\n");
 
     expect(apply("a\nb\n", [
-      { op: "prepend", pos: anchor(1, "a"), lines: ["z"] },
+      { loc: { prepend: anchor(1, "a") }, content: ["z"] },
     ])).toBe("z\na\nb\n");
 
     expect(apply("a\nb\nc\n", [
-      { op: "replace", pos: anchor(2, "b"), end: anchor(3, "c"), lines: null },
+      { loc: { range: { pos: anchor(2, "b"), end: anchor(3, "c") } }, content: null },
     ])).toBe("a\n");
   });
 
   test("preserves original terminal newline state", () => {
     expect(apply("a\nb\n", [
-      { op: "replace", pos: anchor(2, "b"), lines: ["B"] },
+      { loc: { range: { pos: anchor(2, "b"), end: anchor(2, "b") } }, content: ["B"] },
     ])).toBe("a\nB\n");
     expect(apply("a\nb", [
-      { op: "replace", pos: anchor(2, "b"), lines: ["B"] },
+      { loc: { range: { pos: anchor(2, "b"), end: anchor(2, "b") } }, content: ["B"] },
     ])).toBe("a\nB");
   });
 
   test("empty file supports boundary inserts", () => {
-    expect(apply("", [{ op: "prepend", lines: ["a"] }])).toBe("a");
-    expect(apply("", [{ op: "append", lines: ["a", "b"] }])).toBe("a\nb");
+    expect(apply("", [{ loc: "prepend", content: ["a"] }])).toBe("a");
+    expect(apply("", [{ loc: "append", content: ["a", "b"] }])).toBe("a\nb");
   });
 
   test("stale, v2, and malformed anchors reject", () => {
-    expect(() => apply("a\nb\n", [
-      { op: "replace", pos: anchor(2, "not-b"), lines: ["B"] },
-    ])).toThrow("[E_STALE_ANCHOR]");
-    expect(() => apply("a\nb\n", [
-      { op: "replace", pos: "2aa", lines: ["B"] },
-    ])).toThrow("[E_BAD_REF]");
-    expect(() => apply("a\nb\n", [
-      { op: "replace", pos: "2#ZZ", lines: ["B"] },
-    ])).toThrow("[E_BAD_REF]");
-    expect(() => apply("a\nb\n", [
-      { op: "replace", pos: "2", lines: ["B"] },
-    ])).toThrow("[E_BAD_REF]");
+    const replaceAt = (pos: string): RawEdit[] => [
+      { loc: { range: { pos, end: pos } }, content: ["B"] },
+    ];
+    expect(() => apply("a\nb\n", replaceAt(anchor(2, "not-b")))).toThrow("[E_STALE_ANCHOR]");
+    expect(() => apply("a\nb\n", replaceAt("2aa"))).toThrow("[E_BAD_REF]");
+    expect(() => apply("a\nb\n", replaceAt("2#ZZ"))).toThrow("[E_BAD_REF]");
+    expect(() => apply("a\nb\n", replaceAt("2"))).toThrow("[E_BAD_REF]");
   });
 
   test("never relocates stale anchors to nearby matching content", () => {
+    const pos = anchor(2, "foo");
     expect(() => apply("a\nbar\nfoo\nb\n", [
-      { op: "replace", pos: anchor(2, "foo"), lines: ["FOO"] },
+      { loc: { range: { pos, end: pos } }, content: ["FOO"] },
     ])).toThrow("[E_STALE_ANCHOR]");
   });
 
   test("overlapping or adjacent edits reject", () => {
     expect(() => apply("a\nb\nc\n", [
-      { op: "replace", pos: anchor(1, "a"), lines: ["A"] },
-      { op: "replace", pos: anchor(2, "b"), lines: ["B"] },
+      { loc: { range: { pos: anchor(1, "a"), end: anchor(1, "a") } }, content: ["A"] },
+      { loc: { range: { pos: anchor(2, "b"), end: anchor(2, "b") } }, content: ["B"] },
     ])).toThrow("[E_EDIT_CONFLICT]");
   });
 
   test("rendered v2/v3 hashline and diff prefixes are rejected in patch lines", () => {
-    expect(() => apply("a\n", [
-      { op: "replace", pos: anchor(1, "a"), lines: [`1${computeLineHash(1, "a")}|a`] },
-    ])).toThrow("[E_INVALID_PATCH]");
-    expect(() => apply("a\n", [
-      { op: "replace", pos: anchor(1, "a"), lines: ["1aa|a"] },
-    ])).toThrow("[E_INVALID_PATCH]");
-    expect(() => apply("a\n", [
-      { op: "replace", pos: anchor(1, "a"), lines: [`+ 1${computeLineHash(1, "a")}|a`] },
-    ])).toThrow("[E_INVALID_PATCH]");
-    expect(apply("a\n", [
-      { op: "replace", pos: anchor(1, "a"), lines: ["+ legitimate text"] },
-    ])).toBe("+ legitimate text\n");
-  });
-
-  test("v3 loc/content edits apply", () => {
-    expect(apply("a\nb\nc\n", [
-      { loc: { range: { pos: anchor(2, "b"), end: anchor(2, "b") } }, content: ["B"] },
-      { loc: { append: anchor(3, "c") }, content: ["d"] },
-    ])).toBe("a\nB\nc\nd\n");
-    expect(apply("a\n", [{ loc: "prepend", content: ["z"] }])).toBe("z\na\n");
+    const pos = anchor(1, "a");
+    const replaceWith = (content: string[]): RawEdit[] => [
+      { loc: { range: { pos, end: pos } }, content },
+    ];
+    expect(() => apply("a\n", replaceWith([`1${computeLineHash("a")}|a`]))).toThrow("[E_INVALID_PATCH]");
+    expect(() => apply("a\n", replaceWith(["1aa|a"]))).toThrow("[E_INVALID_PATCH]");
+    expect(() => apply("a\n", replaceWith([`+ 1${computeLineHash("a")}|a`]))).toThrow("[E_INVALID_PATCH]");
+    expect(apply("a\n", replaceWith(["+ legitimate text"]))).toBe("+ legitimate text\n");
   });
 
   test("raw anchor edits preserve mixed line endings", () => {
     const original = "a\nb\r\nc\r\n";
-    const result = applyRaw(original, [
+    const result = apply(original, [
       { loc: { range: { pos: anchor(2, "b"), end: anchor(2, "b") } }, content: ["B"] },
     ]);
     expect(result).toBe("a\nB\r\nc\r\n");
   });
 
   test("raw inserts preserve final newline state", () => {
-    expect(applyRaw("a", [{ loc: { append: anchor(1, "a") }, content: ["b"] }])).toBe("a\nb");
-    expect(applyRaw("a\r\n", [{ loc: { append: anchor(1, "a") }, content: ["b"] }])).toBe("a\r\nb\r\n");
+    expect(apply("a", [{ loc: { append: anchor(1, "a") }, content: ["b"] }])).toBe("a\nb");
+    expect(apply("a\r\n", [{ loc: { append: anchor(1, "a") }, content: ["b"] }])).toBe("a\r\nb\r\n");
   });
 });
 
 describe("replace_text", () => {
   test("replaces exact unique text", () => {
-    expect(apply("a b c", [
-      { op: "replace_text", oldText: "b", newText: "B" },
-    ])).toBe("a B c");
+    expect(apply("a b c", [{ oldText: "b", newText: "B" }])).toBe("a B c");
   });
 
   test("rejects empty, missing, and multiple matches", () => {
-    expect(() => apply("abc", [{ op: "replace_text", oldText: "", newText: "x" }])).toThrow("[E_BAD_OP]");
-    expect(() => apply("abc", [{ op: "replace_text", oldText: "z", newText: "x" }])).toThrow("[E_NO_MATCH]");
-    expect(() => apply("aa", [{ op: "replace_text", oldText: "a", newText: "x" }])).toThrow("[E_MULTI_MATCH]");
+    expect(() => apply("abc", [{ oldText: "", newText: "x" }])).toThrow("[E_BAD_OP]");
+    expect(() => apply("abc", [{ oldText: "z", newText: "x" }])).toThrow("[E_NO_MATCH]");
+    expect(() => apply("aa", [{ oldText: "a", newText: "x" }])).toThrow("[E_MULTI_MATCH]");
   });
 
   test("cannot mix replace_text with anchor edits", () => {
     expect(() => apply("a\n", [
-      { op: "replace_text", oldText: "a", newText: "A" },
-      { op: "append", lines: ["b"] },
+      { oldText: "a", newText: "A" },
+      { loc: "append", content: ["b"] },
     ])).toThrow("[E_EDIT_CONFLICT]");
   });
 
   test("raw replace_text preserves unrelated mixed line endings", () => {
-    const result = applyRaw("a\nb\r\nc\r\n", [
-      { op: "replace_text", oldText: "b", newText: "B" },
-    ]);
-    expect(result).toBe("a\nB\r\nc\r\n");
+    expect(apply("a\nb\r\nc\r\n", [
+      { oldText: "b", newText: "B" },
+    ])).toBe("a\nB\r\nc\r\n");
 
-    expect(applyRaw("a\nb\r\nc\r\n", [
-      { op: "replace_text", oldText: "b\nc", newText: "B\nC" },
+    expect(apply("a\nb\r\nc\r\n", [
+      { oldText: "b\nc", newText: "B\nC" },
     ])).toBe("a\nB\r\nC\r\n");
   });
 });
@@ -183,18 +165,18 @@ describe("changed anchor response", () => {
   test("returns fresh anchors around changed region", () => {
     const response = buildChangedAnchorResponse("a\nb\nc\n", "a\nB\nc\n");
     expect(response.text).toContain("--- Anchors 1-3 ---");
-    expect(response.text).toContain(`2${computeLineHash(2, "B")}|B`);
+    expect(response.text).toContain(`2${computeLineHash("B")}|B`);
     expect(response.addedLines).toBe(1);
     expect(response.removedLines).toBe(1);
   });
 
   test("edit metrics sum requested edits instead of spanning unchanged lines", () => {
     const original = Array.from({ length: 100 }, (_, index) => `line ${index + 1}`).join("\n") + "\n";
-    const edits: RawEdit[] = [
-      { op: "replace", pos: anchor(2, "line 2"), lines: ["LINE 2"] },
-      { op: "replace", pos: anchor(50, "line 50"), lines: ["LINE 50"] },
-      { op: "replace", pos: anchor(98, "line 98"), lines: ["LINE 98"] },
-    ];
+    const replaceLine = (line: number): RawEdit => {
+      const pos = anchor(line, `line ${line}`);
+      return { loc: { range: { pos, end: pos } }, content: [`LINE ${line}`] };
+    };
+    const edits = [replaceLine(2), replaceLine(50), replaceLine(98)];
     const response = buildChangedAnchorResponse(original, apply(original, edits));
     expect(response.addedLines).toBe(97);
     expect(response.removedLines).toBe(97);

@@ -32,10 +32,6 @@ export function normalizeToLF(text: string): string {
   return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
-export function restoreLineEnding(text: string, lineEnding: LineEnding): string {
-  return lineEnding === "\r\n" ? text.replace(/\n/g, "\r\n") : text;
-}
-
 export function splitTextLineRecords(text: string): TextLineRecord[] {
   if (text.length === 0) return [];
 

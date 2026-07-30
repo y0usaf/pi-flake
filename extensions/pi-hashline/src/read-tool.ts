@@ -16,21 +16,13 @@ import { resolveToCwd } from "./path-utils";
 import { throwIfAborted } from "./runtime";
 import { isSupportedImageFile, loadTextFileWithSnapshot } from "./text-file";
 
-function normalizePositiveInteger(value: number | undefined, name: "offset" | "limit"): number | undefined {
-  if (value === undefined) return undefined;
-  if (!Number.isInteger(value) || value < 1) {
-    throw new Error(`Read request field "${name}" must be a positive integer.`);
-  }
-  return value;
-}
-
 function formatHashlineReadPreview(
   text: string,
   options: { offset?: number; limit?: number },
 ): { text: string; truncation?: ReturnType<typeof truncateHead>; nextOffset?: number } {
   const allLines = getVisibleLines(text);
   const totalLines = allLines.length;
-  const startLine = normalizePositiveInteger(options.offset, "offset") ?? 1;
+  const startLine = options.offset ?? 1;
 
   if (totalLines === 0) {
     return {
@@ -46,7 +38,7 @@ function formatHashlineReadPreview(
     };
   }
 
-  const limit = normalizePositiveInteger(options.limit, "limit");
+  const limit = options.limit;
   const endIndex = limit ? Math.min(startLine - 1 + limit, totalLines) : totalLines;
   const selected = allLines.slice(startLine - 1, endIndex);
   const formatted = formatHashlineRegion(selected, startLine);

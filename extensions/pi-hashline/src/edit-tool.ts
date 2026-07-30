@@ -1,6 +1,5 @@
 import { constants } from "node:fs";
 import { access as fsAccess } from "node:fs/promises";
-import { StringEnum } from "@earendil-works/pi-ai";
 import {
   DEFAULT_MAX_BYTES,
   generateDiffString,
@@ -20,129 +19,61 @@ import {
 } from "./hashline";
 import { resolveToCwd } from "./path-utils";
 import { throwIfAborted } from "./runtime";
-import { getFileSnapshot, sameFileSnapshot } from "./snapshot";
-import { isSupportedImageFile, loadTextFileWithSnapshot, normalizeToLF } from "./text-file";
+import { loadTextFileWithSnapshot, normalizeToLF } from "./text-file";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-const ROOT_KEYS = new Set(["path", "edits"]);
-const EDIT_KEYS = new Set(["op", "pos", "end", "lines", "oldText", "newText", "loc", "content"]);
+const LEGACY_EDIT_KEYS = new Set(["op", "pos", "end", "lines", "oldText", "newText"]);
+
+/**
+ * Map one legacy edit entry (op/pos/end/lines, or op "replace_text") onto the
+ * strict v3 shapes before schema validation, per Pi's prepareArguments
+ * guidance. Anything unrecognized passes through for the schema to reject.
+ */
+function normalizeLegacyEdit(entry: unknown): unknown {
+  if (!isRecord(entry) || "loc" in entry || "content" in entry) return entry;
+  if (Object.keys(entry).some((key) => !LEGACY_EDIT_KEYS.has(key))) return entry;
+
+  const { op, pos, end, lines, oldText, newText } = entry;
+  if (op === "replace_text") {
+    return typeof oldText === "string" && typeof newText === "string" &&
+      pos === undefined && end === undefined && lines === undefined
+      ? { oldText, newText }
+      : entry;
+  }
+  if (oldText !== undefined || newText !== undefined || lines === undefined) return entry;
+
+  if (op === "replace" && typeof pos === "string" && (end === undefined || typeof end === "string")) {
+    return { loc: { range: { pos, end: end ?? pos } }, content: lines };
+  }
+  if ((op === "append" || op === "prepend") && end === undefined) {
+    if (pos === undefined) return { loc: op, content: lines };
+    if (typeof pos === "string") {
+      return { loc: op === "append" ? { append: pos } : { prepend: pos }, content: lines };
+    }
+  }
+  return entry;
+}
 
 function prepareEditArguments(args: unknown): unknown {
-  if (!isRecord(args) || Array.isArray(args.edits)) return args;
-  const path = args.path;
-  if (typeof path !== "string") return args;
+  if (!isRecord(args) || typeof args.path !== "string") return args;
 
-  if (typeof args.oldText === "string" && typeof args.newText === "string") {
-    return {
-      path,
-      edits: [{ op: "replace_text", oldText: args.oldText, newText: args.newText }],
-    };
+  if (Array.isArray(args.edits)) {
+    return { ...args, edits: args.edits.map(normalizeLegacyEdit) };
   }
 
-  if (typeof args.old_text === "string" && typeof args.new_text === "string") {
-    return {
-      path,
-      edits: [{ op: "replace_text", oldText: args.old_text, newText: args.new_text }],
-    };
+  const oldText = args.oldText ?? args.old_text;
+  const newText = args.newText ?? args.new_text;
+  if (typeof oldText === "string" && typeof newText === "string") {
+    return { path: args.path, edits: [{ oldText, newText }] };
   }
-
   return args;
 }
 
-function assertEditRequest(value: unknown): asserts value is EditRequest {
-  if (!isRecord(value)) throw new Error("Edit request must be an object.");
-  const unknownRootKeys = Object.keys(value).filter((key) => !ROOT_KEYS.has(key));
-  if (unknownRootKeys.length > 0) {
-    throw new Error(`Edit request contains unknown or unsupported fields: ${unknownRootKeys.join(", ")}.`);
-  }
-  if (typeof value.path !== "string" || value.path.length === 0) {
-    throw new Error('Edit request requires a non-empty "path" string.');
-  }
-  if (!Array.isArray(value.edits) || value.edits.length === 0) {
-    throw new Error('Edit request requires a non-empty "edits" array.');
-  }
-
-  for (const [index, edit] of value.edits.entries()) {
-    if (!isRecord(edit)) throw new Error(`Edit ${index} must be an object.`);
-    const unknownEditKeys = Object.keys(edit).filter((key) => !EDIT_KEYS.has(key));
-    if (unknownEditKeys.length > 0) {
-      throw new Error(`Edit ${index} contains unknown or unsupported fields: ${unknownEditKeys.join(", ")}.`);
-    }
-    const op = edit.op;
-    const hasLoc = "loc" in edit;
-    if (hasLoc) {
-      if (op !== undefined || "pos" in edit || "end" in edit || "lines" in edit || "oldText" in edit || "newText" in edit) {
-        throw new Error(`Edit ${index} with loc only supports loc and content.`);
-      }
-      const loc = edit.loc;
-      const validBoundary = loc === "append" || loc === "prepend";
-      const validObject = isRecord(loc) && (
-        (typeof loc.append === "string" && Object.keys(loc).length === 1) ||
-        (typeof loc.prepend === "string" && Object.keys(loc).length === 1) ||
-        (isRecord(loc.range) && typeof loc.range.pos === "string" && typeof loc.range.end === "string" && Object.keys(loc).length === 1)
-      );
-      if (!validBoundary && !validObject) {
-        throw new Error(`Edit ${index} loc must be "append", "prepend", {append}, {prepend}, or {range:{pos,end}}.`);
-      }
-      if (!("content" in edit)) throw new Error(`Edit ${index} requires a "content" field.`);
-      if (
-        edit.content !== null &&
-        typeof edit.content !== "string" &&
-        !(Array.isArray(edit.content) && edit.content.every((line) => typeof line === "string"))
-      ) {
-        throw new Error(`Edit ${index} field "content" must be a string array, string, or null.`);
-      }
-      continue;
-    }
-
-    if (op !== "replace" && op !== "append" && op !== "prepend" && op !== "replace_text") {
-      throw new Error(`Edit ${index} uses unknown op ${JSON.stringify(op)}. Expected loc/content or legacy replace, append, prepend, replace_text.`);
-    }
-
-    if ("pos" in edit && typeof edit.pos !== "string") {
-      throw new Error(`Edit ${index} field "pos" must be a string when provided.`);
-    }
-    if ("end" in edit && typeof edit.end !== "string") {
-      throw new Error(`Edit ${index} field "end" must be a string when provided.`);
-    }
-
-    if (op === "replace_text") {
-      if (typeof edit.oldText !== "string" || typeof edit.newText !== "string") {
-        throw new Error(`Edit ${index} with op "replace_text" requires string oldText and newText.`);
-      }
-      if ("pos" in edit || "end" in edit || "lines" in edit || "content" in edit) {
-        throw new Error(`Edit ${index} with op "replace_text" only supports oldText and newText.`);
-      }
-      continue;
-    }
-
-    if (!("lines" in edit)) {
-      throw new Error(`Edit ${index} requires a "lines" field.`);
-    }
-    if (
-      edit.lines !== null &&
-      typeof edit.lines !== "string" &&
-      !(Array.isArray(edit.lines) && edit.lines.every((line) => typeof line === "string"))
-    ) {
-      throw new Error(`Edit ${index} field "lines" must be a string array, string, or null.`);
-    }
-    if ("oldText" in edit || "newText" in edit || "content" in edit) {
-      throw new Error(`Edit ${index} with op "${op}" does not support oldText/newText/content; use loc/content or op "replace_text".`);
-    }
-    if (op === "replace" && typeof edit.pos !== "string") {
-      throw new Error(`Edit ${index} with op "replace" requires a pos anchor.`);
-    }
-    if ((op === "append" || op === "prepend") && "end" in edit) {
-      throw new Error(`Edit ${index} with op "${op}" does not support end.`);
-    }
-  }
-}
-
 export function registerEditTool(pi: ExtensionAPI): void {
-  const editLinesSchema = Type.Union([
+  const editContentSchema = Type.Union([
     Type.Array(Type.String(), { description: "literal replacement content lines" }),
     Type.String({ description: "literal replacement content split on newlines" }),
     Type.Null({ description: "delete target range" }),
@@ -161,21 +92,22 @@ export function registerEditTool(pi: ExtensionAPI): void {
     }, { additionalProperties: false }),
   ]);
 
-  const editItemSchema = Type.Object(
-    {
-      loc: Type.Optional(locSchema),
-      content: Type.Optional(editLinesSchema),
-      op: Type.Optional(StringEnum(["replace", "append", "prepend", "replace_text"] as const, {
-        description: "legacy edit operation",
-      })),
-      pos: Type.Optional(Type.String({ description: "legacy LINEID anchor" })),
-      end: Type.Optional(Type.String({ description: "legacy inclusive LINEID end anchor for replace" })),
-      lines: Type.Optional(editLinesSchema),
-      oldText: Type.Optional(Type.String({ description: "exact text for replace_text" })),
-      newText: Type.Optional(Type.String({ description: "replacement text for replace_text" })),
-    },
-    { additionalProperties: false },
-  );
+  const editItemSchema = Type.Union([
+    Type.Object(
+      {
+        loc: locSchema,
+        content: editContentSchema,
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        oldText: Type.String({ description: "exact unique text to replace" }),
+        newText: Type.String({ description: "replacement text" }),
+      },
+      { additionalProperties: false },
+    ),
+  ]);
 
   const editSchema = Type.Object(
     {
@@ -190,11 +122,11 @@ export function registerEditTool(pi: ExtensionAPI): void {
     label: "Edit",
     description: [
       "Patch a UTF-8 text file using strict hashline v3 LINEID anchors copied from current read output (e.g. 160sray).",
-      "Preferred entries: {loc,content}. loc: \"append\", \"prepend\", {append:LINEID}, {prepend:LINEID}, {range:{pos,end}}.",
+      "Each edit is {loc,content}. loc: \"append\", \"prepend\", {append:LINEID}, {prepend:LINEID}, {range:{pos,end}}.",
       "content is literal file content lines (string[]/string) or null to delete.",
+      "Fallback: a single {oldText,newText} edit performs one exact, unique text replacement.",
       "Anchors never relocate; stale hash mismatches are rejected with fresh retry anchors.",
       "Multiple anchor edits validate against the same pre-edit snapshot and apply bottom-up. Merge overlapping or adjacent edits.",
-      "Hashline v2 anchors are rejected. Legacy op/pos/end/lines and replace_text remain accepted for request-shape compatibility.",
     ].join("\n"),
     promptSnippet: "Patch files using strict hashline v3 LINEID anchors from current read output.",
     promptGuidelines: [
@@ -240,75 +172,43 @@ export function registerEditTool(pi: ExtensionAPI): void {
     },
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      assertEditRequest(params);
-      const path = params.path;
+      const { path, edits } = params as EditRequest;
       const absolutePath = resolveToCwd(path, ctx.cwd);
-      const mutationTargetPath = await resolveMutationTargetPath(absolutePath);
 
-      return withFileMutationQueue(mutationTargetPath, async () => {
+      try {
+        await fsAccess(absolutePath, constants.R_OK | constants.W_OK);
+      } catch (error: unknown) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT") throw new Error(`File not found: ${path}`);
+        if (code === "EACCES" || code === "EPERM") throw new Error(`File is not writable: ${path}`);
+        throw new Error(`Cannot access file: ${path}`);
+      }
+
+      const targetPath = await resolveMutationTargetPath(absolutePath);
+      return withFileMutationQueue(targetPath, async () => {
         throwIfAborted(signal);
-        const targetPath = await resolveMutationTargetPath(absolutePath);
-        if (targetPath !== mutationTargetPath) {
-          throw new Error("[E_PATH_CHANGED] File path resolved to a different target while waiting to edit. Re-read and retry.");
-        }
-
-        try {
-          await fsAccess(targetPath, constants.R_OK | constants.W_OK);
-        } catch (error: unknown) {
-          const code = (error as NodeJS.ErrnoException).code;
-          if (code === "ENOENT") throw new Error(`File not found: ${path}`);
-          if (code === "EACCES" || code === "EPERM") throw new Error(`File is not writable: ${path}`);
-          throw new Error(`Cannot access file: ${path}`);
-        }
-
-        if (await isSupportedImageFile(targetPath)) {
-          throw new Error(`Path is an image file: ${path}. Hashline edit only supports UTF-8 text files.`);
-        }
-
-        throwIfAborted(signal);
-        let file = await loadTextFileWithSnapshot(targetPath);
-        let original = file.text;
-        let snapshot = file.snapshot;
-        let resultRaw = applyEditsToRawContentPreservingLineEndings(file.rawText, params.edits, {
+        const file = await loadTextFileWithSnapshot(targetPath);
+        const resultRaw = applyEditsToRawContentPreservingLineEndings(file.rawText, edits, {
           defaultLineEnding: file.lineEnding,
         });
-        let result = normalizeToLF(resultRaw);
+        const result = normalizeToLF(resultRaw);
 
-        if (result === original) {
+        if (result === file.text) {
           return {
             content: [{ type: "text", text: "No changes made. The requested edits produced identical content." }],
-            details: { classification: "noop", snapshotId: snapshot.snapshotId, diff: "", patch: "" },
+            details: { classification: "noop", snapshotId: file.snapshot.snapshotId, diff: "", patch: "" },
           };
         }
 
         throwIfAborted(signal);
-        let latestSnapshot = await getFileSnapshot(targetPath);
-        if (!sameFileSnapshot(snapshot, latestSnapshot)) {
-          file = await loadTextFileWithSnapshot(targetPath);
-          original = file.text;
-          snapshot = file.snapshot;
-          resultRaw = applyEditsToRawContentPreservingLineEndings(file.rawText, params.edits, {
-            defaultLineEnding: file.lineEnding,
-          });
-          result = normalizeToLF(resultRaw);
-          if (result === original) {
-            return {
-              content: [{ type: "text", text: "No changes made. The requested edits produced identical content." }],
-              details: { classification: "noop", snapshotId: snapshot.snapshotId, diff: "", patch: "" },
-            };
-          }
-          latestSnapshot = snapshot;
-        }
-
-        const persisted = file.bom + resultRaw;
-        const updatedSnapshot = await writeTextFileAtomically(targetPath, persisted, {
-          expectedSnapshot: latestSnapshot,
+        const updatedSnapshot = await writeTextFileAtomically(targetPath, file.bom + resultRaw, {
+          expectedSnapshot: file.snapshot,
         });
 
-        const response = buildChangedAnchorResponse(original, result, { maxBytes: DEFAULT_MAX_BYTES });
-        const metrics = computeEditLineMetrics(original, params.edits);
-        const diffResult = generateDiffString(original, result);
-        const patch = generateUnifiedPatch(path, original, result);
+        const response = buildChangedAnchorResponse(file.text, result, { maxBytes: DEFAULT_MAX_BYTES });
+        const metrics = computeEditLineMetrics(file.text, edits);
+        const diffResult = generateDiffString(file.text, result);
+        const patch = generateUnifiedPatch(path, file.text, result);
         return {
           content: [{ type: "text", text: response.text }],
           details: {
@@ -317,7 +217,7 @@ export function registerEditTool(pi: ExtensionAPI): void {
             firstChangedLine: diffResult.firstChangedLine ?? response.firstChangedLine,
             snapshotId: updatedSnapshot.snapshotId,
             metrics: {
-              edits_attempted: params.edits.length,
+              edits_attempted: edits.length,
               added_lines: metrics.addedLines,
               removed_lines: metrics.removedLines,
             },
