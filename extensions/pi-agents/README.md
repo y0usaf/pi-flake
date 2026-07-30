@@ -49,6 +49,8 @@ Depth is counted from the root session at depth `0`:
 
 `maxLiveAgents` caps the total number of live agents kept in the in-memory registry at once.
 
+Defaults: `maxDepth: 1`, `maxLiveAgents: 6`, no `model` override.
+
 `model` picks the model every spawned child runs on — the point being to push delegated work onto a cheaper model than the parent session. Accepted forms:
 
 - `"provider/modelId"` — exact, e.g. `"anthropic/claude-haiku-4-5"`, `"vercel-ai-gateway/moonshotai/kimi-k2"` (provider is everything before the first `/`).
@@ -56,7 +58,7 @@ Depth is counted from the root session at depth `0`:
 
 Unset means children inherit whatever model the parent session has active. A spec that resolves to nothing fails loudly: the session-start notification reports it and `spawn_agent` throws, rather than silently falling back. Descendants use the same configured model, not their parent's.
 
-Unknown keys in `pi-agents.json` are a hard error, so a typo like `"models"` fails at session start instead of being ignored.
+Unknown keys in `pi-agents.json` are a hard error, so a typo like `"models"` is reported instead of being silently ignored: a UI notification fires at session start, and `spawn_agent` throws until the config is fixed.
 
 ## Tools
 
@@ -68,7 +70,7 @@ Multiple `spawn_agent` calls in one turn run concurrently (parallel tool executi
 
 - `timeout_seconds` — optional, must be a finite number greater than 0. If the child is still running when the deadline expires it is aborted, removed from the registry, and an error is thrown.
 
-**File-system confinement:** `read`, `write`, and `edit` are restricted to the child’s inherited working directory. Any path that resolves outside that tree — via `../` traversal, an absolute path to a different location, or a symlink escape — is rejected with `Path traversal denied`. Absolute paths that stay within that working directory are accepted. `bash` is **not** confined in the same way: it starts in the working directory, but it can still access the rest of the file system and execute arbitrary shell commands.
+**File-system access:** child `read`, `write`, `edit`, and `bash` are pi's built-in tools, created against the child's inherited working directory. None of them are confined to that tree — absolute paths outside it are accepted, and `bash` has the same OS-level file and network access as the user running pi. There is no sandbox; the working directory is a default, not a boundary.
 
 ### `delegate(id, message, [timeout_seconds])`
 
@@ -100,13 +102,13 @@ Example output:
 
 ## Nix
 
-A subflake, wired into the root flake as the `piAgents` path input.
+A subflake, wired into the root flake as the `piAgents` path input. All commands below run from the repository root.
 
 ```bash
 # Build this extension alone
 nix build .#pi-agents
 
-# Build pi with agents enabled
+# Build pi with all active extensions
 nix build .#pi-full
 
 # Dev shell with node 22
@@ -122,7 +124,7 @@ The package is the extension directory itself; the root flake's
 While a child is running, you see a live activity feed with a braille spinner:
 
 ```
-⠹ worker (5 actions)
+⠹ worker (6 actions)
   → read src/auth.ts
   ✓ read done
   → edit src/auth.ts
@@ -130,10 +132,10 @@ While a child is running, you see a live activity feed with a braille spinner:
   ↑ report "Refactored auth to use tokens"
 ```
 
-When done, the result shows a summary (Ctrl+O to expand for full activity log and reports):
+When done, the result shows a summary (pi's expand key — Ctrl+O by default — shows the full activity log and reports):
 
 ```
-✓ worker (5 actions, 1 reports)
+✓ worker (6 actions, 1 reports)
   ... 2 earlier
   ✓ edit done
   ↑ report "Refactored auth to use tokens"
@@ -173,8 +175,9 @@ Parent: "Which agents are still alive?"
 - **Children run in-process** — they are not isolated processes; a crash or infinite loop in a child can affect the parent session.
 - **Recursive spawning is config-bounded** — descendants may spawn more descendants only while doing so stays within configured `maxDepth` and `maxLiveAgents`.
 - **Subtree-scoped control** — descendant agents can only manage agents in their own subtree; they cannot delegate to or kill arbitrary siblings from other branches.
-- **`bash` is not file-system confined** — unlike `read`/`write`/`edit`, the `bash` tool can access paths outside the working directory. Treat child agents with `bash` as having the same OS-level file and network access as the user running pi.
-- **Minimal allowlisted env for `bash`** — child shell commands receive only a small allowlisted environment (`PATH`, `HOME`, locale/terminal basics, temp-dir basics, and a few standard identity variables). Secret variables are not forwarded by default. If a command genuinely needs something additional, pass it inline for that command invocation instead of relying on inherited environment state.
+- **No file-system confinement** — child `read`/`write`/`edit`/`bash` are pi's built-in tools running with the user's OS-level file and network access. The working directory is where relative paths resolve, nothing more.
+- **Minimal allowlisted env for `bash`** — child shell commands receive a small allowlisted environment: `PATH`, `HOME`, `SHELL`, `USER`, `LOGNAME`, locale/timezone variables, `TERM`/`COLORTERM`, `TMPDIR`, `XDG_RUNTIME_DIR`, and TLS/CA certificate variables (`SSL_CERT_FILE`, `SSL_CERT_DIR`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`). This filters which *environment variables* children inherit — it does not protect secrets stored in files, since a child can read them via `bash`. Pass genuinely needed extra variables inline per command.
+- **Child text is sanitized for the terminal** — reports and activity previews have ANSI/OSC escape sequences stripped before rendering, so a child cannot inject terminal control sequences into the TUI.
 
 ## License
 
