@@ -755,14 +755,19 @@ describe("context engine", () => {
     )) as { messages: Array<Record<string, unknown>> } | undefined;
 
     expect(result).toBeDefined();
-    // Protected head (0,1) and tail (7..11) untouched.
-    for (const index of [0, 1, 7, 8, 9, 10, 11]) {
+    // Copy-not-mutate: the input array is never touched; replacements come
+    // back on the returned messages only.
+    for (const index of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]) {
       expect(JSON.stringify(messages[index]!.content)).toBe(before[index]);
+    }
+    // Protected head (0,1) and tail (7..11) verbatim in the result.
+    for (const index of [0, 1, 7, 8, 9, 10, 11]) {
+      expect(JSON.stringify(result!.messages[index]!.content)).toBe(before[index]);
     }
     // Candidates 2..6 replaced by markers, despite `read` being on the
     // insertion-time skip list.
     for (const index of [2, 3, 4, 5, 6]) {
-      const text = (messages[index]!.content as Array<{ text: string }>)[0]!.text;
+      const text = (result!.messages[index]!.content as Array<{ text: string }>)[0]!.text;
       expect(text).toMatch(/<<<CCR:[0-9a-f]{16}\|code\|/);
     }
     expect(client.getStatus().stored).toBe(5);
@@ -789,12 +794,14 @@ describe("context engine", () => {
     const handler = handlers.get("context")!;
 
     const messages = makeMessages();
-    await handler({ messages }, makeCtx(false, 60));
-    const afterFirst = messages.map((m) => JSON.stringify(m.content));
-    const second = await handler({ messages }, makeCtx(false, 60));
+    const first = (await handler({ messages }, makeCtx(false, 60))) as {
+      messages: Array<Record<string, unknown>>;
+    };
+    const afterFirst = first.messages.map((m) => JSON.stringify(m.content));
+    const second = await handler({ messages: first.messages }, makeCtx(false, 60));
 
     expect(second).toBeUndefined();
-    expect(messages.map((m) => JSON.stringify(m.content))).toEqual(afterFirst);
+    expect(first.messages.map((m) => JSON.stringify(m.content))).toEqual(afterFirst);
     expect(client.getStatus().attempts).toBe(5);
     client.close();
   });

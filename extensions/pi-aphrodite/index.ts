@@ -912,6 +912,9 @@ export function registerPiAphrodite(
       return;
     }
 
+    // Copy-not-mutate: the context event contract wants replacement
+    // messages returned, never in-place edits of the host's array.
+    const nextMessages = messages.slice();
     let changed = false;
     for (let index = start; index < end; index += 1) {
       const message = messages[index];
@@ -935,14 +938,17 @@ export function registerPiAphrodite(
       }
 
       const preview = buildPreview(text, message.toolName, type);
-      message.content = [
-        { type: "text", text: renderCompressedResult(preview, type, stored) },
-      ];
+      nextMessages[index] = {
+        ...message,
+        content: [
+          { type: "text", text: renderCompressedResult(preview, type, stored) },
+        ],
+      };
       engineCompressed += 1;
       changed = true;
     }
 
-    return changed ? { messages: event.messages } : undefined;
+    return changed ? { messages: nextMessages as typeof event.messages } : undefined;
   });
 
   pi.on("tool_result", async (event, ctx) => {
