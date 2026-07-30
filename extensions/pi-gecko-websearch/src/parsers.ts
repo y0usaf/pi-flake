@@ -32,9 +32,6 @@ interface Engine {
 	lookaheadChars?: number;       // if set, snippet search uses chars after mainRegex match
 	cleanUrl?: (u: string) => string;
 	filterUrl?: (u: string) => boolean;
-	extractSnippet?: (html: string, m: RegExpExecArray) => string; // custom snippet logic (generic)
-	fallback?: (html: string) => SearchResult[];
-	maxResults?: number;
 }
 
 const httpFilter = (u: string) => u.startsWith("http");
@@ -58,14 +55,6 @@ const engines: Record<string, Engine> = {
 		titleUrlPatterns: [/<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i],
 		snippetPatterns: [/<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/i],
 		filterUrl: httpFilter,
-		fallback(html: string) {
-			const results: SearchResult[] = [];
-			execAll(/<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, html, (m) => {
-				const url = decode(m[1]), title = clean(m[2]);
-				if (title && url.startsWith("http")) results.push({ title, url, snippet: "" });
-			});
-			return results;
-		},
 	},
 	brave: {
 		mainRegex:
@@ -77,19 +66,7 @@ const engines: Record<string, Engine> = {
 			/<div[^>]*class="[^"]*snippet-description[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
 		],
 		filterUrl: httpFilter,
-		fallback: (html: string) => parse(genericEngine, html),
 	},
-};
-
-const genericEngine: Engine = {
-	mainRegex: /<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi,
-	snippetPatterns: [],
-	filterUrl: (u) => !u.includes("google.com") && !u.includes("duckduckgo.com"),
-	extractSnippet(html, m) {
-		const ctx = html.substring(Math.max(0, m.index - 200), m.index + m[0].length + 500);
-		return clean(ctx).substring(0, 200).trim();
-	},
-	maxResults: 20,
 };
 
 function parse(cfg: Engine, html: string): SearchResult[] {
@@ -119,17 +96,16 @@ function parse(cfg: Engine, html: string): SearchResult[] {
 			if (cfg.lookaheadChars) {
 				const after = html.substring(m.index + m[0].length, m.index + m[0].length + cfg.lookaheadChars);
 				snippet = firstMatch(after, cfg.snippetPatterns).substring(0, 300);
-			} else if (cfg.extractSnippet) {
-				snippet = cfg.extractSnippet(html, m);
 			}
 			results.push({ title, url, snippet });
 		});
 	}
 
-	if (results.length === 0 && cfg.fallback) return cfg.fallback(html);
-	return dedup(results).slice(0, cfg.maxResults ?? results.length);
+	return dedup(results);
 }
 
 export function parseSearchResults(html: string, engine: string): SearchResult[] {
-	return parse(engines[engine.toLowerCase()] ?? genericEngine, html);
+	const config = engines[engine.toLowerCase()];
+	if (!config) throw new Error(`Unknown search engine: "${engine}"`);
+	return parse(config, html);
 }
