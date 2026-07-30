@@ -83,6 +83,10 @@ Multiple `spawn_agent` calls in one turn run concurrently (parallel tool executi
 
 **File-system access:** child `read`, `write`, `edit`, and `bash` are pi's built-in tools, created against the child's inherited working directory. None of them are confined to that tree — absolute paths outside it are accepted, and `bash` has the same OS-level file and network access as the user running pi. There is no sandbox; the working directory is a default, not a boundary.
 
+### `ask_parent(questions)` (child-only)
+
+Asks the parent for information using the contract question shape: `{ id?, label?, prompt, options?: [{label, value?, description?, recommended?}], allowOther? }`. The questions pass through the same host normalizer as `contract` (including derived ids, deduplication, and the question/option caps), and every question gets the host-added `__unable__` option. Calling again in the same turn revises the pending questions. The child run **suspends rather than ends**; `spawn_agent` returns the pending questions while the child stays alive and registered. The ask budget is capped at 8 asks per child; once exhausted, `ask_parent` errors and the child must submit its contract, using `__unable__` where blocked.
+
 ### `submit_answers(answers)` (child-only)
 
 The contract's completion path. `answers` is `[{id, value}]`, one entry per contract question. Each value must be an option value, free text where the question permits it, or `__unable__` to punt. Invalid or incomplete submissions return a tool error listing the problems, so the child can correct and retry; a later call revises an earlier one within the same run.
@@ -90,6 +94,10 @@ The contract's completion path. `answers` is `[{id, value}]`, one entry per cont
 ### `report(message)` (child-only)
 
 Progress channel. Reports stream to the parent via `tool_execution_update` during execution and are appended under the answers in the final result. They are **not** the result — if a child never calls `submit_answers`, the nudge loop kicks in, and after 10 nudges the run errors rather than silently returning prose.
+
+### `answer_agent(id, answers, [timeout_seconds])`
+
+Answers a suspended descendant's pending questions, then resumes it; the call blocks until the child fulfills its contract or asks again. Answers are checked by the same validator as contract submissions, including the host-added `__unable__` punt, so a parent may also not know. Access is subtree-scoped exactly like `kill_agent`: an agent can answer only descendants in its own subtree. A suspended agent remains registered and holds its `maxLiveAgents` slot until answered or killed.
 
 ### `kill_agent(id)`
 
@@ -145,6 +153,12 @@ When done, the header shows contract completion, and the collapsed body lists th
   • risks ◌ unable to determine
 ```
 
+A suspended child carries the status text `awaiting answers (2q)` in its header, for example:
+
+```
+✓ worker · 3 actions · 0 reports · claude-haiku-4-5 · awaiting answers (2q)
+```
+
 The model is a bare id, following pi's own `/model` picker; the provider is appended as a `[provider]` badge only when the child runs on a different provider than the session, so the common case stays short:
 
 ```
@@ -170,6 +184,14 @@ Parent: "Refactor auth and write tests in parallel"
 
 // Both run concurrently. Parent gets both contracts' answers as data.
 
+Parent: "Ask the worker if the migration needs a compatibility note"
+└─ spawn_agent("worker", ...)
+    ├─ child calls ask_parent([{prompt: "Is compatibility required?"}])
+    └─ returns pending questions; worker stays alive and registered
+Parent: "Compatibility is required"
+└─ answer_agent("worker", [{id: "question-1", value: "yes"}])
+    └─ worker resumes and submit_answers([{id: "question-1", value: "updated migration docs"}])
+
 Parent: "Now update the migration docs for that refactor"
 └─ spawn_agent("docs", "You write docs.",
                "The auth refactor changed auth.ts, session.ts, index.ts; behavior preserved. Update the migration docs.",
@@ -183,17 +205,17 @@ Parent: "Is anything still running?"
 Parent: "Abort it"
 └─ kill_agent("docs")
     └─ running child aborted, subtree freed
-```
 
 ## Caveats / Known Limitations
 
-- **One model for the whole subtree** — `model` in `pi-agents.json` applies to every child and descendant; there is no per-`spawn_agent` override. Unset means all children use the parent session's active model.
 - **Children run in-process** — they are not isolated processes; a crash or infinite loop in a child can affect the parent session.
 - **Recursive spawning is config-bounded** — descendants may spawn more descendants only while doing so stays within configured `maxDepth` and `maxLiveAgents`.
 - **Subtree-scoped control** — descendant agents can only manage agents in their own subtree; they cannot spawn into or kill arbitrary siblings' branches.
 - **No file-system confinement** — child `read`/`write`/`edit`/`bash` are pi's built-in tools running with the user's OS-level file and network access. The working directory is where relative paths resolve, nothing more.
 - **Minimal allowlisted env for `bash`** — child shell commands receive a small allowlisted environment: `PATH`, `HOME`, `SHELL`, `USER`, `LOGNAME`, locale/timezone variables, `TERM`/`COLORTERM`, `TMPDIR`, `XDG_RUNTIME_DIR`, and TLS/CA certificate variables (`SSL_CERT_FILE`, `SSL_CERT_DIR`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`). This filters which *environment variables* children inherit — it does not protect secrets stored in files, since a child can read them via `bash`. Pass genuinely needed extra variables inline per command.
 - **Child text is sanitized for the terminal** — reports and activity previews have ANSI/OSC escape sequences stripped before rendering, so a child cannot inject terminal control sequences into the TUI.
+- **Suspended children hold capacity** — a child awaiting answers holds a live slot indefinitely; there is no suspension deadline. Kill it with `kill_agent` if it should be abandoned.
+- **Upward asks are bounded** — each child gets at most 8 `ask_parent` calls; after that it must submit its contract (using `__unable__` where needed).
 - **Contract nudges cost tokens** — a child that ends its run without `submit_answers` is re-prompted up to 10 times before the call errors. A wedged or refusing child burns those turns; `timeout_seconds` bounds the wall clock.
 
 ## License

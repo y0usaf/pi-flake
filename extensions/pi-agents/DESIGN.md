@@ -58,7 +58,22 @@ one contract — spawn, answer, removed.
   a per-call boolean an LLM parent had to repeat correctly forever, and
   contract answers already travel as data into the next spawn's task.
   Reversal condition: executors demonstrably rebuilding large context every
-  spawn — then revisit persistence, not before.
+  spawn — then revisit persistence, not before. Amended 2026-08: an unanswered
+  upward ask suspends the contract rather than ending the agent; see the
+  suspension decision below.
+- **2026-08 — Upward asks suspend, not terminate.** Children get `ask_parent`
+  with the same question shape, normalized by the same `normalizeContract`, and
+  parents answer via `answer_agent`, validated by the same
+  `validateContractAnswers`, including the host-added `__unable__` punt (a
+  parent may not know either). Context preservation is the point: punt-plus-
+  respawn already covered the terminal case. Suspended agents stay registered
+  and count against `maxLiveAgents` because they hold context and memory.
+  `MAX_ASKS` bounds parent round-trips, with the nudge cap as ultimate watchdog.
+  `answer_agent` is subtree-scoped exactly like `kill_agent`; ancestor answering
+  is legitimate. There is no suspension deadline: idle suspension costs
+  nothing, while `kill_agent` and visible `awaiting answers` status cover
+  abandonment. Reversal: add a deadline if abandoned suspended agents appear;
+  restrict to direct-parent-only answering if ancestor answering causes confusion.
 - **2026-08 — Orchestrator mode: the main session delegates mutations.**
   The `orchestrator` config key (default false) and the `/orchestrate`
   command strip `write`/`edit` from the main session via
@@ -136,6 +151,7 @@ blackboard) appears, extract a registry module both use.
 - **Kernel-level read-only bash for orchestrator mode** — bwrap-wrapped host
   bash via `spawnHook`, Linux-only. Deferred until the defection tripwire proves
   insufficient.
+- **Suspension deadline / requestId tokens** — duplicate or late answer_agent calls already fail loudly (claim lock, cleared pendingAsk); deadlines and generation tokens land only if abandonment or answer races are observed.
 
 ## Roadmap
 
@@ -147,3 +163,4 @@ blackboard) appears, extract a registry module both use.
 - **Phase 3 — incentive alignment.** Criterion: one week of orchestrator-mode
   use in which every file mutation either went through a spawned executor or
   tripped a visible correction.
+  documented judgment call with a split verdict rendered as an option tally.
