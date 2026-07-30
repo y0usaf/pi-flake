@@ -1,0 +1,9 @@
+{
+  "name": "pi-pantera",
+  "version": "0.1.0",
+  "description": "Charmtone Pantera theme for Pi",
+  "license": "MIT",
+  "files": ["index.ts", "themes", "package.json"],
+  "pi": { "extensions": ["./index.ts"] },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*" }
+}

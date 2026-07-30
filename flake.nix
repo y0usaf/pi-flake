@@ -137,6 +137,22 @@
       "pi-hashline" = piHashline.packages.${system}.default;
       "pi-agents" = piAgents.packages.${system}.default;
 
+      "pi-pantera" = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-pantera";
+        version = "0.1.0";
+        src = lib.cleanSource ./extensions/pi-pantera;
+        dontBuild = true;
+        installPhase = ''
+          runHook preInstall
+          mkdir -p "$out"
+          cp package.json index.ts "$out"/
+          cp -r themes "$out"/
+          runHook postInstall
+        '';
+        passthru.packageName = "pi-pantera";
+        meta.description = "Charmtone Pantera theme for Pi";
+      };
+
       "pi-review" = let
         reviewPackageJson = builtins.fromJSON (builtins.readFile ./extensions/earendil_pi-review/package.json);
       in
@@ -318,6 +334,7 @@
       pi-quiet-build = self.packages.${system}."pi-quiet";
       pi-cursor-provider-build = self.packages.${system}."pi-cursor-provider";
       pi-agents-build = self.packages.${system}."pi-agents";
+      pi-pantera-build = self.packages.${system}."pi-pantera";
 
       pi-aphrodite-test = piAphrodite.checks.${system}.test;
       pi-interview-test = piInterview.checks.${system}.test;
@@ -443,6 +460,7 @@
         webfetch = self.packages.${system}."pi-webfetch";
         hashline = self.packages.${system}."pi-hashline";
         agents = self.packages.${system}."pi-agents";
+        pantera = self.packages.${system}."pi-pantera";
 
         review = self.packages.${system}."pi-review";
         vcc = self.packages.${system}."pi-vcc";
