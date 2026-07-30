@@ -208,7 +208,6 @@ describe("createLocalAphroditeClient", () => {
     expect(stored?.hash).toMatch(/^[0-9a-f]{16}$/);
     expect(stored?.originalSize).toBe(BASH_OUTPUT.length);
     expect(stored?.markerSize).toBeGreaterThan(0);
-    expect(stored?.ratio).toBeGreaterThan(1);
     expect(client.getStatus()).toMatchObject({
       availability: "available",
       stored: 1,

@@ -94,6 +94,13 @@ const RETRIEVE_LINE_CAP = 2000;
 const HASH_HEX_LENGTH = 16;
 const DEFAULT_TTL_SECONDS = 604_800;
 const PURGE_DEBOUNCE_MS = 60_000;
+const invalidEnvValues = new Map<string, string>();
+
+function noteInvalidEnv(name: string, value: string): void {
+  if (!invalidEnvValues.has(name)) {
+    invalidEnvValues.set(name, value);
+  }
+}
 
 // Context engine, ported from upstream Aphrodite's `[compression] engine_*`
 // keys. Compression at insertion time forces a guess about future need and
@@ -125,9 +132,7 @@ export interface AphroditeStatus {
 
 export interface AphroditeStored {
   hash: string;
-  ratio: number;
   originalSize: number;
-  compressedSize: number;
   markerSize: number;
 }
 
@@ -305,9 +310,7 @@ export function createLocalAphroditeClient(
 
         return {
           hash,
-          ratio: Math.round((originalSize / Math.max(markerSize, 1)) * 10) / 10,
           originalSize,
-          compressedSize: originalSize,
           markerSize,
         };
       } catch {
@@ -499,8 +502,15 @@ export type AphroditeThresholds = {
 
 function readByteEnv(name: string, fallback: number): number {
   const raw = process.env[name];
-  const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  if (raw === undefined) {
+    return fallback;
+  }
+  const parsed = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed;
+  }
+  noteInvalidEnv(name, raw);
+  return fallback;
 }
 
 function readThresholds(): AphroditeThresholds {
@@ -563,8 +573,15 @@ export type AphroditeEngineConfig = {
 
 function readCountEnv(name: string, fallback: number): number {
   const raw = process.env[name];
-  const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+  if (raw === undefined) {
+    return fallback;
+  }
+  const parsed = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+  if (Number.isFinite(parsed) && parsed >= 0) {
+    return parsed;
+  }
+  noteInvalidEnv(name, raw);
+  return fallback;
 }
 
 function readEngineConfig(): AphroditeEngineConfig {
@@ -608,9 +625,17 @@ export function engineCandidateRange(
 }
 
 function readTtlSeconds(): number {
-  const raw = process.env.APHRODITE_TTL_SECONDS;
-  const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_TTL_SECONDS;
+  const name = "APHRODITE_TTL_SECONDS";
+  const raw = process.env[name];
+  if (raw === undefined) {
+    return DEFAULT_TTL_SECONDS;
+  }
+  const parsed = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+  if (Number.isFinite(parsed) && parsed >= 0) {
+    return parsed;
+  }
+  noteInvalidEnv(name, raw);
+  return DEFAULT_TTL_SECONDS;
 }
 
 function formatTtl(seconds: number): string {
@@ -876,6 +901,10 @@ export function registerPiAphrodite(
   });
 
   pi.on("session_start", (_event, ctx) => {
+    for (const [name, value] of invalidEnvValues) {
+      ctx.ui.notify(`Invalid ${name}=${JSON.stringify(value)}; using the default.`, "warning");
+    }
+    invalidEnvValues.clear();
     publishFooter(ctx);
     // Open the store once per session so the footer reflects store health
     // even before the first compressible tool result.
