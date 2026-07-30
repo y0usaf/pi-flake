@@ -110,7 +110,7 @@ export async function runQuestionnaire(
 
 	const isMulti = questions.length > 1;
 	const totalTabs = questions.length + 1;
-	const result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, _keybindings, done) => {
+	const result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, keybindings, done) => {
 		let currentTab = 0;
 		let optionIndex = 0;
 		let inputMode = false;
@@ -204,7 +204,7 @@ export async function runQuestionnaire(
 
 		function handleInput(data: string): void {
 			if (inputMode) {
-				if (matchesKey(data, Key.escape)) {
+				if (keybindings.matches(data, "tui.select.cancel")) {
 					// Escape returns to the option list. Keep the text: destroying it
 					// here is what made answers disappear.
 					if (inputQuestionId) drafts.set(inputQuestionId, editor.getText());
@@ -222,7 +222,7 @@ export async function runQuestionnaire(
 			const question = currentQuestion();
 			const options = currentOptions();
 
-			if (isMulti && (matchesKey(data, Key.tab) || matchesKey(data, Key.right))) {
+			if (isMulti && (keybindings.matches(data, "tui.input.tab") || matchesKey(data, Key.right))) {
 				currentTab = (currentTab + 1) % totalTabs;
 				optionIndex = 0;
 				refresh();
@@ -236,22 +236,22 @@ export async function runQuestionnaire(
 			}
 
 			if (currentTab === questions.length) {
-				if (matchesKey(data, Key.enter) && allAnswered()) submit(false);
-				else if (matchesKey(data, Key.escape)) submit(true);
+				if (keybindings.matches(data, "tui.select.confirm") && allAnswered()) submit(false);
+				else if (keybindings.matches(data, "tui.select.cancel")) submit(true);
 				return;
 			}
 
-			if (matchesKey(data, Key.up)) {
+			if (keybindings.matches(data, "tui.select.up")) {
 				optionIndex = Math.max(0, optionIndex - 1);
 				refresh();
 				return;
 			}
-			if (matchesKey(data, Key.down)) {
+			if (keybindings.matches(data, "tui.select.down")) {
 				optionIndex = Math.min(options.length - 1, optionIndex + 1);
 				refresh();
 				return;
 			}
-			if (matchesKey(data, Key.enter) && question) {
+			if (keybindings.matches(data, "tui.select.confirm") && question) {
 				const option = options[optionIndex];
 				if (!option) return;
 				if (option.isOther) {
@@ -265,7 +265,7 @@ export async function runQuestionnaire(
 				advanceAfterAnswer();
 				return;
 			}
-			if (matchesKey(data, Key.escape)) submit(true);
+			if (keybindings.matches(data, "tui.select.cancel")) submit(true);
 		}
 
 		function render(width: number): string[] {
