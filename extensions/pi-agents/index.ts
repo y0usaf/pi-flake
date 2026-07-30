@@ -1,7 +1,7 @@
 /**
  * Multi-Agent Extension for pi
  *
- * Parent tools: spawn_agent, kill_agent, list_agents.
+ * Parent tools: spawn_agent, answer_agent, kill_agent, list_agents.
  * Children additionally get pi's built-in read/write/edit/bash tools, a
  * progress-only report tool, a submit_answers tool, and descendant-scoped
  * orchestration tools bounded by maxDepth/maxLiveAgents from pi-agents.json.
@@ -13,7 +13,8 @@
  *
  * An agent's lifetime is its contract: spawn_agent blocks until the child
  * fulfills it, returns the answers as data, and removes the child — a typed
- * function call. Multiple calls in one turn run concurrently.
+ * function call. If it calls ask_parent, this call returns its questions and
+ * the agent stays alive until answer_agent or kill_agent. Multiple calls in one turn run concurrently.
  *
  * Concurrency invariants (see DESIGN.md):
  * - Spawn capacity and ID uniqueness are reserved synchronously before any
@@ -82,12 +83,15 @@ function buildSafeEnv(): NodeJS.ProcessEnv {
 
 /** Host-added answer value: the child's explicit punt, better than fabrication. */
 const UNABLE_VALUE = "__unable__";
+/** Distinct tally value for a member that never answered this question. */
 const MAX_CONTRACT_QUESTIONS = 8;
 /** Per question, including the host-added "Unable to determine" option. */
 const MAX_CONTRACT_OPTIONS = 8;
 const MAX_ANSWER_TEXT = 4000;
 /** Watchdog on the enforcement loop: a model refusing at nudge 10 refuses at 500. */
 const MAX_CONTRACT_NUDGES = 10;
+/** Budget on parent round-trips; each ask costs a deliberate parent tool call, the nudge cap remains the ultimate watchdog. */
+const MAX_ASKS = 8;
 
 interface ContractOption {
 	value: string;
@@ -115,6 +119,7 @@ interface ContractAnswer {
 interface ContractBox {
 	questions: ContractQuestion[];
 	answers?: ContractAnswer[];
+	pendingAsk?: ContractQuestion[];
 }
 
 const contractOptionSchema = Type.Object({
@@ -140,14 +145,19 @@ const contractSchema = Type.Array(contractQuestionSchema, {
 		'Every question also gets a host-added "Unable to determine" option so the child can punt explicitly.',
 });
 
-const submitAnswersSchema = Type.Object({
-	answers: Type.Array(
-		Type.Object({
-			id: Type.String({ description: "Contract question id" }),
-			value: Type.String({ description: 'Option value, free text where permitted, or "__unable__" to punt' }),
-		}),
-		{ description: "One answer per contract question" },
-	),
+const contractAnswerSchema = Type.Object({
+	id: Type.String({ description: "Contract question id" }),
+	value: Type.String({ description: 'Option value, free text where permitted, or "__unable__" to punt' }),
+});
+const contractAnswersSchema = Type.Array(contractAnswerSchema, { description: "One answer per contract question" });
+const submitAnswersSchema = Type.Object({ answers: contractAnswersSchema });
+const askParentSchema = Type.Object({
+	questions: Type.Array(contractQuestionSchema, { minItems: 1, description: "Questions for your parent, same shape as a contract. Your run suspends until the parent answers." }),
+});
+const answerAgentSchema = Type.Object({
+	id: Type.String({ description: "ID of the suspended child agent whose questions you are answering" }),
+	answers: contractAnswersSchema,
+	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds to wait for the agent to finish (must be > 0). If the deadline expires the agent is aborted, removed from the registry, and an error is thrown." })),
 });
 // ---------------------------------------------------------------------------
 // Schemas
@@ -158,8 +168,7 @@ const spawnSchema = Type.Object({
 	system_prompt: Type.String({ description: "System prompt defining the child agent's role and behavior" }),
 	task: Type.String({ description: "Initial task to assign to the child agent" }),
 	contract: contractSchema,
-	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds to wait for the agent to finish (must be > 0). If the deadline expires the agent is aborted, removed from the registry, and an error is thrown." })),
-});
+	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds to wait for the agent to finish (must be > 0). If the deadline expires the agent is aborted, removed from the registry, and an error is thrown." })),});
 
 const killSchema = Type.Object({
 	id: Type.String({ description: "ID of the child agent to kill" }),
@@ -299,6 +308,7 @@ interface AgentToolDetails {
 	reports: string[];
 	contract?: ContractQuestion[];
 	answers?: ContractAnswer[];
+	pendingAsk?: ContractQuestion[];
 	error?: string;
 	done: boolean;
 }
@@ -403,6 +413,10 @@ function formatToolActivity(name: string, args: Record<string, unknown>): string
 			return `edit ${shortenPath((args.path as string) || "...")}`;
 		case "report":
 			return `report "${truncateToWidth((args.message as string) || "", 50)}"`;
+		case "ask_parent": {
+			const count = Array.isArray(args.questions) ? args.questions.length : 0;
+			return `ask_parent (${count} question${count === 1 ? "" : "s"})`;
+		}
 		case "submit_answers": {
 			const count = Array.isArray(args.answers) ? args.answers.length : 0;
 			return `submit_answers (${count} answer${count === 1 ? "" : "s"})`;
@@ -537,12 +551,8 @@ function normalizeContract(raw: unknown, label: string): ContractQuestion[] {
 }
 
 /** Rendered into every spawn prompt so the child knows its deliverable. */
-function renderContractBlock(questions: ContractQuestion[]): string {
-	const lines: string[] = [
-		"## Contract",
-		"Your run is complete only after you call submit_answers with one answer per question below.",
-		`Answer with an option value, free text where permitted, or "${UNABLE_VALUE}" to punt explicitly.`,
-	];
+function renderQuestionLines(questions: ContractQuestion[]): string[] {
+	const lines: string[] = [];
 	for (const question of questions) {
 		lines.push(`- id "${question.id}": ${question.prompt}`);
 		for (const option of question.options) {
@@ -554,6 +564,29 @@ function renderContractBlock(questions: ContractQuestion[]): string {
 		}
 		lines.push(`    - free text ${question.allowOther ? "permitted" : "not permitted"}`);
 	}
+	return lines;
+}
+
+function renderContractBlock(questions: ContractQuestion[], allowAsk = true): string {
+	return [
+		"## Contract",
+		"Your run is complete only after you call submit_answers with one answer per question below.",
+		`Answer with an option value, free text where permitted, or "${UNABLE_VALUE}" to punt explicitly.`,
+		...(allowAsk ? ["If you are blocked on information only your parent has, call ask_parent with your questions; your run suspends until the parent answers."] : []),
+		...renderQuestionLines(questions),
+	].join("\n");
+}
+
+function renderAnswersBlock(questions: ContractQuestion[], answers: ContractAnswer[], allowAsk = true): string {
+	const byId = new Map(questions.map((question) => [question.id, question]));
+	const lines = ["## Answers from your parent"];
+	for (const answer of answers) {
+		const question = byId.get(answer.id);
+		if (!question) continue;
+		const shown = answer.value === UNABLE_VALUE ? "(unable to determine)" : answer.wasCustom ? answer.value : `${answer.value} — ${answer.label}`;
+		lines.push(`- ${question.prompt}`, `  answer: ${shown}`);
+	}
+	lines.push(`Continue your task. Your contract is unchanged: call submit_answers when done${allowAsk ? ", or ask_parent again if still blocked" : ""}.`);
 	return lines.join("\n");
 }
 
@@ -597,6 +630,25 @@ function validateContractAnswers(
 	return questions.map((question) => accepted.get(question.id)!);
 }
 
+function buildAskParentTool(childId: string, holder: { state?: ChildState }): AgentTool<typeof askParentSchema> {
+	return {
+		name: "ask_parent", label: "Ask Parent",
+		description: "Ask your parent for information; calling again in the same turn revises the pending questions. Your run suspends until answered.",
+		parameters: askParentSchema,
+		execute: async (_toolCallId, params) => {
+			const state = holder.state;
+			if (!state) throw new Error("Child state is not initialized.");
+			if (state.contract.answers) throw new Error("Contract already fulfilled; answers were recorded.");
+			if (state.askCount >= MAX_ASKS) throw new Error(`Your ask budget is exhausted; submit answers now, using "${UNABLE_VALUE}" where blocked.`);
+			const questions = normalizeContract(params.questions, `ask_parent from "${childId}"`);
+			state.askCount++;
+			state.contract.pendingAsk = questions;
+			state.awaitingSince = Date.now();
+			return { content: [{ type: "text", text: "Questions recorded. End your turn now; your run suspends until the parent answers via answer_agent." }], details: { childId, questionCount: questions.length } };
+		},
+	};
+}
+
 function buildSubmitAnswersTool(childId: string, contract: ContractBox): AgentTool<typeof submitAnswersSchema> {
 	return {
 		name: "submit_answers",
@@ -608,6 +660,7 @@ function buildSubmitAnswersTool(childId: string, contract: ContractBox): AgentTo
 		parameters: submitAnswersSchema,
 		execute: async (_toolCallId, params) => {
 			const answers = validateContractAnswers(contract.questions, params.answers);
+			contract.pendingAsk = undefined;
 			contract.answers = answers;
 			return {
 				content: [{ type: "text", text: `Contract fulfilled: ${answers.length} answer(s) recorded.` }],
@@ -617,22 +670,21 @@ function buildSubmitAnswersTool(childId: string, contract: ContractBox): AgentTo
 	};
 }
 
-const CONTRACT_NUDGE_PROMPT =
-	"Your contract is not fulfilled. Call submit_answers now with one answer per contract question. " +
-	`If a question cannot be determined, answer it with the value "${UNABLE_VALUE}".`;
+const CONTRACT_NUDGE_WITH_ASK_PROMPT = "Your contract is not fulfilled. Call submit_answers now with one answer per contract question. " + `If a question cannot be determined, answer it with the value "${UNABLE_VALUE}". ` + "If you are blocked on information only your parent can provide, call ask_parent with your questions instead.";
+const CONTRACT_NUDGE_PROMPT = "Your contract is not fulfilled. Call submit_answers now with one answer per contract question. " + `If a question cannot be determined, answer it with the value "${UNABLE_VALUE}".`;
 
 /**
  * Enforcement loop: a model cannot be prevented from ending its turn, so the
  * only lever is re-prompting until submit_answers has been called. Bounded by
  * MAX_CONTRACT_NUDGES as the watchdog; abort, timeout, and kill still apply.
  */
-async function runUntilContractFulfilled(state: ChildState, prompt: string, signal: AbortSignal | undefined): Promise<void> {
-	const pending = () => !state.contract.answers && !state.killed && !signal?.aborted && !state.agent.state.errorMessage;
+async function runUntilContractFulfilled(state: ChildState, prompt: string, signal: AbortSignal | undefined, allowAsk = true): Promise<void> {
+	const pending = () => !state.contract.answers && !state.contract.pendingAsk && !state.killed && !signal?.aborted && !state.agent.state.errorMessage;
 	await state.agent.prompt(prompt);
 	let nudges = 0;
 	while (pending() && nudges < MAX_CONTRACT_NUDGES) {
 		nudges++;
-		await state.agent.prompt(CONTRACT_NUDGE_PROMPT);
+		await state.agent.prompt(allowAsk ? CONTRACT_NUDGE_WITH_ASK_PROMPT : CONTRACT_NUDGE_PROMPT);
 	}
 	if (pending()) {
 		throw new Error(`Agent "${state.id}" ended ${nudges} nudged run(s) without calling submit_answers; contract unfulfilled`);
@@ -670,6 +722,12 @@ interface ChildState {
 	locked: boolean;
 	/** Set by killSubtree. The owning run removes this state once its prompt settles. */
 	killed: boolean;
+	/** Cursor into reports already returned to the caller. */
+	reportCursor: number;
+	/** Number of upward asks made by this agent. */
+	askCount: number;
+	/** Timestamp when the current ask became pending. */
+	awaitingSince?: number;
 }
 
 function extractLastAssistantText(agent: Agent): string {
@@ -774,6 +832,10 @@ function collectResult(childId: string, state: ChildState, reportStartIdx: numbe
 		});
 		text = `Contract fulfilled (${answers.length}/${state.contract.questions.length}):\n${lines.join("\n")}`;
 		if (newReports.length > 0) text += `\n\nProgress reports:\n${newReports.join("\n---\n")}`;
+	} else if (state.contract.pendingAsk) {
+		const questions = state.contract.pendingAsk;
+		text = `Agent "${childId}" asks ${questions.length} question(s) and stays alive awaiting your answers:\n${renderQuestionLines(questions).join("\n")}\nAnswer with answer_agent({ id: "${childId}", answers: [{ id, value }, ...] }), or kill_agent("${childId}") to abandon.`;
+		if (newReports.length > 0) text += `\n\nProgress reports:\n${newReports.join("\n---\n")}`;
 	} else {
 		text = newReports.length > 0 ? newReports.join("\n---\n") : extractLastAssistantText(state.agent);
 	}
@@ -787,6 +849,7 @@ function collectResult(childId: string, state: ChildState, reportStartIdx: numbe
 			reports: [...newReports],
 			contract: [...state.contract.questions],
 			answers: answers ? [...answers] : undefined,
+			pendingAsk: state.contract.pendingAsk ? [...state.contract.pendingAsk] : undefined,
 			error,
 			done: true,
 		},
@@ -906,9 +969,10 @@ function renderAgentResult(
 	const activity = details.activity || [];
 	const answers = details.answers ?? [];
 	const contractTotal = details.contract?.length ?? 0;
-	const contractBadge = contractTotal > 0
-		? theme.fg("muted", ` · ${answers.length}/${contractTotal} answered`)
-		: "";
+	const pendingAsk = details.pendingAsk ?? [];
+	const contractBadge = pendingAsk.length > 0
+		? theme.fg("muted", ` · awaiting answers (${pendingAsk.length}q)`)
+		: contractTotal > 0 ? theme.fg("muted", ` · ${answers.length}/${contractTotal} answered`) : "";
 
 	// Expanded view
 	if (expanded) {
@@ -942,6 +1006,12 @@ function renderAgentResult(
 			}
 		}
 
+		if (pendingAsk.length > 0) {
+			container.addChild(new Spacer(1));
+			container.addChild(new Text(theme.fg("muted", "─── Questions ───"), 0, 0));
+			for (const question of pendingAsk) container.addChild(new Text(`  ${theme.fg("warning", "?")} ${theme.fg("accent", question.id)} ${theme.fg("toolOutput", truncateToWidth(stripControlSequences(question.prompt), 70))}`, 0, 0));
+		}
+
 		if (answers.length > 0) {
 			container.addChild(new Spacer(1));
 			container.addChild(new Text(theme.fg("muted", "─── Contract ───") + formatAnswerLines(answers, theme), 0, 0));
@@ -965,6 +1035,8 @@ function renderAgentResult(
 		text += "\n  " + theme.fg("error", details.error);
 	} else if (answers.length > 0) {
 		text += formatAnswerLines(answers, theme);
+	} else if (pendingAsk.length > 0) {
+		text += pendingAsk.map((q) => `\n  ${theme.fg("warning", "?")} ${theme.fg("accent", q.id)} ${theme.fg("toolOutput", truncateToWidth(stripControlSequences(q.prompt), 70))}`).join("");
 	} else {
 		text += formatActivityTail(activity, theme);
 	}
@@ -1178,12 +1250,15 @@ export default function multiAgent(pi: ExtensionAPI) {
 		if (callerId) getCallerState(callerId);
 		const agents = getScopedEntries(callerId).map(([id, state]) => ({
 			id,
+			status: state.agent.state.isStreaming || state.locked ? "running" : state.contract.pendingAsk ? `awaiting answers (${state.contract.pendingAsk.length}q, ${Math.round((Date.now() - (state.awaitingSince ?? Date.now())) / 1000)}s)` : "idle",
 			model: modelLabel(state.agent),
 			parentId: state.parentId,
 			rootId: state.rootId,
 			depth: state.depth,
 			cwd: state.cwd,
 			isRunning: state.agent.state.isStreaming || state.locked,
+			pendingQuestionCount: state.contract.pendingAsk?.length ?? 0,
+			awaitingSince: state.awaitingSince,
 			contractFulfilled: state.contract.answers !== undefined,
 			reportCount: state.reports.length,
 			activityCount: state.activity.length,
@@ -1192,11 +1267,37 @@ export default function multiAgent(pi: ExtensionAPI) {
 		const text = agents.length === 0
 			? "No active child agents."
 			: agents.map((agent) =>
-				`• ${agent.id} — ${agent.isRunning ? "running" : "idle"}, depth ${agent.depth}, ` +
+				`• ${agent.id} — ${agent.status}, depth ${agent.depth}, ` +
 				`${agent.parentId ? `parent ${agent.parentId}` : "root child"}, ${agent.model}, ${agent.reportCount} reports, ` +
 				`contract ${agent.contractFulfilled ? "fulfilled" : "pending"}`,
 			).join("\n");
 		return { content: [{ type: "text", text }], details: { agents } };
+	}
+
+	/** The subtree is removed on any error; nothing outlives a failed run. */
+	async function finishExchange(state: ChildState, prompt: string, signal: AbortSignal | undefined, timeoutSeconds: number | undefined, onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void): Promise<AgentToolResult<AgentToolDetails>> {
+		const onAbort = () => state.agent.abort();
+		signal?.addEventListener("abort", onAbort, { once: true });
+		const unsub = subscribeChild(state.agent, state.id, state, onUpdate);
+		try { await withOptionalTimeout(state.agent, state.id, runUntilContractFulfilled(state, prompt, signal), timeoutSeconds); }
+		catch (err) { state.killed = true; killSubtree(state.id); throw err; }
+		finally { state.locked = false; unsub(); signal?.removeEventListener("abort", onAbort); if (state.killed) removeStateIfCurrent(state); }
+		if (state.killed) throw new Error(`Agent "${state.id}" was killed while running`);
+		const result = collectResult(state.id, state, state.reportCursor);
+		state.reportCursor = state.reports.length;
+		if (!(state.contract.pendingAsk && !state.agent.state.errorMessage && !state.killed)) killSubtree(state.id);
+		return result;
+	}
+
+	async function answerAgent(callerId: string | undefined, params: { id: string; answers: Array<{ id: string; value: string }>; timeout_seconds?: number }, signal?: AbortSignal, onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void) {
+		if (signal?.aborted) throw new Error(`answer_agent for "${params.id}" aborted before start`);
+		const state = getAccessibleTarget(callerId, params.id, "answer", false);
+		if (state.locked) throw new Error(`Agent "${params.id}" is busy (a blocking call is in flight).`);
+		if (!state.contract.pendingAsk) throw new Error(`Agent "${params.id}" has no pending questions.`);
+		const questions = state.contract.pendingAsk;
+		const answers = validateContractAnswers(questions, params.answers);
+		state.contract.pendingAsk = undefined; state.awaitingSince = undefined; state.locked = true;
+		return finishExchange(state, renderAnswersBlock(questions, answers), signal, params.timeout_seconds, onUpdate);
 	}
 
 	function killAgentResult(callerId: string | undefined, targetId: string): AgentToolResult<unknown> {
@@ -1220,12 +1321,22 @@ export default function multiAgent(pi: ExtensionAPI) {
 			description:
 				"Spawn a descendant agent within your own subtree. Requires a contract; " +
 				"the descendant's result is its structured contract answers, and it is removed once it answers. " +
-				"Subject to configured maxDepth and maxLiveAgents limits.",
+				"Subject to configured maxDepth and maxLiveAgents limits. If the child calls ask_parent instead, this call returns its questions and the agent stays alive (holding context and a maxLiveAgents slot) until answer_agent resumes it or kill_agent removes it.",
 			parameters: spawnSchema,
 			execute: async (_toolCallId, params, signal, onUpdate) => {
 				return await spawnChild(callerId, params, model, cwd, signal, onUpdate);
 			},
 		};
+
+		const answerTool: AgentTool<typeof answerAgentSchema> = {
+			name: "answer_agent", label: "Answer Agent",
+			description: "Answer questions from a suspended descendant; the call blocks until its contract is fulfilled or it asks again.",
+			parameters: answerAgentSchema,
+			execute: async (_toolCallId, params, signal, onUpdate) => {
+				return answerAgent(callerId, params, signal, onUpdate);
+			},
+		};
+
 
 		const killTool: AgentTool<typeof killSchema> = {
 			name: "kill_agent",
@@ -1243,7 +1354,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			execute: async () => listAgentsResult(callerId),
 		};
 
-		return [spawnTool as AgentTool<any>, killTool as AgentTool<any>, listTool as AgentTool<any>];
+		return [spawnTool as AgentTool<any>, answerTool as AgentTool<any>, killTool as AgentTool<any>, listTool as AgentTool<any>];
 	}
 
 	function buildChildAgent(
@@ -1253,14 +1364,18 @@ export default function multiAgent(pi: ExtensionAPI) {
 		cwd: string,
 		reports: string[],
 		contract: ContractBox,
+		holder: { state?: ChildState },
+		allowAsk = true,
 	): Agent {
 		const reportTool = buildReportTool(childId, reports);
 		const submitTool = buildSubmitAnswersTool(childId, contract);
+		const askTool = allowAsk ? buildAskParentTool(childId, holder) : undefined;
 		const childTools = [
 			...createChildTools(cwd),
 			...createChildManagementTools(childId, cwd, model),
 			reportTool as AgentTool<any>,
 			submitTool as AgentTool<any>,
+			...(askTool ? [askTool as AgentTool<any>] : []),
 		];
 		return new Agent({
 			initialState: { systemPrompt, model, tools: childTools },
@@ -1276,6 +1391,8 @@ export default function multiAgent(pi: ExtensionAPI) {
 		cwd: string,
 		signal?: AbortSignal,
 		onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void,
+		modelOverride?: Model<any>,
+		allowAsk = true,
 	): Promise<AgentToolResult<AgentToolDetails>> {
 		if (signal?.aborted) throw new Error(`spawn of "${params.id}" aborted before start`);
 
@@ -1295,7 +1412,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		try {
 			const config = await getConfig(cwd);
 			// config.model overrides the inherited parent model; unset means inherit.
-			const childModel = config.model && cachedRegistry ? resolveChildModel(config.model, cachedRegistry) : model;
+			const childModel = modelOverride ?? (config.model && cachedRegistry ? resolveChildModel(config.model, cachedRegistry) : model);
 			if (childDepth > config.maxDepth) {
 				throw new Error(
 					`Cannot spawn agent "${params.id}": depth ${childDepth} exceeds configured maxDepth ${config.maxDepth}.`,
@@ -1310,7 +1427,8 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 			const contract: ContractBox = { questions: normalizeContract(params.contract, `spawn_agent "${params.id}"`) };
 			const reports: string[] = [];
-			const child = buildChildAgent(params.id, params.system_prompt, childModel, cwd, reports, contract);
+			const askHolder: { state?: ChildState } = {};
+			const child = buildChildAgent(params.id, params.system_prompt, childModel, cwd, reports, contract, askHolder, allowAsk);
 			const state: ChildState = {
 				id: params.id,
 				parentId: parentState?.id,
@@ -1322,42 +1440,21 @@ export default function multiAgent(pi: ExtensionAPI) {
 				agent: child,
 				reports,
 				activity: [],
+				reportCursor: 0,
+				askCount: 0,
 				contract,
 				locked: true,
 				killed: false,
 			};
 			children.set(params.id, state);
+			askHolder.state = state;
 
-			const onAbort = () => child.abort();
-			signal?.addEventListener("abort", onAbort, { once: true });
-
-			const unsub = subscribeChild(child, params.id, state, onUpdate);
-			try {
-				const runPromise = runUntilContractFulfilled(state, `${params.task}\n\n${renderContractBlock(contract.questions)}`, signal);
-				await withOptionalTimeout(child, params.id, runPromise, params.timeout_seconds);
-				if (state.killed) {
-					throw new Error(`Agent "${params.id}" was killed while running`);
-				}
-			} catch (err) {
-				// The subtree is removed on any error; nothing outlives a failed run.
-				state.killed = true;
-				killSubtree(params.id);
-				throw err;
-			} finally {
-				state.locked = false;
-				unsub();
-				signal?.removeEventListener("abort", onAbort);
-				if (state.killed) removeStateIfCurrent(state);
-			}
-
-			const result = collectResult(params.id, state, 0);
-			// Agent-as-tool: a fulfilled contract ends the agent.
-			killSubtree(params.id);
-			return result;
+			return await finishExchange(state, `${params.task}\n\n${renderContractBlock(contract.questions, allowAsk)}`, signal, params.timeout_seconds, onUpdate);
 		} finally {
 			reservedIds.delete(params.id);
 		}
 	}
+
 
 	pi.on("session_start", async (_event, ctx) => {
 		configCache = undefined;
@@ -1402,6 +1499,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			"This call blocks until the contract is fulfilled; an unfulfilled contract is nudged up to 10 times, then errors. " +
 			"Multiple spawn_agent calls in the same turn run concurrently. " +
 			"The agent is removed as soon as its contract is fulfilled — spawn is a typed function call: " +
+			"If the child calls ask_parent instead, this call returns its questions and the agent stays alive (holding context and a maxLiveAgents slot) until answer_agent resumes it or kill_agent removes it. " +
 			"contract in, answers out, agent gone. Follow-ups are new spawns with the prior answers folded into the task. " +
 			"kill_agent aborts a running agent. " +
 			"On any error (including timeout) the agent subtree is removed from the registry automatically. " +
@@ -1411,6 +1509,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			"Before every bash call in orchestrator mode, classify it: if it can create, modify, or delete any file (redirects, tee, sed/perl -i, mv/cp/rm, or any script that writes), do not run it — spawn an executor instead. bash is for reading and verification only.",
 			'Minimal executor spawn: spawn_agent({ id: "executor-1", system_prompt: "You are an executor. Apply the requested change, verify it, then submit your answers.", task: "<the change>", contract: [{ prompt: "What changed, and how was it verified?" }] }).',
 			'Minimal scout spawn: spawn_agent({ id: "scout-1", system_prompt: "You are a read-only scout. Never modify files. Cite file:line evidence.", task: "<the question>", contract: [{ prompt: "Answer, with file:line evidence" }] }).',
+			'If a spawn returns questions, answer with answer_agent({ id, answers: [{ id: "<question id>", value: "<answer>" }] }); the call blocks until the contract is fulfilled.',
 		],
 
 		renderCall(args, theme) {
@@ -1428,6 +1527,20 @@ export default function multiAgent(pi: ExtensionAPI) {
 			adoptSessionContext(ctx);
 			return await spawnChild(undefined, params, model, ctx.cwd, signal, onUpdate);
 		},
+	});
+
+	// ── answer_agent ────────────────────────────────────────────────────
+
+	pi.registerTool({
+		name: "answer_agent",
+		label: "Answer Agent",
+		description: "Answer a suspended child agent's questions. Validates answers against the questions it asked, resumes it, and blocks until its contract is fulfilled or it asks again.",
+		parameters: answerAgentSchema,
+		renderCall(args, theme) {
+			return new Text(theme.fg("toolTitle", theme.bold("answer_agent ")) + theme.fg("accent", args.id || "...") + theme.fg("muted", ` · ${Array.isArray(args.answers) ? args.answers.length : 0} answers`), 0, 0);
+		},
+		renderResult(result, options, theme, context) { return renderAgentResult(result, options, theme, context); },
+		async execute(_toolCallId, params, signal, onUpdate) { return answerAgent(undefined, params, signal, onUpdate); },
 	});
 
 	// ── kill_agent ──────────────────────────────────────────────────────
