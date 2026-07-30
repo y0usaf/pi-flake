@@ -143,7 +143,6 @@ class ManagedBrowser {
 	private process: ChildProcess | null = null;
 	private client: MarionetteClient | null = null;
 	private tempProfileDir: string | null = null;
-	private marionettePort: number | null = null;
 	private running = false;
 
 	constructor(private readonly settings: GeckoWebsearchSettings) {}
@@ -255,7 +254,6 @@ class ManagedBrowser {
 				lastPort = port;
 				try {
 					await client.connect(port, "127.0.0.1", 2000);
-					this.marionettePort = port;
 					return;
 				} catch {
 					// Port is published but not accepting yet — wait and retry.
@@ -465,7 +463,6 @@ class ManagedBrowser {
 			this.tempProfileDir = null;
 		}
 
-		this.marionettePort = null;
 		this.running = false;
 	}
 }

@@ -169,11 +169,12 @@ export default function (pi: ExtensionAPI) {
 						.catch(() => "");
 					const diagnostic = typeof pageText === "string" ? searchFailureDiagnostic(pageText, engine) : null;
 					if (diagnostic) {
-						return {
-							content: [{ type: "text" as const, text: truncate(diagnostic) }],
-							details: { engine, query: params.query, resultCount: 0, blocked: true },
-						};
+						throw new Error(diagnostic);
 					}
+					const text = typeof pageText === "string" ? pageText.replace(/\s+/g, " ").trim() : "";
+					throw new Error(
+						`${engine} returned no parseable search results. Page text:\n\n${text.slice(0, 500)}`,
+					);
 				}
 
 				const formatted = formatResults(results);
