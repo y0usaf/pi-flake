@@ -13,7 +13,8 @@ that remains carries a small ASCII face:
 - **Editor (idle)** → `(^-^) ─────` as the top border, bottom border
   gone. The face wears the editor border color, which pi drives from the
   thinking level — the smiley doubles as your thinking indicator.
-- **Hidden thinking** → random flavor label per session ("scheming...").
+- **Hidden thinking** → no label at all; a hidden thinking run leaves one
+  blank line. `ctrl+t` toggles the full thinking text back on.
 
 Footer stays pi's default. All personality is data tables at the top of
 `quiet.ts` — swap a row, change the character. One interval drives the

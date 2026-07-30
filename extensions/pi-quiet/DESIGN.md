@@ -2,6 +2,22 @@
 
 ## Locked decisions
 
+- **2026-07-29 — hidden thinking has no words, only a blank line.**
+  (Supersedes the "random hidden-thinking label" clause of the 2026-08-11
+  personality entry: in use, "conjuring..." was chrome, and hidden should
+  mean hidden.) `setHiddenThinkingLabel("")` — `interactive-mode.ts` uses
+  `label ?? default`, so an empty string survives, and
+  `assistant-message.ts` still emits its one `Text` per hidden thinking
+  run. That `Text` holds only ANSI escapes, whose `.trim()` is not empty,
+  so it renders one blank padded line rather than zero lines. Accepted:
+  one blank line reads as paragraph spacing. Rejected smaller-looking
+  thing: monkey-patching
+  `AssistantMessageComponent.prototype.updateContent` to strip thinking
+  parts for true zero height — ~10 LoC reaching into a builtin's private
+  `hideThinkingBlock` field, silently broken by an upstream rename.
+  Reversed if pi ever treats an empty label as "add no child". ctrl+t
+  still reveals full thinking: the toggle rebuilds chat from untouched
+  session messages.
 - **2026-08-11 — tool rows get faces, results stay builtin.** (Supersedes
   same-day "chrome only, no tool-render override": in use, tool rows were
   the loudest chrome left.) Overrides re-register builtins with a custom
@@ -67,13 +83,13 @@
 
 ## Architecture
 
-- `extensions/quiet.ts` — one file. Decision tables (PULSE, LABELS,
-  TOOL_ROWS, EDITOR_FACE, ERROR_FACE) up top; machinery below: a generic
+- `extensions/quiet.ts` — one file. Decision tables (PULSE, TOOL_ROWS,
+  EDITOR_FACE, ERROR_FACE) up top; machinery below: a generic
   tool-override loop over per-cwd memoized builtin definitions, a
   `QuietEditor` render post-pass with pulse paint, module-level agent
   state (`agentActive`, `pulseTimer`, `pulseFrame`, `editor`), and hooks:
   `session_start` (`setHeader`, `setWorkingVisible(false)`,
-  `setHiddenThinkingLabel`, `setEditorComponent`) plus
+  `setHiddenThinkingLabel("")`, `setEditorComponent`) plus
   `agent_start`/`agent_end`/`agent_settled`/`session_shutdown` driving
   the pulse. No commands, no config.
 - `[[canon:no-privileged-path]]` n/a: single-file extension, no plugin
