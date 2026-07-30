@@ -122,9 +122,12 @@ one contract — spawn, answer, removed.
   string matches across free text are meaningless. Panel members have no
   `ask_parent`: a judge's job is a verdict under uncertainty, and
   `__unable__` already expresses "cannot determine" without holding a slot
-  open. If a third distinct multi-agent shape beyond fan-out/join and executor
-  delegation is being hand-repeated in prose across sessions, extract a
-  declarative workflow format instead of growing more `spawn_agent` parameters.
+  open. The no-`models` path follows ordinary child-model resolution rather
+  than the parent's model, so panels and plain spawns cannot disagree about
+  which model a child runs on. If a third distinct multi-agent shape beyond
+  fan-out/join and executor delegation is being hand-repeated in prose across
+  sessions, extract a declarative workflow format instead of growing more
+  `spawn_agent` parameters.
 
 ## Architecture
 
