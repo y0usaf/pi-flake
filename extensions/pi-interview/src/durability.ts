@@ -104,19 +104,3 @@ export function insertToolResults<M>(messages: readonly M[], inserts: readonly {
 	}
 	return repaired;
 }
-
-/**
- * True when a recovery message for `toolCallId` already exists in the branch.
- * The recovery message is a normal pi custom message, so it is persisted by pi
- * itself: the answers survive restarts without this extension owning a file.
- */
-export function hasRecoveryMessage(messages: readonly unknown[], customType: string, toolCallId: string): boolean {
-	return messages.some((message) => {
-		if (typeof message !== "object" || message === null) return false;
-		const record = message as Record<string, unknown>;
-		if (record.role !== "custom" || record.customType !== customType) return false;
-		const details = record.details;
-		if (typeof details !== "object" || details === null) return false;
-		return (details as Record<string, unknown>).toolCallId === toolCallId;
-	});
-}

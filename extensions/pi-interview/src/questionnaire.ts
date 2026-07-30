@@ -4,7 +4,6 @@ import {
 	type EditorTheme,
 	Key,
 	matchesKey,
-	type OverlayHandle,
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
@@ -31,13 +30,12 @@ function displayDescription(option: QuestionOption): string | undefined {
 	return option.description ? `Recommended · ${option.description}` : "Recommended";
 }
 
-function answerForOption(question: InterviewQuestion, option: QuestionOption, index: number): InterviewAnswer {
+function answerForOption(question: InterviewQuestion, option: QuestionOption): InterviewAnswer {
 	return {
 		id: question.id,
 		value: option.value,
 		label: option.label,
 		wasCustom: false,
-		index: index + 1,
 	};
 }
 
@@ -63,46 +61,17 @@ async function runRpcQuestionnaire(
 			if (!custom || signal?.aborted) return { questions, answers, cancelled: true };
 			answers.push({ id: question.id, value: custom, label: custom, wasCustom: true });
 		} else {
-			answers.push(answerForOption(question, option, index));
+			answers.push(answerForOption(question, option));
 		}
 	}
 	return { questions, answers, cancelled: false };
 }
 
-export interface QuestionnaireOptions {
-	/**
-	 * Render in the overlay layer instead of the editor slot.
-	 *
-	 * Only the restart-resume path needs this. It runs from `session_start`,
-	 * where other extensions are still installing their own UI. pi-quiet, for
-	 * one, calls `ui.setEditorComponent`, and pi implements that as
-	 * `editorContainer.clear()` followed by `ui.setFocus(newEditor)`. An inline
-	 * component installed during `session_start` is evicted by that clear
-	 * without a word, leaving this promise pending forever. The overlay stack is
-	 * a separate layer and survives the clear.
-	 *
-	 * A questionnaire opened mid-turn has no such race, so it stays inline like
-	 * every other pi selector: it takes the editor slot and leaves the
-	 * transcript visible above it.
-	 */
-	overlay?: boolean;
-	/**
-	 * Receives the overlay handle once the overlay is on screen.
-	 *
-	 * Surviving the container clear is only half the job: the `setFocus` that
-	 * follows it hands keyboard input to the new editor, and pi-tui treats a
-	 * non-overlay component taking focus from an overlay as a deliberate handoff
-	 * (`blocked`), which suppresses the reclaim-on-keypress it would otherwise
-	 * do. The caller uses this handle to take focus back.
-	 */
-	onHandle?: (handle: OverlayHandle) => void;
-}
 
 export async function runQuestionnaire(
 	ctx: ExtensionContext,
 	questions: InterviewQuestion[],
 	signal?: AbortSignal,
-	options: QuestionnaireOptions = {},
 ): Promise<QuestionnaireResult> {
 	if (questions.length === 0) return { questions, answers: [], cancelled: false };
 	if (signal?.aborted) return { questions, answers: [], cancelled: true };
@@ -386,7 +355,6 @@ export async function runQuestionnaire(
 			dispose: cleanupSignal,
 		};
 		},
-		options.overlay ? { overlay: true, ...(options.onHandle ? { onHandle: options.onHandle } : {}) } : undefined,
 	);
 
 	return result ?? { questions, answers: [], cancelled: true };
