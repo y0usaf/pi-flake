@@ -88,7 +88,8 @@ one contract — spawn, answer, removed.
   re-summarizes the task in prose, and blocking spawns make a deep chain
   serialize while consuming the shared maxLiveAgents budget. Reversal: a
   demonstrated executor→verifier need raises maxDepth per-project, not
-  the default.
+  the default. Amended 2026-08: `bash` leaves the main session as well; see
+  the read-only orchestrator decision below.
 - **2026-08 — Defection tripwire: detection over classification.** In
   orchestrator mode, `git status --porcelain` is snapshotted before each host
   bash call and compared after; a working-tree delta injects a loud steer-message
@@ -129,6 +130,34 @@ one contract — spawn, answer, removed.
   fan-out/join and executor delegation is being hand-repeated in prose across
   sessions, extract a declarative workflow format instead of growing more
   `spawn_agent` parameters.
+- **2026-08 — The orchestrator reads but never executes.** `bash` joins
+  `write`/`edit` in `ORCHESTRATOR_STRIPPED`, and orchestrator mode adds pi's
+  built-in `grep`/`find`/`ls` to the active set. Search was the only thing
+  `bash` was legitimately doing in the main session, and those three tools
+  are already registered by `createAllToolDefinitions`, so the change is
+  names in a set, not new code. With no shell in the main session defection
+  is structurally impossible rather than advisorily corrected: the
+  git-porcelain tripwire, the bash-classification clause of the gate prompt,
+  and the matching `promptGuidelines` line are deleted with nothing
+  replacing them. The cost is named and accepted — the orchestrator can no
+  longer run `git diff` or `nix build`, so inspection and verification are
+  delegated and arrive as contract answers, which makes verification a
+  child's claim rather than a fact the host checked. The smaller thing
+  rejected, per `[[canon:least-code]]`, is keeping `bash` and only adding
+  `grep`/`find`/`ls`: it preserves the escape hatch the tripwire exists to
+  police, so the snapshot machinery survives with it. A narrow allowlisted
+  git-read tool was rejected as new code reintroducing the
+  command-classification problem the tripwire decision already lost. A panel
+  (gpt-5.6-sol, claude-fable-5, kimi-k3) split 2–1 against the stricter
+  variant that also removes `read`; the grounding argument they shared — an
+  orchestrator writing contracts about files it has never seen — is exactly
+  what `read`/`grep`/`find`/`ls` answer. Children are unchanged: they keep
+  `bash` and do not get `grep`/`find`/`ls` until a child is observed wasting
+  tokens on unmanaged `rg` output. Reversal condition: one week of use in
+  which a verifier child reports a passing build that a later host-side
+  check contradicts, or in which wanting `git diff` in the main session is
+  logged more than once a day — then restore `bash` with the tripwire, or
+  take the deferred bwrap read-only shell.
 
 ## Architecture
 
@@ -171,8 +200,9 @@ blackboard) appears, extract a registry module both use.
   evidence of abuse yet; `maxLiveAgents` bounds concurrency, which is the
   practical cost driver.
 - **Kernel-level read-only bash for orchestrator mode** — bwrap-wrapped host
-  bash via `spawnHook`, Linux-only. Deferred until the defection tripwire proves
-  insufficient.
+  bash via `spawnHook`, Linux-only. Now the reversal path rather than the
+  tripwire's escalation: it lands only if removing `bash` outright costs more
+  in delegated verification than a sandboxed shell would cost in machinery.
 - **Suspension deadline / requestId tokens** — duplicate or late answer_agent calls already fail loudly (claim lock, cleared pendingAsk); deadlines and generation tokens land only if abandonment or answer races are observed.
 
 ## Roadmap

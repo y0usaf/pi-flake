@@ -27,11 +27,9 @@
  *   they operated on, never a same-ID replacement.
  */
 
-import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { promisify } from "node:util";
 import { Agent, type AgentTool, type AgentToolResult, type AgentEvent } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
@@ -39,7 +37,6 @@ import {
 	CONFIG_DIR_NAME,
 	createCodingTools,
 	getAgentDir,
-	isToolCallEventType,
 	type ExtensionAPI,
 	type ModelRegistry,
 	type Theme,
@@ -1146,67 +1143,28 @@ export default function multiAgent(pi: ExtensionAPI) {
 	}
 
 	// ── Orchestrator mode ───────────────────────────────────────────────
-	// Strip write/edit from the main session so mutations route through
-	// spawned executors; read/bash stay for context-gathering and
-	// verification. Removing the tools from the schema (setActiveTools)
+	// Strip write/edit/bash from the main session so every mutation, build,
+	// and test routes through spawned executors; read/grep/find/ls stay for
+	// context-gathering. Removing the tools from the schema (setActiveTools)
 	// beats blocking tool_call: the model never sees them, so no turns are
-	// burned on rejections. bash remains an escape hatch (sed -i) — this
-	// is a strong default, not a sandbox.
+	// burned on rejections. With no shell there is no escape hatch to police,
+	// hence no tripwire — and no `git diff` or `nix build` either, so
+	// verification is a child's reported claim, not a fact the host checked.
 
-	const ORCHESTRATOR_STRIPPED = new Set(["write", "edit"]);
+	const ORCHESTRATOR_STRIPPED = new Set(["write", "edit", "bash"]);
+	/** pi registers these built-ins but leaves them inactive; orchestrator mode turns them on. */
+	const ORCHESTRATOR_ADDED = ["grep", "find", "ls"];
 	let orchestratorOn = false;
 	let toolsBeforeOrchestrator: string[] | undefined;
 
 	const ORCHESTRATOR_GATE =
-		"ORCHESTRATOR MODE: write/edit are unavailable. Before every bash call, classify it: " +
-		"if it can create, modify, or delete any file, do not run it — spawn an executor via spawn_agent instead. " +
-		"bash is for reading and verification only. Direct mutations are detected and flagged.";
+		"ORCHESTRATOR MODE: write, edit, and bash are unavailable. You cannot mutate files, run builds or tests, " +
+		"or inspect git — spawn an executor via spawn_agent for any of it. read, grep, find, and ls are yours: " +
+		"use them to ground the contracts you write.";
 
 	pi.on("before_agent_start", async (event) => {
 		if (!orchestratorOn) return;
 		return { systemPrompt: `${event.systemPrompt}\n\n${ORCHESTRATOR_GATE}` };
-	});
-
-	// Detection over classification: no command parsing (a blocklist is an arms race
-	// against a Turing-complete shell); ground truth is the working tree.
-	const execFileAsync = promisify(execFile);
-	/** toolCallId -> `git status --porcelain` output captured before the bash call ran. */
-	const bashSnapshots = new Map<string, string>();
-
-	async function porcelainSnapshot(cwd: string): Promise<string | undefined> {
-		try {
-			const { stdout } = await execFileAsync("git", ["status", "--porcelain", "--no-optional-locks"], { cwd, timeout: 5000 });
-			return stdout;
-		} catch {
-			return undefined; // not a git repo, git absent, or timeout: tripwire inert
-		}
-	}
-
-	pi.on("tool_call", async (event, ctx) => {
-		if (!orchestratorOn || !isToolCallEventType("bash", event)) return;
-		const snapshot = await porcelainSnapshot(ctx.cwd);
-		if (snapshot !== undefined) bashSnapshots.set(event.toolCallId, snapshot);
-	});
-
-	pi.on("tool_result", async (event, ctx) => {
-		const before = bashSnapshots.get(event.toolCallId);
-		if (before === undefined) return;
-		bashSnapshots.delete(event.toolCallId);
-		if (!orchestratorOn) return;
-		const after = await porcelainSnapshot(ctx.cwd);
-		if (after === undefined || after === before) return;
-		const beforeLines = new Set(before.split("\n").filter(Boolean));
-		const afterLines = new Set(after.split("\n").filter(Boolean));
-		const changed = [...new Set([...beforeLines, ...afterLines]
-			.filter((line) => beforeLines.has(line) !== afterLines.has(line))
-			.map((line) => line.slice(3)))];
-		pi.sendMessage({
-			customType: "pi-agents-tripwire",
-			content:
-				`Orchestrator mode: that bash call changed the working tree (${changed.length} path(s): ${changed.slice(0, 5).join(", ")}${changed.length > 5 ? ", ..." : ""}). ` +
-				"File mutations must go through spawn_agent executors. Revert the direct edit, or redo it via an executor spawn.",
-			display: true,
-		}, { deliverAs: "steer" });
 	});
 
 	function applyOrchestrator(on: boolean, ctx: { hasUI: boolean; ui: any }): void {
@@ -1214,7 +1172,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		orchestratorOn = on;
 		if (on) {
 			toolsBeforeOrchestrator ??= pi.getActiveTools();
-			pi.setActiveTools(toolsBeforeOrchestrator.filter((name) => !ORCHESTRATOR_STRIPPED.has(name)));
+			pi.setActiveTools([...toolsBeforeOrchestrator.filter((name) => !ORCHESTRATOR_STRIPPED.has(name)), ...ORCHESTRATOR_ADDED]);
 		} else {
 			if (toolsBeforeOrchestrator) pi.setActiveTools(toolsBeforeOrchestrator);
 			toolsBeforeOrchestrator = undefined;
@@ -1223,14 +1181,14 @@ export default function multiAgent(pi: ExtensionAPI) {
 	}
 
 	pi.registerCommand("orchestrate", {
-		description: "Toggle orchestrator mode (strip write/edit; delegate mutations via spawn_agent)",
+		description: "Toggle orchestrator mode (strip write/edit/bash, add grep/find/ls; delegate mutations via spawn_agent)",
 		handler: async (_args, ctx) => {
 			applyOrchestrator(!orchestratorOn, ctx);
 			if (ctx.hasUI) {
 				ctx.ui.notify(
 					orchestratorOn
-						? "Orchestrator mode on: write/edit stripped from the main session; delegate mutations via spawn_agent."
-						: "Orchestrator mode off: write/edit restored.",
+						? "Orchestrator mode on: write/edit/bash stripped, grep/find/ls added; delegate mutations, builds, and git via spawn_agent."
+						: "Orchestrator mode off: write/edit/bash restored.",
 					"info",
 				);
 			}
@@ -1581,7 +1539,6 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		configCache = undefined;
-		bashSnapshots.clear();
 		orchestratorOn = false;
 		toolsBeforeOrchestrator = undefined;
 		adoptSessionContext(ctx);
@@ -1599,7 +1556,6 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async () => {
 		configCache = undefined;
-		bashSnapshots.clear();
 		const states = [...children.values()];
 		for (const state of states) {
 			state.killed = true;
@@ -1630,7 +1586,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			"Use proactively for parallel read-only scouting, and in orchestrator mode for every file mutation. When `panelModels` is configured, omit the panel model list and call `panel: {}`; otherwise pass an explicit `models` list.",
 		parameters: spawnSchema,
 		promptGuidelines: [
-			"Before every bash call in orchestrator mode, classify it: if it can create, modify, or delete any file (redirects, tee, sed/perl -i, mv/cp/rm, or any script that writes), do not run it — spawn an executor instead. bash is for reading and verification only.",
+			"In orchestrator mode the main session has no write, edit, or bash: every file mutation, build, test, and git inspection goes through a spawned executor, and its contract answers are the only report you get. read/grep/find/ls are available — ground your contracts with them before spawning.",
 			'Minimal executor spawn: spawn_agent({ id: "executor-1", system_prompt: "You are an executor. Apply the requested change, verify it, then submit your answers.", task: "<the change>", contract: [{ prompt: "What changed, and how was it verified?" }] }).',
 			'Minimal scout spawn: spawn_agent({ id: "scout-1", system_prompt: "You are a read-only scout. Never modify files. Cite file:line evidence.", task: "<the question>", contract: [{ prompt: "Answer, with file:line evidence" }] }).',
 			'If a spawn returns questions, answer with answer_agent({ id, answers: [{ id: "<question id>", value: "<answer>" }] }); the call blocks until the contract is fulfilled.',
