@@ -28,6 +28,9 @@
     piWebfetch.inputs.nixpkgs.follows = "nixpkgs";
     piHashline.url = "path:./extensions/pi-hashline";
     piHashline.inputs.nixpkgs.follows = "nixpkgs";
+
+    piAgents.url = "path:./extensions/pi-agents";
+    piAgents.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs = {
@@ -41,6 +44,7 @@
     piManagement,
     piWebfetch,
     piHashline,
+    piAgents,
     ...
   }: let
     systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
@@ -131,6 +135,7 @@
       "pi-management" = piManagement.packages.${system}.default;
       "pi-webfetch" = piWebfetch.packages.${system}.default;
       "pi-hashline" = piHashline.packages.${system}.default;
+      "pi-agents" = piAgents.packages.${system}.default;
 
       "pi-review" = let
         reviewPackageJson = builtins.fromJSON (builtins.readFile ./extensions/earendil_pi-review/package.json);
@@ -248,37 +253,6 @@
           };
         };
 
-      # Vendored from upstream pi: packages/coding-agent/examples/extensions/subagent.
-      "pi-subagent" = let
-        subagentPackageJson = builtins.fromJSON (builtins.readFile ./extensions/earendil_pi-subagent/package.json);
-      in
-        pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-subagent";
-          version = subagentPackageJson.version;
-          src = lib.cleanSource ./extensions/earendil_pi-subagent;
-
-          dontBuild = true;
-
-          installPhase = ''
-            runHook preInstall
-
-            mkdir -p "$out"
-            cp package.json LICENSE README.upstream.md "$out"/
-            cp -r extensions agents prompts "$out"/
-
-            runHook postInstall
-          '';
-
-          passthru.packageName = subagentPackageJson.name;
-
-          meta = with lib; {
-            description = subagentPackageJson.description;
-            homepage = subagentPackageJson.homepage;
-            license = licenses.mit;
-            platforms = platforms.all;
-          };
-        };
-
       # pi with default extensions pre-bundled.
       pi-full = self.lib.piWithExtensions {
         inherit pkgs;
@@ -301,7 +275,7 @@
       pi-management-build = self.packages.${system}."pi-management";
 
       pi-quiet-build = self.packages.${system}."pi-quiet";
-      pi-subagent-build = self.packages.${system}."pi-subagent";
+      pi-agents-build = self.packages.${system}."pi-agents";
 
       pi-aphrodite-test = piAphrodite.checks.${system}.test;
       pi-interview-test = piInterview.checks.${system}.test;
@@ -426,12 +400,12 @@
         management = self.packages.${system}."pi-management";
         webfetch = self.packages.${system}."pi-webfetch";
         hashline = self.packages.${system}."pi-hashline";
+        agents = self.packages.${system}."pi-agents";
 
         review = self.packages.${system}."pi-review";
         vcc = self.packages.${system}."pi-vcc";
         caveman = self.packages.${system}."pi-caveman";
         quiet = self.packages.${system}."pi-quiet";
-        subagent = self.packages.${system}."pi-subagent";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.

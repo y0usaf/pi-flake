@@ -149,7 +149,7 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-review` | `/review` and `/end-review` code review workflow |
 | `pi-vcc` | Algorithmic conversation compactor with `/pi-vcc`, `/pi-vcc-recall`, and `vcc_recall` |
 | `pi-caveman` | Terse-response mode with configurable compression levels |
-| `pi-subagent` | Planner/executor delegation: single, parallel, and chain modes with a model per role (`testing`, opt-in) |
+| `pi-agents` | Multi-agent orchestration: `spawn_agent`, `delegate`, `kill_agent`, `list_agents` over in-process children (`testing`, opt-in) |
 
 ## Extension Lifecycle
 
@@ -221,6 +221,7 @@ inputs.pi-flake.packages.<system>."pi-hashline"
 inputs.pi-flake.packages.<system>."pi-review"
 inputs.pi-flake.packages.<system>."pi-vcc"
 inputs.pi-flake.packages.<system>."pi-caveman"
+inputs.pi-flake.packages.<system>."pi-agents"
 ```
 
 `pi-interview` is bundled in `pi-full` but defaults to `off`. Use `/interview manual`, `/interview auto [provider/model]`, or `/interview strict`; configuration persists to `~/.pi/agent/interview.json`.
