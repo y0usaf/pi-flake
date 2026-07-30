@@ -8,7 +8,7 @@ Inspired by [VCC](https://github.com/lllyasviel/VCC) **(View-oriented Conversati
 
 ## Demo
 
-![pi-vcc demo](./demo.gif)
+![pi-vcc demo](https://raw.githubusercontent.com/sting8k/pi-vcc/main/demo.gif)
 
 ## Why pi-vcc
 

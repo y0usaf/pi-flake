@@ -184,7 +184,7 @@
               runHook preInstall
 
               mkdir -p "$out"
-              cp package.json README.md demo.gif index.ts "$out"/
+              cp package.json README.md index.ts "$out"/
               cp -r src "$out"/
 
               runHook postInstall
@@ -212,7 +212,7 @@
               runHook preInstall
 
               mkdir -p "$out"
-              cp package.json README.md LICENSE pi-caveman.gif shoutout.jpg "$out"/
+              cp package.json README.md LICENSE "$out"/
               cp -r extensions "$out"/
 
               runHook postInstall
