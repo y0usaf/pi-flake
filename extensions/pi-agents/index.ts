@@ -513,10 +513,10 @@ function parseContractOption(raw: unknown, index: number): ContractOption | unde
 	};
 }
 
-function normalizeContractQuestion(raw: unknown, index: number, usedIds: Set<string>): ContractQuestion | undefined {
-	if (!isPlainObject(raw)) return undefined;
+function normalizeContractQuestion(raw: unknown, index: number, usedIds: Set<string>): ContractQuestion {
+	if (!isPlainObject(raw)) throw new Error("not an object");
 	const prompt = cleanText(raw.prompt ?? raw.question, 500);
-	if (!prompt) return undefined;
+	if (!prompt) throw new Error("missing non-empty prompt");
 
 	const allowOther = raw.allowOther !== false;
 	const options: ContractOption[] = [];
@@ -524,12 +524,12 @@ function normalizeContractQuestion(raw: unknown, index: number, usedIds: Set<str
 	const usedLabels = new Set<string>();
 	let hasRecommended = false;
 	const rawOptions = Array.isArray(raw.options) ? raw.options : [];
-	for (const candidate of rawOptions) {
-		if (options.length >= MAX_CONTRACT_OPTIONS - 1) break;
+	for (const [optionIndex, candidate] of rawOptions.entries()) {
+		if (options.length >= MAX_CONTRACT_OPTIONS - 1) throw new Error(`option ${optionIndex} exceeds maximum of ${MAX_CONTRACT_OPTIONS - 1}`);
 		const parsed = parseContractOption(candidate, options.length);
-		if (!parsed) continue;
+		if (!parsed) throw new Error(`option ${optionIndex} is unparseable`);
 		const labelKey = parsed.label.toLowerCase();
-		if (usedValues.has(parsed.value) || usedLabels.has(labelKey)) continue;
+		if (usedValues.has(parsed.value) || usedLabels.has(labelKey)) throw new Error(`option ${optionIndex} is a duplicate`);
 		usedValues.add(parsed.value);
 		usedLabels.add(labelKey);
 		if (parsed.recommended) {
@@ -540,7 +540,7 @@ function normalizeContractQuestion(raw: unknown, index: number, usedIds: Set<str
 	}
 	// Divergence from pi-interview: zero options plus allowOther is a valid
 	// free-text question. Zero options without allowOther can answer nothing.
-	if (options.length === 0 && !allowOther) return undefined;
+	if (options.length === 0 && !allowOther) throw new Error("has no options and disallows free text");
 
 	options.push({
 		value: UNABLE_VALUE,
@@ -573,11 +573,18 @@ function normalizeContract(raw: unknown, label: string): ContractQuestion[] {
 		throw new Error(`${label}: contract must be a non-empty array of questions`);
 	}
 	const questions: ContractQuestion[] = [];
+	const dropped: string[] = [];
 	const usedIds = new Set<string>();
-	for (const candidate of raw) {
-		if (questions.length >= MAX_CONTRACT_QUESTIONS) break;
-		const question = normalizeContractQuestion(candidate, questions.length, usedIds);
-		if (question) questions.push(question);
+	for (const [index, candidate] of raw.entries()) {
+		if (index >= MAX_CONTRACT_QUESTIONS) {
+			dropped.push(`${index}: exceeds maximum of ${MAX_CONTRACT_QUESTIONS} questions`);
+			continue;
+		}
+		try { questions.push(normalizeContractQuestion(candidate, index, usedIds)); }
+		catch (error) { dropped.push(`${index}: ${(error as Error).message}`); }
+	}
+	if (dropped.length > 0) {
+		throw new Error(`${label}: dropped contract questions — ${dropped.join("; ")}`);
 	}
 	if (questions.length === 0) {
 		throw new Error(
@@ -901,11 +908,11 @@ function collectResult(childId: string, state: ChildState, reportStartIdx: numbe
 
 function renderAgentCall(
 	toolLabel: string,
-	args: { id?: string; system_prompt?: string; task?: string; message?: string; contract?: unknown; panel?: { size?: number; models?: string[] } },
+	args: { id?: string; system_prompt?: string; task?: string; contract?: unknown; panel?: { size?: number; models?: string[] } },
 	theme: Theme,
 ) {
 	const id = args.id || "...";
-	const taskText = args.task || args.message || "...";
+	const taskText = args.task || "...";
 	const preview = truncateToWidth(taskText, 70);
 	let text = theme.fg("toolTitle", theme.bold(`${toolLabel} `)) + theme.fg("accent", id);
 	if (Array.isArray(args.contract)) text += theme.fg("muted", ` · contract: ${args.contract.length}q`);

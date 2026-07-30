@@ -1,7 +1,7 @@
 # pi-agents DESIGN
 
-Multi-agent orchestration for pi: root tools `spawn_agent`, `kill_agent`,
-`list_agents`; in-process child `Agent` instances whose lifetime is exactly
+Multi-agent orchestration for pi: root tools `spawn_agent`, `answer_agent`,
+`kill_agent`, `list_agents`; in-process child `Agent` instances whose lifetime is exactly
 one contract — spawn, answer, removed.
 
 ## Locked decisions
@@ -97,13 +97,15 @@ one contract — spawn, answer, removed.
   shell, while the working tree is ground truth and catches writes by any
   binary. This is advisory, not blocking, so the correction remains visible in
   the transcript. Reversal condition: kernel-level read-only bash (bwrap via
-  `spawnHook`) if loud-but-advisory proves insufficient.
+  `spawnHook`) if loud-but-advisory proves insufficient. Amended 2026-08:
+  the tripwire machinery was removed when orchestrator mode stopped exposing
+  bash; see the read-only orchestrator decision below.
 - **2026-08 — Contract answers fail loud at the cap.** Silent truncation
   violated the fail-loud rule on the extension's primary result channel;
   over-cap free-text answers are rejected with a reason and the child resubmits
-  condensed via the existing revision path. The cap rises from 2000 to 4000
-  chars because dense analysis answers were observed truncating mid-sentence at
-  2000.
+  condensed via the existing revision path. The cap is 4000 chars because dense
+  analysis answers were observed truncating mid-sentence at the former 2000-char
+  cap.
 - **2026-08 — Role presets are rejected as over-build.** Name-as-convention
   plus few-shot minimal executor/scout spawn shapes in `promptGuidelines`
   replace a host-owned preset table: the minimal legal contract is already one
@@ -175,8 +177,10 @@ Single-file extension (`index.ts`). Sections, in order:
 - `multiAgent()` — registry (`children`, `reservedIds`), subtree
   authorization, spawn/kill lifecycle — decision-making
 
-The registry owns child lifecycle. The extension boundary is
-`createChildTools` + `createChildManagementTools` (including ask_parent/answer_agent): everything a child can
+The registry owns child lifecycle. The child extension boundary is
+`buildChildAgent` (index.ts:1394-1414), which assembles `createChildTools`,
+`createChildManagementTools`, and the child-only `buildReportTool`,
+`buildSubmitAnswersTool`, and `buildAskParentTool`; everything a child can
 invoke is declared there. `[[canon:no-privileged-path]]` is `n/a` beyond
 that — the extension *is* the feature; there is no builtins layer to split
 out. Reversal: if a second orchestration feature (e.g. teams, shared

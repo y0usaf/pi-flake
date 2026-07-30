@@ -1,6 +1,6 @@
 # pi-agents
 
-Multi-agent extension for pi. Root agents get three orchestration tools — `spawn_agent`, `kill_agent`, `list_agents` — plus every spawned child gets `read`, `write`, `edit`, `bash`, `report`, `submit_answers`, and descendant-scoped orchestration tools of its own.
+Multi-agent extension for pi. Root agents get four orchestration tools — `spawn_agent`, `answer_agent`, `kill_agent`, `list_agents` — plus every spawned child gets `read`, `write`, `edit`, `bash`, `report`, `submit_answers`, and descendant-scoped orchestration tools of its own.
 
 Every invocation carries a **contract**: AskUserQuestion-style questions (options, optional free text) the child must answer via `submit_answers` before its run can end. The tool result is those answers as data — the child behaves like a typed function call, not a chat transcript. `report` is a progress channel only.
 
@@ -14,9 +14,8 @@ Bundled by this flake. Enable via the NixOS module:
 programs.pi.extensions.agents = true;
 ```
 
-`agents` is a `testing`-stage extension: built and checked, but not in the
-default `pi-full` bundle, so it stays opt-in until the orchestration path has
-been exercised end to end.
+`agents` is an `active`-stage extension and is included in the default
+`pi-full` bundle.
 
 For a one-off session without installing anything:
 
