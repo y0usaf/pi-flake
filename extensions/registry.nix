@@ -61,15 +61,13 @@
   };
 
   quiet = {
-    stage = "testing";
+    stage = "active";
     source = "vendored";
     dir = "pi-quiet";
-    note = "Emoticon chrome: no header, blink spinner, face tool rows, face-border editor. Evaluating since 2026-08-11.";
   };
 
   agents = {
-    stage = "testing";
+    stage = "active";
     source = "subflake";
-    note = "Multi-agent orchestration: spawn_agent/delegate/kill_agent/list_agents over in-process child Agents, bounded by maxDepth and maxLiveAgents. Replaces the vendored subagent extension (retired 2026-07-30) — children are in-process instead of one pi subprocess per child, so they no longer each pay a full system prompt. Opt-in until a recursive spawn has run end to end without a runaway child; promote to active then.";
   };
 }
