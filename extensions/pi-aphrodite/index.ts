@@ -82,7 +82,7 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { createLocalBashOperations, keyHint } from "@earendil-works/pi-coding-agent";
+import { createLocalBashOperations, formatSize, keyHint } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
@@ -411,14 +411,6 @@ export function detectType(text: string, toolName: string | undefined): string {
   return "text";
 }
 
-export function formatBytes(bytes: number): string {
-  if (bytes < 1024) {
-    return `${bytes}B`;
-  }
-
-  return `${(bytes / 1024).toFixed(1)}KB`;
-}
-
 export function buildPreview(
   text: string,
   toolName: string | undefined,
@@ -432,7 +424,7 @@ export function buildPreview(
       : firstMeaningful;
   const label = toolName ?? "tool";
 
-  return `[${label}:${type} ${lines.length}L ${formatBytes(text.length)} | ${hint}]`;
+  return `[${label}:${type} ${lines.length}L ${formatSize(text.length)} | ${hint}]`;
 }
 
 export function renderCompressedResult(
@@ -443,7 +435,7 @@ export function renderCompressedResult(
   return [
     preview,
     `<<<CCR:${stored.hash}|${type}|${stored.originalSize}>>>`,
-    `Full output (${formatBytes(stored.originalSize)}) stored by pi-aphrodite. Use the aphrodite_retrieve tool with hash "${stored.hash}" to fetch it.`,
+    `Full output (${formatSize(stored.originalSize)}) stored by pi-aphrodite. Use the aphrodite_retrieve tool with hash "${stored.hash}" to fetch it.`,
   ].join("\n");
 }
 
@@ -471,7 +463,7 @@ export function formatRetrieveResult(
   }
 
   const lines = text.length === 0 ? 0 : text.split("\n").length;
-  const summary = `${lines}L ${formatBytes(Buffer.byteLength(text, "utf8"))} · `;
+  const summary = `${lines}L ${formatSize(Buffer.byteLength(text, "utf8"))} · `;
   return theme.fg("muted", summary) + expandHint;
 }
 
@@ -650,7 +642,7 @@ function formatStatus(
     `stored: ${status.stored}/${status.attempts}`,
     `retrieves: ${status.retrieves}`,
     `purged: ${status.purged}`,
-    `context: ${formatBytes(status.originalBytes)} → ${formatBytes(status.markerBytes)} markers`,
+    `context: ${formatSize(status.originalBytes)} → ${formatSize(status.markerBytes)} markers`,
     `unavailable skips: ${status.unavailableSkips}`,
     `last failure: ${status.lastFailure ?? "none"}`,
   ].join(" · ");
