@@ -6,6 +6,7 @@ one contract — spawn, answer, removed.
 
 ## Locked decisions
 
+- **2026-08 — Panel roster is config data, not per-call LLM output.** Model choice moves down the least-power ladder from generated string to config file; explicit per-call `models` still wins because config is a default, not a lock. A smaller `size` takes the first N configured models, making list order a priority order, and the roster is validated at session start. Reversal condition: if per-call model choice proves necessary for panel quality, revisit the default roster.
 - **2026-08 — Child tools are pi's built-ins, not bespoke copies.** Children
   get `createReadTool`/`createWriteTool`/`createEditTool`/`createBashTool`
   against the child cwd. A previous hand-rolled suite (~230 lines) duplicated
