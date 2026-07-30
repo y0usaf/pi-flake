@@ -26,22 +26,24 @@
  *   they operated on, never a same-ID replacement.
  */
 
+import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { promisify } from "node:util";
 import { Agent, type AgentTool, type AgentToolResult, type AgentEvent } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import {
-	createBashTool,
-	createEditTool,
-	createReadTool,
-	createWriteTool,
+	CONFIG_DIR_NAME,
+	createCodingTools,
 	getAgentDir,
+	isToolCallEventType,
 	type ExtensionAPI,
 	type ModelRegistry,
+	type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { Text, Container, Spacer } from "@earendil-works/pi-tui";
+import { Text, Container, Spacer, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 // ---------------------------------------------------------------------------
@@ -71,12 +73,7 @@ const SAFE_ENV_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 function buildSafeEnv(): NodeJS.ProcessEnv {
-	const safe: NodeJS.ProcessEnv = {};
-	for (const key of SAFE_ENV_KEYS) {
-		const value = process.env[key];
-		if (value !== undefined) safe[key] = value;
-	}
-	return safe;
+	return Object.fromEntries([...SAFE_ENV_KEYS].map((key) => [key, process.env[key]]).filter(([, value]) => value !== undefined));
 }
 
 // ---------------------------------------------------------------------------
@@ -88,7 +85,7 @@ const UNABLE_VALUE = "__unable__";
 const MAX_CONTRACT_QUESTIONS = 8;
 /** Per question, including the host-added "Unable to determine" option. */
 const MAX_CONTRACT_OPTIONS = 8;
-const MAX_ANSWER_TEXT = 2000;
+const MAX_ANSWER_TEXT = 4000;
 /** Watchdog on the enforcement loop: a model refusing at nudge 10 refuses at 500. */
 const MAX_CONTRACT_NUDGES = 10;
 
@@ -182,8 +179,6 @@ const CONFIG_FILE_NAME = "pi-agents.json";
 const DEFAULT_MAX_DEPTH = 1;
 const DEFAULT_MAX_LIVE_AGENTS = 6;
 
-const CONFIG_KEYS = new Set(["maxDepth", "maxLiveAgents", "model", "orchestrator"]);
-
 interface PiAgentsConfig {
 	maxDepth: number;
 	maxLiveAgents: number;
@@ -197,34 +192,27 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function normalizeNonNegativeInteger(value: unknown, key: string, path: string): number {
-	if (!Number.isInteger(value) || (value as number) < 0) {
-		throw new Error(`${path}: "${key}" must be an integer ≥ 0`);
+const intAtLeast = (min: number) => (value: unknown, key: string, path: string): number => {
+	if (!Number.isInteger(value) || (value as number) < min) {
+		throw new Error(`${path}: "${key}" must be an integer ≥ ${min}`);
 	}
 	return value as number;
-}
+};
 
-function normalizePositiveInteger(value: unknown, key: string, path: string): number {
-	if (!Number.isInteger(value) || (value as number) < 1) {
-		throw new Error(`${path}: "${key}" must be an integer ≥ 1`);
-	}
-	return value as number;
-}
-
-function normalizeModelSpec(value: unknown, key: string, path: string): string {
-	const spec = typeof value === "string" ? value.trim() : "";
-	if (spec === "") {
-		throw new Error(`${path}: "${key}" must be a non-empty string ("provider/modelId" or "modelId")`);
-	}
-	return spec;
-}
-
-function normalizeBoolean(value: unknown, key: string, path: string): boolean {
-	if (typeof value !== "boolean") {
-		throw new Error(`${path}: "${key}" must be a boolean`);
-	}
-	return value;
-}
+/** Every config key and its validator; readConfigFragment rejects keys outside this table. */
+const CONFIG_VALIDATORS: Record<keyof PiAgentsConfig, (value: unknown, key: string, path: string) => unknown> = {
+	maxDepth: intAtLeast(0),
+	maxLiveAgents: intAtLeast(1),
+	model: (value, key, path) => {
+		const spec = typeof value === "string" ? value.trim() : "";
+		if (spec === "") throw new Error(`${path}: "${key}" must be a non-empty string ("provider/modelId" or "modelId")`);
+		return spec;
+	},
+	orchestrator: (value, key, path) => {
+		if (typeof value !== "boolean") throw new Error(`${path}: "${key}" must be a boolean`);
+		return value;
+	},
+};
 
 async function readConfigFragment(path: string): Promise<Partial<PiAgentsConfig>> {
 	let raw: string;
@@ -246,30 +234,21 @@ async function readConfigFragment(path: string): Promise<Partial<PiAgentsConfig>
 		throw new Error(`${path}: expected a JSON object`);
 	}
 
-	const unknownKeys = Object.keys(parsed).filter((key) => !CONFIG_KEYS.has(key));
+	const unknownKeys = Object.keys(parsed).filter((key) => !(key in CONFIG_VALIDATORS));
 	if (unknownKeys.length > 0) {
 		throw new Error(`${path}: unknown key(s): ${unknownKeys.join(", ")}`);
 	}
 
 	const config: Partial<PiAgentsConfig> = {};
-	if ("maxDepth" in parsed) {
-		config.maxDepth = normalizeNonNegativeInteger(parsed.maxDepth, "maxDepth", path);
-	}
-	if ("maxLiveAgents" in parsed) {
-		config.maxLiveAgents = normalizePositiveInteger(parsed.maxLiveAgents, "maxLiveAgents", path);
-	}
-	if ("model" in parsed) {
-		config.model = normalizeModelSpec(parsed.model, "model", path);
-	}
-	if ("orchestrator" in parsed) {
-		config.orchestrator = normalizeBoolean(parsed.orchestrator, "orchestrator", path);
+	for (const [key, value] of Object.entries(parsed)) {
+		(config as Record<string, unknown>)[key] = CONFIG_VALIDATORS[key as keyof PiAgentsConfig](value, key, path);
 	}
 	return config;
 }
 
 async function loadPiAgentsConfig(cwd: string): Promise<PiAgentsConfig> {
 	const globalConfig = await readConfigFragment(join(getAgentDir(), CONFIG_FILE_NAME));
-	const projectConfig = await readConfigFragment(resolve(cwd, ".pi", CONFIG_FILE_NAME));
+	const projectConfig = await readConfigFragment(resolve(cwd, CONFIG_DIR_NAME, CONFIG_FILE_NAME));
 	return {
 		maxDepth: projectConfig.maxDepth ?? globalConfig.maxDepth ?? DEFAULT_MAX_DEPTH,
 		maxLiveAgents: projectConfig.maxLiveAgents ?? globalConfig.maxLiveAgents ?? DEFAULT_MAX_LIVE_AGENTS,
@@ -351,14 +330,6 @@ function stripControlSequences(value: string): string {
 		.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
 }
 
-function normalizePositiveTimeout(value: number | undefined, label: string): number | undefined {
-	if (value === undefined) return undefined;
-	if (!Number.isFinite(value) || value <= 0) {
-		throw new Error(`${label} must be a finite number greater than 0`);
-	}
-	return value;
-}
-
 class AgentTimeoutError extends Error {
 	constructor(childId: string, timeoutSeconds: number) {
 		super(`Agent "${childId}" timed out after ${timeoutSeconds}s`);
@@ -366,9 +337,10 @@ class AgentTimeoutError extends Error {
 	}
 }
 
-async function waitForAgentSettlement(agent: Agent, work: Promise<unknown>, graceMs = SHUTDOWN_GRACE_MS): Promise<void> {
+/** Wait for all work to settle, but never longer than graceMs. */
+async function settleWithGrace(work: Array<Promise<unknown>>, graceMs = SHUTDOWN_GRACE_MS): Promise<void> {
 	await Promise.race([
-		Promise.allSettled([work, agent.waitForIdle()]).then(() => undefined),
+		Promise.allSettled(work).then(() => undefined),
 		new Promise<void>((resolve) => setTimeout(resolve, graceMs)),
 	]);
 }
@@ -377,10 +349,12 @@ async function withOptionalTimeout<T>(
 	agent: Agent,
 	childId: string,
 	work: Promise<T>,
-	timeoutSeconds: number | undefined,
+	timeout: number | undefined,
 ): Promise<T> {
-	const timeout = normalizePositiveTimeout(timeoutSeconds, "timeout_seconds");
 	if (timeout === undefined) return await work;
+	if (!Number.isFinite(timeout) || timeout <= 0) {
+		throw new Error("timeout_seconds must be a finite number greater than 0");
+	}
 
 	let handle: ReturnType<typeof setTimeout> | undefined;
 	let timedOut = false;
@@ -398,7 +372,7 @@ async function withOptionalTimeout<T>(
 		]);
 	} catch (err) {
 		if (timedOut) {
-			await waitForAgentSettlement(agent, work);
+			await settleWithGrace([work, agent.waitForIdle()]);
 		}
 		throw err;
 	} finally {
@@ -413,10 +387,8 @@ function shortenPath(p: string): string {
 
 function formatToolActivity(name: string, args: Record<string, unknown>): string {
 	switch (name) {
-		case "bash": {
-			const cmd = (args.command as string) || "...";
-			return `$ ${cmd.length > 60 ? cmd.slice(0, 60) + "..." : cmd}`;
-		}
+		case "bash":
+			return `$ ${truncateToWidth((args.command as string) || "...", 60)}`;
 		case "read": {
 			const p = shortenPath((args.path as string) || "...");
 			const off = args.offset as number | undefined;
@@ -429,18 +401,14 @@ function formatToolActivity(name: string, args: Record<string, unknown>): string
 			return `write ${shortenPath((args.path as string) || "...")}`;
 		case "edit":
 			return `edit ${shortenPath((args.path as string) || "...")}`;
-		case "report": {
-			const msg = (args.message as string) || "";
-			return `report "${msg.length > 50 ? msg.slice(0, 50) + "..." : msg}"`;
-		}
+		case "report":
+			return `report "${truncateToWidth((args.message as string) || "", 50)}"`;
 		case "submit_answers": {
 			const count = Array.isArray(args.answers) ? args.answers.length : 0;
 			return `submit_answers (${count} answer${count === 1 ? "" : "s"})`;
 		}
-		default: {
-			const s = JSON.stringify(args);
-			return `${name} ${s.length > 50 ? s.slice(0, 50) + "..." : s}`;
-		}
+		default:
+			return `${name} ${truncateToWidth(JSON.stringify(args), 50)}`;
 	}
 }
 
@@ -612,9 +580,13 @@ function validateContractAnswers(
 			problems.push(`"${entry.id}": value must be one of ${allowed}`);
 			continue;
 		}
-		const text = cleanText(entry.value, MAX_ANSWER_TEXT);
+		const text = cleanText(entry.value, MAX_ANSWER_TEXT + 1);
 		if (!text) {
 			problems.push(`"${entry.id}": free-text answer is empty`);
+			continue;
+		}
+		if (text.length > MAX_ANSWER_TEXT) {
+			problems.push(`"${entry.id}": answer exceeds ${MAX_ANSWER_TEXT} chars; resubmit condensed`);
 			continue;
 		}
 		accepted.set(question.id, { id: question.id, value: text, label: text, wasCustom: true });
@@ -655,19 +627,14 @@ const CONTRACT_NUDGE_PROMPT =
  * MAX_CONTRACT_NUDGES as the watchdog; abort, timeout, and kill still apply.
  */
 async function runUntilContractFulfilled(state: ChildState, prompt: string, signal: AbortSignal | undefined): Promise<void> {
+	const pending = () => !state.contract.answers && !state.killed && !signal?.aborted && !state.agent.state.errorMessage;
 	await state.agent.prompt(prompt);
 	let nudges = 0;
-	while (
-		!state.contract.answers &&
-		!state.killed &&
-		!signal?.aborted &&
-		!state.agent.state.errorMessage &&
-		nudges < MAX_CONTRACT_NUDGES
-	) {
+	while (pending() && nudges < MAX_CONTRACT_NUDGES) {
 		nudges++;
 		await state.agent.prompt(CONTRACT_NUDGE_PROMPT);
 	}
-	if (!state.contract.answers && !state.killed && !signal?.aborted && !state.agent.state.errorMessage) {
+	if (pending()) {
 		throw new Error(`Agent "${state.id}" ended ${nudges} nudged run(s) without calling submit_answers; contract unfulfilled`);
 	}
 }
@@ -676,16 +643,9 @@ async function runUntilContractFulfilled(state: ChildState, prompt: string, sign
 // ---------------------------------------------------------------------------
 
 function createChildTools(cwd: string): AgentTool<any>[] {
-	const bashTool = createBashTool(cwd, {
-		exposeSessionEnvironment: false,
-		spawnHook: (context) => ({ ...context, env: buildSafeEnv() }),
-	});
-	return [
-		createReadTool(cwd) as AgentTool<any>,
-		createWriteTool(cwd) as AgentTool<any>,
-		createEditTool(cwd) as AgentTool<any>,
-		bashTool as AgentTool<any>,
-	];
+	return createCodingTools(cwd, {
+		bash: { exposeSessionEnvironment: false, spawnHook: (context) => ({ ...context, env: buildSafeEnv() }) },
+	}) as AgentTool<any>[];
 }
 
 // ---------------------------------------------------------------------------
@@ -713,17 +673,11 @@ interface ChildState {
 }
 
 function extractLastAssistantText(agent: Agent): string {
-	const messages = agent.state.messages;
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const msg = messages[i];
-		if (msg.role === "assistant") {
-			const parts = (msg as AssistantMessage).content
-				.filter((c): c is TextContent => c.type === "text")
-				.map((c) => c.text);
-			if (parts.length > 0) return parts.join("");
-		}
-	}
-	return "(no output)";
+	const textParts = agent.state.messages
+		.filter((msg): msg is AssistantMessage => msg.role === "assistant")
+		.map((msg) => msg.content.filter((c): c is TextContent => c.type === "text").map((c) => c.text))
+		.filter((parts) => parts.length > 0);
+	return textParts.at(-1)?.join("") ?? "(no output)";
 }
 
 function buildReportTool(childId: string, reports: string[]): AgentTool<typeof reportSchema> {
@@ -757,7 +711,7 @@ function subscribeChild(
 	const emit = () => {
 		if (!emitPending && onUpdate && !unsubscribed) {
 			emitPending = true;
-			Promise.resolve().then(() => {
+			queueMicrotask(() => {
 				emitPending = false;
 				if (unsubscribed) return;
 				onUpdate({
@@ -774,52 +728,30 @@ function subscribeChild(
 		}
 	};
 
-	const trimActivity = () => {
+	/** Append one activity item, trim storage, and schedule a partial update. */
+	const push = (type: ActivityItem["type"], label: string) => {
+		state.activity.push({ type, label, timestamp: Date.now() });
 		if (state.activity.length > MAX_ACTIVITY_STORAGE) {
 			state.activity = state.activity.slice(-MAX_ACTIVITY_STORAGE);
 		}
+		emit();
 	};
 
 	const innerUnsub = child.subscribe((event: AgentEvent) => {
 		if (event.type === "tool_execution_start") {
-			state.activity.push({
-				type: "tool_start",
-				label: stripControlSequences(formatToolActivity(event.toolName, event.args)),
-				timestamp: Date.now(),
-			});
-			trimActivity();
-			emit();
+			push("tool_start", stripControlSequences(formatToolActivity(event.toolName, event.args)));
 		} else if (event.type === "tool_execution_end") {
 			if (event.toolName === "report" && !event.isError) {
-				const latest = state.reports[state.reports.length - 1];
-				if (latest) {
-					state.activity.push({
-						type: "report",
-						label: `report "${latest.length > 50 ? latest.slice(0, 50) + "..." : latest}"`,
-						timestamp: Date.now(),
-					});
-				}
+				const latest = state.reports.at(-1);
+				if (latest) push("report", `report "${truncateToWidth(latest, 50)}"`);
 			} else {
-				state.activity.push({
-					type: "tool_end",
-					label: `${event.toolName} ${event.isError ? "failed" : "done"}`,
-					timestamp: Date.now(),
-				});
+				push("tool_end", `${event.toolName} ${event.isError ? "failed" : "done"}`);
 			}
-			trimActivity();
-			emit();
 		} else if (event.type === "message_end" && event.message.role === "assistant") {
 			const msg = event.message as AssistantMessage;
 			const textParts = msg.content.filter((c): c is TextContent => c.type === "text");
 			if (textParts.length > 0) {
-				const preview = stripControlSequences(textParts[0].text.split("\n")[0]);
-				state.activity.push({
-					type: "text",
-					label: preview.length > 60 ? preview.slice(0, 60) + "..." : preview,
-					timestamp: Date.now(),
-				});
-				trimActivity();
-				emit();
+				push("text", truncateToWidth(stripControlSequences(textParts[0].text.split("\n")[0]), 60));
 			}
 		}
 	});
@@ -868,12 +800,11 @@ function collectResult(childId: string, state: ChildState, reportStartIdx: numbe
 function renderAgentCall(
 	toolLabel: string,
 	args: { id?: string; system_prompt?: string; task?: string; message?: string; contract?: unknown },
-	theme: any,
-	_context: any,
+	theme: Theme,
 ) {
 	const id = args.id || "...";
 	const taskText = args.task || args.message || "...";
-	const preview = taskText.length > 70 ? taskText.slice(0, 70) + "..." : taskText;
+	const preview = truncateToWidth(taskText, 70);
 	let text = theme.fg("toolTitle", theme.bold(`${toolLabel} `)) + theme.fg("accent", id);
 	if (Array.isArray(args.contract)) text += theme.fg("muted", ` · contract: ${args.contract.length}q`);
 	text += "\n  " + theme.fg("dim", preview);
@@ -883,32 +814,32 @@ function renderAgentCall(
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 /** " · N actions · N reports · model" — pi joins metadata with a muted middot. */
-function metaSuffix(model: string | undefined, activityCount: number, reportCount: number | undefined, theme: any): string {
+function metaSuffix(model: string | undefined, activityCount: number, reportCount: number | undefined, theme: Theme): string {
 	const parts = [plural(activityCount, "action")];
 	if (reportCount !== undefined) parts.push(plural(reportCount, "report"));
 	if (model) parts.push(model);
 	return theme.fg("muted", parts.map((part) => ` · ${part}`).join(""));
 }
 
-function formatAnswerLines(answers: ContractAnswer[], theme: any): string {
+function formatAnswerLines(answers: ContractAnswer[], theme: Theme): string {
 	let text = "";
 	for (const answer of answers) {
 		const punted = answer.value === UNABLE_VALUE;
 		const shownRaw = stripControlSequences(punted ? "unable to determine" : answer.label);
-		const shown = shownRaw.length > 70 ? shownRaw.slice(0, 70) + "..." : shownRaw;
+		const shown = truncateToWidth(shownRaw, 70);
 		const mark = punted ? theme.fg("warning", "◌") : theme.fg("success", "•");
 		text += "\n  " + mark + " " + theme.fg("accent", answer.id) + (answer.wasCustom ? theme.fg("dim", " ✎ ") : " ") + theme.fg("toolOutput", shown);
 	}
 	return text;
 }
-function activityIcon(item: ActivityItem, theme: any): string {
+function activityIcon(item: ActivityItem, theme: Theme): string {
 	if (item.type === "report") return theme.fg("warning", "↑");
 	if (item.type === "tool_start") return theme.fg("accent", "→");
 	if (item.type === "text") return theme.fg("dim", "·");
 	return theme.fg("success", "✓");
 }
 
-function formatActivityTail(activity: ActivityItem[], theme: any): string {
+function formatActivityTail(activity: ActivityItem[], theme: Theme): string {
 	const visible = activity.slice(-MAX_RENDERED_ACTIVITY);
 	const skipped = activity.length - visible.length;
 	let text = "";
@@ -929,7 +860,7 @@ function clearSpinner(context: any): void {
 function renderAgentResult(
 	result: { content: any[]; details?: unknown },
 	options: { expanded: boolean; isPartial: boolean },
-	theme: any,
+	theme: Theme,
 	context: any,
 ) {
 	const details = (result.details && typeof result.details === "object" && "childId" in result.details)
@@ -1053,32 +984,17 @@ export default function multiAgent(pi: ExtensionAPI) {
 	// This assumes modelRegistry is stable for the session lifetime.
 	let cachedGetApiKey: ((provider: string) => Promise<string | undefined>) | undefined;
 	let cachedRegistry: ModelRegistry | undefined;
-	let cachedConfig: PiAgentsConfig | undefined;
-	let cachedConfigCwd: string | undefined;
-	let cachedConfigError: Error | undefined;
+	/** Caching the promise memoizes success and failure alike: a rejected promise rethrows on every await. */
+	let configCache: { cwd: string; promise: Promise<PiAgentsConfig> } | undefined;
 
-	async function getConfig(cwd: string): Promise<PiAgentsConfig> {
-		if (cachedConfig && cachedConfigCwd === cwd) return cachedConfig;
-		if (cachedConfigError && cachedConfigCwd === cwd) throw cachedConfigError;
-
-		try {
-			const config = await loadPiAgentsConfig(cwd);
-			cachedConfig = config;
-			cachedConfigCwd = cwd;
-			cachedConfigError = undefined;
-			return config;
-		} catch (err) {
-			cachedConfig = undefined;
-			cachedConfigCwd = cwd;
-			cachedConfigError = err instanceof Error ? err : new Error(String(err));
-			throw cachedConfigError;
-		}
+	function getConfig(cwd: string): Promise<PiAgentsConfig> {
+		if (configCache?.cwd !== cwd) configCache = { cwd, promise: loadPiAgentsConfig(cwd) };
+		return configCache.promise;
 	}
 
-	function clearConfigCache(): void {
-		cachedConfig = undefined;
-		cachedConfigCwd = undefined;
-		cachedConfigError = undefined;
+	function adoptSessionContext(ctx: { modelRegistry: ModelRegistry }): void {
+		cachedRegistry ??= ctx.modelRegistry;
+		cachedGetApiKey ??= (provider: string) => ctx.modelRegistry.getApiKeyForProvider(provider);
 	}
 
 	// ── Orchestrator mode ───────────────────────────────────────────────
@@ -1092,6 +1008,58 @@ export default function multiAgent(pi: ExtensionAPI) {
 	const ORCHESTRATOR_STRIPPED = new Set(["write", "edit"]);
 	let orchestratorOn = false;
 	let toolsBeforeOrchestrator: string[] | undefined;
+
+	const ORCHESTRATOR_GATE =
+		"ORCHESTRATOR MODE: write/edit are unavailable. Before every bash call, classify it: " +
+		"if it can create, modify, or delete any file, do not run it — spawn an executor via spawn_agent instead. " +
+		"bash is for reading and verification only. Direct mutations are detected and flagged.";
+
+	pi.on("before_agent_start", async (event) => {
+		if (!orchestratorOn) return;
+		return { systemPrompt: `${event.systemPrompt}\n\n${ORCHESTRATOR_GATE}` };
+	});
+
+	// Detection over classification: no command parsing (a blocklist is an arms race
+	// against a Turing-complete shell); ground truth is the working tree.
+	const execFileAsync = promisify(execFile);
+	/** toolCallId -> `git status --porcelain` output captured before the bash call ran. */
+	const bashSnapshots = new Map<string, string>();
+
+	async function porcelainSnapshot(cwd: string): Promise<string | undefined> {
+		try {
+			const { stdout } = await execFileAsync("git", ["status", "--porcelain", "--no-optional-locks"], { cwd, timeout: 5000 });
+			return stdout;
+		} catch {
+			return undefined; // not a git repo, git absent, or timeout: tripwire inert
+		}
+	}
+
+	pi.on("tool_call", async (event, ctx) => {
+		if (!orchestratorOn || !isToolCallEventType("bash", event)) return;
+		const snapshot = await porcelainSnapshot(ctx.cwd);
+		if (snapshot !== undefined) bashSnapshots.set(event.toolCallId, snapshot);
+	});
+
+	pi.on("tool_result", async (event, ctx) => {
+		const before = bashSnapshots.get(event.toolCallId);
+		if (before === undefined) return;
+		bashSnapshots.delete(event.toolCallId);
+		if (!orchestratorOn) return;
+		const after = await porcelainSnapshot(ctx.cwd);
+		if (after === undefined || after === before) return;
+		const beforeLines = new Set(before.split("\n").filter(Boolean));
+		const afterLines = new Set(after.split("\n").filter(Boolean));
+		const changed = [...new Set([...beforeLines, ...afterLines]
+			.filter((line) => beforeLines.has(line) !== afterLines.has(line))
+			.map((line) => line.slice(3)))];
+		pi.sendMessage({
+			customType: "pi-agents-tripwire",
+			content:
+				`Orchestrator mode: that bash call changed the working tree (${changed.length} path(s): ${changed.slice(0, 5).join(", ")}${changed.length > 5 ? ", ..." : ""}). ` +
+				"File mutations must go through spawn_agent executors. Revert the direct edit, or redo it via an executor spawn.",
+			display: true,
+		}, { deliverAs: "steer" });
+	});
 
 	function applyOrchestrator(on: boolean, ctx: { hasUI: boolean; ui: any }): void {
 		if (on === orchestratorOn) return;
@@ -1136,20 +1104,14 @@ export default function multiAgent(pi: ExtensionAPI) {
 		return false;
 	}
 
+	/** Depth-first preorder: root, then each child's subtree in id order. */
 	function getSubtreeIds(rootId: string): string[] {
-		const result: string[] = [];
-		const queue = [rootId];
-		while (queue.length > 0) {
-			const current = queue.shift()!;
-			if (!children.has(current)) continue;
-			result.push(current);
-			const childIds = [...children.entries()]
-				.filter(([, state]) => state.parentId === current)
-				.map(([id]) => id)
-				.sort((a, b) => a.localeCompare(b));
-			queue.push(...childIds);
-		}
-		return result;
+		if (!children.has(rootId)) return [];
+		const childIds = [...children.entries()]
+			.filter(([, state]) => state.parentId === rootId)
+			.map(([id]) => id)
+			.sort((a, b) => a.localeCompare(b));
+		return [rootId, ...childIds.flatMap((id) => getSubtreeIds(id))];
 	}
 
 	function getScopedEntries(callerId?: string): Array<[string, ChildState]> {
@@ -1237,6 +1199,20 @@ export default function multiAgent(pi: ExtensionAPI) {
 		return { content: [{ type: "text", text }], details: { agents } };
 	}
 
+	function killAgentResult(callerId: string | undefined, targetId: string): AgentToolResult<unknown> {
+		const state = getAccessibleTarget(callerId, targetId, "kill");
+		const { killedIds, reportCount } = killSubtree(state.id);
+		return {
+			content: [{ type: "text", text: `Killed ${killedIds.length} agent(s): ${killedIds.join(", ")}.` }],
+			details: { childId: state.id, killedIds, reportCount },
+		};
+	}
+
+	const renderTextResult = (result: AgentToolResult<unknown>) => {
+		const first = result.content[0];
+		return new Text(first?.type === "text" ? first.text : "done", 0, 0);
+	};
+
 	function createChildManagementTools(callerId: string, cwd: string, model: Model<any>): AgentTool<any>[] {
 		const spawnTool: AgentTool<typeof spawnSchema> = {
 			name: "spawn_agent",
@@ -1256,14 +1232,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			label: "Kill Agent",
 			description: "Kill a descendant agent in your subtree. Descendants are killed recursively.",
 			parameters: killSchema,
-			execute: async (_toolCallId, params) => {
-				const state = getAccessibleTarget(callerId, params.id, "kill");
-				const { killedIds, reportCount } = killSubtree(state.id);
-				return {
-					content: [{ type: "text", text: `Killed ${killedIds.length} agent(s): ${killedIds.join(", ")}.` }],
-					details: { childId: state.id, killedIds, reportCount },
-				};
-			},
+			execute: async (_toolCallId, params) => killAgentResult(callerId, params.id),
 		};
 
 		const listTool: AgentTool<typeof listSchema> = {
@@ -1391,11 +1360,11 @@ export default function multiAgent(pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		clearConfigCache();
+		configCache = undefined;
+		bashSnapshots.clear();
 		orchestratorOn = false;
 		toolsBeforeOrchestrator = undefined;
-		cachedRegistry ??= ctx.modelRegistry;
-		cachedGetApiKey ??= (provider: string) => ctx.modelRegistry.getApiKeyForProvider(provider);
+		adoptSessionContext(ctx);
 		try {
 			const config = await getConfig(ctx.cwd);
 			if (config.model) resolveChildModel(config.model, ctx.modelRegistry);
@@ -1408,16 +1377,14 @@ export default function multiAgent(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
-		clearConfigCache();
+		configCache = undefined;
+		bashSnapshots.clear();
 		const states = [...children.values()];
 		for (const state of states) {
 			state.killed = true;
 			state.agent.abort();
 		}
-		await Promise.race([
-			Promise.allSettled(states.map((state) => state.agent.waitForIdle())).then(() => undefined),
-			new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_GRACE_MS)),
-		]);
+		await settleWithGrace(states.map((state) => state.agent.waitForIdle()));
 		children.clear();
 	});
 
@@ -1437,14 +1404,17 @@ export default function multiAgent(pi: ExtensionAPI) {
 			"The agent is removed as soon as its contract is fulfilled — spawn is a typed function call: " +
 			"contract in, answers out, agent gone. Follow-ups are new spawns with the prior answers folded into the task. " +
 			"kill_agent aborts a running agent. " +
-			"On any error (including timeout) the agent subtree is removed from the registry automatically.",
+			"On any error (including timeout) the agent subtree is removed from the registry automatically. " +
+			"Use proactively for parallel read-only scouting, and in orchestrator mode for every file mutation.",
 		parameters: spawnSchema,
 		promptGuidelines: [
-			"When write and edit are unavailable (orchestrator mode), perform all file mutations by spawning executor agents via spawn_agent; keep using read and bash directly for context and verification.",
+			"Before every bash call in orchestrator mode, classify it: if it can create, modify, or delete any file (redirects, tee, sed/perl -i, mv/cp/rm, or any script that writes), do not run it — spawn an executor instead. bash is for reading and verification only.",
+			'Minimal executor spawn: spawn_agent({ id: "executor-1", system_prompt: "You are an executor. Apply the requested change, verify it, then submit your answers.", task: "<the change>", contract: [{ prompt: "What changed, and how was it verified?" }] }).',
+			'Minimal scout spawn: spawn_agent({ id: "scout-1", system_prompt: "You are a read-only scout. Never modify files. Cite file:line evidence.", task: "<the question>", contract: [{ prompt: "Answer, with file:line evidence" }] }).',
 		],
 
-		renderCall(args, theme, context) {
-			return renderAgentCall("spawn_agent", args, theme, context);
+		renderCall(args, theme) {
+			return renderAgentCall("spawn_agent", args, theme);
 		},
 
 		renderResult(result, options, theme, context) {
@@ -1455,8 +1425,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			const model = ctx.model;
 			if (!model) throw new Error("No model selected");
 
-			cachedRegistry ??= ctx.modelRegistry;
-			cachedGetApiKey ??= (provider: string) => ctx.modelRegistry.getApiKeyForProvider(provider);
+			adoptSessionContext(ctx);
 			return await spawnChild(undefined, params, model, ctx.cwd, signal, onUpdate);
 		},
 	});
@@ -1475,18 +1444,10 @@ export default function multiAgent(pi: ExtensionAPI) {
 			return new Text(theme.fg("toolTitle", theme.bold("kill_agent ")) + theme.fg("error", args.id || "..."), 0, 0);
 		},
 
-		renderResult(result) {
-			const text = result.content[0]?.type === "text" ? result.content[0].text : "done";
-			return new Text(text, 0, 0);
-		},
+		renderResult: renderTextResult,
 
 		async execute(_toolCallId, params) {
-			const state = getAccessibleTarget(undefined, params.id, "kill", true);
-			const { killedIds, reportCount } = killSubtree(state.id);
-			return {
-				content: [{ type: "text", text: `Killed ${killedIds.length} agent(s): ${killedIds.join(", ")}.` }],
-				details: { childId: state.id, killedIds, reportCount },
-			};
+			return killAgentResult(undefined, params.id);
 		},
 	});
 
@@ -1502,10 +1463,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			return new Text(theme.fg("toolTitle", theme.bold("list_agents")), 0, 0);
 		},
 
-		renderResult(result) {
-			const text = result.content[0]?.type === "text" ? result.content[0].text : "done";
-			return new Text(text, 0, 0);
-		},
+		renderResult: renderTextResult,
 
 		async execute() {
 			return listAgentsResult();

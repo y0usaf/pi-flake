@@ -73,6 +73,27 @@ one contract — spawn, answer, removed.
   serialize while consuming the shared maxLiveAgents budget. Reversal: a
   demonstrated executor→verifier need raises maxDepth per-project, not
   the default.
+- **2026-08 — Defection tripwire: detection over classification.** In
+  orchestrator mode, `git status --porcelain` is snapshotted before each host
+  bash call and compared after; a working-tree delta injects a loud steer-message
+  correction. A bash command blocklist is an arms race against a Turing-complete
+  shell, while the working tree is ground truth and catches writes by any
+  binary. This is advisory, not blocking, so the correction remains visible in
+  the transcript. Reversal condition: kernel-level read-only bash (bwrap via
+  `spawnHook`) if loud-but-advisory proves insufficient.
+- **2026-08 — Contract answers fail loud at the cap.** Silent truncation
+  violated the fail-loud rule on the extension's primary result channel;
+  over-cap free-text answers are rejected with a reason and the child resubmits
+  condensed via the existing revision path. The cap rises from 2000 to 4000
+  chars because dense analysis answers were observed truncating mid-sentence at
+  2000.
+- **2026-08 — Role presets are rejected as over-build.** Name-as-convention
+  plus few-shot minimal executor/scout spawn shapes in `promptGuidelines`
+  replace a host-owned preset table: the minimal legal contract is already one
+  free-text question, so role identity lives in the agent id and a one-line
+  system prompt by convention. The extension never parses agent ids for
+  behavior; magic-string dispatch fails silent. Reversal condition: delegation
+  still failing to occur after the gate and tripwire have had a fair trial.
 
 ## Architecture
 
@@ -112,6 +133,9 @@ blackboard) appears, extract a registry module both use.
 - **Resource budgets** (report bytes, spawn churn, token budget) — no
   evidence of abuse yet; `maxLiveAgents` bounds concurrency, which is the
   practical cost driver.
+- **Kernel-level read-only bash for orchestrator mode** — bwrap-wrapped host
+  bash via `spawnHook`, Linux-only. Deferred until the defection tripwire proves
+  insufficient.
 
 ## Roadmap
 
@@ -120,3 +144,6 @@ blackboard) appears, extract a registry module both use.
   (spawn → contract → submit_answers → auto-removal) with no orphaned agents.
 - **Phase 2 (current): active stage.** Ships in the default bundle. Criterion:
   one full week of regular use without a lifecycle bug report.
+- **Phase 3 — incentive alignment.** Criterion: one week of orchestrator-mode
+  use in which every file mutation either went through a spawned executor or
+  tripped a visible correction.
