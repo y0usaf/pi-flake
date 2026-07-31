@@ -78,14 +78,16 @@ fi
 printf '%s\\n' "$2" >> "\${RTK_LOG:-/dev/null}"
 case "$2" in
   empty)
-    exit 0
+    exit 1
     ;;
   same)
     printf 'same\\n'
+    exit 0
     ;;
   slow)
     sleep 1
-    printf 'rewritten:slow\\n'
+    printf 'rtk slow\\n'
+    exit 3
     ;;
   timeout)
     sleep 1
@@ -93,8 +95,56 @@ case "$2" in
   fail)
     exit 42
     ;;
+  0)
+    printf 'rtk ls -la\\n'
+    exit 0
+    ;;
+  3)
+    printf 'rtk ls -la\\n'
+    exit 3
+    ;;
+  sudo)
+    printf 'sudo rtk ls -la\\n'
+    exit 3
+    ;;
+  malicious)
+    printf 'rtk-malicious ls\\n'
+    exit 3
+    ;;
+  pwned)
+    printf 'echo pwned\\n'
+    exit 3
+    ;;
+  two-line)
+    printf 'rtk ls\\nsecond\\n'
+    exit 3
+    ;;
+  control)
+    printf 'rtk ls\\033[31m\\n'
+    exit 3
+    ;;
+  run)
+    printf 'rtk run sh -c x\\n'
+    exit 3
+    ;;
+  find)
+    printf 'rtk find . -name "*.ts"\\n'
+    exit 3
+    ;;
+  sudo-find)
+    printf 'sudo rtk find . -name "*.ts"\\n'
+    exit 3
+    ;;
+  long)
+    printf 'rtk'
+    i=0
+    while [ "$i" -lt 1100 ]; do printf 'x'; i=$((i + 1)); done
+    printf '\\n'
+    exit 3
+    ;;
   *)
-    printf 'rewritten:%s\\n' "$2"
+    printf 'rtk %s\\n' "$2"
+    exit 3
     ;;
 esac
 `,
@@ -228,7 +278,7 @@ describe("pi-rtk extension wiring", () => {
     expect(performance.now() - started).toBeLessThan(100);
     await pending;
 
-    expect(event.input.command).toBe("rewritten:slow");
+    expect(event.input.command).toBe("rtk slow");
   });
 
   test("disabling during a pending rewrite prevents bash mutation", async () => {
@@ -313,7 +363,7 @@ describe("pi-rtk extension wiring", () => {
 
     await result.operations.exec("echo user", dir, { timeout: 1 });
     expect(localExecCalls).toEqual([
-      { command: "rewritten:echo user", cwd: dir, options: { timeout: 1 } },
+      { command: "rtk echo user", cwd: dir, options: { timeout: 1 } },
     ]);
   });
 
@@ -383,22 +433,87 @@ describe("pi-rtk extension wiring", () => {
 });
 
 describe("rtk rewriter", () => {
-  test("empty and identical rewrites fall back without counting as failures", async () => {
+  test("exit 1 means no rewrite without counting as a failure", async () => {
     const dir = makeTempDir();
     const { command } = writeFakeRtk(dir);
     const rewriter = createRtkRewriter({ command, timeoutMs: 100 });
 
     expect(await rewriter.rewrite("empty")).toBeUndefined();
+
+    expect(rewriter.getStatus()).toMatchObject({
+      availability: "available",
+      attempts: 1,
+      applied: 0,
+      empty: 1,
+      failures: 0,
+      lastFailure: undefined,
+    });
+  });
+
+  test("identical rewrites fall back without counting as failures", async () => {
+    const dir = makeTempDir();
+    const { command } = writeFakeRtk(dir);
+    const rewriter = createRtkRewriter({ command, timeoutMs: 100 });
+
     expect(await rewriter.rewrite("same")).toBeUndefined();
 
     expect(rewriter.getStatus()).toMatchObject({
       availability: "available",
-      attempts: 2,
+      attempts: 1,
       applied: 0,
-      empty: 1,
+      empty: 0,
       unchanged: 1,
       failures: 0,
+      lastFailure: undefined,
     });
+  });
+
+  test("exit 3 and exit 0 rewrites apply", async () => {
+    const dir = makeTempDir();
+    const { command } = writeFakeRtk(dir);
+    const rewriter = createRtkRewriter({ command, timeoutMs: 100 });
+
+    expect(await rewriter.rewrite("3")).toBe("rtk ls -la");
+    expect(await rewriter.rewrite("0")).toBe("rtk ls -la");
+    expect(await rewriter.rewrite("sudo")).toBe("sudo rtk ls -la");
+    expect(rewriter.getStatus()).toMatchObject({ applied: 3, failures: 0 });
+  });
+
+  test("guard rejects unsafe rewrites without failures", async () => {
+    const dir = makeTempDir();
+    const { command } = writeFakeRtk(dir);
+    const rewriter = createRtkRewriter({ command, timeoutMs: 100 });
+
+    for (const input of ["pwned", "malicious", "two-line", "control", "run", "long"]) {
+      expect(await rewriter.rewrite(input)).toBeUndefined();
+    }
+    expect(rewriter.getStatus()).toMatchObject({ rejected: 6, failures: 0 });
+  });
+
+  test("status reports rejected rewrites", async () => {
+    const dir = makeTempDir();
+    const { command } = writeFakeRtk(dir);
+    const fake = createFakePi();
+    register(fake, command);
+    const { ctx, notifications } = createCtx();
+
+    await getHandler(fake, "tool_call")(
+      { type: "tool_call", toolName: "bash", input: { command: "pwned" } },
+      ctx,
+    );
+    await getCommand(fake, "rtk").handler("status", ctx);
+
+    expect(notifications.at(-1)?.message).toContain("rejected: 1");
+  });
+
+  test("find rewrites are rejected", async () => {
+    const dir = makeTempDir();
+    const { command } = writeFakeRtk(dir);
+    const rewriter = createRtkRewriter({ command, timeoutMs: 100 });
+
+    expect(await rewriter.rewrite("find . -name '*.ts'")).toBeUndefined();
+    expect(await rewriter.rewrite("sudo find . -name '*.ts'")).toBeUndefined();
+    expect(rewriter.getStatus()).toMatchObject({ rejected: 2, failures: 0 });
   });
 
   test("non-zero rewrite exits fall back", async () => {
@@ -484,7 +599,7 @@ describe("rtk rewriter", () => {
     );
 
     expect(results).toEqual(
-      Array.from({ length: 5 }, (_, index) => `rewritten:cmd-${index}`),
+      Array.from({ length: 5 }, (_, index) => `rtk cmd-${index}`),
     );
     expect(rewriter.getStatus()).toMatchObject({
       attempts: 5,

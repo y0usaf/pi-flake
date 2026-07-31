@@ -39,6 +39,7 @@ export interface RtkStatus {
   applied: number;
   empty: number;
   unchanged: number;
+  rejected: number;
   failures: number;
   unavailableSkips: number;
   lastFailure?: RtkFailureKind;
@@ -72,6 +73,55 @@ async function execFileText(
     timeout: options.timeoutMs,
   });
   return String(stdout).trimEnd();
+}
+
+async function execFileRewrite(
+  file: string,
+  args: string[],
+  options: { timeoutMs: number; signal?: AbortSignal },
+): Promise<{ stdout: string; code: number }> {
+  try {
+    const stdout = await execFileText(file, args, options);
+    return { stdout, code: 0 };
+  } catch (error) {
+    const err = error as {
+      code?: unknown;
+      killed?: unknown;
+      stdout?: unknown;
+    } | null;
+    if (
+      typeof err?.code === "number" &&
+      err.killed !== true &&
+      err.code !== 0
+    ) {
+      return { stdout: String(err.stdout ?? "").trimEnd(), code: err.code };
+    }
+    throw error;
+  }
+}
+
+export function isUsableRewrite(rewritten: string, original: string): boolean {
+  const trimmed = rewritten.trimEnd();
+  if (!trimmed || trimmed.includes("\n") || trimmed.includes("\r")) {
+    return false;
+  }
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(trimmed)) {
+    return false;
+  }
+  if (trimmed.length > original.length + 1024) {
+    return false;
+  }
+
+  const anchored = /^\s*rtk(?:\s|$)/.test(trimmed) || /^\s*sudo\s+rtk(?:\s|$)/.test(trimmed);
+  if (!anchored || /^\s*(?:sudo\s+)?rtk\s+(?:run|proxy)(?:\s|$)/.test(trimmed)) {
+    return false;
+  }
+  if (/^\s*(?:sudo\s+)?rtk\s+find(?:\s|$)/.test(trimmed)) {
+    return false;
+  }
+
+  const originalFirst = original.trimStart().replace(/^sudo\s+/, "").split(/\s+/, 1)[0];
+  return originalFirst !== "find";
 }
 
 function classifyError(error: unknown): RtkFailureKind {
@@ -110,6 +160,7 @@ export function createRtkRewriter(
     empty: 0,
     unchanged: 0,
     failures: 0,
+    rejected: 0,
     unavailableSkips: 0,
     lastFailure: undefined,
   };
@@ -136,12 +187,24 @@ export function createRtkRewriter(
       counters.attempts += 1;
 
       try {
-        const rewritten = await execFileText(
+        const result = await execFileRewrite(
           command,
           ["rewrite", shellCommand],
           { timeoutMs, signal },
         );
         availability = "available";
+        const rewritten = result.stdout.trimEnd();
+
+        if (result.code === 1) {
+          counters.empty += 1;
+          return undefined;
+        }
+
+        if (result.code !== 0 && result.code !== 3) {
+          throw Object.assign(new Error(`rtk rewrite exited ${result.code}`), {
+            code: result.code,
+          });
+        }
 
         if (!rewritten) {
           counters.empty += 1;
@@ -150,6 +213,11 @@ export function createRtkRewriter(
 
         if (rewritten === shellCommand) {
           counters.unchanged += 1;
+          return undefined;
+        }
+
+        if (!isUsableRewrite(rewritten, shellCommand)) {
+          counters.rejected += 1;
           return undefined;
         }
 
@@ -197,6 +265,7 @@ function formatStatus(enabled: boolean, status: RtkStatus): string {
     `rewrites: ${status.applied}/${status.attempts}`,
     `empty: ${status.empty}`,
     `unchanged: ${status.unchanged}`,
+    `rejected: ${status.rejected}`,
     `unavailable skips: ${status.unavailableSkips}`,
     `last failure: ${status.lastFailure ?? "none"}`,
   ].join(" · ");
