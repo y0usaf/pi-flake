@@ -21,9 +21,9 @@
  *
  * Configuration:
  * - APHRODITE_TOOL_THRESHOLD       minimum byte size to compress generic
- *                                  tool output (default 16384)
+ *                                  tool output (default 32768)
  * - APHRODITE_TERMINAL_THRESHOLD   minimum byte size to compress shell
- *                                  output (default 8192); applies to the
+ *                                  output (default 32768); applies to the
  *                                  bash tool and user `!<cmd>` output alike
  * - APHRODITE_SKIP_TOOLS           comma-separated tool names whose output
  *                                  is never compressed (default "read");
@@ -37,9 +37,9 @@
  *                                  0 = never expire)
  *
  * Threshold and skip-list defaults are tuned from session telemetry rather
- * than copied from upstream Aphrodite: below roughly 16KB a compressed
- * result is retrieved in full about 90% of the time, so the extra request
- * needed to retrieve it costs more than the marker saves. `read` is skipped
+ * than copied from upstream Aphrodite: below 32KB a compressed result is
+ * retrieved often enough that the extra request can cost more than the marker
+ * saves. `read` is skipped
  * for the same reason at any size — the model asks for a file because it
  * needs the file.
  *
@@ -86,8 +86,8 @@ import { createLocalBashOperations, formatSize, keyHint } from "@earendil-works/
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
-const DEFAULT_TOOL_THRESHOLD_BYTES = 16_384;
-const DEFAULT_TERMINAL_THRESHOLD_BYTES = 8_192;
+const DEFAULT_TOOL_THRESHOLD_BYTES = 32_768;
+const DEFAULT_TERMINAL_THRESHOLD_BYTES = 32_768;
 const DEFAULT_SKIP_TOOLS = "read";
 const PREVIEW_FIRST_LINE_MAX = 120;
 const RETRIEVE_LINE_CAP = 2000;
