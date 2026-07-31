@@ -36,8 +36,8 @@ That's all. The store is a local file; nothing else needs to run.
 
 | Variable                     | Default                                            | Purpose                                 |
 | ---------------------------- | -------------------------------------------------- | --------------------------------------- |
-| `APHRODITE_TOOL_THRESHOLD`   | `16384`                                            | Minimum size (bytes) to compress generic tool output |
-| `APHRODITE_TERMINAL_THRESHOLD` | `8192`                                           | Minimum size (bytes) to compress shell output — bash tool and user `!<cmd>` alike |
+| `APHRODITE_TOOL_THRESHOLD`   | `32768`                                            | Minimum size (bytes) to compress generic tool output |
+| `APHRODITE_TERMINAL_THRESHOLD` | `32768`                                           | Minimum size (bytes) to compress shell output — bash tool and user `!<cmd>` alike |
 | `APHRODITE_SKIP_TOOLS`       | `read`                                             | Comma-separated tool names never compressed; `APHRODITE_SKIP_TOOLS=` (empty) compresses every tool |
 | `APHRODITE_ENGINE_PERCENT`   | `45`                                               | Context-window fill (%) that activates the context engine; `0` disables it (upstream's `engine_threshold_pct`) |
 | `APHRODITE_ENGINE_PROTECT_FIRST` | `2`                                            | Messages at the start of the conversation the engine never touches |
@@ -65,6 +65,8 @@ An audit of 141 local Pi sessions (2778 compressions, 2495 retrievals) measured 
 
 Below roughly 16 KB the model answers a marker with an immediate `aphrodite_retrieve` of the same bytes, so the compression costs one extra request and returns the content anyway. `read` behaved that way at every size (97% retrieval), which is why it ships on the skip list.
 
+A new three-model measurement across 513 local session JSONL files confirms the higher cutoff. Under the previous 16 KB / 8 KB pair, 191 CCR markers replaced 4,027,231 bytes; 170 `aphrodite_retrieve` calls retrieved 142 markers (74%). Retrieval was 70.6% (60/85) at 8–16 KB, 84.9% (62/73) at 16–32 KB, and 60.6% (20/33) at 32–64 KB; 157 of 190 compressions landed in the 8–32 KB range. Those 170 round-trips re-prefilled 7.5–8.8 million input plus cache-read tokens to keep only about 1.94 MB (roughly 0.49 million tokens) out of context — about 15:1 in raw tokens, and still unfavorable at cache-read pricing. Only the 32 KB+ bucket has a retrieval rate low enough and a per-hit byte win large enough to earn its marker. The previous 16 KB / 8 KB pair therefore still lost tokens once retrieval round-trips were charged.
+
 ### Upstream mechanisms: ported and not
 
 | Upstream | What it does | Here |
@@ -74,7 +76,7 @@ Below roughly 16 KB the model answers a marker with an immediate `aphrodite_retr
 | Enriched previews | Per-type shapes: `[grep:4 hits in 3 files …]`, `[test:220 pass 0 fail]`, `[git:2M 1A 1D 3??]`, plus code structure maps | not ported — one shape: first meaningful line, capped at 120 chars |
 | `classifier_poll` | Skips CCR entirely for outputs the classifier calls clean | not ported |
 
-The context engine was the load-bearing gap, and it is now closed. The two compression points are independent safeties: insertion-time compression stays conservative (high thresholds, `read` skipped) so a fresh result is never hidden from a model about to read it, while the engine reclaims the same content once it has aged out. Set the environment variables above to restore upstream-parity numbers at the insertion point.
+The context engine was the load-bearing gap, and it is now closed. A store-wide measurement found it firing at most 68 times: 68 of 3,617 rows never appear in session logs, so it is not currently carrying the value the earlier design assumed. The two compression points are independent safeties: insertion-time compression stays conservative (high thresholds, `read` skipped) so a fresh result is never hidden from a model about to read it, while the engine reclaims the same content once it has aged out. Set the environment variables above to restore upstream-parity numbers at the insertion point.
 
 ## Commands
 
