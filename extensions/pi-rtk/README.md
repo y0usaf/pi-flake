@@ -13,7 +13,7 @@ In both cases, `pi-rtk` asynchronously attempts to rewrite the command with:
 rtk rewrite "<original command>"
 ```
 
-If rewrite succeeds and returns a different, non-empty command, Pi executes the rewritten command. If rewrite fails for any reason, `pi-rtk` notifies once per failure kind per session, then falls back so normal Pi shell behavior continues.
+Rewrites are applied when `rtk rewrite` exits 0 or 3 and returns a different, non-empty command. Its stdout is guarded to be rtk-anchored, single-line, and free of control characters; find rewrites are refused because rtk find can silently diverge from GNU find and cannot perform compound actions. If rewrite fails or is rejected, `pi-rtk` falls back so normal Pi shell behavior continues.
 
 Commands entered with `!!<cmd>` are intentionally not intercepted. They continue through Pi's normal context-excluded shell execution path unchanged.
 
@@ -94,6 +94,7 @@ The setting is session-scoped. It is not persisted to Pi settings.
 - rewrite attempts and applied rewrites
 - empty and unchanged rewrite counts
 - unavailable-binary skips
+- rejected rewrite count
 - last failure category
 
 It does not include shell command contents.
