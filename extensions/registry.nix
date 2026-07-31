@@ -61,12 +61,6 @@
     source = "vendored";
     dir = "jonjonrankin_pi-caveman";
   };
-  cursor-provider = {
-    stage = "active";
-    source = "vendored";
-    dir = "ndraiman_pi-cursor-provider";
-  };
-
   pantera = {
     stage = "active";
     source = "inline";
