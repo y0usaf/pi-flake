@@ -385,47 +385,6 @@
           };
         };
 
-      # Cursor models via browser OAuth plus a local OpenAI-compatible proxy.
-      # The proxy speaks Cursor's Connect-gRPC wire format, so protobuf-es must
-      # resolve from the extension dir at runtime (pi's bun binary bundles only
-      # typebox and the pi packages as virtual modules). Pinned registry tarball
-      # instead of buildNpmPackage: @bufbuild/protobuf has zero transitive deps,
-      # while upstream's lockfile also pins the pi peer deps we already ship.
-      "pi-cursor-provider" = let
-        cursorPackageJson = builtins.fromJSON (builtins.readFile ./extensions/ndraiman_pi-cursor-provider/package.json);
-        protobuf = pkgs.fetchurl {
-          url = "https://registry.npmjs.org/@bufbuild/protobuf/-/protobuf-2.11.0.tgz";
-          hash = "sha256-JaaVnK4Dleoizwq5zcl70tuEAqE8Q212BBowAj1jbC0=";
-        };
-      in
-        pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-cursor-provider";
-          version = cursorPackageJson.version;
-          src = lib.cleanSource ./extensions/ndraiman_pi-cursor-provider;
-
-          dontBuild = true;
-
-          installPhase = ''
-            runHook preInstall
-
-            mkdir -p "$out" "$out/node_modules/@bufbuild/protobuf"
-            cp package.json README.md LICENSE index.ts auth.ts proxy.ts h2-bridge.mjs cursor-models-raw.json "$out"/
-            cp -r proto "$out"/
-            tar -xzf ${protobuf} -C "$out/node_modules/@bufbuild/protobuf" --strip-components=1
-
-            runHook postInstall
-          '';
-
-          passthru.packageName = cursorPackageJson.name;
-
-          meta = with lib; {
-            description = cursorPackageJson.description;
-            homepage = cursorPackageJson.homepage;
-            license = licenses.mit;
-            platforms = platforms.all;
-          };
-        };
-
       # pi with default extensions pre-bundled.
       pi-full = self.lib.piWithExtensions {
         inherit pkgs;
@@ -456,7 +415,6 @@
       pi-management-build = self.packages.${system}."pi-management";
 
       pi-quiet-build = self.packages.${system}."pi-quiet";
-      pi-cursor-provider-build = self.packages.${system}."pi-cursor-provider";
       pi-agents-build = self.packages.${system}."pi-agents";
       pi-pantera-build = self.packages.${system}."pi-pantera";
       pi-full-pantera-theme = pkgs.runCommand "pi-full-pantera-theme" {} ''
@@ -626,7 +584,6 @@
         review = self.packages.${system}."pi-review";
         vcc = self.packages.${system}."pi-vcc";
         caveman = self.packages.${system}."pi-caveman";
-        "cursor-provider" = self.packages.${system}."pi-cursor-provider";
         quiet = self.packages.${system}."pi-quiet";
       };
 
