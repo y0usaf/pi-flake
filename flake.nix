@@ -385,6 +385,36 @@
           };
         };
 
+      "pi-continue" = let
+        continuePackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-continue/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-continue";
+          version = continuePackageJson.version;
+          src = lib.cleanSource ./extensions/pi-continue;
+
+          dontBuild = true;
+
+          installPhase = ''
+            runHook preInstall
+
+            mkdir -p "$out"
+            cp package.json README.md "$out"/
+            cp -r extensions "$out"/
+
+            runHook postInstall
+          '';
+
+          passthru.packageName = continuePackageJson.name;
+
+          meta = with lib; {
+            description = continuePackageJson.description;
+            homepage = continuePackageJson.homepage;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
       # pi with default extensions pre-bundled.
       pi-full = self.lib.piWithExtensions {
         inherit pkgs;
@@ -415,6 +445,7 @@
       pi-management-build = self.packages.${system}."pi-management";
 
       pi-quiet-build = self.packages.${system}."pi-quiet";
+      pi-continue-build = self.packages.${system}."pi-continue";
       pi-agents-build = self.packages.${system}."pi-agents";
       pi-pantera-build = self.packages.${system}."pi-pantera";
       pi-full-pantera-theme = pkgs.runCommand "pi-full-pantera-theme" {} ''
@@ -585,6 +616,7 @@
         vcc = self.packages.${system}."pi-vcc";
         caveman = self.packages.${system}."pi-caveman";
         quiet = self.packages.${system}."pi-quiet";
+        continue = self.packages.${system}."pi-continue";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.
