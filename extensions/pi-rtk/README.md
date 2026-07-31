@@ -53,19 +53,19 @@ This repository also includes a flake that packages `pi-rtk` as a local Pi packa
 Build the package:
 
 ```shell
-nix build .#
+nix build .#pi-rtk
 ```
 
 Then load it directly in Pi:
 
 ```shell
-pi -e "$(nix build .# --print-out-paths)"
+pi -e "$(nix build .#pi-rtk --print-out-paths)"
 ```
 
 Or install the built store path as a local package:
 
 ```shell
-pi install "$(nix build .# --print-out-paths)"
+pi install "$(nix build .#pi-rtk --print-out-paths)"
 ```
 
 For development, enter the dev shell:
@@ -194,6 +194,6 @@ npm run format-check
 Validate through Nix:
 
 ```shell
-nix build .#
+nix build .#pi-rtk
 nix flake check
 ```

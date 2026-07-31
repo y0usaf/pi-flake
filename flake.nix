@@ -8,43 +8,12 @@
       url = "github:earendil-works/pi?ref=main";
       flake = false;
     };
-
-    piGeckoWebsearch.url = "path:./extensions/pi-gecko-websearch";
-    piGeckoWebsearch.inputs.nixpkgs.follows = "nixpkgs";
-
-    piRtk.url = "path:./extensions/pi-rtk";
-    piRtk.inputs.nixpkgs.follows = "nixpkgs";
-
-    piAphrodite.url = "path:./extensions/pi-aphrodite";
-    piAphrodite.inputs.nixpkgs.follows = "nixpkgs";
-
-    piInterview.url = "path:./extensions/pi-interview";
-    piInterview.inputs.nixpkgs.follows = "nixpkgs";
-
-    piManagement.url = "path:./extensions/pi-management";
-    piManagement.inputs.nixpkgs.follows = "nixpkgs";
-
-    piWebfetch.url = "path:./extensions/pi-webfetch";
-    piWebfetch.inputs.nixpkgs.follows = "nixpkgs";
-    piHashline.url = "path:./extensions/pi-hashline";
-    piHashline.inputs.nixpkgs.follows = "nixpkgs";
-
-    piAgents.url = "path:./extensions/pi-agents";
-    piAgents.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs = {
     self,
     nixpkgs,
     piSrc,
-    piGeckoWebsearch,
-    piRtk,
-    piAphrodite,
-    piInterview,
-    piManagement,
-    piWebfetch,
-    piHashline,
-    piAgents,
     ...
   }: let
     systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
@@ -128,14 +97,161 @@
         };
       };
 
-      "pi-gecko-websearch" = piGeckoWebsearch.packages.${system}.default;
-      "pi-rtk" = piRtk.packages.${system}.default;
-      "pi-aphrodite" = piAphrodite.packages.${system}.default;
-      "pi-interview" = piInterview.packages.${system}.default;
-      "pi-management" = piManagement.packages.${system}.default;
-      "pi-webfetch" = piWebfetch.packages.${system}.default;
-      "pi-hashline" = piHashline.packages.${system}.default;
-      "pi-agents" = piAgents.packages.${system}.default;
+      "pi-gecko-websearch" = let
+        packageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-gecko-websearch/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-gecko-websearch";
+          version = packageJson.version;
+          src = lib.cleanSource ./extensions/pi-gecko-websearch;
+          dontBuild = true;
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp package.json README.md "$out"/
+            cp -r src "$out"/
+            runHook postInstall
+          '';
+          passthru.packageName = packageJson.name;
+          meta = with lib; {
+            description = "Pi extension that browses/searches the web via Gecko Marionette";
+            license = licenses.mit;
+            platforms = platforms.unix;
+          };
+        };
+
+      "pi-rtk" = let
+        packageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-rtk/package.json);
+        rtk = pkgs.rtk.overrideAttrs (_old: {doCheck = false;});
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-rtk";
+          version = packageJson.version;
+          src = lib.cleanSource ./extensions/pi-rtk;
+          dontBuild = true;
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp package.json README.md CHANGELOG.md LICENSE index.ts "$out"/
+            substituteInPlace "$out/index.ts" --replace-fail 'const RTK_COMMAND = "rtk";' 'const RTK_COMMAND = "${rtk}/bin/rtk";'
+            runHook postInstall
+          '';
+          passthru = {
+            packageName = packageJson.name;
+            inherit rtk;
+          };
+          meta = with lib; {
+            description = packageJson.description;
+            homepage = packageJson.homepage;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
+      "pi-aphrodite" = let
+        packageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-aphrodite/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-aphrodite";
+          version = packageJson.version;
+          src = lib.cleanSource ./extensions/pi-aphrodite;
+          dontBuild = true;
+          installPhase = ''runHook preInstall; mkdir -p "$out"; cp package.json README.md CHANGELOG.md index.ts "$out"/; runHook postInstall '';
+          passthru.packageName = packageJson.name;
+          meta = with lib; {
+            description = packageJson.description;
+            homepage = packageJson.homepage;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
+      "pi-interview" = let
+        packageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-interview/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-interview";
+          version = packageJson.version;
+          src = lib.cleanSource ./extensions/pi-interview;
+          dontBuild = true;
+          installPhase = ''runHook preInstall; mkdir -p "$out"; cp package.json README.md "$out"/; cp -r src "$out"/; runHook postInstall '';
+          passthru.packageName = packageJson.name;
+          meta = with lib; {
+            description = packageJson.description;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
+      "pi-management" = let
+        packageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-management/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-management";
+          version = packageJson.version;
+          src = lib.cleanSource ./extensions/pi-management;
+          dontBuild = true;
+          installPhase = ''runHook preInstall; mkdir -p "$out"; cp package.json README.md "$out"/; cp -r src "$out"/; runHook postInstall '';
+          passthru.packageName = packageJson.name;
+          meta = with lib; {
+            description = packageJson.description;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
+      "pi-webfetch" = let
+        packageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-webfetch/package.json);
+      in
+        pkgs.buildNpmPackage {
+          pname = "pi-webfetch";
+          version = packageJson.version;
+          src = lib.cleanSource ./extensions/pi-webfetch;
+          npmDepsHash = "sha256-UPegfa9KGwdz9k8DsXz/hQaqWN43SXSlfJD2qlI0pfA=";
+          nodejs = pkgs.nodejs_22;
+          dontNpmBuild = true;
+          installPhase = ''runHook preInstall; mkdir -p "$out"; cp -r package.json README.md src "$out"/; cp -r node_modules "$out"/node_modules; rm -f "$out/node_modules/.package-lock.json"; runHook postInstall '';
+          passthru.packageName = packageJson.name;
+          meta = with lib; {
+            description = "Pi extension that fetches URLs and returns clean markdown";
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
+      "pi-hashline" = let
+        packageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-hashline/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-hashline";
+          version = packageJson.version;
+          src = lib.cleanSource ./extensions/pi-hashline;
+          dontBuild = true;
+          installPhase = ''runHook preInstall; mkdir -p "$out"; cp package.json README.md "$out"/; cp -r src "$out"/; runHook postInstall '';
+          passthru.packageName = packageJson.name;
+          meta = with lib; {
+            description = packageJson.description;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
+      "pi-agents" = let
+        packageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-agents/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-agents";
+          version = packageJson.version;
+          src = lib.cleanSource ./extensions/pi-agents;
+          dontBuild = true;
+          installPhase = ''runHook preInstall; mkdir -p "$out"; cp package.json README.md index.ts "$out"/; runHook postInstall '';
+          passthru.packageName = packageJson.name;
+          meta = with lib; {
+            description = packageJson.description;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
 
       "pi-pantera" = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-pantera";
@@ -327,7 +443,15 @@
       pi-build = self.packages.${system}.pi;
 
       pi-rtk-build = self.packages.${system}."pi-rtk";
-      pi-rtk-test = piRtk.checks.${system}.test;
+      pi-rtk-test = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-rtk-test";
+        version = (builtins.fromJSON (builtins.readFile ./extensions/pi-rtk/package.json)).version;
+        src = lib.cleanSource ./extensions/pi-rtk;
+        nativeBuildInputs = [pkgs.bun];
+        dontConfigure = true;
+        dontBuild = true;
+        installPhase = ''runHook preInstall; export HOME="$TMPDIR/home"; mkdir -p "$HOME"; bun test; touch "$out"; runHook postInstall '';
+      };
       pi-aphrodite-build = self.packages.${system}."pi-aphrodite";
       pi-management-build = self.packages.${system}."pi-management";
 
@@ -336,9 +460,33 @@
       pi-agents-build = self.packages.${system}."pi-agents";
       pi-pantera-build = self.packages.${system}."pi-pantera";
 
-      pi-aphrodite-test = piAphrodite.checks.${system}.test;
-      pi-interview-test = piInterview.checks.${system}.test;
-      pi-hashline-test = piHashline.checks.${system}.test;
+      pi-aphrodite-test = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-aphrodite-test";
+        version = (builtins.fromJSON (builtins.readFile ./extensions/pi-aphrodite/package.json)).version;
+        src = lib.cleanSource ./extensions/pi-aphrodite;
+        nativeBuildInputs = [pkgs.bun];
+        dontConfigure = true;
+        dontBuild = true;
+        installPhase = ''runHook preInstall; export HOME="$TMPDIR/home"; mkdir -p "$HOME"; bun test; touch "$out"; runHook postInstall '';
+      };
+      pi-interview-test = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-interview-tests";
+        version = "0.1.0";
+        src = lib.cleanSource ./extensions/pi-interview;
+        nativeBuildInputs = [pkgs.bun];
+        dontConfigure = true;
+        dontBuild = true;
+        installPhase = ''bun test ./tests; touch "$out" '';
+      };
+      pi-hashline-test = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-hashline-tests";
+        version = (builtins.fromJSON (builtins.readFile ./extensions/pi-hashline/package.json)).version;
+        src = lib.cleanSource ./extensions/pi-hashline;
+        nativeBuildInputs = [pkgs.bun];
+        dontConfigure = true;
+        dontBuild = true;
+        installPhase = ''runHook preInstall; bun test; touch $out; runHook postInstall '';
+      };
       biome-lint = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-flake-biome-lint";
         version = "1";

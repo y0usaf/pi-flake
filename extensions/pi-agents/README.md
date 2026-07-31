@@ -116,7 +116,7 @@ Example output:
 
 ## Nix
 
-A subflake, wired into the root flake as the `piAgents` path input. All commands below run from the repository root.
+Built inline by the root flake. All commands below run from the repository root.
 
 ```bash
 # Build this extension alone

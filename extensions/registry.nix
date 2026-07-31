@@ -7,38 +7,44 @@
 #   paused   — source kept in tree, but not built, bundled, or checked.
 #   retired  — remove the entry here AND delete the source from extensions/.
 #
-# source: "subflake" (own flake input under extensions/),
-#         "vendored" (third-party tree built inline in flake.nix), or
+# source: "vendored" (third-party tree built inline in flake.nix), or
 #         "inline" (first-party tree in this repo, built inline by the root flake).
 {
   gecko-websearch = {
     stage = "active";
-    source = "subflake";
+    source = "inline";
+    dir = "pi-gecko-websearch";
   };
   rtk = {
     stage = "active";
-    source = "subflake";
+    source = "inline";
+    dir = "pi-rtk";
   };
   aphrodite = {
     stage = "active";
-    source = "subflake";
+    source = "inline";
+    dir = "pi-aphrodite";
   };
 
   interview = {
     stage = "active";
-    source = "subflake";
+    source = "inline";
+    dir = "pi-interview";
   };
   management = {
     stage = "active";
-    source = "subflake";
+    source = "inline";
+    dir = "pi-management";
   };
   webfetch = {
     stage = "active";
-    source = "subflake";
+    source = "inline";
+    dir = "pi-webfetch";
   };
   hashline = {
     stage = "active";
-    source = "subflake";
+    source = "inline";
+    dir = "pi-hashline";
   };
   review = {
     stage = "active";
@@ -75,6 +81,7 @@
 
   agents = {
     stage = "active";
-    source = "subflake";
+    source = "inline";
+    dir = "pi-agents";
   };
 }

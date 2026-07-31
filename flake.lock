@@ -16,118 +16,6 @@
         "type": "github"
       }
     },
-    "piAgents": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-agents",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-agents",
-        "type": "path"
-      },
-      "parent": []
-    },
-    "piAphrodite": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-aphrodite",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-aphrodite",
-        "type": "path"
-      },
-      "parent": []
-    },
-    "piGeckoWebsearch": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-gecko-websearch",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-gecko-websearch",
-        "type": "path"
-      },
-      "parent": []
-    },
-    "piHashline": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-hashline",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-hashline",
-        "type": "path"
-      },
-      "parent": []
-    },
-    "piInterview": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-interview",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-interview",
-        "type": "path"
-      },
-      "parent": []
-    },
-    "piManagement": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-management",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-management",
-        "type": "path"
-      },
-      "parent": []
-    },
-    "piRtk": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-rtk",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-rtk",
-        "type": "path"
-      },
-      "parent": []
-    },
     "piSrc": {
       "flake": false,
       "locked": {
@@ -145,34 +33,10 @@
         "type": "github"
       }
     },
-    "piWebfetch": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./extensions/pi-webfetch",
-        "type": "path"
-      },
-      "original": {
-        "path": "./extensions/pi-webfetch",
-        "type": "path"
-      },
-      "parent": []
-    },
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
-        "piAgents": "piAgents",
-        "piAphrodite": "piAphrodite",
-        "piGeckoWebsearch": "piGeckoWebsearch",
-        "piHashline": "piHashline",
-        "piInterview": "piInterview",
-        "piManagement": "piManagement",
-        "piRtk": "piRtk",
-        "piSrc": "piSrc",
-        "piWebfetch": "piWebfetch"
+        "piSrc": "piSrc"
       }
     }
   },
