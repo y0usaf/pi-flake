@@ -72,6 +72,11 @@
     source = "inline";
     dir = "pi-quiet";
   };
+  continue = {
+    stage = "active";
+    source = "inline";
+    dir = "pi-continue";
+  };
 
   agents = {
     stage = "active";
