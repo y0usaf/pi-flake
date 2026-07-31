@@ -459,6 +459,10 @@
       pi-cursor-provider-build = self.packages.${system}."pi-cursor-provider";
       pi-agents-build = self.packages.${system}."pi-agents";
       pi-pantera-build = self.packages.${system}."pi-pantera";
+      pi-full-pantera-theme = pkgs.runCommand "pi-full-pantera-theme" {} ''
+        test -f ${self.packages.${system}.pi-full}/share/pi/themes/pantera.json
+        touch $out
+      '';
 
       pi-aphrodite-test = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-aphrodite-test";
@@ -693,6 +697,10 @@
               ext_dir="$out/share/pi/extensions/${name}"
               mkdir -p "$ext_dir"
               cp -R ${ext}/* "$ext_dir/" 2>/dev/null || true
+              if [ -d "$ext_dir/themes" ]; then
+                mkdir -p "$out/share/pi/themes"
+                cp "$ext_dir"/themes/*.json "$out/share/pi/themes/"
+              fi
 
               entries=$(${pkgs.jq}/bin/jq -r '.pi.extensions // [] | .[]' "$ext_dir/package.json" 2>/dev/null || true)
               if [ -z "$entries" ]; then
