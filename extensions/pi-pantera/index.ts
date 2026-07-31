@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function panteraTheme(pi: ExtensionAPI): void {
-  pi.on("session_start", async () => {
+  pi.on("session_start", async (_event, ctx) => {
     const configuredDir = process.env.PI_CODING_AGENT_DIR;
     const agentDir = configuredDir?.startsWith("~/")
       ? join(homedir(), configuredDir.slice(2))
@@ -22,8 +22,9 @@ export default function panteraTheme(pi: ExtensionAPI): void {
     const themeSetting = typeof settings.theme === "string" ? settings.theme : undefined;
     if (themeSetting !== undefined && themeSetting !== "dark" && themeSetting !== "light") return;
 
-    const result = pi.ui?.setTheme?.("pantera");
-    if (result?.success === true) {
+    if (!ctx.ui || typeof ctx.ui.setTheme !== "function") return;
+    const result = ctx.ui.setTheme("pantera");
+    if (result.success === true) {
       try {
         writeFileSync(marker, "");
       } catch {}
