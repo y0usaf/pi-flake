@@ -4,7 +4,7 @@
  * Parent tools: agent, agent_answer, agent_kill, agent_list.
  * Children additionally get pi's built-in read/write/edit/bash tools, a
  * progress-only report tool, a submit_answers tool, and descendant-scoped
- * orchestration tools bounded by maxDepth/maxLiveAgents from pi-agents.json.
+ * orchestration tools when maxDepth allows further nesting.
  *
  * Every spawn carries an AskUserQuestion-style contract (questions,
  * options, allowOther). The run completes only after the child calls
@@ -1320,10 +1320,17 @@ export default function multiAgent(pi: ExtensionAPI) {
 		const onAbort = () => state.agent.abort();
 		signal?.addEventListener("abort", onAbort, { once: true });
 		const unsub = subscribeChild(state.agent, state.id, state, onUpdate);
-		try { await withOptionalTimeout(state.agent, state.id, runUntilContractFulfilled(state, prompt, signal, !state.panelMember), timeoutSeconds); }
+		try {
+			if (state.killed) throw new Error(`Agent "${state.id}" was killed while running`);
+			if (signal?.aborted) throw new Error(`Agent "${state.id}" aborted before start`);
+			if (state.agent.state.errorMessage) throw new Error(state.agent.state.errorMessage);
+			await withOptionalTimeout(state.agent, state.id, runUntilContractFulfilled(state, prompt, signal, !state.panelMember), timeoutSeconds);
+			if (state.killed) throw new Error(`Agent "${state.id}" was killed while running`);
+			if (signal?.aborted) throw new Error(`Agent "${state.id}" aborted while running`);
+			if (state.agent.state.errorMessage) throw new Error(state.agent.state.errorMessage);
+		}
 		catch (err) { state.killed = true; killSubtree(state.id); throw err; }
 		finally { state.locked = false; unsub(); signal?.removeEventListener("abort", onAbort); if (state.killed) removeStateIfCurrent(state); }
-		if (state.killed) throw new Error(`Agent "${state.id}" was killed while running`);
 		const result = collectResult(state.id, state, state.reportCursor);
 		state.reportCursor = state.reports.length;
 		if (!(state.contract.pendingAsk && !state.agent.state.errorMessage && !state.killed)) killSubtree(state.id);
@@ -1407,13 +1414,14 @@ export default function multiAgent(pi: ExtensionAPI) {
 		contract: ContractBox,
 		holder: { state?: ChildState },
 		allowAsk = true,
+		canSpawn = true,
 	): Agent {
 		const reportTool = buildReportTool(childId, reports);
 		const submitTool = buildSubmitAnswersTool(childId, contract);
 		const askTool = allowAsk ? buildAskParentTool(childId, holder) : undefined;
 		const childTools = [
 			...createChildTools(cwd),
-			...createChildManagementTools(childId, cwd, model),
+			...(canSpawn ? createChildManagementTools(childId, cwd, model) : []),
 			reportTool as AgentTool<any>,
 			submitTool as AgentTool<any>,
 			...(askTool ? [askTool as AgentTool<any>] : []),
@@ -1469,7 +1477,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			const contract: ContractBox = { questions: normalizeContract(params.contract, `agent "${params.id}"`) };
 			const reports: string[] = [];
 			const askHolder: { state?: ChildState } = {};
-			const child = buildChildAgent(params.id, params.system_prompt, childModel, cwd, reports, contract, askHolder, allowAsk);
+			const child = buildChildAgent(params.id, params.system_prompt, childModel, cwd, reports, contract, askHolder, allowAsk, childDepth < config.maxDepth);
 			const state: ChildState = {
 				id: params.id,
 				parentId: parentState?.id,
@@ -1488,6 +1496,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 				killed: false,
 			};
 			children.set(params.id, state);
+			reservedIds.delete(params.id);
 			askHolder.state = state;
 
 			return await finishExchange(state, `${params.task}\n\n${renderContractBlock(contract.questions, allowAsk)}`, signal, params.timeout_seconds, onUpdate);
@@ -1581,7 +1590,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			"Spawn a child agent with its own system prompt, task, and contract. Pass `panel` to get a second opinion instead of judging alone: N independent children answer the same contract on different models and the result is an agreement tally. " +
 			"The contract is the child's deliverable: AskUserQuestion-style questions the child must answer " +
 			"via its submit_answers tool before its run can end; the tool result is those answers as data. " +
-			"Children get read, write, edit, bash, report (progress only), submit_answers, and descendant-scoped orchestration tools. " +
+			"Children get read, write, edit, bash, report (progress only), and submit_answers; descendant-scoped orchestration tools are included only when maxDepth allows further nesting. " +
 			"Recursive spawning is bounded by pi-agents.json maxDepth/maxLiveAgents, which also picks the child model. " +
 			"This call blocks until the contract is fulfilled; an unfulfilled contract is nudged up to 10 times, then errors. " +
 			"Multiple agent calls in the same turn run concurrently. " +
@@ -1596,7 +1605,9 @@ export default function multiAgent(pi: ExtensionAPI) {
 			"In orchestrator mode the main session has no write, edit, or bash: every file mutation, build, test, and git inspection goes through a spawned executor, and its contract answers are the only report you get. read/grep/find/ls are available — ground your contracts with them before spawning.",
 			'Minimal executor spawn: agent({ id: "executor-1", system_prompt: "You are an executor. Apply the requested change, verify it, then submit your answers.", task: "<the change>", contract: [{ prompt: "What changed, and how was it verified?" }] }).',
 			'Minimal scout spawn: agent({ id: "scout-1", system_prompt: "You are a read-only scout. Never modify files. Cite file:line evidence.", task: "<the question>", contract: [{ prompt: "Answer, with file:line evidence" }] }).',
+			"Fan-out/join goes in ONE assistant turn: emit every independent agent call in the same message and they run concurrently; splitting them across turns serializes them. Give each a distinct id and a contract question that asks for a synthesis-ready answer, then join the answers yourself. Dependent work is the next turn — fold the prior contract's answers into the next spawn's task verbatim rather than re-deriving them.",
 			'If a spawn returns questions, answer with agent_answer({ id, answers: [{ id: "<question id>", value: "<answer>" }] }); the call blocks until the contract is fulfilled.',
+			"If a previous spawn was interrupted by a host crash or kill there is no resume: re-spawn it with the original task and add that the prior run was interrupted and the working tree may already hold partial work, so the child must check current file state before repeating any mutation.",
 			'Do not self-judge a ship/block, safety, or correctness call — get a second opinion. When the decision is a judgment rather than a lookup, invoke a panel: use `panel: {}` when `panelModels` is configured; otherwise pass an explicit `models` list: agent({ id: "panel", system_prompt: "You are an independent reviewer. Judge only what the evidence supports; do not defer to the requester.", task: "<the plan or diff to judge>", contract: [{ prompt: "Ship or block?", options: [{ label: "Ship" }, { label: "Block" }] }, { prompt: "Strongest argument against your own verdict" }], panel: {} }). Consensus is only mechanical on questions with options, so always give the panel an enumerated verdict question. Different models disagree for different reasons; N members on one model mostly agree with each other.'
 		],
 

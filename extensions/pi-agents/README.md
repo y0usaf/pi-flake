@@ -1,6 +1,6 @@
 # pi-agents
 
-Multi-agent extension for pi. Root agents get four orchestration tools — `agent`, `agent_answer`, `agent_kill`, `agent_list` — plus every spawned child gets `read`, `write`, `edit`, `bash`, `report`, `submit_answers`, and descendant-scoped orchestration tools of its own.
+Multi-agent extension for pi. Root agents get four orchestration tools — `agent`, `agent_answer`, `agent_kill`, `agent_list` — plus every spawned child gets `read`, `write`, `edit`, `bash`, `report`, and `submit_answers`; descendant-scoped orchestration tools are included only when maxDepth allows further nesting.
 
 Every invocation carries a **contract**: AskUserQuestion-style questions (options, optional free text) the child must answer via `submit_answers` before its run can end. The tool result is those answers as data — the child behaves like a typed function call, not a chat transcript. `report` is a progress channel only.
 
@@ -69,7 +69,7 @@ Unknown keys in `pi-agents.json` are a hard error, so a typo like `"models"` is 
 
 ### `agent(id, system_prompt, task, contract, [timeout_seconds])`
 
-Creates a new child agent with its own system prompt. The child gets `read`, `write`, `edit`, `bash`, `report`, `submit_answers`, and descendant-scoped `agent`/`agent_kill`/`agent_list` tools. Blocks until the contract is fulfilled.
+Creates a new child agent with its own system prompt. The child gets `read`, `write`, `edit`, `bash`, `report`, and `submit_answers`, plus descendant-scoped orchestration tools when maxDepth allows further nesting. Blocks until the contract is fulfilled.
 
 `contract` is a non-empty array of questions: `{ id?, label?, prompt, options?: [{label, value?, description?, recommended?}], allowOther? }`. The host normalizes it (caps: 8 questions, 8 options each, dedupe, derived ids) and appends an "Unable to determine" (`__unable__`) option to every question so the child can punt explicitly instead of fabricating. Zero options + `allowOther` (the default) makes a plain free-text question.
 
