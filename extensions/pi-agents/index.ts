@@ -915,9 +915,9 @@ function renderAgentCall(
 	const taskText = args.task || "...";
 	const preview = truncateToWidth(taskText, 70);
 	let text = theme.fg("toolTitle", theme.bold(`${toolLabel} `)) + theme.fg("accent", id);
-	if (Array.isArray(args.contract)) text += theme.fg("muted", ` · contract: ${args.contract.length}q`);
 	if (args.panel) text += theme.fg("muted", ` · panel ${args.panel.size ?? args.panel.models?.length ?? "?"}`);
 	text += "\n  " + theme.fg("dim", preview);
+	text += formatQuestionLines(args.contract, theme);
 	return new Text(text, 0, 0);
 }
 
@@ -931,6 +931,20 @@ function metaSuffix(model: string | undefined, activityCount: number, reportCoun
 	return theme.fg("muted", parts.map((part) => ` · ${part}`).join(""));
 }
 
+function formatQuestionLines(questions: unknown, theme: Theme): string {
+	if (!Array.isArray(questions)) return "";
+	let text = "";
+	for (const question of questions) {
+		if (!question || typeof question !== "object" || typeof (question as { prompt?: unknown }).prompt !== "string") continue;
+		const prompt = (question as { prompt: string }).prompt;
+		if (prompt.length === 0) continue;
+		const candidate = question as { id?: unknown; label?: unknown };
+		const id = typeof candidate.id === "string" ? candidate.id : typeof candidate.label === "string" ? candidate.label : undefined;
+		text += "\n  " + theme.fg("warning", "?") + (id ? " " + theme.fg("accent", stripControlSequences(id)) : "") + " " + theme.fg("toolOutput", truncateToWidth(stripControlSequences(prompt), 70));
+	}
+	return text;
+}
+
 function formatAnswerLines(answers: ContractAnswer[], theme: Theme): string {
 	let text = "";
 	for (const answer of answers) {
@@ -941,6 +955,18 @@ function formatAnswerLines(answers: ContractAnswer[], theme: Theme): string {
 		text += "\n  " + mark + " " + theme.fg("accent", answer.id) + (answer.wasCustom ? theme.fg("dim", " ✎ ") : " ") + theme.fg("toolOutput", shown);
 	}
 	return text;
+}
+
+function formatAgentAnswerLines(answers: unknown, theme: Theme): string {
+	if (!Array.isArray(answers)) return "";
+	const mapped: ContractAnswer[] = [];
+	for (const answer of answers) {
+		if (!answer || typeof answer !== "object" || typeof (answer as { id?: unknown }).id !== "string") continue;
+		const item = answer as { id: string; value?: unknown };
+		const value = typeof item.value === "string" ? item.value : "";
+		mapped.push({ id: item.id, value, label: value, wasCustom: false });
+	}
+	return formatAnswerLines(mapped, theme);
 }
 function activityIcon(item: ActivityItem, theme: Theme): string {
 	if (item.type === "report") return theme.fg("warning", "↑");
@@ -1089,7 +1115,7 @@ function renderAgentResult(
 		if (pendingAsk.length > 0) {
 			container.addChild(new Spacer(1));
 			container.addChild(new Text(theme.fg("muted", "─── Questions ───"), 0, 0));
-			for (const question of pendingAsk) container.addChild(new Text(`  ${theme.fg("warning", "?")} ${theme.fg("accent", question.id)} ${theme.fg("toolOutput", truncateToWidth(stripControlSequences(question.prompt), 70))}`, 0, 0));
+			for (const question of pendingAsk) container.addChild(new Text(formatQuestionLines([question], theme).slice(1), 0, 0));
 		}
 
 		if (answers.length > 0) {
@@ -1116,7 +1142,7 @@ function renderAgentResult(
 	} else if (answers.length > 0) {
 		text += formatAnswerLines(answers, theme);
 	} else if (pendingAsk.length > 0) {
-		text += pendingAsk.map((q) => `\n  ${theme.fg("warning", "?")} ${theme.fg("accent", q.id)} ${theme.fg("toolOutput", truncateToWidth(stripControlSequences(q.prompt), 70))}`).join("");
+		text += formatQuestionLines(pendingAsk, theme);
 	} else {
 		text += formatActivityTail(activity, theme);
 	}
@@ -1636,7 +1662,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		description: "Answer a suspended child agent's questions. Validates answers against the questions it asked, resumes it, and blocks until its contract is fulfilled or it asks again.",
 		parameters: answerAgentSchema,
 		renderCall(args, theme) {
-			return new Text(theme.fg("toolTitle", theme.bold("agent_answer ")) + theme.fg("accent", args.id || "...") + theme.fg("muted", ` · ${Array.isArray(args.answers) ? args.answers.length : 0} answers`), 0, 0);
+			return new Text(theme.fg("toolTitle", theme.bold("agent_answer ")) + theme.fg("accent", args.id || "...") + formatAgentAnswerLines(args.answers, theme), 0, 0);
 		},
 		renderResult(result, options, theme, context) { return renderAgentResult(result, options, theme, context); },
 		async execute(_toolCallId, params, signal, onUpdate) { return answerAgent(undefined, params, signal, onUpdate); },
