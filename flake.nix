@@ -473,6 +473,15 @@
         dontBuild = true;
         installPhase = ''runHook preInstall; export HOME="$TMPDIR/home"; mkdir -p "$HOME"; bun test; touch "$out"; runHook postInstall '';
       };
+      pi-pantera-test = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-pantera-test";
+        version = (builtins.fromJSON (builtins.readFile ./extensions/pi-pantera/package.json)).version;
+        src = lib.cleanSource ./extensions/pi-pantera;
+        nativeBuildInputs = [pkgs.bun];
+        dontConfigure = true;
+        dontBuild = true;
+        installPhase = ''runHook preInstall; export HOME="$TMPDIR/home"; mkdir -p "$HOME"; bun test; touch "$out"; runHook postInstall '';
+      };
       pi-interview-test = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-interview-tests";
         version = "0.1.0";
