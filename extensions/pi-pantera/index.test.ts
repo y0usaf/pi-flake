@@ -1,15 +1,18 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import panteraTheme from "./index.ts";
 
 const tempDirs: string[] = [];
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+const originalPantera = process.env.PI_PANTERA;
 
 afterEach(async () => {
   if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
   else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+  if (originalPantera === undefined) delete process.env.PI_PANTERA;
+  else process.env.PI_PANTERA = originalPantera;
   while (tempDirs.length > 0) {
     await rm(tempDirs.pop()!, { recursive: true, force: true });
   }
@@ -89,6 +92,34 @@ describe("pantera default theme", () => {
     };
     await run();
     expect(calls).toEqual(["pantera"]);
+    expect(await markerExists(dir)).toBe(false);
+  });
+
+  test("re-applies for read-only detected settings", async () => {
+    const { dir, calls, run } = await setup();
+    const settingsPath = join(dir, "settings.json");
+    await writeFile(settingsPath, JSON.stringify({ theme: "dark" }));
+    await chmod(settingsPath, 0o444);
+    await run();
+    await run();
+    expect(calls).toEqual(["pantera", "pantera"]);
+    expect(await markerExists(dir)).toBe(false);
+  });
+
+  test("does not apply a pinned theme in read-only settings", async () => {
+    const { dir, calls, run } = await setup();
+    const settingsPath = join(dir, "settings.json");
+    await writeFile(settingsPath, JSON.stringify({ theme: "gruvbox" }));
+    await chmod(settingsPath, 0o444);
+    await run();
+    expect(calls).toEqual([]);
+  });
+
+  test("does not apply when disabled by PI_PANTERA", async () => {
+    const { dir, calls, run } = await setup();
+    process.env.PI_PANTERA = "0";
+    await run();
+    expect(calls).toEqual([]);
     expect(await markerExists(dir)).toBe(false);
   });
 });
