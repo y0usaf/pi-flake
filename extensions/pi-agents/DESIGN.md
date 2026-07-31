@@ -6,6 +6,7 @@ one contract — spawn, answer, removed.
 
 ## Locked decisions
 
+- **2026-08 — Leaf children do not receive orchestration tool schemas.** A child that cannot spawn receives no `agent`, `agent_answer`, `agent_kill`, or `agent_list` schemas, avoiding a large unusable contract schema tree. The gate reads the resolved per-cwd config, so project `maxDepth` overrides still allow legitimate nesting. Accepted loss: a leaf cannot use `agent_list` for self-introspection. Reversal condition: a child is observed needing `agent_list` purely for self-status.
 - **2026-08 — Root tools are a noun-prefix family: `agent`, `agent_answer`, `agent_kill`, `agent_list`.** `spawn` was the inaccurate part: it promises a background handle this extension explicitly does not have. The call blocks and the agent is removed when it returns, and background spawn / handle polling is listed under Deferred. Noun-prefix grouping keeps the four tools adjacent wherever tools are listed alphabetically. Precedent: Kimi Code CLI groups the same way (`Agent`/`AgentSwarm`, `TaskOutput`/`TaskStop`, `CronList`), as do modern CLIs (`docker container ls`, `gh pr create`). Bare `agent` matches Claude Code, which renamed its subagent tool `Task` to `Agent` in v2.1.63, and OpenCode's `task`; it also matches pi's own bare-word built-ins (`read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`), against which `spawn_agent` was the outlier. The smaller thing rejected, per `[[canon:least-code]]`: renaming only the spawn tool and leaving three verb_noun siblings — same churn, no grouping benefit. Panel plurality is deliberately not addressed by the name. A panel is still one delegation act with a strategy parameter; a separate swarm tool would relitigate the 2026-08 panels-as-a-parameter decision. Reversal condition: if models measurably mis-select the verb-less `agent` tool, restore a verb.
 - **2026-08 — Panel roster is config data, not per-call LLM output.** Model choice moves down the least-power ladder from generated string to config file; explicit per-call `models` still wins because config is a default, not a lock. A smaller `size` takes the first N configured models, making list order a priority order, and the roster is validated at session start. Reversal condition: if per-call model choice proves necessary for panel quality, revisit the default roster.
 - **2026-08 — Child tools are pi's built-ins, not bespoke copies.** Children
@@ -132,7 +133,9 @@ one contract — spawn, answer, removed.
   which model a child runs on. If a third distinct multi-agent shape beyond
   fan-out/join and executor delegation is being hand-repeated in prose across
   sessions, extract a declarative workflow format instead of growing more
-  `agent` parameters.
+  `agent` parameters. The trigger fires on a written record — the sessions
+  and the shape named in Deferred — not on an impression that workflows would
+  be nice; an unrecorded pattern has not fired it.
 - **2026-08 — The orchestrator reads but never executes.** `bash` joins
   `write`/`edit` in `ORCHESTRATOR_STRIPPED`, and orchestrator mode adds pi's
   built-in `grep`/`find`/`ls` to the active set. Search was the only thing
@@ -179,7 +182,7 @@ Single-file extension (`index.ts`). Sections, in order:
   authorization, spawn/kill lifecycle — decision-making
 
 The registry owns child lifecycle. The child extension boundary is
-`buildChildAgent` (index.ts:1394-1414), which assembles `createChildTools`,
+`buildChildAgent` (index.ts:1401-1427), which assembles `createChildTools`,
 `createChildManagementTools`, and the child-only `buildReportTool`,
 `buildSubmitAnswersTool`, and `buildAskParentTool`; everything a child can
 invoke is declared there. `[[canon:no-privileged-path]]` is `n/a` beyond
@@ -209,6 +212,44 @@ blackboard) appears, extract a registry module both use.
   tripwire's escalation: it lands only if removing `bash` outright costs more
   in delegated verification than a sandboxed shell would cost in machinery.
 - **Suspension deadline / requestId tokens** — duplicate or late agent_answer calls already fail loudly (claim lock, cleared pendingAsk); deadlines and generation tokens land only if abandonment or answer races are observed.
+- **Declarative workflow DAG** — a host-evaluated stage graph (fan-out over a
+  prior stage's answers, dependency edges, answer interpolation) covering what
+  a workflow script would, at rung 2-3 instead of rung 5. Deferred because the
+  third-shape trigger above has no recorded instances as of 2026-08; when it
+  lands it lands with the registry extraction, not before. The rejected form is
+  upstream `pi-dynamic-workflows`' vm-sandboxed JS script: it is rung 5 where
+  the trigger names a declarative format, its determinism claim does not
+  survive LLM children, `ask_parent` has no answerer when the parent is a
+  script, and a plan frozen at script-authoring time is less adaptive than an
+  orchestrator that re-plans each turn with every child's answers in hand. Also
+  rejected: upstream's `opts.schema`/`structured_output` as a second result
+  channel next to contracts. Record instances here, dated, when a third shape
+  is actually observed being hand-repeated.
+- **Child crash checkpoint/resume** — a host crash or kill destroys an
+  in-flight child's transcript, leaving partially-applied edits on disk with
+  no resume. Rejected as the extension's first write path: a checkpoint file
+  is a disk twin of the `children` map that every teardown path must
+  maintain, while the data worth having already sits lower on the
+  least-power ladder — the parent session JSONL under `~/.pi/agent/sessions/`
+  persists the child's spawn args before the tool runs, and the working tree
+  holds whatever landed. The genuinely expensive artifact, the child's
+  accumulated transcript, is unrecoverable either way: `initialState` cannot
+  carry `pendingToolCalls`, `continue()` requires the transcript to end on a
+  user or tool-result message, and replaying tool calls whose write/edit/bash
+  effects already hit disk is not idempotent. Recovery is a re-spawn from the
+  session JSONL's spawn args plus `git status`/`git diff`, with the
+  interruption stated in the task. Reversal condition: task-only
+  checkpoint/resume (spawn params + contract + reports, resumed with a fresh
+  `Agent` and `prompt()`, never `continue()`) lands only together with the
+  deferred background-spawn/handle API, and only after this entry holds two
+  dated incident records — each naming the host session file and the child id
+  — in which a crash destroyed an in-flight run that re-spawn could not
+  recover without redoing more than 30 minutes of child wall-clock work.
+  Raising `maxDepth` above 1 is a separate trigger: a grandchild's spawn args
+  live only in its parent child's in-memory transcript, so the JSONL fallback
+  does not cover nested subtrees. A write-only post-mortem log is the cheaper
+  variant if debugging rather than recovery is what is wanted — it needs no
+  teardown maintenance, so the disk-twin objection does not apply.
 
 ## Roadmap
 
