@@ -2,6 +2,12 @@
 
 This changelog follows [Common Changelog](https://common-changelog.org/).
 
+## Unreleased
+
+### Fixed
+
+- Accept rtk rewrite exit 0/3 with guarded stdout, reject unsafe and find-family rewrites, and report rejections.
+
 ## [0.4.0] - 2026-07-17
 
 ### Added
