@@ -4,6 +4,6 @@
   "description": "Charmtone Pantera theme for Pi",
   "license": "MIT",
   "files": ["index.ts", "themes", "package.json"],
-  "pi": { "extensions": ["./index.ts"] },
+  "pi": { "extensions": ["./index.ts"], "themes": ["./themes"] },
   "peerDependencies": { "@earendil-works/pi-coding-agent": "*" }
 }
