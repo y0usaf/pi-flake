@@ -917,7 +917,7 @@ function renderAgentCall(
 	let text = theme.fg("toolTitle", theme.bold(`${toolLabel} `)) + theme.fg("accent", id);
 	if (args.panel) text += theme.fg("muted", ` · panel ${args.panel.size ?? args.panel.models?.length ?? "?"}`);
 	text += "\n  " + theme.fg("dim", preview);
-	text += formatQuestionLines(args.contract, theme);
+	text += formatQuestionLines(args.contract, theme, 70);
 	return new Text(text, 0, 0);
 }
 
@@ -931,7 +931,7 @@ function metaSuffix(model: string | undefined, activityCount: number, reportCoun
 	return theme.fg("muted", parts.map((part) => ` · ${part}`).join(""));
 }
 
-function formatQuestionLines(questions: unknown, theme: Theme): string {
+function formatQuestionLines(questions: unknown, theme: Theme, limit?: number): string {
 	if (!Array.isArray(questions)) return "";
 	let text = "";
 	for (const question of questions) {
@@ -940,24 +940,25 @@ function formatQuestionLines(questions: unknown, theme: Theme): string {
 		if (prompt.length === 0) continue;
 		const candidate = question as { id?: unknown; label?: unknown };
 		const id = typeof candidate.id === "string" ? candidate.id : typeof candidate.label === "string" ? candidate.label : undefined;
-		text += "\n  " + theme.fg("warning", "?") + (id ? " " + theme.fg("accent", stripControlSequences(id)) : "") + " " + theme.fg("toolOutput", truncateToWidth(stripControlSequences(prompt), 70));
+		const shown = limit === undefined ? stripControlSequences(prompt) : truncateToWidth(stripControlSequences(prompt), limit);
+		text += "\n  " + theme.fg("warning", "?") + (id ? " " + theme.fg("accent", stripControlSequences(id)) : "") + " " + theme.fg("toolOutput", shown);
 	}
 	return text;
 }
 
-function formatAnswerLines(answers: ContractAnswer[], theme: Theme): string {
+function formatAnswerLines(answers: ContractAnswer[], theme: Theme, limit?: number): string {
 	let text = "";
 	for (const answer of answers) {
 		const punted = answer.value === UNABLE_VALUE;
 		const shownRaw = stripControlSequences(punted ? "unable to determine" : answer.label);
-		const shown = truncateToWidth(shownRaw, 70);
+		const shown = limit === undefined ? shownRaw : truncateToWidth(shownRaw, limit);
 		const mark = punted ? theme.fg("warning", "◌") : theme.fg("success", "•");
 		text += "\n  " + mark + " " + theme.fg("accent", answer.id) + (answer.wasCustom ? theme.fg("dim", " ✎ ") : " ") + theme.fg("toolOutput", shown);
 	}
 	return text;
 }
 
-function formatAgentAnswerLines(answers: unknown, theme: Theme): string {
+function formatAgentAnswerLines(answers: unknown, theme: Theme, limit?: number): string {
 	if (!Array.isArray(answers)) return "";
 	const mapped: ContractAnswer[] = [];
 	for (const answer of answers) {
@@ -966,7 +967,7 @@ function formatAgentAnswerLines(answers: unknown, theme: Theme): string {
 		const value = typeof item.value === "string" ? item.value : "";
 		mapped.push({ id: item.id, value, label: value, wasCustom: false });
 	}
-	return formatAnswerLines(mapped, theme);
+	return formatAnswerLines(mapped, theme, limit);
 }
 function activityIcon(item: ActivityItem, theme: Theme): string {
 	if (item.type === "report") return theme.fg("warning", "↑");
@@ -1034,7 +1035,7 @@ function renderAgentResult(
 		container.addChild(new Text(header, 0, 0));
 		for (const q of panel.tally.questions) {
 			const mark = q.freeText ? theme.fg("warning", "◌") : q.unanimous ? theme.fg("success", "•") : theme.fg("warning", "⚠");
-			container.addChild(new Text(`  ${mark} ${theme.fg("accent", truncateToWidth(stripControlSequences(q.prompt), 55))}`, 0, 0));
+			container.addChild(new Text(`  ${mark} ${theme.fg("accent", stripControlSequences(q.prompt))}`, 0, 0));
 			for (const g of q.groups) for (const id of g.memberIds) {
 				const member = panel.members.find((m) => m.id === id); const answer = member?.answers?.find((a) => a.id === q.questionId);
 				container.addChild(new Text(`    ${stripControlSequences(id)} [${stripControlSequences(member?.model ?? "?")}]: ${stripControlSequences(answer ? (answer.label ?? answer.value) : "no answer")}`, 0, 0));
@@ -1140,9 +1141,9 @@ function renderAgentResult(
 	if (hasError && details.error) {
 		text += "\n  " + theme.fg("error", details.error);
 	} else if (answers.length > 0) {
-		text += formatAnswerLines(answers, theme);
+		text += formatAnswerLines(answers, theme, 70);
 	} else if (pendingAsk.length > 0) {
-		text += formatQuestionLines(pendingAsk, theme);
+		text += formatQuestionLines(pendingAsk, theme, 70);
 	} else {
 		text += formatActivityTail(activity, theme);
 	}
@@ -1550,11 +1551,32 @@ export default function multiAgent(pi: ExtensionAPI) {
 		const memberModels = resolvedSpecs ? resolvedSpecs.map((spec) => resolveChildModel(spec, cachedRegistry as ModelRegistry)) : Array(n).fill(config.model && cachedRegistry ? resolveChildModel(config.model, cachedRegistry) : model);
 		const memberParams = Array.from({ length: n }, (_, i) => ({ ...params, id: `${params.id}-${i + 1}`, panel: undefined }));
 		let finished = 0;
+		const memberActivity = new Map<string, { actions: number; latest: string; done: boolean }>();
+		for (const p of memberParams) memberActivity.set(p.id, { actions: 0, latest: "", done: false });
+		const emitActivity = () => {
+			if (!onUpdate) return;
+			const activity = memberParams.map((p, i) => {
+				const state = memberActivity.get(p.id)!;
+				const latest = state.latest ? ` — ${state.latest}` : "";
+				return {
+					type: state.done ? "tool_end" as const : "tool_start" as const,
+					label: `${p.id} [${memberModels[i].id}] · ${state.actions} actions${latest}`,
+					timestamp: Date.now(),
+				};
+			});
+			onUpdate({ content: [{ type: "text", text: `Panel ${params.id}: ${finished}/${n} members finished` }], details: { childId: params.id, model: undefined, activity, reports: [], done: false } });
+		};
 		// Each member's spawnChild already aborts its agent on the shared signal.
 		let firstFailure: unknown;
 		let failureSeen = false;
 		let teardownStarted = false;
-		const promises = memberParams.map((p, i) => spawnChild(callerId, p, model, cwd, signal, undefined, memberModels[i], false).catch((reason: unknown) => {
+		const promises = memberParams.map((p, i) => spawnChild(callerId, p, model, cwd, signal, onUpdate ? (partial) => {
+			const state = memberActivity.get(p.id)!;
+			const activity = partial.details?.activity ?? [];
+			state.actions = activity.length;
+			state.latest = activity.at(-1)?.label ?? "";
+			emitActivity();
+		} : undefined, memberModels[i], false).catch((reason: unknown) => {
 			if (!teardownStarted) {
 				teardownStarted = true;
 				firstFailure = reason;
@@ -1564,7 +1586,8 @@ export default function multiAgent(pi: ExtensionAPI) {
 			throw reason;
 		}).finally(() => {
 			finished++;
-			onUpdate?.({ content: [{ type: "text", text: `Panel ${params.id}: ${finished}/${n} members finished` }], details: { childId: params.id, activity: [], reports: [], done: false } });
+			memberActivity.get(p.id)!.done = true;
+			emitActivity();
 		}));
 		const settled = await Promise.allSettled(promises);
 		if (failureSeen) throw new Error(`Panel member failed: ${firstFailure instanceof Error ? firstFailure.message : String(firstFailure)}`);
@@ -1662,7 +1685,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		description: "Answer a suspended child agent's questions. Validates answers against the questions it asked, resumes it, and blocks until its contract is fulfilled or it asks again.",
 		parameters: answerAgentSchema,
 		renderCall(args, theme) {
-			return new Text(theme.fg("toolTitle", theme.bold("agent_answer ")) + theme.fg("accent", args.id || "...") + formatAgentAnswerLines(args.answers, theme), 0, 0);
+			return new Text(theme.fg("toolTitle", theme.bold("agent_answer ")) + theme.fg("accent", args.id || "...") + formatAgentAnswerLines(args.answers, theme, 70), 0, 0);
 		},
 		renderResult(result, options, theme, context) { return renderAgentResult(result, options, theme, context); },
 		async execute(_toolCallId, params, signal, onUpdate) { return answerAgent(undefined, params, signal, onUpdate); },
