@@ -46,6 +46,11 @@
     source = "inline";
     dir = "pi-hashline";
   };
+  frames = {
+    stage = "testing";
+    source = "inline";
+    dir = "pi-frames";
+  };
   review = {
     stage = "active";
     source = "vendored";
