@@ -58,6 +58,30 @@ const stopPulse = () => {
 
 // OMP bar: colored segments joined by frame-painted " > ", padded with an
 // ASCII rule so the whole line doubles as the editor's top border.
+
+// omp status-line colors (can1357/oh-my-pi dark theme, statusLine* roles).
+// Hardcoded — the pi fork's theme has no such roles and theme.fg throws on
+// unknown ones; pi-powerline-footer does the same. Escalation bands stay
+// theme roles, matching omp's own getContextUsageThemeColor.
+const OMP = {
+	model: "#d787af",
+	path: "#00afaf",
+	context: "#8787af",
+	cost: 205, // 256-color index, as in omp's dark.json
+} as const;
+
+// paint a segment: hex/256 index directly, theme roles via the active theme
+const fg = (c: string | number, s: string): string => {
+	if (typeof c === "number") return `\x1b[38;5;${c}m${s}\x1b[39m`;
+	if (c.startsWith("#")) {
+		const r = parseInt(c.slice(1, 3), 16);
+		const g = parseInt(c.slice(3, 5), 16);
+		const b = parseInt(c.slice(5, 7), 16);
+		return `\x1b[38;2;${r};${g};${b}m${s}\x1b[39m`;
+	}
+	return uiCtx?.theme.fg(c as ThemeColor, s) ?? s;
+};
+
 const ompBar = (width: number, frame: (s: string) => string): string => {
 	const m = sessionCtx?.model;
 	const u = sessionCtx?.getContextUsage();
@@ -73,15 +97,14 @@ const ompBar = (width: number, frame: (s: string) => string): string => {
 	const raw = sessionCtx?.sessionManager.getCwd() ?? "";
 	const cwd = home && raw.startsWith(home) ? `~${raw.slice(home.length)}` : raw;
 	const pct = u?.percent ?? 0;
-	const segs: [ThemeColor, string][] = [
+	const segs: [string | number, string][] = [
 		["accent", "pi"],
-		["text", `[M] ${m?.name || m?.id || "no-model"}${m?.reasoning ? ` - [${sessionCtx?.thinkingLevel}]` : ""}`],
-		["success", `[T] ${cwd}`],
-		[pct > 90 ? "error" : pct > 70 ? "warning" : "dim",
+		[OMP.model, `[M] ${m?.name || m?.id || "no-model"}${m?.reasoning ? ` - [${sessionCtx?.thinkingLevel}]` : ""}`],
+		[OMP.path, `[T] ${cwd}`],
+		[pct > 90 ? "error" : pct > 70 ? "thinkingHigh" : pct > 50 ? "warning" : OMP.context,
 			`ctx: ${u?.percent != null ? pct.toFixed(1) : "?"}%/${fmtTokens(u?.contextWindow ?? m?.contextWindow ?? 0)}`],
-		["warning", `$${cost.toFixed(2)}`],
+		[OMP.cost, `$${cost.toFixed(2)}`],
 	];
-	const fg = (c: ThemeColor, s: string) => uiCtx?.theme.fg(c, s) ?? s;
 	const plain = `+-- ${segs.map(([, s]) => s).join(" > ")} >`;
 	const rule = "-".repeat(Math.max(0, width - visibleWidth(plain) - 1));
 	const body = segs.map(([c, s]) => fg(c, s)).join(frame(" > "));
