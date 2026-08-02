@@ -1,0 +1,71 @@
+diff -urN /tmp/pi-pristine-1785597426/packages/coding-agent/src/modes/interactive/components/user-message.ts /tmp/pi-mod-1785597426/packages/coding-agent/src/modes/interactive/components/user-message.ts
+--- a/packages/coding-agent/src/modes/interactive/components/user-message.ts	2026-08-01 11:17:06.831239546 -0400
++++ b/packages/coding-agent/src/modes/interactive/components/user-message.ts	2026-08-01 11:17:06.878327125 -0400
+@@ -28,7 +28,8 @@
+ 
+ 	private rebuild(): void {
+ 		this.clear();
+-		const contentBox = new Box(this.outputPad, 1, (content: string) => theme.bg("userMessageBg", content));
++		const bar = theme.hasFg("userMessageBar");
++		const contentBox = new Box(bar ? 0 : this.outputPad, bar ? 0 : 1, bar ? undefined : (content: string) => theme.bg("userMessageBg", content));
+ 		contentBox.addChild(
+ 			new Markdown(
+ 				this.text,
+@@ -45,7 +46,12 @@
+ 	}
+ 
+ 	override render(width: number): string[] {
+-		const lines = super.render(width);
++		const hasBar = theme.hasFg("userMessageBar");
++		const lines = super.render(hasBar ? Math.max(0, width - 2) : width);
++		if (hasBar) {
++			const prefix = theme.fg("userMessageBar", "│ ");
++			for (let i = 0; i < lines.length; i++) lines[i] = prefix + lines[i];
++		}
+ 		if (lines.length === 0) {
+ 			return lines;
+ 		}
+diff -urN /tmp/pi-pristine-1785597426/packages/coding-agent/src/modes/interactive/theme/theme-schema.json /tmp/pi-mod-1785597426/packages/coding-agent/src/modes/interactive/theme/theme-schema.json
+--- a/packages/coding-agent/src/modes/interactive/theme/theme-schema.json	2026-08-01 11:17:06.831546494 -0400
++++ b/packages/coding-agent/src/modes/interactive/theme/theme-schema.json	2026-08-01 11:17:06.862474871 -0400
+@@ -293,6 +293,10 @@
+ 					"$ref": "#/$defs/colorValue",
+ 					"description": "Thinking level border: max (falls back to thinkingXhigh when omitted)"
+ 				},
++				"userMessageBar": {
++					"$ref": "#/$defs/colorValue",
++					"description": "User message bar foreground (omitted disables the bar)"
++				},
+ 				"bashMode": {
+ 					"$ref": "#/$defs/colorValue",
+ 					"description": "Editor border color in bash mode"
+diff -urN /tmp/pi-pristine-1785597426/packages/coding-agent/src/modes/interactive/theme/theme.ts /tmp/pi-mod-1785597426/packages/coding-agent/src/modes/interactive/theme/theme.ts
+--- a/packages/coding-agent/src/modes/interactive/theme/theme.ts	2026-08-01 11:17:06.831573936 -0400
++++ b/packages/coding-agent/src/modes/interactive/theme/theme.ts	2026-08-01 11:17:06.862550393 -0400
+@@ -90,6 +90,7 @@
+ 		thinkingHigh: ColorValueSchema,
+ 		thinkingXhigh: ColorValueSchema,
+ 		thinkingMax: Type.Optional(ColorValueSchema),
++		userMessageBar: Type.Optional(ColorValueSchema),
+ 		// Bash Mode (1 color)
+ 		bashMode: ColorValueSchema,
+ 	}),
+@@ -152,6 +153,7 @@
+ 	| "thinkingHigh"
+ 	| "thinkingXhigh"
+ 	| "thinkingMax"
++	| "userMessageBar"
+ 	| "bashMode";
+ 
+ export type ThemeBg =
+@@ -388,6 +390,10 @@
+ 		return chalk.strikethrough(text);
+ 	}
+ 
++	hasFg(color: ThemeColor): boolean {
++		return this.fgColors.has(color);
++	}
++
+ 	getFgAnsi(color: ThemeColor): string {
+ 		const ansi = this.fgColors.get(color);
+ 		if (!ansi) throw new Error(`Unknown theme color: ${color}`);

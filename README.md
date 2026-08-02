@@ -282,6 +282,7 @@ Current patch set applied to upstream `pi`:
 
 - `avoid-network-model-regeneration.patch` - Uses checked-in model registry during builds
 - `default-package-sources-env.patch` - Adds non-persistent `PI_DEFAULT_PACKAGES` package sources for Nix-bundled resources
+- `user-message-bar.patch` - Adds an optional theme-gated Crush-style user-message gutter bar
 
 Removed patches and their replacements:
 

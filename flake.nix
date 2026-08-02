@@ -28,6 +28,7 @@
     piPatches = [
       ./patches/avoid-network-model-regeneration.patch
       ./patches/default-package-sources-env.patch
+      ./patches/user-message-bar.patch
     ];
   in {
     packages = forAllSystems (system: let
