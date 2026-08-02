@@ -73,7 +73,7 @@ Creates a new child agent with its own system prompt. The child gets `read`, `wr
 
 `contract` is a non-empty array of questions: `{ id?, label?, prompt, options?: [{label, value?, description?, recommended?}], allowOther? }`. The host normalizes it (caps: 8 questions, 8 options each, dedupe, derived ids) and appends an "Unable to determine" (`__unable__`) option to every question so the child can punt explicitly instead of fabricating. Zero options + `allowOther` (the default) makes a plain free-text question.
 
-If the child ends a run without a valid `submit_answers` call, it is re-prompted ("nudged") up to 10 times, then the call errors. On spawn errors the subtree is removed; the result content is the formatted answers, and `details.answers` carries them structurally.
+If the child ends a run without a valid `submit_answers` call, it is re-prompted ("nudged") up to 2 times, with each nudge restating the contract questions, then the call errors. On spawn errors the subtree is removed; the result content is the formatted answers, and `details.answers` carries them structurally.
 
 A child is **removed as soon as its contract is fulfilled** — spawn is a typed function call: contract in, answers out, agent gone. There is no persistent-agent mode; the parent holds the answers as data and folds them into the next spawn's task when work continues.
 
@@ -94,7 +94,7 @@ The contract's completion path. `answers` is `[{id, value}]`, one entry per cont
 
 ### `report(message)` (child-only)
 
-Progress channel. Reports stream to the parent via `tool_execution_update` during execution and are appended under the answers in the final result. They are **not** the result — if a child never calls `submit_answers`, the nudge loop kicks in, and after 10 nudges the run errors rather than silently returning prose.
+Progress channel. Reports stream to the parent via `tool_execution_update` during execution and are appended under the answers in the final result. They are **not** the result — if a child never calls `submit_answers`, the nudge loop kicks in, and after 2 nudges the run errors rather than silently returning prose; each nudge restates the contract questions.
 
 ### `agent_answer(id, answers, [timeout_seconds])`
 
@@ -230,7 +230,7 @@ Parent: "Is this diff safe to merge?"
 - **Child text is sanitized for the terminal** — reports and activity previews have ANSI/OSC escape sequences stripped before rendering, so a child cannot inject terminal control sequences into the TUI.
 - **Suspended children hold capacity** — a child awaiting answers holds a live slot indefinitely; there is no suspension deadline. Kill it with `agent_kill` if it should be abandoned.
 - **Upward asks are bounded** — each child gets at most 8 `ask_parent` calls; after that it must submit its contract (using `__unable__` where needed).
-- **Contract nudges cost tokens** — a child that ends its run without `submit_answers` is re-prompted up to 10 times before the call errors. A wedged or refusing child burns those turns; `timeout_seconds` bounds the wall clock.
+- **Contract nudges cost tokens** — a child that ends its run without `submit_answers` is re-prompted up to 2 times before the call errors; each nudge restates the contract questions. A wedged or refusing child burns those turns; `timeout_seconds` bounds the wall clock.
 
 ## License
 
