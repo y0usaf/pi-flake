@@ -151,7 +151,7 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-vcc` | Algorithmic conversation compactor with `/pi-vcc`, `/pi-vcc-recall`, and `vcc_recall` |
 | `pi-caveman` | Terse-response mode with configurable compression levels |
 | `pi-agents` | Multi-agent orchestration: `agent`, `agent_answer`, `agent_kill`, `agent_list` over in-process children |
-| `pi-quiet` | Emoticon chrome: no header, blink spinner, face tool rows, face-border editor |
+| `pi-quiet` | OMP-style prompt chrome: no header, live status-bar editor border (model/thinking/cwd/ctx/cost), face-prefixed input line |
 
 ## Extension Lifecycle
 
