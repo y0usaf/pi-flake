@@ -47,7 +47,7 @@
     dir = "pi-hashline";
   };
   frames = {
-    stage = "testing";
+    stage = "active";
     source = "inline";
     dir = "pi-frames";
   };
