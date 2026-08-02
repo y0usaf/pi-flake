@@ -287,6 +287,22 @@
         meta.description = "Charmtone Pantera theme for Pi";
       };
 
+      "pi-dark-terminal" = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-dark-terminal";
+        version = "0.1.0";
+        src = lib.cleanSource ./extensions/pi-dark-terminal;
+        dontBuild = true;
+        installPhase = ''
+          runHook preInstall
+          mkdir -p "$out"
+          cp package.json index.ts "$out"/
+          cp -r themes "$out"/
+          runHook postInstall
+        '';
+        passthru.packageName = "pi-dark-terminal";
+        meta.description = "oh-my-pi dark-terminal theme for Pi";
+      };
+
       "pi-review" = let
         reviewPackageJson = builtins.fromJSON (builtins.readFile ./extensions/earendil_pi-review/package.json);
       in
@@ -466,8 +482,10 @@
       pi-continue-build = self.packages.${system}."pi-continue";
       pi-agents-build = self.packages.${system}."pi-agents";
       pi-pantera-build = self.packages.${system}."pi-pantera";
-      pi-full-pantera-theme = pkgs.runCommand "pi-full-pantera-theme" {} ''
-        test -f ${self.packages.${system}.pi-full}/share/pi/themes/pantera.json
+      pi-dark-terminal-build = self.packages.${system}."pi-dark-terminal";
+      pi-full-dark-terminal-theme = pkgs.runCommand "pi-full-dark-terminal-theme" {} ''
+        test -f ${self.packages.${system}.pi-full}/share/pi/themes/dark-terminal.json
+        ! test -f ${self.packages.${system}.pi-full}/share/pi/themes/pantera.json
         touch $out
       '';
 
@@ -484,6 +502,15 @@
         pname = "pi-pantera-test";
         version = (builtins.fromJSON (builtins.readFile ./extensions/pi-pantera/package.json)).version;
         src = lib.cleanSource ./extensions/pi-pantera;
+        nativeBuildInputs = [pkgs.bun];
+        dontConfigure = true;
+        dontBuild = true;
+        installPhase = ''runHook preInstall; export HOME="$TMPDIR/home"; mkdir -p "$HOME"; bun test; touch "$out"; runHook postInstall '';
+      };
+      pi-dark-terminal-test = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-dark-terminal-test";
+        version = (builtins.fromJSON (builtins.readFile ./extensions/pi-dark-terminal/package.json)).version;
+        src = lib.cleanSource ./extensions/pi-dark-terminal;
         nativeBuildInputs = [pkgs.bun];
         dontConfigure = true;
         dontBuild = true;
@@ -639,6 +666,7 @@
         frames = self.packages.${system}."pi-frames";
         agents = self.packages.${system}."pi-agents";
         pantera = self.packages.${system}."pi-pantera";
+        dark-terminal = self.packages.${system}."pi-dark-terminal";
 
         review = self.packages.${system}."pi-review";
         vcc = self.packages.${system}."pi-vcc";

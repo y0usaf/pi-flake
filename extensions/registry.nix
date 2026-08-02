@@ -67,9 +67,14 @@
     dir = "jonjonrankin_pi-caveman";
   };
   pantera = {
-    stage = "active";
+    stage = "testing";
     source = "inline";
     dir = "pi-pantera";
+  };
+  dark-terminal = {
+    stage = "active";
+    source = "inline";
+    dir = "pi-dark-terminal";
   };
 
   quiet = {
