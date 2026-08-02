@@ -1,0 +1,194 @@
+// Vendored from can1357/oh-my-pi (MIT) commit 403931b9, packages/coding-agent/src/tui/output-block.ts.
+// Trims: sixel, render cache, TERMINAL.
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { Component } from "@earendil-works/pi-tui";
+
+export type FrameState = "pending" | "success" | "error";
+
+export type OutputBlockOptions = {
+  header?: string;
+  headerMeta?: string;
+  state?: FrameState;
+  sections?: Array<{ label?: string; lines: readonly string[]; separator?: boolean }>;
+  width: number;
+  applyBg?: boolean;
+  contentPaddingLeft?: number;
+  contentPaddingRight?: number;
+  borderColor?: string;
+  /** Draw the labeled top bar. renderResult suppresses it once a call frame
+   * already owns the top so the row pair does not double-top the box. When
+   * false the content rows start immediately and header/headerMeta are
+   * ignored. */
+  topBar?: boolean;
+  /** Draw the closing bottom bar. renderCall suppresses it once a result frame
+   * owns the closure so the row pair does not double-close the box. */
+  bottomBar?: boolean;
+};
+
+export type FrameDeps = {
+  visibleWidth: (s: string) => number;
+  truncateToWidth: (s: string, width: number) => string;
+  wrapTextWithAnsi: (s: string, width: number) => string[];
+};
+
+// Local box-drawing constants replace the upstream theme.boxRound.* tokens;
+// the dot separator replaces theme.sep.dot.
+const topLeft = "╭";
+const topRight = "╮";
+const bottomLeft = "╰";
+const bottomRight = "╯";
+const vertical = "│";
+const horizontal = "─";
+const teeRight = "├";
+const teeLeft = "┤";
+const sep = " · ";
+const cap = horizontal.repeat(3);
+
+// Upstream runs five states (pending/running/success/error/warning); the PI
+// tool slots only expose pending/success/error.
+const STATE_BORDER: Record<FrameState, string> = {
+  error: "error",
+  pending: "accent",
+  success: "dim",
+};
+
+const STATE_BG: Record<FrameState, string> = {
+  pending: "toolPendingBg",
+  success: "toolSuccessBg",
+  error: "toolErrorBg",
+};
+
+type BlockRow =
+  | { kind: "bar"; leftChar: string; rightChar: string; label?: string; meta?: string }
+  | { kind: "bottom"; leftChar: string; rightChar: string }
+  | { kind: "content"; inner: string };
+
+function normalizeContentPaddingLeft(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 1;
+  return Math.max(0, Math.floor(value));
+}
+
+function normalizeContentPaddingRight(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.floor(value));
+}
+
+/** Inner content width renderOutputBlock wraps body lines to, for a given
+ * outer `width`: both vertical borders (1 cell each) plus the content
+ * paddings. Renderers that size a tail window MUST budget visual rows against
+ * this, not the outer width. */
+export function outputBlockContentWidth(width: number, contentPaddingLeft?: number, contentPaddingRight?: number): number {
+  return Math.max(1, width - 2 - normalizeContentPaddingLeft(contentPaddingLeft) - normalizeContentPaddingRight(contentPaddingRight));
+}
+
+export function renderOutputBlock(options: OutputBlockOptions, theme: Theme, deps: FrameDeps): string[] {
+  const { header, headerMeta, state, sections = [], width, applyBg = true, topBar = true, bottomBar = true } = options;
+  const lineWidth = Math.max(0, width);
+  // Border colors: pending uses accent, success uses dim (gray), error keeps
+  // its color; an explicit borderColor always wins.
+  const borderColor = options.borderColor ?? (state === "error" ? "error" : state === "pending" ? "accent" : "dim");
+  const border = (text: string): string => theme.fg(borderColor, text);
+  const bgFn = (() => {
+    if (!state || !applyBg) return undefined;
+    const bgAnsi = theme.getBgAnsi(STATE_BG[state]);
+    // Keep block background stable even if inner content contains SGR resets
+    // (e.g. "\x1b[0m"), which would otherwise clear the outer background
+    // mid-line.
+    return (text: string): string => {
+      const stabilized = text
+        .replace(/\x1b\[(?:0)?m/g, (m) => `${m}${bgAnsi}`)
+        .replace(/\x1b\[49m/g, (m) => `${m}${bgAnsi}`);
+      return `${bgAnsi}${stabilized}\x1b[49m`;
+    };
+  })();
+
+  const contentPaddingLeft = normalizeContentPaddingLeft(options.contentPaddingLeft);
+  const contentPaddingRight = normalizeContentPaddingRight(options.contentPaddingRight);
+  const contentWidth = Math.max(0, lineWidth - vertical.length - contentPaddingLeft - vertical.length - contentPaddingRight);
+  const contentLeftPadding = contentPaddingLeft > 0 ? " ".repeat(contentPaddingLeft) : "";
+  const contentRightPadding = contentPaddingRight > 0 ? " ".repeat(contentPaddingRight) : "";
+
+  // Layout pass: collect row descriptors before emitting the bordered lines.
+  const rows: BlockRow[] = [];
+  if (topBar) rows.push({ kind: "bar", leftChar: topLeft, rightChar: topRight, label: header, meta: headerMeta });
+
+  const normalizedSections = sections.length > 0 ? sections : [{ lines: [] as string[] }];
+  for (let sectionIndex = 0; sectionIndex < normalizedSections.length; sectionIndex++) {
+    const section = normalizedSections[sectionIndex]!;
+    // A labeled section always draws its titled separator bar. A label-less
+    // section can still request a plain divider via `separator`, but only
+    // between sections — leading with one would just double the header bar.
+    if (section.label) {
+      rows.push({ kind: "bar", leftChar: teeRight, rightChar: teeLeft, label: section.label });
+    } else if (section.separator && sectionIndex > 0) {
+      rows.push({ kind: "bar", leftChar: teeRight, rightChar: teeLeft });
+    }
+    const allLines = section.lines.flatMap((l) => l.split("\n"));
+    for (const line of allLines) {
+      const wrappedLines = deps.wrapTextWithAnsi(line.trimEnd(), contentWidth);
+      for (const wrappedLine of wrappedLines) {
+        const innerPadding = " ".repeat(Math.max(0, contentWidth - deps.visibleWidth(wrappedLine)));
+        rows.push({ kind: "content", inner: `${wrappedLine}${innerPadding}` });
+      }
+    }
+  }
+
+  if (bottomBar) rows.push({ kind: "bottom", leftChar: bottomLeft, rightChar: bottomRight });
+
+  const renderBar = (row: { leftChar: string; rightChar: string; label?: string; meta?: string }): string => {
+    const leftGlyphs = `${row.leftChar}${cap}`;
+    const rightGlyph = row.rightChar;
+    if (lineWidth <= 0) return border(leftGlyphs) + border(rightGlyph);
+    const labelText = [row.label, row.meta].filter(Boolean).join(sep);
+    if (!labelText) {
+      // No header: draw a clean, continuous top/separator bar (no 1-col gap).
+      const fillCount = Math.max(0, lineWidth - deps.visibleWidth(leftGlyphs) - deps.visibleWidth(rightGlyph));
+      return `${border(leftGlyphs)}${border(horizontal.repeat(fillCount))}${border(rightGlyph)}`;
+    }
+    const rawLabel = ` ${labelText} `;
+    const leftWidth = deps.visibleWidth(leftGlyphs);
+    const rightWidth = deps.visibleWidth(rightGlyph);
+    const maxLabelWidth = Math.max(0, lineWidth - leftWidth - rightWidth);
+    const trimmedLabel = deps.truncateToWidth(rawLabel, maxLabelWidth);
+    const labelWidth = deps.visibleWidth(trimmedLabel);
+    const fillCount = Math.max(0, lineWidth - leftWidth - labelWidth - rightWidth);
+    return `${border(leftGlyphs)}${trimmedLabel}${border(horizontal.repeat(fillCount))}${border(rightGlyph)}`;
+  };
+
+  const renderBottom = (row: { leftChar: string; rightChar: string }): string => {
+    const leftGlyphs = `${row.leftChar}${cap}`;
+    const rightGlyph = row.rightChar;
+    const fillCount = Math.max(0, lineWidth - deps.visibleWidth(leftGlyphs) - deps.visibleWidth(rightGlyph));
+    return `${border(leftGlyphs)}${border(horizontal.repeat(fillCount))}${border(rightGlyph)}`;
+  };
+
+  const renderContent = (inner: string): string =>
+    `${border(vertical)}${contentLeftPadding}${inner}${contentRightPadding}${border(vertical)}`;
+
+  const padLine = (line: string): string => {
+    // With applyBg, wrap the whole row (borders included) in the state
+    // background so the tint is stable across interior SGR resets.
+    const colored = bgFn ? bgFn(line) : line;
+    const padCount = Math.max(0, lineWidth - deps.visibleWidth(colored));
+    return padCount > 0 ? colored + " ".repeat(padCount) : colored;
+  };
+
+  const lines: string[] = [];
+  for (const row of rows) {
+    const line =
+      row.kind === "bar" ? renderBar(row) : row.kind === "bottom" ? renderBottom(row) : renderContent(row.inner);
+    lines.push(padLine(line));
+  }
+  return lines;
+}
+
+/** Build a self-framing tool component backed by renderOutputBlock. The
+ * `build` callback returns the block options for a given width. A plain
+ * `{ render, invalidate }` object suffices — the upstream framed-block symbol
+ * marking has no counterpart in the PI tool-execution container. */
+export function frameComponent(build: (width: number) => OutputBlockOptions, theme: Theme, deps: FrameDeps): Component {
+  return {
+    render: (width: number): string[] => renderOutputBlock(build(width), theme, deps),
+    invalidate: () => {},
+  };
+}

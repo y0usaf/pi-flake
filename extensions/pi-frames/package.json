@@ -1,0 +1,1 @@
+{"name":"pi-frames","private":true,"version":"0.1.0","type":"module","description":"Bordered, state-tinted output frames for Pi's builtin tool rows","scripts":{"test":"bun test"},"pi":{"extensions":["./src/index.ts"]},"peerDependencies":{"@earendil-works/pi-coding-agent":"*","@earendil-works/pi-tui":"*","@sinclair/typebox":"*"}}

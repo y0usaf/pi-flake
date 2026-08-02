@@ -237,6 +237,23 @@
           };
         };
 
+      "pi-frames" = let
+        packageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-frames/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-frames";
+          version = packageJson.version;
+          src = lib.cleanSource ./extensions/pi-frames;
+          dontBuild = true;
+          installPhase = ''runHook preInstall; mkdir -p "$out"; cp package.json README.md "$out"/; cp -r src "$out"/; runHook postInstall '';
+          passthru.packageName = packageJson.name;
+          meta = with lib; {
+            description = packageJson.description;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
       "pi-agents" = let
         packageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-agents/package.json);
       in
@@ -481,6 +498,15 @@
         dontBuild = true;
         installPhase = ''bun test ./tests; touch "$out" '';
       };
+      pi-frames-test = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-frames-tests";
+        version = (builtins.fromJSON (builtins.readFile ./extensions/pi-frames/package.json)).version;
+        src = lib.cleanSource ./extensions/pi-frames;
+        nativeBuildInputs = [pkgs.bun];
+        dontConfigure = true;
+        dontBuild = true;
+        installPhase = ''runHook preInstall; bun test; touch $out; runHook postInstall '';
+      };
       pi-hashline-test = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-hashline-tests";
         version = (builtins.fromJSON (builtins.readFile ./extensions/pi-hashline/package.json)).version;
@@ -610,6 +636,7 @@
         management = self.packages.${system}."pi-management";
         webfetch = self.packages.${system}."pi-webfetch";
         hashline = self.packages.${system}."pi-hashline";
+        frames = self.packages.${system}."pi-frames";
         agents = self.packages.${system}."pi-agents";
         pantera = self.packages.${system}."pi-pantera";
 
