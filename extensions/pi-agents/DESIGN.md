@@ -49,7 +49,10 @@ one contract — spawn, answer, removed.
   be prevented from ending its turn, so an unfulfilled contract is re-prompted,
   at most `MAX_CONTRACT_NUDGES` (10) times — the watchdog bound; abort,
   timeout, and kill still interrupt it. A model refusing at nudge 10 refuses
-  at 500. After the cap: error, and the subtree is torn down.
+  at 500. After the cap: error, and the subtree is torn down. Amendment
+  2026-08: the cap is lowered to 2 and each nudge carries the contract
+  questions, because identical zero-information re-prompts were the cost;
+  reverse this if children are observed first submitting after nudge 2.
 - **2026-07 — Contract schema diverges from pi-interview deliberately.**
   Zero options plus `allowOther` is a legal free-text question (edit-style
   tasks have no enumerable options); the host-added option is "Unable to
@@ -128,7 +131,8 @@ one contract — spawn, answer, removed.
   string matches across free text are meaningless. Panel members have no
   `ask_parent`: a judge's job is a verdict under uncertainty, and
   `__unable__` already expresses "cannot determine" without holding a slot
-  open. The no-`models` path follows ordinary child-model resolution rather
+  open. Amendment 2026-08: an all-free-text panel contract is now a pre-spawn
+  hard error rather than a prose guideline. The no-`models` path follows ordinary child-model resolution rather
   than the parent's model, so panels and plain spawns cannot disagree about
   which model a child runs on. If a third distinct multi-agent shape beyond
   fan-out/join and executor delegation is being hand-repeated in prose across

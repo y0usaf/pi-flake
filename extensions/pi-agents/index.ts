@@ -86,8 +86,8 @@ const MAX_CONTRACT_QUESTIONS = 8;
 /** Per question, including the host-added "Unable to determine" option. */
 const MAX_CONTRACT_OPTIONS = 8;
 const MAX_ANSWER_TEXT = 4000;
-/** Watchdog on the enforcement loop: a model refusing at nudge 10 refuses at 500. */
-const MAX_CONTRACT_NUDGES = 10;
+/** Watchdog on the enforcement loop: a model refusing at nudge 2 refuses at 500. */
+const MAX_CONTRACT_NUDGES = 2;
 /** Budget on parent round-trips; each ask costs a deliberate parent tool call, the nudge cap remains the ultimate watchdog. */
 const MAX_ASKS = 8;
 
@@ -316,6 +316,7 @@ interface ActivityItem {
 
 interface AgentToolDetails {
 	childId: string;
+	nudges?: number;
 	/** Child model as the TUI shows it: bare id, plus "[provider]" when it differs from the parent's. */
 	model?: string;
 	activity: ActivityItem[];
@@ -337,7 +338,7 @@ const modelLabel = (agent: Agent): string => `${agent.state.model.provider}/${ag
 function tallyPanel(questions: ContractQuestion[], members: { id: string; model: string; answers: ContractAnswer[] | undefined }[]): PanelTally {
 	let disagreementCount = 0;
 	const result = questions.map((question) => {
-		const freeText = question.options.filter((o) => o.value !== UNABLE_VALUE).length === 0;
+		const freeText = question.options.filter((o) => o.value !== UNABLE_VALUE).length === 0 || members.some((member) => member.answers?.some((answer) => answer.id === question.id && answer.wasCustom === true));
 		const groups = new Map<string, { value: string; label: string; memberIds: string[]; count: number }>();
 		for (const member of members) {
 			const answer = member.answers?.find((a) => a.id === question.id);
@@ -715,8 +716,14 @@ function buildSubmitAnswersTool(childId: string, contract: ContractBox): AgentTo
 	};
 }
 
-const CONTRACT_NUDGE_WITH_ASK_PROMPT = "Your contract is not fulfilled. Call submit_answers now with one answer per contract question. " + `If a question cannot be determined, answer it with the value "${UNABLE_VALUE}". ` + "If you are blocked on information only your parent can provide, call ask_parent with your questions instead.";
-const CONTRACT_NUDGE_PROMPT = "Your contract is not fulfilled. Call submit_answers now with one answer per contract question. " + `If a question cannot be determined, answer it with the value "${UNABLE_VALUE}".`;
+function buildNudgePrompt(questions: ContractQuestion[], allowAsk: boolean): string {
+	return [
+		"Your contract is not fulfilled. Call submit_answers now with one answer per contract question.",
+		`If a question cannot be determined, answer it with the value "${UNABLE_VALUE}".`,
+		...(allowAsk ? ["If you are blocked on information only your parent can provide, call ask_parent with your questions instead."] : []),
+		...renderQuestionLines(questions),
+	].join("\n");
+}
 
 /**
  * Enforcement loop: a model cannot be prevented from ending its turn, so the
@@ -726,13 +733,12 @@ const CONTRACT_NUDGE_PROMPT = "Your contract is not fulfilled. Call submit_answe
 async function runUntilContractFulfilled(state: ChildState, prompt: string, signal: AbortSignal | undefined, allowAsk = true): Promise<void> {
 	const pending = () => !state.contract.answers && !state.contract.pendingAsk && !state.killed && !signal?.aborted && !state.agent.state.errorMessage;
 	await state.agent.prompt(prompt);
-	let nudges = 0;
-	while (pending() && nudges < MAX_CONTRACT_NUDGES) {
-		nudges++;
-		await state.agent.prompt(allowAsk ? CONTRACT_NUDGE_WITH_ASK_PROMPT : CONTRACT_NUDGE_PROMPT);
+	while (pending() && state.nudges < MAX_CONTRACT_NUDGES) {
+		state.nudges++;
+		await state.agent.prompt(buildNudgePrompt(state.contract.questions, allowAsk));
 	}
 	if (pending()) {
-		throw new Error(`Agent "${state.id}" ended ${nudges} nudged run(s) without calling submit_answers; contract unfulfilled`);
+		throw new Error(`Agent "${state.id}" ended ${state.nudges} nudged run(s) without calling submit_answers; contract unfulfilled`);
 	}
 }
 // ---------------------------------------------------------------------------
@@ -772,6 +778,8 @@ interface ChildState {
 	reportCursor: number;
 	/** Number of upward asks made by this agent. */
 	askCount: number;
+	/** Number of contract nudges sent to this agent. */
+	nudges: number;
 	/** Timestamp when the current ask became pending. */
 	awaitingSince?: number;
 }
@@ -890,6 +898,7 @@ function collectResult(childId: string, state: ChildState, reportStartIdx: numbe
 		content: [{ type: "text", text: error ? `[Error]: ${error}\n\n${text}` : text }],
 		details: {
 			childId,
+			nudges: state.nudges,
 			model: state.modelDisplay,
 			activity: [...state.activity],
 			reports: [...newReports],
@@ -1328,6 +1337,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			pendingQuestionCount: state.contract.pendingAsk?.length ?? 0,
 			awaitingSince: state.awaitingSince,
 			contractFulfilled: state.contract.answers !== undefined,
+			nudges: state.nudges,
 			reportCount: state.reports.length,
 			activityCount: state.activity.length,
 			createdAt: state.createdAt,
@@ -1336,8 +1346,8 @@ export default function multiAgent(pi: ExtensionAPI) {
 			? "No active child agents."
 			: agents.map((agent) =>
 				`• ${agent.id} — ${agent.status}, depth ${agent.depth}, ` +
-				`${agent.parentId ? `parent ${agent.parentId}` : "root child"}, ${agent.model}, ${agent.reportCount} reports, ` +
-				`contract ${agent.contractFulfilled ? "fulfilled" : "pending"}`,
+				`${agent.parentId ? `parent ${agent.parentId}` : "root child"}, ${agent.model}, ${agent.reportCount} reports` +
+				`${agent.nudges > 0 ? `, ${agent.nudges} nudges` : ""}, contract ${agent.contractFulfilled ? "fulfilled" : "pending"}`,
 			).join("\n");
 		return { content: [{ type: "text", text }], details: { agents } };
 	}
@@ -1518,6 +1528,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 				activity: [],
 				reportCursor: 0,
 				askCount: 0,
+				nudges: 0,
 				contract,
 				locked: true,
 				killed: false,
@@ -1534,6 +1545,10 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 	async function spawnPanel(callerId: string | undefined, params: { id: string; system_prompt: string; task: string; timeout_seconds?: number; contract: unknown; panel?: { size?: number; models?: string[] } }, model: Model<any>, cwd: string, signal?: AbortSignal, onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void): Promise<AgentToolResult<AgentToolDetails>> {
 		const config = await getConfig(cwd);
+		const questions = normalizeContract(params.contract, `panel "${params.id}"`);
+		if (questions.every((question) => question.options.filter((option) => option.value !== UNABLE_VALUE).length === 0)) {
+			throw new Error(`panel "${params.id}": no enumerated question, so a tally would be meaningless — give the panel at least one question with options, or spawn plain agents in one turn for independent free-text views.`);
+		}
 		const models = params.panel?.models;
 		const size = params.panel?.size;
 		if (models && size !== undefined && models.length !== size) throw new Error(`Panel models length ${models.length} does not match size ${size}`);
@@ -1593,7 +1608,6 @@ export default function multiAgent(pi: ExtensionAPI) {
 		if (failureSeen) throw new Error(`Panel member failed: ${firstFailure instanceof Error ? firstFailure.message : String(firstFailure)}`);
 		const results = settled.map((r) => (r as PromiseFulfilledResult<AgentToolResult<AgentToolDetails>>).value);
 		const members = results.map((r, i) => ({ id: memberParams[i].id, model: `${memberModels[i].provider}/${memberModels[i].id}`, answers: r.details?.answers, reports: r.details?.reports ?? [] }));
-		const questions = normalizeContract(params.contract, `panel "${params.id}"`);
 		const tally = tallyPanel(questions, members);
 		const lines = [`Panel "${params.id}": ${n} members, ${new Set(members.map((m) => m.model)).size} distinct models`];
 		if (tally.disagreementCount) lines.unshift(`DISAGREEMENT on ${tally.disagreementCount}/${tally.questions.filter((q) => !q.freeText).length} tallyable question(s)`);
