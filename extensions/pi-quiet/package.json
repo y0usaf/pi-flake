@@ -1,7 +1,7 @@
 {
   "name": "pi-quiet",
-  "version": "0.1.0",
-  "description": "Minimalist chrome for pi: no header, no loader row, pulsing editor border",
+  "version": "0.2.1",
+  "description": "OMP-style prompt bar chrome for pi: status-bar editor border (no header) + face input line",
   "homepage": "https://github.com/y0usaf/pi-flake",
   "repository": {
     "type": "git",
