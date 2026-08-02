@@ -31,16 +31,16 @@ export type FrameDeps = {
   wrapTextWithAnsi: (s: string, width: number) => string[];
 };
 
-// Local box-drawing constants replace the upstream theme.boxRound.* tokens;
+// Local ASCII box constants replace the upstream box-drawing glyphs;
 // the dot separator replaces theme.sep.dot.
-const topLeft = "╭";
-const topRight = "╮";
-const bottomLeft = "╰";
-const bottomRight = "╯";
-const vertical = "│";
-const horizontal = "─";
-const teeRight = "├";
-const teeLeft = "┤";
+const topLeft = "+";
+const topRight = "+";
+const bottomLeft = "+";
+const bottomRight = "+";
+const vertical = "|";
+const horizontal = "-";
+const teeRight = "+";
+const teeLeft = "+";
 const sep = " · ";
 const cap = horizontal.repeat(3);
 
@@ -84,9 +84,10 @@ export function outputBlockContentWidth(width: number, contentPaddingLeft?: numb
 export function renderOutputBlock(options: OutputBlockOptions, theme: Theme, deps: FrameDeps): string[] {
   const { header, headerMeta, state, sections = [], width, applyBg = true, topBar = true, bottomBar = true } = options;
   const lineWidth = Math.max(0, width);
-  // Border colors: pending uses accent, success uses dim (gray), error keeps
-  // its color; an explicit borderColor always wins.
-  const borderColor = options.borderColor ?? (state === "error" ? "error" : state === "pending" ? "accent" : "dim");
+  // The state color now washes the whole box, not just the border strokes:
+  // pending uses accent, success uses dim (gray), error keeps its color; an
+  // explicit borderColor always wins on the border glyphs.
+  const borderColor = options.borderColor ?? (state ? STATE_BORDER[state] : "dim");
   const border = (text: string): string => theme.fg(borderColor, text);
   const bgFn = (() => {
     if (!state || !applyBg) return undefined;
@@ -99,6 +100,17 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme, dep
         .replace(/\x1b\[(?:0)?m/g, (m) => `${m}${bgAnsi}`)
         .replace(/\x1b\[49m/g, (m) => `${m}${bgAnsi}`);
       return `${bgAnsi}${stabilized}\x1b[49m`;
+    };
+  })();
+  const fgFn = (() => {
+    const fgColor = state ? STATE_BORDER[state] : undefined;
+    if (!fgColor) return undefined;
+    const fgAnsi = theme.getFgAnsi(fgColor);
+    return (text: string): string => {
+      const stabilized = text
+        .replace(/\x1b\[(?:0)?m/g, (m) => `${m}${fgAnsi}`)
+        .replace(/\x1b\[39m/g, (m) => `${m}${fgAnsi}`);
+      return `${fgAnsi}${stabilized}\x1b[39m`;
     };
   })();
 
@@ -166,9 +178,12 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme, dep
     `${border(vertical)}${contentLeftPadding}${inner}${contentRightPadding}${border(vertical)}`;
 
   const padLine = (line: string): string => {
-    // With applyBg, wrap the whole row (borders included) in the state
-    // background so the tint is stable across interior SGR resets.
-    const colored = bgFn ? bgFn(line) : line;
+    // Whole-box state wash: fg under the bg (bg outermost). The state color
+    // covers borders and unstyled interior text; explicitly styled text
+    // (badges, footer glyphs) keeps its colors. Both layers re-inject after
+    // interior SGR resets, like bg alone did before.
+    const washed = fgFn ? fgFn(line) : line;
+    const colored = bgFn ? bgFn(washed) : washed;
     const padCount = Math.max(0, lineWidth - deps.visibleWidth(colored));
     return padCount > 0 ? colored + " ".repeat(padCount) : colored;
   };

@@ -241,50 +241,50 @@ describe("pi-frames tree rendering", () => {
   test("find/ls render tree rows inside the Output section; bash stays tail-style", () => {
     let context = slotContext();
     const find = renderResult("find", { content: [{ type: "text", text: "src/main.ts\nsrc/search/" }], details: undefined }, { isPartial: false, expanded: false }, theme, context) as any;
-    const findLines = find.render(60).map(strip).filter((l) => l.startsWith("│"));
+    const findLines = find.render(60).map(strip).filter((l) => l.startsWith("|"));
     expect(findLines.length).toBe(2);
-    expect(findLines[0].startsWith("│ ├── ts src/main.ts")).toBe(true);
-    expect(findLines[0].endsWith("│")).toBe(true);
-    expect(findLines[1].startsWith("│ └── [D] src/search/")).toBe(true);
+    expect(findLines[0].startsWith("| ├── ts src/main.ts")).toBe(true);
+    expect(findLines[0].endsWith("|")).toBe(true);
+    expect(findLines[1].startsWith("| └── [D] src/search/")).toBe(true);
 
     context = slotContext();
     const ls = renderResult("ls", { content: [{ type: "text", text: "a.ts\nb.ts\nc.ts\nd.ts\ne.ts" }], details: undefined }, { isPartial: false, expanded: false }, theme, context) as any;
-    const lsLines = ls.render(60).map(strip).filter((l) => l.startsWith("│"));
+    const lsLines = ls.render(60).map(strip).filter((l) => l.startsWith("|"));
     expect(lsLines.some((l) => l.includes("├──"))).toBe(true);
     expect(lsLines[lsLines.length - 1]).toContain("└── … 2 more entries");
 
     context = slotContext();
     const bash = renderResult("bash", { content: [{ type: "text", text: "l1\nl2\nl3\nl4\nl5" }], details: undefined }, { isPartial: false, expanded: false }, theme, context) as any;
-    const bashLines = bash.render(60).map(strip).filter((l) => l.startsWith("│"));
+    const bashLines = bash.render(60).map(strip).filter((l) => l.startsWith("|"));
     expect(bashLines[0]).toContain("earlier lines");
     expect(bashLines.some((l) => l.includes("├──"))).toBe(false);
   });
 });
 
 describe("pi-frames frame rendering", () => {
-  test("top bar starts ╭─── and ends ╮; bottom ╰…╯; exact width", () => {
+  test("top bar starts +--- and ends +; bottom +…+; exact width", () => {
     const lines = renderOutputBlock({ header: "bash", state: "success", sections: [{ lines: ["body"] }], width: 20 }, theme, frameDeps);
     const top = strip(lines[0]);
-    expect(top.startsWith("╭───")).toBe(true);
-    expect(top.endsWith("╮")).toBe(true);
+    expect(top.startsWith("+---")).toBe(true);
+    expect(top.endsWith("+")).toBe(true);
     const last = strip(lines[lines.length - 1]);
-    expect(last.startsWith("╰───")).toBe(true);
-    expect(last.endsWith("╯")).toBe(true);
+    expect(last.startsWith("+---")).toBe(true);
+    expect(last.endsWith("+")).toBe(true);
     for (const line of lines) expect(strip(line).length).toBe(20);
   });
 
   test("plain top bar renders a continuous fill with no label", () => {
     const lines = renderOutputBlock({ state: "pending", sections: [{ lines: ["body"] }], width: 20 }, theme, frameDeps);
     const top = strip(lines[0]);
-    expect(top).toBe(`╭${"─".repeat(18)}╮`);
+    expect(top).toBe(`+${"-".repeat(18)}+`);
     expect(top).not.toContain(" ");
   });
 
   test("header label truncates rather than overflowing at narrow width", () => {
     const lines = renderOutputBlock({ header: "a very long header label that cannot fit", state: "pending", sections: [], width: 12 }, theme, frameDeps);
     const top = strip(lines[0]);
-    expect(top.startsWith("╭───")).toBe(true);
-    expect(top.endsWith("╮")).toBe(true);
+    expect(top.startsWith("+---")).toBe(true);
+    expect(top.endsWith("+")).toBe(true);
     expect(top).not.toContain("cannot fit");
     expect(top.length).toBe(12);
   });
@@ -300,18 +300,20 @@ describe("pi-frames frame rendering", () => {
     for (const line of lines) expect(line).not.toContain("[BG]");
   });
 
-  test("topBar false: no ╭ line and content starts on the first row", () => {
+  test("topBar false: no + line and content starts on the first row", () => {
     const lines = renderOutputBlock({ state: "success", sections: [{ lines: ["body"] }], width: 20, topBar: false }, theme, frameDeps);
-    for (const line of lines) expect(strip(line)).not.toContain("╭");
-    expect(strip(lines[0]).startsWith("│")).toBe(true);
+    // no top bar: the first row is content, not a + corner
+    expect(strip(lines[0])).not.toContain("+");
+    expect(strip(lines[0]).startsWith("|")).toBe(true);
   });
 
   test("labeled section at index 0 draws its titled tee bar even with topBar false", () => {
     const lines = renderOutputBlock({ state: "success", topBar: false, sections: [{ label: "Output", lines: ["body"] }], width: 20 }, theme, frameDeps).map(strip);
-    const tees = lines.filter((l) => l.includes("├"));
+    // the tee bar is the only + line carrying the title (the bottom bar is a bare +-+ streak)
+    const tees = lines.filter((l) => l.includes("- Output -"));
     expect(tees.length).toBe(1);
-    expect(tees[0].startsWith("├")).toBe(true);
-    expect(tees[0]).toContain("─ Output ─");
+    expect(tees[0].startsWith("+")).toBe(true);
+    expect(tees[0]).toContain("- Output -");
     expect(lines[0]).toBe(tees[0]);
   });
 
@@ -321,31 +323,30 @@ describe("pi-frames frame rendering", () => {
     const result = renderResult("bash", { content: [{ type: "text", text: "c1 commit message" }], details: undefined }, { isPartial: false, expanded: false }, theme, context) as any;
     const lines = [...call.render(30), ...result.render(30)].map(strip);
 
-    // one plain top border (no label text), one bottom border, last row ╰
-    expect(lines.filter((l) => l.includes("╭")).length).toBe(1);
-    expect(lines.filter((l) => l.includes("╰")).length).toBe(1);
-    expect(lines[0].startsWith("╭")).toBe(true);
+    // exactly three lines carry the + corner: top bar, Output tee, bottom bar
+    expect(lines.filter((l) => l.includes("+")).length).toBe(3);
+    expect(lines[0].startsWith("+---")).toBe(true);
     expect(lines[0]).not.toContain("git");
-    expect(lines[lines.length - 1].startsWith("╰")).toBe(true);
+    expect(lines[lines.length - 1].startsWith("+")).toBe(true);
 
     // the $ command is an interior row, not a border label
-    expect(lines.some((l) => l.startsWith("│") && l.includes("$ git log"))).toBe(true);
+    expect(lines.some((l) => l.startsWith("|") && l.includes("$ git log"))).toBe(true);
 
     // exactly one tee row, carrying the Output label
-    const tees = lines.filter((l) => l.includes("├"));
+    const tees = lines.filter((l) => l.includes("- Output -"));
     expect(tees.length).toBe(1);
     expect(tees[0]).toContain("Output");
   });
 
-  test("long command wraps to multiple │ rows without truncation", () => {
+  test("long command wraps to multiple | rows without truncation", () => {
     const context = slotContext();
     const call = renderCall("bash", { command: "git log --oneline -15 --all --decorate --graph --stat" }, theme, context) as any;
     const lines = call.render(22).map(strip);
-    const commandRows = lines.filter((l) => l.startsWith("│"));
+    const commandRows = lines.filter((l) => l.startsWith("|"));
     expect(commandRows.length).toBeGreaterThan(1);
     for (const row of commandRows) expect(row).not.toContain("…");
     // content is lossless across the wrapped rows (only frame glyphs/padding stripped)
-    expect(commandRows.join("").replace(/[│ ]/g, "")).toContain("--decorate");
+    expect(commandRows.join("").replace(/[| ]/g, "")).toContain("--decorate");
   });
 
   test("clipped output shows the earlier-lines indicator inside the frame", () => {
@@ -353,7 +354,7 @@ describe("pi-frames frame rendering", () => {
     const context = slotContext();
     const result = renderResult("bash", { content: [{ type: "text", text: body }], details: undefined }, { isPartial: false, expanded: false }, theme, context) as any;
     // wide enough that the indicator fits on one row: only indicator + 3 tail rows
-    const interior = result.render(80).map(strip).filter((l) => l.startsWith("│"));
+    const interior = result.render(80).map(strip).filter((l) => l.startsWith("|"));
     expect(interior[0]).toContain("earlier lines");
     expect(interior[0]).toContain("showing 3 of 24");
     expect(interior[0]).toContain("ctrl+o");
@@ -368,6 +369,21 @@ describe("pi-frames frame rendering", () => {
     const result = renderResult("bash", { content: [], details: undefined }, { isPartial: false, expanded: false }, theme, context) as any;
     const lines = result.render(30).map(strip);
     expect(lines.length).toBe(1);
-    expect(lines[0].startsWith("╰")).toBe(true);
+    expect(lines[0].startsWith("+")).toBe(true);
+    expect(lines[0].endsWith("+")).toBe(true);
+  });
+
+  test("whole box takes the state fg wash, not just border strokes", () => {
+    const lines = renderOutputBlock({ state: "success", sections: [{ lines: ["plain body"] }], width: 20 }, theme, frameDeps);
+    for (const line of lines) {
+      expect(line.includes("[FG]")).toBe(true);
+      expect(line.includes("\x1b[39m")).toBe(true);
+      expect(line.endsWith("\x1b[49m")).toBe(true);
+    }
+  });
+
+  test("no state means no fg wash", () => {
+    const lines = renderOutputBlock({ sections: [{ lines: ["body"] }], width: 20 }, theme, frameDeps);
+    for (const line of lines) expect(line).not.toContain("[FG]");
   });
 });
