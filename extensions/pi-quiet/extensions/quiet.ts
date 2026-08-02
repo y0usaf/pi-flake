@@ -3,9 +3,9 @@
  *
  * Header removed; working loader row removed; hidden thinking collapses to
  * one blank line. The editor renders as a two-line OMP prompt: the top
- * border is a live status bar (model - [thinking] ❯ cwd ❯ ctx ❯ cost) and
- * the face prefixes the input line. While an agent run is active the bar
- * and face pulse through PULSE — the bar IS the working indicator.
+ * border is a live status bar (+-- pi > [M] model - [thinking] > [T] cwd > ctx > $cost >---+) and
+ * the face prefixes the input line. While an agent run is active the frame
+ * pulses through PULSE — the bar IS the working indicator.
  *
  * Tool rows are pi's own; quiet registers nothing tool-related.
  */
@@ -56,9 +56,9 @@ const stopPulse = () => {
 	editor?.requestPulse(); // one last static-color render
 };
 
-// OMP bar: segments joined by ❯, padded with the border rule so the whole
-// line doubles as the editor's top border.
-const ompBar = (width: number, paint: (s: string) => string): string => {
+// OMP bar: colored segments joined by frame-painted " > ", padded with an
+// ASCII rule so the whole line doubles as the editor's top border.
+const ompBar = (width: number, frame: (s: string) => string): string => {
 	const m = sessionCtx?.model;
 	const u = sessionCtx?.getContextUsage();
 	let cost = 0;
@@ -72,17 +72,20 @@ const ompBar = (width: number, paint: (s: string) => string): string => {
 	const home = process.env.HOME;
 	const raw = sessionCtx?.sessionManager.getCwd() ?? "";
 	const cwd = home && raw.startsWith(home) ? `~${raw.slice(home.length)}` : raw;
-	const pct = u?.percent != null ? u.percent.toFixed(1) : "?";
-	const segs = [
-		"pi",
-		`[M] ${m?.name || m?.id || "no-model"}${m?.reasoning ? ` - [${sessionCtx?.thinkingLevel}]` : ""}`,
-		`[T] ${cwd}`,
-		`ctx: ${pct}%/${fmtTokens(u?.contextWindow ?? m?.contextWindow ?? 0)}`,
-		`$${cost.toFixed(2)}`,
+	const pct = u?.percent ?? 0;
+	const segs: [ThemeColor, string][] = [
+		["accent", "pi"],
+		["text", `[M] ${m?.name || m?.id || "no-model"}${m?.reasoning ? ` - [${sessionCtx?.thinkingLevel}]` : ""}`],
+		["success", `[T] ${cwd}`],
+		[pct > 90 ? "error" : pct > 70 ? "warning" : "dim",
+			`ctx: ${u?.percent != null ? pct.toFixed(1) : "?"}%/${fmtTokens(u?.contextWindow ?? m?.contextWindow ?? 0)}`],
+		["warning", `$${cost.toFixed(2)}`],
 	];
-	const text = `╭─ ${segs.join(" ❯ ")} ❯`;
-	const rule = "─".repeat(Math.max(0, width - visibleWidth(text) - 1));
-	return paint(truncateToWidth(`${text}${rule}╮`, width));
+	const fg = (c: ThemeColor, s: string) => uiCtx?.theme.fg(c, s) ?? s;
+	const plain = `+-- ${segs.map(([, s]) => s).join(" > ")} >`;
+	const rule = "-".repeat(Math.max(0, width - visibleWidth(plain) - 1));
+	const body = segs.map(([c, s]) => fg(c, s)).join(frame(" > "));
+	return truncateToWidth(`${frame("+-- ")}${body}${frame(` >${rule}+`)}`, width);
 };
 
 class QuietEditor extends CustomEditor {
