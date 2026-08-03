@@ -243,9 +243,14 @@
         pkgs.stdenvNoCC.mkDerivation {
           pname = "pi-frames";
           version = packageJson.version;
-          src = lib.cleanSource ./extensions/pi-frames;
+          src = lib.cleanSourceWith {
+            src = lib.cleanSource ./extensions;
+            filter = path: type:
+              let rel = lib.removePrefix (toString ./extensions) (toString path);
+              in rel == "" || lib.hasPrefix "/pi-frames" rel || lib.hasPrefix "/shared" rel;
+          };
           dontBuild = true;
-          installPhase = ''runHook preInstall; mkdir -p "$out"; cp package.json README.md "$out"/; cp -r src "$out"/; runHook postInstall '';
+          installPhase = ''runHook preInstall; mkdir -p "$out"; cp $src/pi-frames/package.json $src/pi-frames/README.md "$out"/; cp -r $src/pi-frames/src "$out"/; cp -r $src/shared "$out"/; runHook postInstall '';
           passthru.packageName = packageJson.name;
           meta = with lib; {
             description = packageJson.description;
@@ -528,7 +533,12 @@
       pi-frames-test = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-frames-tests";
         version = (builtins.fromJSON (builtins.readFile ./extensions/pi-frames/package.json)).version;
-        src = lib.cleanSource ./extensions/pi-frames;
+        src = lib.cleanSourceWith {
+          src = lib.cleanSource ./extensions;
+          filter = path: type:
+            let rel = lib.removePrefix (toString ./extensions) (toString path);
+            in rel == "" || lib.hasPrefix "/pi-frames" rel || lib.hasPrefix "/shared" rel;
+        };
         nativeBuildInputs = [pkgs.bun];
         dontConfigure = true;
         dontBuild = true;

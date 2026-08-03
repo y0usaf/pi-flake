@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import { callHeaderLine, resultFooter, resultLines, tailBody, badgeForPath } from "../src/format";
-import { renderOutputBlock } from "../src/frame";
+import { renderOutputBlock } from "../../shared/frame";
 import { renderStatusLine } from "../src/status";
 import { skinDefinition } from "../src/skin";
 import { EXT_BADGES, TREE_SPECS } from "../src/specs";

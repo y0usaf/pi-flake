@@ -4,7 +4,7 @@
 // `status.error` `[!!]`), and theme.format bracket tokens are replaced with plain "[" / "]"
 // (upstream pi-tui lacks them).
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import type { FrameState } from "./frame";
+import type { FrameState } from "../../shared/frame";
 
 export type StatusLineOptions = {
   icon?: FrameState;

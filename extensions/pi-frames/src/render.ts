@@ -1,6 +1,6 @@
 import { Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { keyHint, type Theme } from "@earendil-works/pi-coding-agent";
-import { frameComponent, type FrameDeps, type FrameState, type OutputBlockOptions } from "./frame";
+import { frameComponent, type FrameDeps, type FrameState, type OutputBlockOptions } from "../../shared/frame";
 import { callHeaderLine, resultLines } from "./format";
 import { formatStatusIcon } from "./status";
 import type { RenderDeps } from "./skin";
