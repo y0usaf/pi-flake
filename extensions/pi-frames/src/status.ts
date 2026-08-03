@@ -1,6 +1,8 @@
 // Vendored from can1357/oh-my-pi (MIT) commit 403931b9, packages/coding-agent/src/tui/status-line.ts.
-// Trims: upstream status icons are replaced with local pending/success/error glyphs, and
-// theme.format bracket tokens are replaced with plain "[" / "]" (upstream pi-tui lacks them).
+// Trims: upstream status icons are replaced with local ASCII pending/success/error glyphs that
+// mirror oh-my-pi's ASCII symbol preset (`status.pending` `[*]`, `status.success` `[ok]`,
+// `status.error` `[!!]`), and theme.format bracket tokens are replaced with plain "[" / "]"
+// (upstream pi-tui lacks them).
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { FrameState } from "./frame";
 
@@ -23,14 +25,17 @@ function flattenForHeader(text: string): string {
   return text.replace(/\r\n?|\n/g, " ");
 }
 
-function formatStatusIcon(status: FrameState, theme: Theme): string {
+/** ASCII status glyph for a frame state, mirroring oh-my-pi's ASCII symbol
+ * preset (`status.pending` `[*]`, `status.success` `[ok]`, `status.error`
+ * `[!!]`). Exported so the inline call line can prefix its state icon. */
+export function formatStatusIcon(status: FrameState, theme: Theme): string {
   switch (status) {
     case "pending":
-      return theme.fg("muted", "◐");
+      return theme.fg("muted", "[*]");
     case "success":
-      return theme.fg("success", "✓");
+      return theme.fg("success", "[ok]");
     case "error":
-      return theme.fg("error", "✗");
+      return theme.fg("error", "[!!]");
   }
 }
 
