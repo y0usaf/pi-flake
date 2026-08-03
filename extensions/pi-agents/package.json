@@ -10,7 +10,14 @@
 	],
 	"files": [
 		"index.ts",
+		"config.ts",
+		"contract.ts",
+		"state.ts",
 		"render.ts",
+		"registry.ts",
+		"spawn.ts",
+		"loop.ts",
+		"orchestrator.ts",
 		"README.md",
 		"package.json"
 	],

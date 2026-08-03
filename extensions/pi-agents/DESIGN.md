@@ -6,6 +6,22 @@ one contract — spawn, answer, removed.
 
 ## Locked decisions
 
+- **2026-08-03 — The single-file split is user-directed; the registry extraction is sanctioned.**
+  The user directed the modular split of the extension now, in advance of the
+  2026-08+ decision's deferred trigger (a third orchestration feature, or a
+  demonstrably unmaintainable file). The registry extraction in particular is
+  sanctioned by its own reversal condition, which has fired: `agent_loop`'s
+  interpreter (`runWorkflow`) is a second consumer of the registry machinery — it
+  drives `spawnChild`/`spawnPanel`/`killSubtree` — the second consumer the registry
+  extraction was waiting for. Per `[[canon:design-doc]]`: divergence from a
+  documented decision is fine; undocumented divergence is drift — so the divergence
+  is recorded here rather than happening silently. Scope is strictly structural: code
+  moved verbatim into `config.ts`, `contract.ts`, `state.ts`; renderers consolidated
+  in `render.ts`; `multiAgent()` and `children`/`reservedIds` moved out of
+  `index.ts` into `registry.ts` as `createRegistry()`; `index.ts` is now a thin
+  composition root wiring the registry, spawn, loop, and orchestrator modules (see
+  Architecture for the module map). No behavior, message, constant, schema, or tool
+  name changes.
 - **2026-08+ — `agent_loop` lands as a second orchestration feature inside pi-agents.**
   A bounded single-loop interpreter (`goal` / `doer` / `check` / `strategy` /
   `converge` / `budget`) reuses `spawnChild` and `spawnPanel` as its execution
@@ -179,29 +195,64 @@ one contract — spawn, answer, removed.
 
 ## Architecture
 
-Renderers moved to render.ts (machinery); `index.ts` keeps the logic
-sections below. Single-file extension (`index.ts`). Sections, in order:
+Modular extension; each module holds one DESIGN section and nothing else.
+Public surfaces are deliberately narrow — each module's exports fit on one
+screen, and the import graph is acyclic at runtime (`index.ts` is the
+composition root; the value-level edges are `spawn.ts →
+config/contract/state/registry`, `loop.ts → config/contract/state/registry/
+spawn`, `registry.ts → state`, plus `render.ts → contract.ts`, `state.ts →
+render.ts/contract.ts`, `contract.ts → config.ts`; type-only edges are
+erased, and no module imports `index.ts`).
 
-- env allowlist — data
-- schemas + config load/validate — decision-making (what limits apply,
-  which model children run)
-- contract normalization, answer validation, prompt rendering, nudge loop —
-  decision-making (pure except the loop's prompts)
-- `stripControlSequences`, timeout helpers, activity formatting — machinery
-- `createChildTools` — thin wrappers over pi built-ins — machinery
-- child state, `subscribeChild`, `collectResult` — machinery
-- renderers — machinery (TUI only)
-- `multiAgent()` — registry (`children`, `reservedIds`), subtree
-  authorization, spawn/kill lifecycle — decision-making
+- `config.ts` — env allowlist (data); config load/validate + model
+  resolution (decision-making: what limits apply, which model children run)
+- `contract.ts` — contract schemas, normalization, answer validation, prompt
+  rendering, the nudge enforcement loop, and the child-only
+  report/submit_answers/ask_parent tools (decision-making — pure except the
+  loop's prompts)
+- `state.ts` — child state, `subscribeChild`, `collectResult`, usage/activity/
+  timeout helpers, `createChildTools` + `buildReportTool`, panel tally
+  (machinery)
+- `registry.ts` — the per-session registry created by `createRegistry()`
+  inside `multiAgent()`: the `children` map, `reservedIds`, and every subtree
+  operation (`getCallerState`, `isInSubtree`, `getSubtreeIds`,
+  `getScopedEntries`, `formatScopedAgentIds`, `getAccessibleTarget`,
+  `killSubtree`, `removeStateIfCurrent`, `listAgentsResult`), plus the
+  session-shutdown teardown (`registry.shutdown()`). The registry owns child
+  lifecycle (machinery).
+- `spawn.ts` — spawn machinery: `spawnChild`, `spawnPanel`, `buildChildAgent`,
+  `createChildManagementTools`, `finishExchange`, `answerAgent`,
+  `killAgentResult`, and the tool schemas they own (`spawnSchema`,
+  `answerAgentSchema`, `killSchema`, `listSchema`), assembled by
+  `createSpawnTools({ registry, session, getConfig })` (decision-making: the
+  capacity/duplicate reservation and the panel cap live here)
+- `loop.ts` — the `agent_loop` interpreter: `runWorkflow` +
+  `LoopCandidate`/`LoopLedgerEntry` + `workflowSchema`/`agentLoopSchema`
+  (`StringEnum` helper, `StaticWorkflowType`), assembled by
+  `createLoop({ spawn, registry, getConfig })` (decision-making: quorum,
+  strategy, and budget interpretation)
+- `orchestrator.ts` — orchestrator mode: `ORCHESTRATOR_*` constants,
+  `applyOrchestrator`, the `/orchestrate` command, and the
+  `before_agent_start` gate hook, assembled by `createOrchestrator(pi)`
+  (decision-making: which tools the main session sees)
+- `render.ts` — renderers (machinery, TUI only)
+- `index.ts` — thin composition root: the default-export `multiAgent()`,
+  session-level state (`cachedRegistry`/`cachedGetApiKey`/`configCache`/
+  `sessionTheme` on the `session` object), the registry instance + wiring
+  (`getConfig`, `adoptSessionContext`, the spawn/loop/orchestrator factories),
+  the five root-tool registrations (`agent`, `agent_answer`, `agent_kill`,
+  `agent_list`, `agent_loop`), and the `session_start`/`session_shutdown`
+  handlers (decision-making + composition)
 
-The registry owns child lifecycle. The child extension boundary is
-`buildChildAgent` (index.ts:1401-1427), which assembles `createChildTools`,
-`createChildManagementTools`, and the child-only `buildReportTool`,
-`buildSubmitAnswersTool`, and `buildAskParentTool`; everything a child can
-invoke is declared there. `[[canon:no-privileged-path]]` is `n/a` beyond
-that — the extension *is* the feature; there is no builtins layer to split
-out. Reversal: if a second orchestration feature (e.g. teams, shared
-blackboard) appears, extract a registry module both use.
+The child extension boundary is `buildChildAgent` in spawn.ts, which
+assembles `createChildTools`, `createChildManagementTools`, and the child-only
+`buildReportTool`, `buildSubmitAnswersTool`, and `buildAskParentTool`;
+everything a child can invoke is declared there.
+`[[canon:no-privileged-path]]` is `n/a` beyond that — the extension *is* the
+feature; there is no builtins layer to split out. The registry extraction
+reversal fired 2026-08+: `agent_loop`'s `runWorkflow` is the second consumer
+of the registry (it drives `spawnChild`/`spawnPanel`/`killSubtree`), so the
+registry moved into its own module (see the 2026-08-03 decision).
 
 ## Deferred
 
