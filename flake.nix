@@ -226,9 +226,14 @@
         pkgs.stdenvNoCC.mkDerivation {
           pname = "pi-hashline";
           version = packageJson.version;
-          src = lib.cleanSource ./extensions/pi-hashline;
+          src = lib.cleanSourceWith {
+            src = lib.cleanSource ./extensions;
+            filter = path: type:
+              let rel = lib.removePrefix (toString ./extensions) (toString path);
+              in rel == "" || lib.hasPrefix "/pi-hashline" rel || lib.hasPrefix "/shared" rel;
+          };
           dontBuild = true;
-          installPhase = ''runHook preInstall; mkdir -p "$out"; cp package.json README.md "$out"/; cp -r src "$out"/; runHook postInstall '';
+          installPhase = ''runHook preInstall; mkdir -p "$out"; cp $src/pi-hashline/package.json $src/pi-hashline/README.md "$out"/; cp -r $src/pi-hashline/src "$out"/; cp -r $src/shared "$out"/; runHook postInstall '';
           passthru.packageName = packageJson.name;
           meta = with lib; {
             description = packageJson.description;
@@ -547,7 +552,12 @@
       pi-hashline-test = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-hashline-tests";
         version = (builtins.fromJSON (builtins.readFile ./extensions/pi-hashline/package.json)).version;
-        src = lib.cleanSource ./extensions/pi-hashline;
+        src = lib.cleanSourceWith {
+          src = lib.cleanSource ./extensions;
+          filter = path: type:
+            let rel = lib.removePrefix (toString ./extensions) (toString path);
+            in rel == "" || lib.hasPrefix "/pi-hashline" rel || lib.hasPrefix "/shared" rel;
+        };
         nativeBuildInputs = [pkgs.bun];
         dontConfigure = true;
         dontBuild = true;
