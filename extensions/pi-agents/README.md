@@ -135,21 +135,28 @@ The package is the extension directory itself; the root flake's
 
 ## TUI
 
-While a child is running, you see a live activity feed with a braille spinner. The header carries the child's model, so a `model` override in `pi-agents.json` is visible at a glance:
+While a child is running, you see a live activity feed with a braille spinner and a `⎿` continuation feed. The header carries the child's model, so a `model` override in `pi-agents.json` is visible at a glance:
 
 ```
 ⠹ worker · 6 actions · claude-haiku-4-5
-  → read src/auth.ts
-  ✓ read done
-  → edit src/auth.ts
-  ✓ edit done
-  ↑ report "Refactored auth to use tokens"
+  ⎿  → read src/auth.ts
+  ⎿  ✓ read done
+  ⎿  → edit src/auth.ts
+  ⎿  ✓ edit done
+  ⎿  ↑ report "Refactored auth to use tokens"
+  Press Ctrl+O for live detail
+```
+
+Stats are joined with middle dots; token/cost usage appears in the header once the child has consumed tokens:
+
+```
+✓ worker · 6 actions · 1 report · claude-haiku-4-5 · ↑12.3k · ↓456 · $0.0042
 ```
 
 When done, the header shows contract completion, and the collapsed body lists the answers (pi's expand key — Ctrl+O by default — shows the full activity log, reports, and contract):
 
 ```
-✓ worker · 2/2 answered · 6 actions · 1 report · claude-haiku-4-5
+✓ worker · 6 actions · 1 report · claude-haiku-4-5 · 2/2 answered
   • files-changed 3 files under src/auth/
   • risks ◌ unable to determine
 ```
@@ -157,7 +164,7 @@ When done, the header shows contract completion, and the collapsed body lists th
 A suspended child carries the status text `awaiting answers (2q)` in its header, for example:
 
 ```
-✓ worker · 3 actions · 0 reports · claude-haiku-4-5 · awaiting answers (2q)
+✓ worker · 3 actions · claude-haiku-4-5 · awaiting answers (2q)
 ```
 
 The model is a bare id, following pi's own `/model` picker; the provider is appended as a `[provider]` badge only when the child runs on a different provider than the session, so the common case stays short:

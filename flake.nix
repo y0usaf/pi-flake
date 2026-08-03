@@ -272,7 +272,7 @@
           version = packageJson.version;
           src = lib.cleanSource ./extensions/pi-agents;
           dontBuild = true;
-          installPhase = ''runHook preInstall; mkdir -p "$out"; cp package.json README.md index.ts "$out"/; runHook postInstall '';
+          installPhase = ''runHook preInstall; mkdir -p "$out"; cp package.json README.md index.ts render.ts "$out"/; runHook postInstall '';
           passthru.packageName = packageJson.name;
           meta = with lib; {
             description = packageJson.description;

@@ -171,7 +171,8 @@ one contract — spawn, answer, removed.
 
 ## Architecture
 
-Single-file extension (`index.ts`). Sections, in order:
+Renderers moved to render.ts (machinery); `index.ts` keeps the logic
+sections below. Single-file extension (`index.ts`). Sections, in order:
 
 - env allowlist — data
 - schemas + config load/validate — decision-making (what limits apply,
