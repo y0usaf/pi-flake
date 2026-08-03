@@ -82,6 +82,11 @@
     source = "inline";
     dir = "pi-quiet";
   };
+  workflow = {
+    stage = "active";
+    source = "inline";
+    dir = "pi-workflow";
+  };
   continue = {
     stage = "active";
     source = "inline";

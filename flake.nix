@@ -459,6 +459,36 @@
           };
         };
 
+      "pi-workflow" = let
+        workflowPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-workflow/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-workflow";
+          version = workflowPackageJson.version;
+          src = lib.cleanSource ./extensions/pi-workflow;
+
+          dontBuild = true;
+
+          installPhase = ''
+            runHook preInstall
+
+            mkdir -p "$out"
+            cp package.json README.md "$out"/
+            cp -r extensions "$out"/
+
+            runHook postInstall
+          '';
+
+          passthru.packageName = workflowPackageJson.name;
+
+          meta = with lib; {
+            description = workflowPackageJson.description;
+            homepage = workflowPackageJson.homepage;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
       # pi with default extensions pre-bundled.
       pi-full = self.lib.piWithExtensions {
         inherit pkgs;
@@ -490,6 +520,7 @@
 
       pi-quiet-build = self.packages.${system}."pi-quiet";
       pi-continue-build = self.packages.${system}."pi-continue";
+      pi-workflow-build = self.packages.${system}."pi-workflow";
       pi-agents-build = self.packages.${system}."pi-agents";
       pi-pantera-build = self.packages.${system}."pi-pantera";
       pi-dark-terminal-build = self.packages.${system}."pi-dark-terminal";
@@ -693,6 +724,7 @@
         caveman = self.packages.${system}."pi-caveman";
         quiet = self.packages.${system}."pi-quiet";
         continue = self.packages.${system}."pi-continue";
+        workflow = self.packages.${system}."pi-workflow";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.
