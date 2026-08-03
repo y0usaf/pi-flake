@@ -117,7 +117,9 @@ export function resultFooter(
 
 /** Rows for the result slot's Output section: tail-clipped body lines (error
  * results stay unwrapped/full) plus the bracketed footer when one is
- * available. Empty row list means the result slot renders just the bottom bar. */
+ * available. Empty row list means the result slot renders just the bottom bar.
+ * Inline tools (find/ls) pass `includeFooter: false` so their bare tree rows
+ * carry no bracketed footer. */
 export function resultLines(
   name: string,
   result: any,
@@ -126,10 +128,11 @@ export function resultLines(
   state: { startedAt?: number; endedAt?: number } | undefined,
   theme: Theme,
   deps: RenderDeps,
+  includeFooter: boolean = true,
 ): string[] {
   const body = (result?.content ?? []).filter((x: any) => x.type === "text").map((x: any) => x.text ?? "").join("\n");
   const lines = isError ? (body ? body.split("\n") : []) : TREE_SPECS[name] ? treeBody(name, body, expanded, theme, deps) : tailBody(name, body, expanded, theme, deps);
-  if (isError || lines.length > 0) {
+  if (includeFooter && (isError || lines.length > 0)) {
     const footer = resultFooter(result, isError, state, theme);
     if (footer) lines.push(footer);
   }

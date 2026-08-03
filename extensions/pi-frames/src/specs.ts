@@ -8,6 +8,9 @@ export type ToolSpec = {
   prefix?: string;
   primary: (args: any, deps: RenderDeps) => string;
   extras: (args: any, deps: RenderDeps) => Array<[string, string]>;
+  /** Render the call and result inline as plain text (no output-block frame,
+   * no `Output` tee, no bracketed footer) instead of inside a bordered box. */
+  inline?: boolean;
 };
 
 /** Collapse embedded whitespace so a multi-line argument can never split the
@@ -22,8 +25,8 @@ export const SPECS: Record<string, ToolSpec> = {
   bash: { label: "bash", prefix: "$", primary: (a) => normalize(a?.command), extras: (a) => (a?.timeout ? [["timeout", String(a.timeout)]] : []) },
   write: { label: "write", primary: (a) => normalize(a?.path ?? a?.file_path), extras: (a) => (a?.content === undefined ? [] : [["bytes", String(String(a.content).length)]]) },
   grep: { label: "grep", primary: (a) => normalize(a?.pattern), extras: (a) => (a?.path ? [["path", String(a.path)]] : []) },
-  find: { label: "find", primary: (a) => normalize(a?.pattern), extras: (a) => (a?.path ? [["path", String(a.path)]] : []) },
-  ls: { label: "ls", primary: (a) => normalize(a?.path ?? "."), extras: (a) => (a?.depth !== undefined ? [["depth", String(a.depth)]] : []) },
+  find: { label: "find", inline: true, primary: (a) => normalize(a?.pattern), extras: (a) => (a?.path ? [["path", String(a.path)]] : []) },
+  ls: { label: "ls", inline: true, primary: (a) => normalize(a?.path ?? "."), extras: (a) => (a?.depth !== undefined ? [["depth", String(a.depth)]] : []) },
 };
 
 export const LINE_BUDGETS: Record<string, { collapsed: number; expanded: number }> = {

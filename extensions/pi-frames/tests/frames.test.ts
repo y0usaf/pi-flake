@@ -70,6 +70,9 @@ const frameDeps = { visibleWidth: deps.visibleWidth, truncateToWidth, wrapTextWi
 mock.module("@earendil-works/pi-tui", () => ({
   Text: class {
     constructor(public text = "", ..._rest: unknown[]) {}
+    setText(text: string) {
+      this.text = text;
+    }
   },
   truncateToWidth,
   visibleWidth: deps.visibleWidth,
@@ -154,20 +157,20 @@ describe("pi-frames formatting", () => {
 });
 
 describe("pi-frames tree rendering", () => {
-  test("last visible row uses └──, others ├──", () => {
+  test("last visible row uses '--, others |--", () => {
     const rows = renderTreeList({ items: ["a", "b", "c"], renderItem: (s) => s }, theme, deps);
-    expect(rows).toEqual(["├── a", "├── b", "└── c"]);
+    expect(rows).toEqual(["|-- a", "|-- b", "'-- c"]);
   });
 
-  test("clipped list ends with the … N more files summary on the final └── row", () => {
+  test("clipped list ends with the ... N more files summary on the final '-- row", () => {
     const rows = renderTreeList({ items: ["a", "b", "c", "d", "e"], maxCollapsed: 3, itemType: "file", renderItem: (s) => s }, theme, deps);
-    expect(rows).toEqual(["├── a", "├── b", "├── c", "└── … 2 more files"]);
-    expect(rows[rows.length - 1]).toBe("└── … 2 more files");
+    expect(rows).toEqual(["|-- a", "|-- b", "|-- c", "'-- ... 2 more files"]);
+    expect(rows[rows.length - 1]).toBe("'-- ... 2 more files");
   });
 
   test("expanded shows every item with no summary", () => {
     const rows = renderTreeList({ items: ["a", "b", "c", "d", "e"], expanded: true, maxCollapsed: 3, itemType: "file", renderItem: (s) => s }, theme, deps);
-    expect(rows).toEqual(["├── a", "├── b", "├── c", "├── d", "└── e"]);
+    expect(rows).toEqual(["|-- a", "|-- b", "|-- c", "|-- d", "'-- e"]);
     expect(rows.some((r) => r.includes("more files"))).toBe(false);
   });
 
@@ -203,11 +206,12 @@ describe("pi-frames tree rendering", () => {
       undefined,
       theme,
       deps,
+      false,
     );
-    expect(lines).toEqual(["├── ts src/web/search/provider.ts", "└── [D] src/web/search/providers/"]);
+    expect(lines).toEqual(["|-- ts src/web/search/provider.ts", "'-- [D] src/web/search/providers/"]);
   });
 
-  test("ls entries clip under the collapsed budget to … N more entries", () => {
+  test("ls entries clip under the collapsed budget to ... N more entries", () => {
     const lines = resultLines(
       "ls",
       { content: [{ type: "text", text: "README.md\ndist/\nsrc/\nmain.ts\nindex.html" }], details: {} },
@@ -216,12 +220,14 @@ describe("pi-frames tree rendering", () => {
       undefined,
       theme,
       deps,
+      false,
     );
-    expect(lines).toEqual(["├── md README.md", "├── [D] dist/", "├── [D] src/", "└── … 2 more entries"]);
+    expect(lines).toEqual(["|-- md README.md", "|-- [D] dist/", "|-- [D] src/", "'-- ... 2 more entries"]);
   });
 
-  test("no-result and limit-notice content pass through outside the tree", () => {
-    const noResult = resultLines("find", { content: [{ type: "text", text: "No files found matching pattern" }], details: {} }, false, false, undefined, theme, deps);
+  test("no-result and limit-notice content pass through outside the inline tree", () => {
+    // find renders inline: its result rows carry no bracketed footer.
+    const noResult = resultLines("find", { content: [{ type: "text", text: "No files found matching pattern" }], details: {} }, false, false, undefined, theme, deps, false);
     expect(noResult).toEqual(["No files found matching pattern"]);
     const limited = resultLines(
       "find",
@@ -231,33 +237,69 @@ describe("pi-frames tree rendering", () => {
       undefined,
       theme,
       deps,
+      false,
     );
-    expect(limited[0]).toBe("├── ts a.ts");
-    expect(limited[1]).toBe("└── rs b.rs");
+    expect(limited[0]).toBe("|-- ts a.ts");
+    expect(limited[1]).toBe("'-- rs b.rs");
     expect(limited[2]).toBe("[1000 results limit reached. Use limit=2000 for more, or refine pattern]");
-    expect(limited[3]).toBe("[✓ 1000 results limit]");
+    // No footer: inline find rows drop the bracketed `[✓ …]` line.
+    expect(limited.length).toBe(3);
   });
 
-  test("find/ls render tree rows inside the Output section; bash stays tail-style", () => {
+  test("inline call line prefixes the ascii status icon for pending/success/error", () => {
+    // Not yet started → pending `[*]`; default settled → success `[ok]`; error
+    // → `[!!]`. The icon prefix is not a frame glyph: the call row stays a
+    // bare text line.
+    let context = slotContext({ executionStarted: false });
+    const pending = renderCall("ls", {}, theme, context) as any;
+    expect(pending.text).toStartWith("[*] ls .");
+    expect(pending.text).not.toContain("|");
+
+    context = slotContext();
+    const ok = renderCall("ls", {}, theme, context) as any;
+    expect(ok.text).toStartWith("[ok] ls .");
+
+    context = slotContext({ isError: true });
+    const err = renderCall("ls", {}, theme, context) as any;
+    expect(err.text).toStartWith("[!!] ls .");
+  });
+
+  test("find/ls render inline bare tree rows; bash stays framed tail-style", () => {
+    // find/ls renderResult returns a Text whose lines are the bare tree rows:
+    // no frame borders, no `- Output -` tee, no `[✓` footer.
     let context = slotContext();
+    const findCall = renderCall("find", { pattern: "*.ts" }, theme, context) as any;
+    expect(findCall.text).toContain("find *.ts");
+    expect(findCall.text).toStartWith("[ok] ");
+    context = slotContext();
     const find = renderResult("find", { content: [{ type: "text", text: "src/main.ts\nsrc/search/" }], details: undefined }, { isPartial: false, expanded: false }, theme, context) as any;
-    const findLines = find.render(60).map(strip).filter((l) => l.startsWith("|"));
-    expect(findLines.length).toBe(2);
-    expect(findLines[0].startsWith("| ├── ts src/main.ts")).toBe(true);
-    expect(findLines[0].endsWith("|")).toBe(true);
-    expect(findLines[1].startsWith("| └── [D] src/search/")).toBe(true);
+    const findLines = find.text.split("\n");
+    expect(findLines).toEqual(["|-- ts src/main.ts", "'-- [D] src/search/"]);
+    expect(findLines.some((l) => l.includes("- Output -"))).toBe(false);
+    expect(findLines.some((l) => l.includes("[✓"))).toBe(false);
+    expect(findLines.some((l) => l.startsWith("| "))).toBe(false);
 
     context = slotContext();
     const ls = renderResult("ls", { content: [{ type: "text", text: "a.ts\nb.ts\nc.ts\nd.ts\ne.ts" }], details: undefined }, { isPartial: false, expanded: false }, theme, context) as any;
-    const lsLines = ls.render(60).map(strip).filter((l) => l.startsWith("|"));
-    expect(lsLines.some((l) => l.includes("├──"))).toBe(true);
-    expect(lsLines[lsLines.length - 1]).toContain("└── … 2 more entries");
+    const lsLines = ls.text.split("\n");
+    expect(lsLines).toEqual(["|-- ts a.ts", "|-- ts b.ts", "|-- ts c.ts", "'-- ... 2 more entries"]);
+    expect(lsLines.some((l) => l.includes("- Output -"))).toBe(false);
+    expect(lsLines.some((l) => l.includes("[✓"))).toBe(false);
+
+    // Inline error results still render the full body; inline empty results
+    // render empty text.
+    context = slotContext({ isError: true });
+    const errFind = renderResult("find", { content: [{ type: "text", text: "boom\nline2" }], details: undefined }, { isPartial: false, expanded: false }, theme, context) as any;
+    expect(errFind.text).toBe("boom\nline2");
+    context = slotContext();
+    const emptyLs = renderResult("ls", { content: [], details: undefined }, { isPartial: false, expanded: false }, theme, context) as any;
+    expect(emptyLs.text).toBe("");
 
     context = slotContext();
     const bash = renderResult("bash", { content: [{ type: "text", text: "l1\nl2\nl3\nl4\nl5" }], details: undefined }, { isPartial: false, expanded: false }, theme, context) as any;
     const bashLines = bash.render(60).map(strip).filter((l) => l.startsWith("|"));
     expect(bashLines[0]).toContain("earlier lines");
-    expect(bashLines.some((l) => l.includes("├──"))).toBe(false);
+    expect(bashLines.some((l) => l.includes("|--"))).toBe(false);
   });
 });
 
@@ -385,5 +427,17 @@ describe("pi-frames frame rendering", () => {
   test("no state means no fg wash", () => {
     const lines = renderOutputBlock({ sections: [{ lines: ["body"] }], width: 20 }, theme, frameDeps);
     for (const line of lines) expect(line).not.toContain("[FG]");
+  });
+
+  test("first result defers invalidate past the render pass (no sync re-entry)", async () => {
+    let calls = 0;
+    const context = slotContext({ invalidate: () => { calls++; } });
+    renderCall("ls", {}, theme, context) as any;
+    renderResult("ls", { content: [{ type: "text", text: "README.md" }], details: undefined }, { isPartial: false, expanded: false }, theme, context) as any;
+    // A synchronous invalidate would re-enter updateDisplay() before this
+    // result component is added to the row container; assert it is deferred.
+    expect(calls).toBe(0);
+    await Promise.resolve();
+    expect(calls).toBe(1);
   });
 });
