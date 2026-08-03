@@ -114,6 +114,50 @@ Example output:
 • reviewer — running, depth 2, parent worker, anthropic/claude-haiku-4-5, 0 reports, contract pending
 ```
 
+### `agent_loop(workflow)`
+
+Runs a deterministic goal-loop: spawn `strategy.population` doers toward a
+`goal`, judge each candidate against `check.contract` (one checker child per
+candidate, or a `panel` for more robust verdicts), keep the top
+`strategy.survivors` by score, and iterate — mutating or pairing survivors —
+until the best score reaches `converge.quorum` or the `budget` cap is hit.
+`workflow` is declarative data only: no control flow, no expressions. It
+reuses the `agent`/`panel` machinery wholesale — children get the same tools,
+`maxDepth`/`maxLiveAgents` caps apply, `agent_kill` aborts an in-flight run,
+and doers run on the cheap configured `model` while checkers may use a
+`panelModels` roster.
+
+The checker contract's FIRST question must be an enumerated verdict question
+whose option values include `check.passValue` (scored mechanically); remaining
+questions are folded into next-generation critiques as free text.
+
+Example (plain refine loop):
+
+```json
+{
+  "workflow": {
+    "goal": "Refactor src/auth.ts so it has no any-typed casts and every function is pure where feasible.",
+    "doer": {
+      "system_prompt": "You are a careful senior refactorer. Produce the best artifact for the goal, then summarize what you changed.",
+      "contract": [{ "prompt": "Summarize the refactor you produced and its verification." }]
+    },
+    "check": {
+      "use": "panel",
+      "system_prompt": "Judge the candidate artifact against the goal strictly on the evidence shown. Return the verdict option values.",
+      "contract": [
+        { "prompt": "Verdict?", "options": [{ "label": "pass" }, { "label": "fail" }] },
+        { "prompt": "Strongest concrete improvement." }
+      ],
+      "passValue": "pass"
+    },
+    "strategy": { "population": 1, "survivors": 1 },
+    "converge": { "quorum": 1 },
+    "budget": { "maxGenerations": 3, "maxSpawns": 12 }
+  },
+  "timeout_seconds": 900
+}
+```
+
 ## Nix
 
 Built inline by the root flake. All commands below run from the repository root.

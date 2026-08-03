@@ -6,6 +6,14 @@ one contract — spawn, answer, removed.
 
 ## Locked decisions
 
+- **2026-08+ — `agent_loop` lands as a second orchestration feature inside pi-agents.**
+  A bounded single-loop interpreter (`goal` / `doer` / `check` / `strategy` /
+  `converge` / `budget`) reuses `spawnChild` and `spawnPanel` as its execution
+  machinery — no new spawn path, caps (`maxDepth`/`maxLiveAgents`) apply, and
+  `agent_kill` aborts an in-flight loop. The registry-file-split extraction is
+  deferred: it lands when a third orchestration feature appears or the file
+  demonstrably exceeds maintainable size. The panel-usage gap fix (member
+  `usage` now travels in `AgentToolDetails.panel.members`) rode along.
 - **2026-08 — Leaf children do not receive orchestration tool schemas.** A child that cannot spawn receives no `agent`, `agent_answer`, `agent_kill`, or `agent_list` schemas, avoiding a large unusable contract schema tree. The gate reads the resolved per-cwd config, so project `maxDepth` overrides still allow legitimate nesting. Accepted loss: a leaf cannot use `agent_list` for self-introspection. Reversal condition: a child is observed needing `agent_list` purely for self-status.
 - **2026-08 — Root tools are a noun-prefix family: `agent`, `agent_answer`, `agent_kill`, `agent_list`.** `spawn` was the inaccurate part: it promises a background handle this extension explicitly does not have. The call blocks and the agent is removed when it returns, and background spawn / handle polling is listed under Deferred. Noun-prefix grouping keeps the four tools adjacent wherever tools are listed alphabetically. Precedent: Kimi Code CLI groups the same way (`Agent`/`AgentSwarm`, `TaskOutput`/`TaskStop`, `CronList`), as do modern CLIs (`docker container ls`, `gh pr create`). Bare `agent` matches Claude Code, which renamed its subagent tool `Task` to `Agent` in v2.1.63, and OpenCode's `task`; it also matches pi's own bare-word built-ins (`read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`), against which `spawn_agent` was the outlier. The smaller thing rejected, per `[[canon:least-code]]`: renaming only the spawn tool and leaving three verb_noun siblings — same churn, no grouping benefit. Panel plurality is deliberately not addressed by the name. A panel is still one delegation act with a strategy parameter; a separate swarm tool would relitigate the 2026-08 panels-as-a-parameter decision. Reversal condition: if models measurably mis-select the verb-less `agent` tool, restore a verb.
 - **2026-08 — Panel roster is config data, not per-call LLM output.** Model choice moves down the least-power ladder from generated string to config file; explicit per-call `models` still wins because config is a default, not a lock. A smaller `size` takes the first N configured models, making list order a priority order, and the roster is validated at session start. Reversal condition: if per-call model choice proves necessary for panel quality, revisit the default roster.
@@ -219,9 +227,15 @@ blackboard) appears, extract a registry module both use.
 - **Suspension deadline / requestId tokens** — duplicate or late agent_answer calls already fail loudly (claim lock, cleared pendingAsk); deadlines and generation tokens land only if abandonment or answer races are observed.
 - **Declarative workflow DAG** — a host-evaluated stage graph (fan-out over a
   prior stage's answers, dependency edges, answer interpolation) covering what
-  a workflow script would, at rung 2-3 instead of rung 5. Deferred because the
-  third-shape trigger above has no recorded instances as of 2026-08; when it
-  lands it lands with the registry extraction, not before. The rejected form is
+  a workflow script would, at rung 2-3 instead of rung 5. **PARTIALLY LANDED
+  via `agent_loop` (2026-08+): a bounded single-loop interpreter — doers→
+  checkers→select, repeated — is in; no DAG, no branches, and declarations
+  ride on panel/agent spawn parameters rather than a stage graph.** The
+  waived-trigger divergence: the third-shape trigger was named as a
+  precondition for any declarative format, and `agent_loop` landed without a
+  recorded third shape, on request, to prove the orchestration family can
+  compose on the existing spawn machinery. Remaining DAG features (stages,
+  edges, interpolation) stay deferred until a recorded need. The rejected form is
   upstream `pi-dynamic-workflows`' vm-sandboxed JS script: it is rung 5 where
   the trigger names a declarative format, its determinism claim does not
   survive LLM children, `ask_parent` has no answerer when the parent is a
