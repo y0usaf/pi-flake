@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { callHeaderLine, resultFooter, resultLines, tailBody, badgeForPath } from "../src/format";
+import { callHeaderLine, resultLines, tailBody, badgeForPath } from "../src/format";
 import { renderOutputBlock } from "../../shared/frame";
 import { renderStatusLine } from "../src/status";
 import { skinDefinition } from "../src/skin";
@@ -130,13 +130,21 @@ describe("pi-frames formatting", () => {
   });
 
   test("footer omits when nothing available, renders from details and elapsed", () => {
-    expect(resultFooter({ content: [], details: {} }, false, undefined, theme)).toBeUndefined();
-    expect(resultFooter({ content: [], details: { truncation: { truncated: true, outputLines: 10, totalLines: 24 } } }, false, undefined, theme)).toContain("showing 10 of 24");
-    expect(resultFooter({ content: [], details: { matchLimitReached: 100 } }, false, { startedAt: 0, endedAt: 0 }, theme)).toContain("100 matches limit");
-    expect(resultFooter({ content: [], details: { resultLimitReached: 1000 } }, false, { startedAt: 0, endedAt: 0 }, theme)).toContain("1000 results limit");
-    expect(resultFooter({ content: [], details: { entryLimitReached: 500 } }, false, { startedAt: 0, endedAt: 0 }, theme)).toContain("500 entries limit");
-    expect(resultFooter({ content: [], details: {} }, false, { startedAt: 0, endedAt: 140 }, theme)).toContain("[✓ 0.1s]");
-    expect(resultFooter({ content: [], details: {} }, true, { startedAt: 0, endedAt: 140 }, theme)).toContain("[✗ 0.1s]");
+    const rendered = (result: any, isError = false, state?: { startedAt?: number; endedAt?: number }) =>
+      resultLines("bash", result, false, isError, state, theme, deps);
+    expect(rendered({ content: [], details: {} })).toEqual([]);
+    const truncation = rendered({ content: [{ type: "text", text: "x" }], details: { truncation: { truncated: true, outputLines: 10, totalLines: 24 } } });
+    expect(truncation[truncation.length - 1]).toContain("showing 10 of 24");
+    const matches = rendered({ content: [{ type: "text", text: "x" }], details: { matchLimitReached: 100 } }, false, { startedAt: 0, endedAt: 0 });
+    expect(matches[matches.length - 1]).toContain("100 matches limit");
+    const results = rendered({ content: [{ type: "text", text: "x" }], details: { resultLimitReached: 1000 } }, false, { startedAt: 0, endedAt: 0 });
+    expect(results[results.length - 1]).toContain("1000 results limit");
+    const entries = rendered({ content: [{ type: "text", text: "x" }], details: { entryLimitReached: 500 } }, false, { startedAt: 0, endedAt: 0 });
+    expect(entries[entries.length - 1]).toContain("500 entries limit");
+    const elapsed = rendered({ content: [{ type: "text", text: "x" }], details: {} }, false, { startedAt: 0, endedAt: 140 });
+    expect(elapsed[elapsed.length - 1]).toContain("[✓ 0.1s]");
+    const err = rendered({ content: [{ type: "text", text: "x" }], details: {} }, true, { startedAt: 0, endedAt: 140 });
+    expect(err[err.length - 1]).toContain("[✗ 0.1s]");
   });
 
   test("skin sets renderShell self and preserves builtin identity", () => {
