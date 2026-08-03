@@ -8,20 +8,22 @@
 - Dated 2026-08-01: borders switched from box-drawing to plain ASCII (corners/tees `+`, sides `-`/`|`), and the state color — previously border strokes only — now washes the whole box (borders plus unstyled interior text) via a stabilized foreground pass that re-injects after SGR resets; explicitly styled interior text keeps its own colors.
 - Dated 2026-08-01: `find` and `ls` result bodies render as an oh-my-pi flat tree vendored from can1357/oh-my-pi (MIT) commit `403931b9`, `packages/coding-agent/src/tui/tree-list.ts` — files get a dim extension badge, directories an accent `[D]`, and clipped collapsed views end with the muted `... N more files/entries` summary on the final `'--` row (see the 2026-08-02 decision: these trees now render inline with ASCII connectors). `maxCollapsed` comes from the tool's LINE_BUDGETS collapsed value. Trims from the vendored source: the `trailingSummary`/caller-driven collapse, the `maxCollapsedLines` budget, and the `TreeContext` depth. Non-path content upstream emits (the `No files found matching pattern`/`(empty directory)` messages and the appended `[N results limit…]` notice block) passes through outside the tree. `bash`/`grep`/`write` keep the plain tail view.
 - Dated 2026-08-02: `find`/`ls` result rows render inline — a plain call line plus a bare flat tree, with no output-block frame, no `Output` tee, and no bracketed footer — matching oh-my-pi's inline file-list rendering. Tree connectors are ASCII (`|--` branch, `'--` last row, `...` summary): the last-row `'--` mirrors oh-my-pi's ASCII symbol preset (`theme.tree.last` = `"'" + "--"`), and the inline call line carries the ASCII status icon prefix (`[*]` pending, `[ok]` success, `[!!]` error — `status.pending`/`status.success`/`status.error` in their ASCII_SYMBOLS map). Inline rows otherwise carry no state wash (no box tint or border color): truncation info survives only in the pass-through notice.
+- Dated 2026-08-03: the frame helper lives in `extensions/shared/frame.ts` — both derivations build-with-and-install it (extensions are Bun-executed verbatim, so the runtime relative import must resolve inside each installed package: `$out/shared/frame.ts` next to `src/`). `pi-hashline`'s `read` adopts it for a framed call/result pair: read renders no-wrap with `trimEndContent: false` so LINEID anchors and raw lines stay copyable (the line hash covers the raw line; trimming would silently diverge displayed content from hashed content), and collapsed non-error read rows still render nothing (no frame) to avoid flooding the transcript.
 
 ## Architecture
 - `src/specs.ts` is decision-making: which builtins are framed (`bash`/`write`/`grep`) vs inline (`find`/`ls`) and how arguments read.
-- `src/frame.ts`, `src/status.ts`, `src/render.ts` are machinery: vendored frame drawing, status-line composition, and TUI slot adaptation.
+- `src/status.ts`, `src/render.ts` are machinery: status-line composition and TUI slot adaptation; the frame drawing itself lives in the shared helper at `../shared/frame.ts`.
 - `src/format.ts` and `src/skin.ts` carry pi-toolskin's pure, dependency-injected formatting and the definition skinner so tests run with zero node_modules.
 - `src/index.ts` is wiring: spreads builtin definitions, tags `renderShell: "self"`, and registers the framed overrides.
 
 ## Deferred
-- Read/edit frames are blocked by pi-hashline ownership; reverse when hashline imports the frame helper.
+- edit frames are still blocked by pi-hashline ownership; reverse when hashline adopts the frame helper for edit (read already did).
 - read result batching is owned by pi-hashline; revisit here only after the frame handoff.
 - grep match-line trees are deferred — they need match-line parsing against grep's `path:line:match` content, not the flat path lines find/ls emit; revisit on demand.
 - Sixel/image passthrough is deferred; reverse if upstream pi-tui exposes an image-protocol query.
 
 ## Roadmap
 - [ ] Phase 1: framed output for the owned builtins (frames for `bash`/`write`/`grep`, inline trees for `find`/`ls`) with tests (criterion: nix checks green).
-- [ ] Phase 2: pi-hashline adopts the frame helper for read/edit.
+- [x] Phase 2 (read): pi-hashline adopts the frame helper for read (framed call + one continuous box with the result Output section; collapsed rows still render nothing).
+- [ ] Phase 2 (edit): pi-hashline adopts the frame helper for edit (still pending).
 - [ ] Phase 3: revisit bg-stabilization against upstream markdown/syntax output.

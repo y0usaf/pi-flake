@@ -23,6 +23,11 @@ export type OutputBlockOptions = {
   /** Draw the closing bottom bar. renderCall suppresses it once a result frame
    * owns the closure so the row pair does not double-close the box. */
   bottomBar?: boolean;
+  /** Trim trailing whitespace from each content line before wrapping. Default
+   * true. Read passes false so its LINEID|content lines keep the raw trailing
+   * whitespace — trimming would silently diverge the displayed line from the
+   * hashed content. */
+  trimEndContent?: boolean;
 };
 
 export type FrameDeps = {
@@ -137,7 +142,12 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme, dep
     }
     const allLines = section.lines.flatMap((l) => l.split("\n"));
     for (const line of allLines) {
-      const wrappedLines = deps.wrapTextWithAnsi(line.trimEnd(), contentWidth);
+      // Default: trim trailing whitespace before wrapping (rendering nicety).
+      // Read passes trimEndContent:false so its LINEID|content lines keep raw
+      // trailing whitespace — trimming would silently diverge the displayed
+      // line from the hashed content.
+      const contentLine = options.trimEndContent === false ? line : line.trimEnd();
+      const wrappedLines = deps.wrapTextWithAnsi(contentLine, contentWidth);
       for (const wrappedLine of wrappedLines) {
         const innerPadding = " ".repeat(Math.max(0, contentWidth - deps.visibleWidth(wrappedLine)));
         rows.push({ kind: "content", inner: `${wrappedLine}${innerPadding}` });

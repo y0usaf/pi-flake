@@ -1,6 +1,6 @@
 # pi-frames
 
-Bordered, state-tinted output frames for the builtin `bash`, `write`, and `grep` rows, while `find` and `ls` render inline: a plain call line — prefixed with the ASCII status icon `[*]`/`[ok]`/`[!!]` — plus a bare flat file tree with ASCII connectors (`|--`/`'--`/`...`), no frame and no footer. Each builtin definition and execution contract is preserved; only the rendering is overridden, via `renderShell: "self"`, so framed tool output appears inside a flush-edged box with a status bar whose border and whole-box tint track the call's pending/success/error state. `read` and `edit` are intentionally untouched because pi-hashline owns them. Enable with `pi -e ./extensions/pi-frames` (or the flake's opt-in extension setting).
+Bordered, state-tinted output frames for the builtin `bash`, `write`, and `grep` rows, while `find` and `ls` render inline: a plain call line — prefixed with the ASCII status icon `[*]`/`[ok]`/`[!!]` — plus a bare flat file tree with ASCII connectors (`|--`/`'--`/`...`), no frame and no footer. Each builtin definition and execution contract is preserved; only the rendering is overridden, via `renderShell: "self"`, so framed tool output appears inside a flush-edged box with a status bar whose border and whole-box tint track the call's pending/success/error state. `read` is now framed via the shared frame helper in `extensions/shared/frame.ts`; `edit` is intentionally untouched because pi-hashline owns it. Enable with `pi -e ./extensions/pi-frames` (or the flake's opt-in extension setting).
 
 ## Credits
 
