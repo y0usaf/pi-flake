@@ -28,7 +28,6 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { Agent, type AgentTool, type AgentToolResult, type AgentEvent } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
@@ -37,12 +36,24 @@ import {
 	CONFIG_DIR_NAME,
 	createCodingTools,
 	getAgentDir,
+	getMarkdownTheme,
+	keyText,
 	type ExtensionAPI,
 	type ModelRegistry,
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { Text, Container, Spacer, truncateToWidth } from "@earendil-works/pi-tui";
+import { Text, Container, Spacer, Markdown } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
+import {
+	formatToolCall,
+	formatUsage,
+	runningGlyph,
+	runningSeed,
+	statJoin,
+	stripControlSequences,
+	truncLine,
+	type Usage,
+} from "./render.js";
 
 // ---------------------------------------------------------------------------
 // Child bash environment (strict allowlist)
@@ -321,6 +332,8 @@ interface AgentToolDetails {
 	model?: string;
 	activity: ActivityItem[];
 	reports: string[];
+	/** Accumulated token/cost sums; undefined when everything is 0. */
+	usage?: Usage;
 	contract?: ContractQuestion[];
 	answers?: ContractAnswer[];
 	pendingAsk?: ContractQuestion[];
@@ -361,22 +374,14 @@ function tallyPanel(questions: ContractQuestion[], members: { id: string; model:
 const modelDisplay = (child: Model<any>, parent: Model<any>): string =>
 	child.provider === parent.provider ? child.id : `${child.id} [${child.provider}]`;
 
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const MAX_RENDERED_ACTIVITY = 8;
 // Cap on stored activity items to prevent unbounded growth during a run.
 const MAX_ACTIVITY_STORAGE = 500;
 const SHUTDOWN_GRACE_MS = 5000;
 
-/**
- * Strip terminal control sequences from child-controlled text before it
- * reaches the TUI: OSC sequences (ESC ] ... ST), CSI sequences, and stray C0
- * controls except tab/newline. Child reports and tool args are untrusted.
- */
-function stripControlSequences(value: string): string {
-	return value
-		.replace(/\u001B\][\s\S]*?(?:\u0007|\u001B\\|\u009C)/g, "")
-		.replace(/[\u001B\u009B][[\]()#;?]*(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]/g, "")
-		.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
+/** Terminal-relative width budget for single-line renders; indent subtracts from it. */
+function termBudget(indent = 0): number {
+	return Math.max(24, (process.stdout.columns || 120) - 6 - indent);
 }
 
 class AgentTimeoutError extends Error {
@@ -429,40 +434,11 @@ async function withOptionalTimeout<T>(
 	}
 }
 
-function shortenPath(p: string): string {
-	const home = homedir();
-	return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
-}
-
-function formatToolActivity(name: string, args: Record<string, unknown>): string {
-	switch (name) {
-		case "bash":
-			return `$ ${truncateToWidth((args.command as string) || "...", 60)}`;
-		case "read": {
-			const p = shortenPath((args.path as string) || "...");
-			const off = args.offset as number | undefined;
-			const lim = args.limit as number | undefined;
-			let s = `read ${p}`;
-			if (off || lim) s += `:${off ?? 1}${lim ? `-${(off ?? 1) + lim - 1}` : ""}`;
-			return s;
-		}
-		case "write":
-			return `write ${shortenPath((args.path as string) || "...")}`;
-		case "edit":
-			return `edit ${shortenPath((args.path as string) || "...")}`;
-		case "report":
-			return `report "${truncateToWidth((args.message as string) || "", 50)}"`;
-		case "ask_parent": {
-			const count = Array.isArray(args.questions) ? args.questions.length : 0;
-			return `ask_parent (${count} question${count === 1 ? "" : "s"})`;
-		}
-		case "submit_answers": {
-			const count = Array.isArray(args.answers) ? args.answers.length : 0;
-			return `submit_answers (${count} answer${count === 1 ? "" : "s"})`;
-		}
-		default:
-			return `${name} ${truncateToWidth(JSON.stringify(args), 50)}`;
-	}
+function formatToolActivity(name: string, args: Record<string, unknown>, theme?: Theme): string {
+	// Theme is always available via the module singleton in practice; fall back to a
+	// plain label if a session ever schedules a child before a theme is captured.
+	if (!theme) return `${name} ${JSON.stringify(args)}`.slice(0, 60);
+	return formatToolCall(name, args, theme, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -782,6 +758,8 @@ interface ChildState {
 	nudges: number;
 	/** Timestamp when the current ask became pending. */
 	awaitingSince?: number;
+	/** Accumulated token/cost sums across the child's assistant messages. */
+	usage: Usage;
 }
 
 function extractLastAssistantText(agent: Agent): string {
@@ -811,12 +789,21 @@ function buildReportTool(childId: string, reports: string[]): AgentTool<typeof r
 	};
 }
 
+/** Hide a zeroed usage bucket so the header only shows real usage. */
+function usageToDetails(usage: Usage): Usage | undefined {
+	if (usage.input === 0 && usage.output === 0 && usage.cacheRead === 0 && usage.cacheWrite === 0 && usage.cost === 0) {
+		return undefined;
+	}
+	return usage;
+}
+
 /** Subscribe to child events, push activity + reports to onUpdate. */
 function subscribeChild(
 	child: Agent,
 	childId: string,
 	state: ChildState,
 	onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void,
+	theme?: Theme,
 ): () => void {
 	let emitPending = false;
 	let unsubscribed = false;
@@ -833,6 +820,7 @@ function subscribeChild(
 						model: state.modelDisplay,
 						activity: [...state.activity],
 						reports: [...state.reports],
+						usage: usageToDetails(state.usage),
 						done: false,
 					},
 				});
@@ -851,19 +839,26 @@ function subscribeChild(
 
 	const innerUnsub = child.subscribe((event: AgentEvent) => {
 		if (event.type === "tool_execution_start") {
-			push("tool_start", stripControlSequences(formatToolActivity(event.toolName, event.args)));
+			push("tool_start", formatToolActivity(event.toolName, event.args, theme));
 		} else if (event.type === "tool_execution_end") {
 			if (event.toolName === "report" && !event.isError) {
 				const latest = state.reports.at(-1);
-				if (latest) push("report", `report "${truncateToWidth(latest, 50)}"`);
+				if (latest) push("report", `report "${truncLine(stripControlSequences(latest), termBudget(2))}"`);
 			} else {
 				push("tool_end", `${event.toolName} ${event.isError ? "failed" : "done"}`);
 			}
 		} else if (event.type === "message_end" && event.message.role === "assistant") {
 			const msg = event.message as AssistantMessage;
+			if (msg.usage) {
+				state.usage.input += msg.usage.input;
+				state.usage.output += msg.usage.output;
+				state.usage.cacheRead += msg.usage.cacheRead;
+				state.usage.cacheWrite += msg.usage.cacheWrite;
+				state.usage.cost += msg.usage.cost.total;
+			}
 			const textParts = msg.content.filter((c): c is TextContent => c.type === "text");
 			if (textParts.length > 0) {
-				push("text", truncateToWidth(stripControlSequences(textParts[0].text.split("\n")[0]), 60));
+				push("text", truncLine(stripControlSequences(textParts[0].text.split("\n")[0]), termBudget(2)));
 			}
 		}
 	});
@@ -902,6 +897,7 @@ function collectResult(childId: string, state: ChildState, reportStartIdx: numbe
 			model: state.modelDisplay,
 			activity: [...state.activity],
 			reports: [...newReports],
+			usage: usageToDetails(state.usage),
 			contract: [...state.contract.questions],
 			answers: answers ? [...answers] : undefined,
 			pendingAsk: state.contract.pendingAsk ? [...state.contract.pendingAsk] : undefined,
@@ -921,23 +917,27 @@ function renderAgentCall(
 	theme: Theme,
 ) {
 	const id = args.id || "...";
-	const taskText = args.task || "...";
-	const preview = truncateToWidth(taskText, 70);
+	const taskText = stripControlSequences(args.task || "...");
+	const preview = truncLine(taskText, termBudget(2));
 	let text = theme.fg("toolTitle", theme.bold(`${toolLabel} `)) + theme.fg("accent", id);
 	if (args.panel) text += theme.fg("muted", ` · panel ${args.panel.size ?? args.panel.models?.length ?? "?"}`);
 	text += "\n  " + theme.fg("dim", preview);
-	text += formatQuestionLines(args.contract, theme, 70);
+	text += formatQuestionLines(args.contract, theme, termBudget(2));
 	return new Text(text, 0, 0);
 }
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-/** " · N actions · N reports · model" — pi joins metadata with a muted middot. */
-function metaSuffix(model: string | undefined, activityCount: number, reportCount: number | undefined, theme: Theme): string {
+/**
+ * "N actions · N reports · model · usage" — pi-subagents statJoin composition.
+ * Report count is omitted when undefined or zero; usage only when present.
+ */
+function agentStats(model: string | undefined, activityCount: number, reportCount: number | undefined, usage: Usage | undefined, theme: Theme): string {
 	const parts = [plural(activityCount, "action")];
-	if (reportCount !== undefined) parts.push(plural(reportCount, "report"));
+	if (reportCount !== undefined && reportCount > 0) parts.push(plural(reportCount, "report"));
 	if (model) parts.push(model);
-	return theme.fg("muted", parts.map((part) => ` · ${part}`).join(""));
+	if (usage) parts.push(formatUsage(usage));
+	return statJoin(theme, parts);
 }
 
 function formatQuestionLines(questions: unknown, theme: Theme, limit?: number): string {
@@ -949,7 +949,7 @@ function formatQuestionLines(questions: unknown, theme: Theme, limit?: number): 
 		if (prompt.length === 0) continue;
 		const candidate = question as { id?: unknown; label?: unknown };
 		const id = typeof candidate.id === "string" ? candidate.id : typeof candidate.label === "string" ? candidate.label : undefined;
-		const shown = limit === undefined ? stripControlSequences(prompt) : truncateToWidth(stripControlSequences(prompt), limit);
+		const shown = limit === undefined ? stripControlSequences(prompt) : truncLine(stripControlSequences(prompt), limit);
 		text += "\n  " + theme.fg("warning", "?") + (id ? " " + theme.fg("accent", stripControlSequences(id)) : "") + " " + theme.fg("toolOutput", shown);
 	}
 	return text;
@@ -960,7 +960,7 @@ function formatAnswerLines(answers: ContractAnswer[], theme: Theme, limit?: numb
 	for (const answer of answers) {
 		const punted = answer.value === UNABLE_VALUE;
 		const shownRaw = stripControlSequences(punted ? "unable to determine" : answer.label);
-		const shown = limit === undefined ? shownRaw : truncateToWidth(shownRaw, limit);
+		const shown = limit === undefined ? shownRaw : truncLine(shownRaw, limit);
 		const mark = punted ? theme.fg("warning", "◌") : theme.fg("success", "•");
 		text += "\n  " + mark + " " + theme.fg("accent", answer.id) + (answer.wasCustom ? theme.fg("dim", " ✎ ") : " ") + theme.fg("toolOutput", shown);
 	}
@@ -988,10 +988,11 @@ function activityIcon(item: ActivityItem, theme: Theme): string {
 function formatActivityTail(activity: ActivityItem[], theme: Theme): string {
 	const visible = activity.slice(-MAX_RENDERED_ACTIVITY);
 	const skipped = activity.length - visible.length;
+	const budget = termBudget(2);
 	let text = "";
-	if (skipped > 0) text += "\n  " + theme.fg("muted", `... ${skipped} earlier`);
+	if (skipped > 0) text += "\n" + truncLine(`  ⎿  ${theme.fg("muted", `... ${skipped} earlier`)}`, budget);
 	for (const item of visible) {
-		text += "\n  " + activityIcon(item, theme) + " " + theme.fg("dim", item.label);
+		text += "\n" + truncLine(`  ⎿  ${activityIcon(item, theme)} ${theme.fg("dim", item.label)}`, budget);
 	}
 	return text;
 }
@@ -1037,7 +1038,7 @@ function renderAgentResult(
 		const lines = panel.tally.questions.map((q) => {
 				const mark = q.freeText ? theme.fg("warning", "◌") : q.unanimous ? theme.fg("success", "•") : theme.fg("warning", "⚠");
 				const summary = q.groups.map((g) => `${stripControlSequences(g.label)} (${g.count})`).join(" vs ");
-				return `  ${mark} ${theme.fg("accent", truncateToWidth(stripControlSequences(q.prompt), 55))} — ${q.freeText ? "free-text — compare manually, not a consensus" : q.unanimous ? "unanimous" : "split"}: ${summary}`;
+				return `  ${mark} ${theme.fg("accent", truncLine(stripControlSequences(q.prompt), termBudget(2)))} — ${q.freeText ? "free-text — compare manually, not a consensus" : q.unanimous ? "unanimous" : "split"}: ${summary}`;
 			});
 		if (!expanded) return new Text([header, ...lines].join("\n"), 0, 0);
 		const container = new Container();
@@ -1059,17 +1060,21 @@ function renderAgentResult(
 		if (!context.state._spinnerInterval) {
 			context.state._spinnerFrame = 0;
 			context.state._spinnerInterval = setInterval(() => {
-				context.state._spinnerFrame = ((context.state._spinnerFrame ?? 0) + 1) % SPINNER_FRAMES.length;
+				context.state._spinnerFrame = (context.state._spinnerFrame ?? 0) + 1;
 				context.invalidate();
 			}, 80);
 		}
 
-		const frame = SPINNER_FRAMES[context.state._spinnerFrame ?? 0];
 		const activity = details.activity;
+		const seed = runningSeed(activity.length, details.reports?.length ?? 0, context.state._spinnerFrame ?? 0);
+		const glyph = runningGlyph(seed);
 
-		let text = theme.fg("accent", frame) + " " + theme.fg("toolTitle", theme.bold(details.childId));
-		text += metaSuffix(details.model, activity.length, undefined, theme);
+		let text = theme.fg("accent", glyph) + " " + theme.fg("toolTitle", theme.bold(details.childId));
+		text += " · " + agentStats(details.model, activity.length, undefined, details.usage, theme);
 		text += formatActivityTail(activity, theme);
+		if (!expanded) {
+			text += "\n  " + theme.fg("accent", `Press ${keyText("app.tools.expand")} for live detail`);
+		}
 
 		const prev = context.lastComponent;
 		const component = (prev instanceof Text) ? prev : new Text("", 0, 0);
@@ -1094,7 +1099,7 @@ function renderAgentResult(
 	if (expanded) {
 		const container = new Container();
 		let header = `${icon} ${theme.fg("toolTitle", theme.bold(details.childId))}`;
-		header += metaSuffix(details.model, activity.length, reports.length, theme);
+		header += " · " + agentStats(details.model, activity.length, reports.length, details.usage, theme);
 		header += contractBadge;
 		if (hasError) header += " " + theme.fg("error", `[error]`);
 		container.addChild(new Text(header, 0, 0));
@@ -1107,7 +1112,7 @@ function renderAgentResult(
 			container.addChild(new Spacer(1));
 			container.addChild(new Text(theme.fg("muted", "─── Activity ───"), 0, 0));
 			for (const item of activity) {
-				container.addChild(new Text(`  ${activityIcon(item, theme)} ${theme.fg("dim", item.label)}`, 0, 0));
+				container.addChild(new Text(truncLine(`  ⎿  ${activityIcon(item, theme)} ${theme.fg("dim", item.label)}`, termBudget(2)), 0, 0));
 			}
 		}
 
@@ -1137,7 +1142,7 @@ function renderAgentResult(
 		if (finalText?.type === "text" && reports.length === 0 && answers.length === 0) {
 			container.addChild(new Spacer(1));
 			container.addChild(new Text(theme.fg("muted", "─── Output ───"), 0, 0));
-			container.addChild(new Text(theme.fg("toolOutput", finalText.text), 0, 0));
+			container.addChild(new Markdown(finalText.text, 0, 0, getMarkdownTheme()));
 		}
 
 		return container;
@@ -1145,14 +1150,14 @@ function renderAgentResult(
 
 	// Collapsed view
 	let text = `${icon} ${theme.fg("toolTitle", theme.bold(details.childId))}`;
-	text += metaSuffix(details.model, activity.length, reports.length, theme);
+	text += " · " + agentStats(details.model, activity.length, reports.length, details.usage, theme);
 	text += contractBadge;
 	if (hasError && details.error) {
 		text += "\n  " + theme.fg("error", details.error);
 	} else if (answers.length > 0) {
-		text += formatAnswerLines(answers, theme, 70);
+		text += formatAnswerLines(answers, theme, termBudget(2));
 	} else if (pendingAsk.length > 0) {
-		text += formatQuestionLines(pendingAsk, theme, 70);
+		text += formatQuestionLines(pendingAsk, theme, termBudget(2));
 	} else {
 		text += formatActivityTail(activity, theme);
 	}
@@ -1174,6 +1179,8 @@ export default function multiAgent(pi: ExtensionAPI) {
 	let cachedRegistry: ModelRegistry | undefined;
 	/** Caching the promise memoizes success and failure alike: a rejected promise rethrows on every await. */
 	let configCache: { cwd: string; promise: Promise<PiAgentsConfig> } | undefined;
+	/** Theme at the last session start / tool execute; styles child activity labels created in subscribeChild. */
+	let sessionTheme: Theme | undefined;
 
 	function getConfig(cwd: string): Promise<PiAgentsConfig> {
 		if (configCache?.cwd !== cwd) configCache = { cwd, promise: loadPiAgentsConfig(cwd) };
@@ -1356,7 +1363,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 	async function finishExchange(state: ChildState, prompt: string, signal: AbortSignal | undefined, timeoutSeconds: number | undefined, onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void): Promise<AgentToolResult<AgentToolDetails>> {
 		const onAbort = () => state.agent.abort();
 		signal?.addEventListener("abort", onAbort, { once: true });
-		const unsub = subscribeChild(state.agent, state.id, state, onUpdate);
+		const unsub = subscribeChild(state.agent, state.id, state, onUpdate, sessionTheme);
 		try {
 			if (state.killed) throw new Error(`Agent "${state.id}" was killed while running`);
 			if (signal?.aborted) throw new Error(`Agent "${state.id}" aborted before start`);
@@ -1526,6 +1533,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 				agent: child,
 				reports,
 				activity: [],
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
 				reportCursor: 0,
 				askCount: 0,
 				nudges: 0,
@@ -1620,6 +1628,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		configCache = undefined;
 		orchestratorOn = false;
 		toolsBeforeOrchestrator = undefined;
+		sessionTheme = ctx.ui.theme;
 		adoptSessionContext(ctx);
 		try {
 			const config = await getConfig(ctx.cwd);
@@ -1686,6 +1695,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			const model = ctx.model;
 			if (!model) throw new Error("No model selected");
 
+			sessionTheme = ctx.ui.theme;
 			adoptSessionContext(ctx);
 			return params.panel ? await spawnPanel(undefined, params, model, ctx.cwd, signal, onUpdate) : await spawnChild(undefined, params, model, ctx.cwd, signal, onUpdate);
 		},
@@ -1699,10 +1709,10 @@ export default function multiAgent(pi: ExtensionAPI) {
 		description: "Answer a suspended child agent's questions. Validates answers against the questions it asked, resumes it, and blocks until its contract is fulfilled or it asks again.",
 		parameters: answerAgentSchema,
 		renderCall(args, theme) {
-			return new Text(theme.fg("toolTitle", theme.bold("agent_answer ")) + theme.fg("accent", args.id || "...") + formatAgentAnswerLines(args.answers, theme, 70), 0, 0);
+			return new Text(theme.fg("toolTitle", theme.bold("agent_answer ")) + theme.fg("accent", args.id || "...") + formatAgentAnswerLines(args.answers, theme, termBudget(2)), 0, 0);
 		},
 		renderResult(result, options, theme, context) { return renderAgentResult(result, options, theme, context); },
-		async execute(_toolCallId, params, signal, onUpdate) { return answerAgent(undefined, params, signal, onUpdate); },
+		async execute(_toolCallId, params, signal, onUpdate, ctx) { sessionTheme = ctx.ui.theme; return answerAgent(undefined, params, signal, onUpdate); },
 	});
 
 	// ── agent_kill ──────────────────────────────────────────────────────

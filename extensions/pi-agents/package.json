@@ -10,6 +10,7 @@
 	],
 	"files": [
 		"index.ts",
+		"render.ts",
 		"README.md",
 		"package.json"
 	],
