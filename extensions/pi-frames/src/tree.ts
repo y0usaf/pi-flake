@@ -13,28 +13,30 @@ export type TreeListOptions<T> = {
   renderItem: (item: T) => string | string[];
 };
 
-// Local box-drawing constants replace the upstream theme.tree.* tokens; the
-// continue-prefix lines are kept for multi-line items (unused by find/ls).
-const branch = "├──";
-const last = "└──";
-const continuePrefix = "│  ";
+// Local ASCII connector constants replace the upstream theme.tree.* tokens; the
+// continue-prefix lines are kept for multi-line items (unused by find/ls). The
+// last-row `'--` mirrors oh-my-pi's ASCII symbol preset (`theme.tree.last` =
+// `"'" + "--"`).
+const branch = "|--";
+const last = "'--";
+const continuePrefix = "|  ";
 const lastContinuePrefix = "   ";
 
 /** Tabs render as two spaces so indentation never breaks the frame's wrap
  * pass (upstream replaces tabs with a fixed display width too). */
 const replaceTabs = (text: string): string => text.replaceAll("\t", "  ");
 
-/** `… N more <itemType>` summary text, pluralized for the item type
+/** `... N more <itemType>` summary text, pluralized for the item type
  * (file → files, entry → entries). */
 function formatMoreItems(remaining: number, itemType: string): string {
   const safe = Number.isFinite(remaining) ? remaining : 0;
   const plural = itemType.endsWith("y") ? `${itemType.slice(0, -1)}ies` : `${itemType}s`;
-  return `… ${safe} more ${plural}`;
+  return `... ${safe} more ${plural}`;
 }
 
 /** Flatten a tool's result lines into a compact flat tree: each item gets a
- * `├──` branch except the last visible row, which uses `└──` — either the true
- * last item or the clipped summary (`└── … N more files`) when collapsed and
+ * `|--` branch except the last visible row, which uses `'--` — either the true
+ * last item or the clipped summary (`'-- ... N more files`) when collapsed and
  * there are more lines than `maxCollapsed`. The upstream trailingSummary
  * caller-driven collapse, the `maxCollapsedLines` budget, and the
  * TreeContext depth parameter are all trimmed away. */
