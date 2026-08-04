@@ -28,6 +28,12 @@ export type OutputBlockOptions = {
    * whitespace — trimming would silently diverge the displayed line from the
    * hashed content. */
   trimEndContent?: boolean;
+  /** nvim breakindent/showbreak-style continuation rows: when a line wraps,
+   * later chunks get a marker glyph in the last hash cell and keep the
+   * separator pipe, so wrapped chunks read as continuations of their anchored
+   * line. sepIndexFor returns the index of the line's `|` separator, or -1
+   * for lines that carry no anchor (rendered without the marker). */
+  wrapContinuation?: { marker: string; sepIndexFor: (line: string) => number };
 };
 
 export type FrameDeps = {
@@ -148,9 +154,34 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme, dep
       // line from the hashed content.
       const contentLine = options.trimEndContent === false ? line : line.trimEnd();
       const wrappedLines = deps.wrapTextWithAnsi(contentLine, contentWidth);
-      for (const wrappedLine of wrappedLines) {
-        const innerPadding = " ".repeat(Math.max(0, contentWidth - deps.visibleWidth(wrappedLine)));
-        rows.push({ kind: "content", inner: `${wrappedLine}${innerPadding}` });
+      // nvim breakindent-style continuation: when an anchored line wraps, chunk
+      // 0 keeps the anchor and the later chunks are re-joined (lossless — the
+      // trimEndContent:false test shows trailing spaces survive chunk
+      // boundaries, so join("") reconstructs the source text) and re-wrapped
+      // at the width left over after the marker + separator pipe claim their
+      // columns. Lines without an anchor (sep -1) keep plain wrapping.
+      const wrapContinuation = options.wrapContinuation;
+      const sep = wrapContinuation ? wrapContinuation.sepIndexFor(line) : -1;
+      const pushContentRow = (inner: string): void => {
+        // The per-row right padding keeps every row flush to the box edge; the
+        // continuation marker prefix is part of `inner`, so the total visible
+        // width stays contentWidth.
+        const innerPadding = " ".repeat(Math.max(0, contentWidth - deps.visibleWidth(inner)));
+        rows.push({ kind: "content", inner: `${inner}${innerPadding}` });
+      };
+      if (!wrapContinuation || sep < 0 || wrappedLines.length <= 1) {
+        for (const wrappedLine of wrappedLines) pushContentRow(wrappedLine);
+        continue;
+      }
+      pushContentRow(wrappedLines[0]);
+      const continuationWidth = Math.max(1, contentWidth - (sep + 1));
+      const joinedRemainder = wrappedLines.slice(1).join("");
+      for (const chunk of deps.wrapTextWithAnsi(joinedRemainder, continuationWidth)) {
+        // The marker sits in the final hash cell; the separator pipe after it
+        // stays plain (it mirrors the raw hashline separator, which is
+        // unstyled content).
+        const inner = `${" ".repeat(Math.max(0, sep - 1))}${theme.fg("dim", wrapContinuation.marker)}|${chunk}`;
+        pushContentRow(inner);
       }
     }
   }

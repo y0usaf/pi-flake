@@ -155,6 +155,12 @@ export function registerReadTool(pi: ExtensionAPI): void {
           // hashline lines are exact copy targets (LINEID|content); trimming
           // would silently diverge the displayed line from the hashed content.
           trimEndContent: false,
+          // nvim breakindent-style continuation: wrapped chunks keep the
+          // anchor column (dim `>` in the final hash cell, plain `|`
+          // separator) so a continuation row can't be mistaken for a new
+          // anchored line. The `[Showing lines ...]` trailer and error lines
+          // carry no `|` (indexOf -1) and keep marker-free wrapping.
+          wrapContinuation: { marker: ">", sepIndexFor: (line: string) => line.indexOf("|") },
         });
         return frameComponent(build, theme, frameDeps);
       } catch {

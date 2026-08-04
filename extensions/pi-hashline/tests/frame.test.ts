@@ -90,4 +90,111 @@ describe("shared frame renderer (hashline read)", () => {
     expect(contentRows.length).toBe(1);
     expect(contentRows[0]).toBe("| ab |");
   });
+
+  const wrapContinuation = { marker: ">", sepIndexFor: (line: string) => line.indexOf("|") };
+  // Every rendered row must sit flush in the box: after stripping the fake
+  // fg/bg markers (zero-width in the mock), each line is exactly `width`
+  // visible cells, right border included. Overshoot from a continuation
+  // prefix that exceeds the content width would surface here.
+  const expectFlush = (lines: string[], width: number): void => {
+    for (const line of lines) expect(strip(line).length).toBe(width);
+  };
+
+  test("wrapContinuation marks wrapped chunks of a two-digit-anchor line", () => {
+    // contentWidth 12 (width 15 - 2 borders - 1 left pad): "10aphw|    {code}"
+    // wraps to "10aphw|    {" + "code}". The anchored row keeps the line as-is;
+    // the continuation row keeps the anchor column (1 pad + 5 blank cells),
+    // puts the dim `>` in the final hash cell (6 hash chars in "10aphw") and
+    // keeps the separator pipe.
+    const lines = renderOutputBlock(
+      {
+        state: "success",
+        sections: [{ label: "Output", lines: ["10aphw|    {code}"] }],
+        width: 15,
+        topBar: false,
+        trimEndContent: false,
+        wrapContinuation,
+      },
+      theme,
+      frameDeps,
+    ).map(strip);
+    const contentRows = lines.filter((l) => l.startsWith("|"));
+    expect(contentRows[0]).toBe("| 10aphw|    {|");
+    expect(contentRows[1]).toBe("|      >|code}|");
+    expect(contentRows[1].startsWith("|      >|")).toBe(true);
+    expectFlush(lines, 15);
+  });
+
+  test("wrapContinuation marks wrapped chunks of a single-digit-anchor line", () => {
+    // Same shape for a 5-char anchor: 1 pad + 4 blank cells + `>` + kept `|`.
+    const lines = renderOutputBlock(
+      {
+        state: "success",
+        sections: [{ label: "Output", lines: ["9ajgs|    {code}"] }],
+        width: 14,
+        topBar: false,
+        trimEndContent: false,
+        wrapContinuation,
+      },
+      theme,
+      frameDeps,
+    ).map(strip);
+    const contentRows = lines.filter((l) => l.startsWith("|"));
+    expect(contentRows[0]).toBe("| 9ajgs|    {|");
+    expect(contentRows[1]).toBe("|     >|code}|");
+    expect(contentRows[1].startsWith("|     >|")).toBe(true);
+    expectFlush(lines, 14);
+  });
+
+  test("wrapContinuation leaves lines without an anchor marker-free (sep -1)", () => {
+    // The "[Showing lines ...]" trailer has no `|`, so indexOf returns -1 and
+    // the wrapped chunks render exactly as before — no marker, no indent.
+    const trailer = "[Showing lines 8-14 of 100. Use offset=15 to continue.]";
+    const options = {
+      state: "success",
+      sections: [{ label: "Output", lines: [trailer] }],
+      width: 20,
+      topBar: false,
+      trimEndContent: false,
+    };
+    const withContinuation = renderOutputBlock({ ...options, wrapContinuation }, theme, frameDeps).map(strip);
+    const withoutContinuation = renderOutputBlock(options, theme, frameDeps).map(strip);
+    const contentRows = withContinuation.filter((l) => l.startsWith("|"));
+    expect(contentRows.every((l) => !l.includes(">"))).toBe(true);
+    // current behavior unchanged: identical rows with or without the option
+    expect(withContinuation).toEqual(withoutContinuation);
+    expect(contentRows[0]).toBe("| [Showing lines 8-|");
+    expectFlush(withContinuation, 20);
+  });
+
+  test("wrapContinuation rows stay within the box width (right border flush)", () => {
+    // Wrapped anchored rows plus the plain trailer, all in one section: every
+    // row — anchored, continuation, marker-free, bars — stays flush.
+    const lines = renderOutputBlock(
+      {
+        state: "success",
+        sections: [
+          {
+            label: "Output",
+            lines: ["10aphw|    {code}", "9ajgs|    {code}", "[Showing lines 8-14 of 100. Use offset=15 to continue.]"],
+          },
+        ],
+        width: 15,
+        topBar: false,
+        trimEndContent: false,
+        wrapContinuation,
+      },
+      theme,
+      frameDeps,
+    ).map(strip);
+    expectFlush(lines, 15);
+    const contentRows = lines.filter((l) => l.startsWith("|"));
+    // anchored row, its continuation, then the marker-free trailer chunks
+    expect(contentRows[0]).toBe("| 10aphw|    {|");
+    expect(contentRows[1]).toBe("|      >|code}|");
+    // only the two anchored lines' continuation rows carry the marker; the
+    // trailer chunks (no `|`, sep -1) stay marker-free
+    expect(contentRows.filter((l) => l.includes(">"))).toEqual(["|      >|code}|", "|     >|ode}  |"]);
+    expect(contentRows.slice(4).every((l) => !l.includes(">"))).toBe(true);
+  });
 });
