@@ -8,12 +8,19 @@
       url = "github:earendil-works/pi?ref=main";
       flake = false;
     };
+
+    # Vendored engram learning plugin (nagisanzenin/engram).
+    engramSrc = {
+      url = "github:nagisanzenin/engram";
+      flake = false;
+    };
   };
 
   outputs = {
     self,
     nixpkgs,
     piSrc,
+    engramSrc,
     ...
   }: let
     systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
@@ -399,6 +406,40 @@
           };
         };
 
+      # Vendored engram learning plugin (nagisanzenin/engram), built straight
+      # from the engramSrc flake input (github:nagisanzenin/engram, MIT).
+      "pi-engram" = let
+        engramPackageJson = builtins.fromJSON (builtins.readFile "${engramSrc}/package.json");
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-engram";
+          version = engramPackageJson.version;
+          src = engramSrc;
+
+          dontBuild = true;
+
+          installPhase = ''
+            runHook preInstall
+
+            mkdir -p "$out"
+            cp package.json LICENSE "$out"/
+            # experiments/ ships the pre-registered preset designs that the
+            # selftest loads from <plugin_root>/experiments/*.json.
+            cp -r skills scripts pi agents gold experiments "$out"/
+
+            runHook postInstall
+          '';
+
+          passthru.packageName = engramPackageJson.name;
+
+          meta = with lib; {
+            description = engramPackageJson.description;
+            homepage = "https://github.com/nagisanzenin/engram";
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
       "pi-quiet" = let
         quietPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-quiet/package.json);
       in
@@ -538,6 +579,21 @@
         dontConfigure = true;
         dontBuild = true;
         installPhase = ''runHook preInstall; export HOME="$TMPDIR/home"; mkdir -p "$HOME"; bun test; touch "$out"; runHook postInstall '';
+      };
+      pi-engram-selftest = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-engram-selftest";
+        version = (builtins.fromJSON (builtins.readFile "${engramSrc}/package.json")).version;
+        # Verify the PACKAGED tree runs, not just a raw checkout.
+        src = self.packages.${system}."pi-engram";
+        nativeBuildInputs = [pkgs.python3];
+        dontConfigure = true;
+        dontBuild = true;
+        installPhase = ''
+          runHook preInstall
+          python3 "$src/scripts/engram.py" selftest
+          touch "$out"
+          runHook postInstall
+        '';
       };
       pi-pantera-test = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-pantera-test";
@@ -722,6 +778,7 @@
         review = self.packages.${system}."pi-review";
         vcc = self.packages.${system}."pi-vcc";
         caveman = self.packages.${system}."pi-caveman";
+        engram = self.packages.${system}."pi-engram";
         quiet = self.packages.${system}."pi-quiet";
         continue = self.packages.${system}."pi-continue";
         workflow = self.packages.${system}."pi-workflow";

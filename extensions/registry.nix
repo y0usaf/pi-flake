@@ -66,6 +66,12 @@
     source = "vendored";
     dir = "jonjonrankin_pi-caveman";
   };
+  # engram is vendored from the engramSrc flake input (github:nagisanzenin/engram),
+  # built inline in flake.nix; there is no extensions/engram dir.
+  engram = {
+    stage = "active";
+    source = "vendored";
+  };
   pantera = {
     stage = "testing";
     source = "inline";
