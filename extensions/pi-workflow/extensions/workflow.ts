@@ -25,7 +25,7 @@ async function listWorkflows(): Promise<string[]> {
     return [];
   }
   return entries
-    .filter((e) => e.isFile() && e.name.endsWith(".json"))
+    .filter((e) => (e.isFile() || e.isSymbolicLink()) && e.name.endsWith(".json"))
     .map((e) => e.name)
     .sort();
 }
