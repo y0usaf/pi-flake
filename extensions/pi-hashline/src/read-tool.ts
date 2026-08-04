@@ -105,7 +105,9 @@ export function registerReadTool(pi: ExtensionAPI): void {
           width,
           // A pending call shows a thin closed box; once the result frame owns
           // the closure, drop the bottom bar so the pair doesn't double-close.
-          bottomBar: context.state?.hasResult !== true,
+          // Collapsed non-error read rows render nothing, so the call keeps its
+          // own bottom bar to stay a closed box.
+          bottomBar: context.state?.hasResult !== true || (!context.expanded && !context.isError),
         });
         return frameComponent(build, theme, frameDeps);
       } catch {
