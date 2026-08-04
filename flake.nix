@@ -832,7 +832,13 @@
       pkgs,
       pi,
       extensions,
-    }:
+    }: let
+      # Each bundled extension dir is its own package root so readPiManifest
+      # finds its package.json and loads .pi.extensions/.pi.skills/.pi.prompts.
+      extensionPackageSources = pkgs.lib.concatStringsSep ":" (
+        pkgs.lib.mapAttrsToList (name: _: "@out@/share/pi/extensions/${name}") extensions
+      );
+    in
       pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-with-extensions";
         version = pi.version;
@@ -914,9 +920,9 @@
 
 
           if [ -n "''${PI_DEFAULT_PACKAGES:-}" ]; then
-            export PI_DEFAULT_PACKAGES="@out@/share/pi:''${PI_DEFAULT_PACKAGES}"
+            export PI_DEFAULT_PACKAGES="${extensionPackageSources}:''${PI_DEFAULT_PACKAGES}"
           else
-            export PI_DEFAULT_PACKAGES="@out@/share/pi"
+            export PI_DEFAULT_PACKAGES="${extensionPackageSources}"
           fi
 
           # Run pi
