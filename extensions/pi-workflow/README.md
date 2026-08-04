@@ -15,6 +15,11 @@ cp my-workflow.json ~/.pi/workflows/
 
 - `/workflow` — menu of installed workflows
 - `/workflow NAME` — run a workflow by name without the menu
+- `/workflow NAME GOAL...` — run a workflow by name with the goal provided inline
+
+A workflow whose `goal` is missing or is a `PLACEHOLDER: ...` stub prompts for
+the goal (TUI mode), or errors with a usage hint (non-TUI). The goal can also
+be supplied inline as arguments after the workflow name.
 
 Selecting a workflow injects a user message telling the current agent to
 run it with its own `agent_loop` tool (an extension cannot call the
