@@ -227,7 +227,7 @@ export function termBudget(indent = 0): number {
 
 export function renderAgentCall(
 	toolLabel: string,
-	args: { id?: string; system_prompt?: string; task?: string; contract?: unknown; panel?: { size?: number; models?: string[] } },
+	args: { id?: string; system_prompt?: string; task?: string; contract?: unknown; panel?: { size?: number; models?: string[] }; background?: boolean },
 	theme: Theme,
 ) {
 	const id = args.id || "...";
@@ -235,6 +235,7 @@ export function renderAgentCall(
 	const preview = truncLine(taskText, termBudget(2));
 	let text = theme.fg("toolTitle", theme.bold(`${toolLabel} `)) + theme.fg("accent", id);
 	if (args.panel) text += theme.fg("muted", ` · panel ${args.panel.size ?? args.panel.models?.length ?? "?"}`);
+	if (args.background) text += theme.fg("muted", " · background");
 	text += "\n  " + theme.fg("dim", preview);
 	text += formatQuestionLines(args.contract, theme, termBudget(2));
 	return new Text(text, 0, 0);
@@ -397,6 +398,22 @@ export function renderAgentResult(
 	}
 
 	clearSpinner(context);
+
+	// -- background handle / agent_answer resume ack: show the handle text --
+	if (details.background && !details.done && !details.error) {
+		const t = result.content[0];
+		return new Text(
+			theme.fg("success", "⇢") + " " + theme.fg("toolTitle", theme.bold(details.childId)) + " " +
+			theme.fg("dim", truncLine(stripControlSequences(t?.type === "text" ? t.text : "spawned in background"), termBudget(2))),
+			0, 0,
+		);
+	}
+
+	// -- agent_output peek / mailbox pointer: show the content text as-is --
+	if (details.peek) {
+		const t = result.content[0];
+		return new Text(stripControlSequences(t?.type === "text" ? t.text : "(no output)"), 0, 0);
+	}
 
 	const hasError = !!details.error;
 	const icon = hasError ? theme.fg("error", "✗") : theme.fg("success", "✓");

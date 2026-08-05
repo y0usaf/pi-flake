@@ -2,8 +2,9 @@
  * Multi-Agent Extension for pi
  *
  * Parent tools: agent, agent_answer, agent_kill, agent_list, agent_loop.
- * Children additionally get pi's built-in read/write/edit/bash tools, a
- * progress-only report tool, a submit_answers tool, and descendant-scoped
+ * Children are literal `pi --mode rpc` subprocesses: full pi sessions (all
+ * built-ins, context files, user extensions) plus the child-mode
+ * report/submit_answers/ask_parent wrappers, and descendant-scoped
  * orchestration tools when maxDepth allows further nesting.
  *
  * Every spawn carries an AskUserQuestion-style contract (questions,
@@ -43,13 +44,21 @@ import {
 	termBudget,
 } from "./render.js";
 import { loadPiAgentsConfig, resolveChildModel, type PiAgentsConfig } from "./config.js";
+import {
+	buildChildModeAskTool,
+	buildChildModeReportTool,
+	buildChildModeSubmitTool,
+	readChildEnv,
+} from "./contract.js";
 import { createRegistry } from "./registry.js";
 import {
 	createSpawnTools,
 	answerAgentSchema,
 	killSchema,
 	listSchema,
+	outputSchema,
 	spawnSchema,
+	waitSchema,
 	type SessionState,
 } from "./spawn.js";
 import { createLoop, agentLoopSchema } from "./loop.js";
@@ -60,6 +69,18 @@ import { createOrchestrator } from "./orchestrator.js";
 // ---------------------------------------------------------------------------
 
 export default function multiAgent(pi: ExtensionAPI) {
+	// Child mode: this process is itself a spawned child (pi --mode rpc via
+	// process.execPath, stage 2's rpc-child engine). Only the three
+	// child-facing tools (submit_answers/report/ask_parent) register here; the
+	// root orchestration tools register below only when depth+1 <= maxDepth,
+	// read from config at session_start the existing way. The parent reads the
+	// child's tool data from the RPC event stream; these tools only validate
+	// locally. Root behavior when not in child mode is unchanged.
+	const childEnv = readChildEnv();
+	const childMode = childEnv !== undefined;
+	/** Per-process in-memory ask_parent budget (MAX_ASKS) for child mode. */
+	const childAskBudget = { count: 0 };
+
 	// Session-level state, shared with the spawn machinery via the session
 	// object: cachedGetApiKey and cachedRegistry are initialized from the
 	// first ctx we see. This assumes modelRegistry is stable for the session
@@ -86,20 +107,55 @@ export default function multiAgent(pi: ExtensionAPI) {
 		session.cachedGetApiKey ??= (provider: string) => ctx.modelRegistry.getApiKeyForProvider(provider);
 	}
 
-	const spawn = createSpawnTools({ registry, session, getConfig });
+	// index.ts owns the pi handle: it wires the spawn machinery's inject callback
+	// to pi.sendMessage so background completions/as the delivery mechanism. The
+	// policy (followUp for results, steer for asks, bounded mailbox) stays in
+	// spawn.ts; this module only bridges to the ExtensionAPI and swallows a
+	// failed injection so it can never surface outside the extension.
+	const spawn = createSpawnTools({
+		registry,
+		session,
+		getConfig,
+		inject: (delivery) => {
+			try {
+				pi.sendMessage(
+					{ customType: "pi-agents", content: delivery.content, display: true },
+					{ deliverAs: delivery.deliverAs, triggerTurn: delivery.triggerTurn },
+				);
+			} catch (err) {
+				console.error(`[pi-agents] failed to inject background message: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		},
+	});
 	const loop = createLoop({ spawn, registry, getConfig });
-	const { applyOrchestrator, resetOrchestrator } = createOrchestrator(pi);
+	// Orchestrator mode is a main-session feature: child processes never apply
+	// it, and createOrchestrator also registers the /orchestrate command plus
+	// a before_agent_start gate hook, both of which are skipped in child mode.
+	const orchestratorTools = childMode ? undefined : createOrchestrator(pi);
+	const applyOrchestrator = orchestratorTools?.applyOrchestrator;
+	const resetOrchestrator = orchestratorTools?.resetOrchestrator;
+
+	if (childEnv) {
+		pi.registerTool(buildChildModeSubmitTool(childEnv.contract));
+		pi.registerTool(buildChildModeReportTool());
+		pi.registerTool(buildChildModeAskTool(childAskBudget));
+	}
 
 	pi.on("session_start", async (_event, ctx) => {
 		session.configCache = undefined;
-		resetOrchestrator();
+		resetOrchestrator?.();
 		session.sessionTheme = ctx.ui.theme;
 		adoptSessionContext(ctx);
 		try {
 			const config = await getConfig(ctx.cwd);
 			if (config.model) resolveChildModel(config.model, ctx.modelRegistry);
 			for (const spec of config.panelModels ?? []) resolveChildModel(spec, ctx.modelRegistry);
-			if (config.orchestrator) applyOrchestrator(true, ctx);
+			// Child mode: this process spawns subprocess descendants only when
+			// depth+1 <= maxDepth (the existing leaf-gating rationale); a leaf
+			// registers no orchestration tools. registerTool here is safe: it
+			// refreshes the tool registry, and re-registration is idempotent.
+			if (childEnv && childEnv.depth + 1 <= config.maxDepth) registerRootTools();
+			if (config.orchestrator) applyOrchestrator?.(true, ctx);
 		} catch (err) {
 			if (ctx.hasUI) {
 				ctx.ui.notify(`pi-agents config error: ${(err as Error).message}`, "error");
@@ -117,6 +173,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		return new Text(first?.type === "text" ? first.text : "done", 0, 0);
 	};
 
+	function registerRootTools(): void {
 	// ── agent ───────────────────────────────────────────────────────────
 
 	pi.registerTool({
@@ -126,9 +183,10 @@ export default function multiAgent(pi: ExtensionAPI) {
 			"Spawn a child agent with its own system prompt, task, and contract. Pass `panel` to get a second opinion instead of judging alone: N independent children answer the same contract on different models and the result is an agreement tally. " +
 			"The contract is the child's deliverable: AskUserQuestion-style questions the child must answer " +
 			"via its submit_answers tool before its run can end; the tool result is those answers as data. " +
-			"Children get read, write, edit, bash, report (progress only), and submit_answers; descendant-scoped orchestration tools are included only when maxDepth allows further nesting. " +
+			"Children are full pi sessions (literal `pi --mode rpc` subprocesses): every pi built-in (read/write/edit/bash/grep/find/ls), context files, and the user's own extensions, plus report (progress only), submit_answers, and ask_parent; descendant-scoped orchestration tools are included only when maxDepth allows further nesting. " +
 			"Recursive spawning is bounded by pi-agents.json maxDepth/maxLiveAgents, which also picks the child model. " +
-			"This call blocks until the contract is fulfilled; an unfulfilled contract is nudged up to 10 times, then errors. " +
+			"This call blocks until the contract is fulfilled; an unfulfilled contract is nudged up to 2 times, then errors. " +
+			"Pass `background: true` to return immediately with a session handle while the child runs detached — its result is delivered via a follow-up message and collected with agent_wait({ id }), or inspected with agent_output({ id }). " +
 			"Multiple agent calls in the same turn run concurrently. " +
 			"The agent is removed as soon as its contract is fulfilled — this is a typed function call: " +
 			"If the child calls ask_parent instead, this call returns its questions and the agent stays alive (holding context and a maxLiveAgents slot) until agent_answer resumes it or agent_kill removes it. " +
@@ -161,7 +219,8 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 			session.sessionTheme = ctx.ui.theme;
 			adoptSessionContext(ctx);
-			return params.panel ? await spawn.spawnPanel(undefined, params, model, ctx.cwd, signal, onUpdate) : await spawn.spawnChild(undefined, params, model, ctx.cwd, signal, onUpdate);
+			if (params.background && params.panel) throw new Error("Background panels are not supported yet — panels cannot run in background. Drop background: true, or spawn plain agents in one turn for independent background views.");
+			return params.panel ? await spawn.spawnPanel(undefined, params, model, ctx.cwd, signal, onUpdate) : await spawn.spawnChild(undefined, params, model, ctx.cwd, signal, onUpdate, undefined, undefined, params.background ?? false);
 		},
 	});
 
@@ -205,7 +264,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "agent_list",
 		label: "List Agents",
-		description: "List all currently active child agent IDs and their status. Includes depth and parent metadata.",
+		description: "List all currently active child agent IDs and their status. Includes depth and parent metadata; background children are marked \"(background)\" with their session file.",
 		parameters: listSchema,
 
 		renderCall(_args, theme) {
@@ -216,6 +275,51 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 		async execute() {
 			return registry.listAgentsResult();
+		},
+	});
+
+	// ── agent_wait ─────────────────────────────────────────────────────
+
+	pi.registerTool({
+		name: "agent_wait",
+		label: "Wait Agent",
+		description:
+			"Collect a background agent's result. If the agent already finished (its result is parked in the mailbox, or the injected follow-up message announced it), returns the result immediately. " +
+			"If it is still running, blocks until it settles and returns the same answers result as a blocking spawn. " +
+			"Unknown ids error and list the known ones. " +
+			"`timeout_seconds` bounds only this wait — the background agent keeps running if the wait expires.",
+		parameters: waitSchema,
+
+		renderCall(args, theme) {
+			return new Text(theme.fg("toolTitle", theme.bold("agent_wait ")) + theme.fg("accent", args.id || "..."), 0, 0);
+		},
+
+		renderResult: renderTextResult,
+
+		async execute(_toolCallId, params, signal) {
+			return spawn.waitAgent(undefined, params, signal);
+		},
+	});
+
+	// ── agent_output ───────────────────────────────────────────────────
+
+	pi.registerTool({
+		name: "agent_output",
+		label: "Agent Output",
+		description:
+			"Non-blocking peek at a background agent: status, model, action count, recent activity lines, reports so far, and its session file. " +
+			"Works for running and suspended (awaiting answers) children. " +
+			"If the agent already finished, points you at the parked result and agent_wait.",
+		parameters: outputSchema,
+
+		renderCall(args, theme) {
+			return new Text(theme.fg("toolTitle", theme.bold("agent_output ")) + theme.fg("accent", args.id || "..."), 0, 0);
+		},
+
+		renderResult: renderTextResult,
+
+		async execute(_toolCallId, params) {
+			return spawn.outputAgent(undefined, params.id);
 		},
 	});
 
@@ -243,4 +347,10 @@ export default function multiAgent(pi: ExtensionAPI) {
 			return await loop.runWorkflow(params.workflow as any, model, ctx.cwd, signal, onUpdate);
 		},
 	});
+	}
+
+	// Root orchestration tools register at load in a normal session; in child
+	// mode they register from session_start only when depth+1 <= maxDepth (see
+	// above), so a leaf child never sees them.
+	if (!childMode) registerRootTools();
 }

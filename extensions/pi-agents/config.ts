@@ -8,35 +8,6 @@ import { join, resolve } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import { CONFIG_DIR_NAME, getAgentDir, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 
-// ---------------------------------------------------------------------------
-// Child bash environment (strict allowlist)
-// ---------------------------------------------------------------------------
-
-const SAFE_ENV_KEYS: ReadonlySet<string> = new Set([
-	"PATH",
-	"HOME",
-	"SHELL",
-	"USER",
-	"LOGNAME",
-	"LANG",
-	"LC_ALL",
-	"LC_CTYPE",
-	"TZ",
-	"TERM",
-	"COLORTERM",
-	"TMPDIR",
-	"XDG_RUNTIME_DIR",
-	// TLS / CA certificates (required on NixOS and custom-CA environments)
-	"SSL_CERT_FILE",
-	"SSL_CERT_DIR",
-	"CURL_CA_BUNDLE",
-	"REQUESTS_CA_BUNDLE",
-	"NODE_EXTRA_CA_CERTS",
-]);
-
-export function buildSafeEnv(): NodeJS.ProcessEnv {
-	return Object.fromEntries([...SAFE_ENV_KEYS].map((key) => [key, process.env[key]]).filter(([, value]) => value !== undefined));
-}
 // Extension config
 // ---------------------------------------------------------------------------
 
@@ -53,6 +24,8 @@ export interface PiAgentsConfig {
 	panelModels?: string[];
 	/** Strip write/edit from the main session so mutations route through spawned executors. Toggle with /orchestrate. */
 	orchestrator: boolean;
+	/** Directory for child session JSONL files, resolved against cwd at use time. Default `.pi/agents/sessions/` under the parent cwd. */
+	sessionDir?: string;
 }
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -86,6 +59,11 @@ const CONFIG_VALIDATORS: Record<keyof PiAgentsConfig, (value: unknown, key: stri
 	orchestrator: (value, key, path) => {
 		if (typeof value !== "boolean") throw new Error(`${path}: "${key}" must be a boolean`);
 		return value;
+	},
+	sessionDir: (value, key, path) => {
+		const dir = typeof value === "string" ? value.trim() : "";
+		if (dir === "") throw new Error(`${path}: "${key}" must be a non-empty string`);
+		return dir;
 	},
 };
 
@@ -130,6 +108,7 @@ export async function loadPiAgentsConfig(cwd: string): Promise<PiAgentsConfig> {
 		model: projectConfig.model ?? globalConfig.model,
 		panelModels: projectConfig.panelModels ?? globalConfig.panelModels,
 		orchestrator: projectConfig.orchestrator ?? globalConfig.orchestrator ?? false,
+		sessionDir: projectConfig.sessionDir ?? globalConfig.sessionDir,
 	};
 }
 
