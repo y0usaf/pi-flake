@@ -13,24 +13,10 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { settleWithGrace, type AgentToolDetails, type ChildState } from "./state.js";
 import { shortenPath } from "./render.js";
 
-/** A parked background completion result (see `mailbox`); consumed by agent_wait. */
-export interface MailboxEntry {
-	result: AgentToolResult<AgentToolDetails>;
-}
-
-/** Bound on the background result mailbox: park is drop-oldest past this many entries. */
-const MAX_MAILBOX_ENTRIES = 24;
-
 export interface Registry {
 	children: Map<string, ChildState>;
 	/** IDs reserved by in-flight spawns that have not yet inserted into `children`. */
 	reservedIds: Set<string>;
-	/** Parked background completion results (deliverable via agent_wait); bounded, drop-oldest. */
-	mailbox: Map<string, MailboxEntry>;
-	/** Tombstones for mailbox entries dropped by the bound, so a query learns where its result went. */
-	droppedMailbox: Map<string, string>;
-	parkMailbox(id: string, result: AgentToolResult<AgentToolDetails>): void;
-	consumeMailbox(id: string): AgentToolResult<AgentToolDetails> | undefined;
 	getCallerState(callerId: string): ChildState;
 	isInSubtree(targetId: string, ancestorId: string, allowSelf?: boolean): boolean;
 	/** Depth-first preorder: root, then each child's subtree in id order. */
@@ -50,34 +36,6 @@ export function createRegistry(): Registry {
 	const children = new Map<string, ChildState>();
 	/** IDs reserved by in-flight spawns that have not yet inserted into `children`. */
 	const reservedIds = new Set<string>();
-	const mailbox = new Map<string, MailboxEntry>();
-	const droppedMailbox = new Map<string, string>();
-
-	/** Park a background completion result; drop the oldest entry over the bound with a tombstone warning. */
-	function parkMailbox(id: string, result: AgentToolResult<AgentToolDetails>): void {
-		if (mailbox.has(id)) mailbox.delete(id); // re-park at the tail
-		mailbox.set(id, { result });
-		while (mailbox.size > MAX_MAILBOX_ENTRIES) {
-			const oldest = mailbox.keys().next().value as string | undefined;
-			if (oldest === undefined) break;
-			mailbox.delete(oldest);
-			droppedMailbox.set(oldest, `Background result for "${oldest}" was dropped (mailbox bound of ${MAX_MAILBOX_ENTRIES}): its injected follow-up message is the only record.`);
-			while (droppedMailbox.size > MAX_MAILBOX_ENTRIES) {
-				const oldestDropped = droppedMailbox.keys().next().value as string | undefined;
-				if (oldestDropped === undefined) break;
-				droppedMailbox.delete(oldestDropped);
-			}
-		}
-	}
-
-	/** Remove and return a parked result, if any. Also clears any drop tombstone for the id. */
-	function consumeMailbox(id: string): AgentToolResult<AgentToolDetails> | undefined {
-		const entry = mailbox.get(id);
-		if (!entry) return undefined;
-		mailbox.delete(id);
-		droppedMailbox.delete(id);
-		return entry.result;
-	}
 	function getCallerState(callerId: string): ChildState {
 		const state = children.get(callerId);
 		if (!state) throw new Error(`Caller agent "${callerId}" is no longer active.`);
@@ -202,17 +160,11 @@ export function createRegistry(): Registry {
 		for (const engine of engines) engine.abort();
 		await settleWithGrace(engines.map((engine) => engine.stop()));
 		children.clear();
-		mailbox.clear();
-		droppedMailbox.clear();
 	}
 
 	return {
 		children,
 		reservedIds,
-		mailbox,
-		droppedMailbox,
-		parkMailbox,
-		consumeMailbox,
 		getCallerState,
 		isInSubtree,
 		getSubtreeIds,

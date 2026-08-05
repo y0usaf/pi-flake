@@ -1,7 +1,7 @@
 /**
  * Multi-Agent Extension for pi
  *
- * Parent tools: agent, agent_answer, agent_kill, agent_list, agent_loop.
+ * Parent tools: agent, agent_answer, agent_kill, agent_list, agent_output, agent_loop.
  * Children are literal `pi --mode rpc` subprocesses: full pi sessions (all
  * built-ins, context files, user extensions) plus the child-mode
  * report/submit_answers/ask_parent wrappers, and descendant-scoped
@@ -20,7 +20,7 @@
  * This file is the composition root: it owns the default-export multiAgent(),
  * the per-session state (registry, session, config loader), the wiring that
  * passes that state down to the registry/spawn/loop/orchestrator modules, the
- * five root-tool registrations, and the session_start/session_shutdown
+ * six root-tool registrations, and the session_start/session_shutdown
  * handlers. All machinery lives in its own module (see DESIGN.md Architecture).
  *
  * Concurrency invariants (see DESIGN.md):
@@ -58,7 +58,6 @@ import {
 	listSchema,
 	outputSchema,
 	spawnSchema,
-	waitSchema,
 	type SessionState,
 } from "./spawn.js";
 import { createLoop, agentLoopSchema } from "./loop.js";
@@ -109,7 +108,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 	// index.ts owns the pi handle: it wires the spawn machinery's inject callback
 	// to pi.sendMessage so background completions/as the delivery mechanism. The
-	// policy (followUp for results, steer for asks, bounded mailbox) stays in
+	// policy (followUp for results, steer for asks) stays in
 	// spawn.ts; this module only bridges to the ExtensionAPI and swallows a
 	// failed injection so it can never surface outside the extension.
 	const spawn = createSpawnTools({
@@ -186,7 +185,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			"Children are full pi sessions (literal `pi --mode rpc` subprocesses): every pi built-in (read/write/edit/bash/grep/find/ls), context files, and the user's own extensions, plus report (progress only), submit_answers, and ask_parent; descendant-scoped orchestration tools are included only when maxDepth allows further nesting. " +
 			"Recursive spawning is bounded by pi-agents.json maxDepth/maxLiveAgents, which also picks the child model. " +
 			"This call blocks until the contract is fulfilled; an unfulfilled contract is nudged up to 2 times, then errors. " +
-			"Pass `background: true` to return immediately with a session handle while the child runs detached — its result is delivered via a follow-up message and collected with agent_wait({ id }), or inspected with agent_output({ id }). " +
+			"Pass `background: true` to return immediately with a session handle while the child runs detached — its result is delivered by an injected follow-up message, or inspect with agent_output({ id }). " +
 			"Multiple agent calls in the same turn run concurrently. " +
 			"The agent is removed as soon as its contract is fulfilled — this is a typed function call: " +
 			"If the child calls ask_parent instead, this call returns its questions and the agent stays alive (holding context and a maxLiveAgents slot) until agent_answer resumes it or agent_kill removes it. " +
@@ -278,29 +277,6 @@ export default function multiAgent(pi: ExtensionAPI) {
 		},
 	});
 
-	// ── agent_wait ─────────────────────────────────────────────────────
-
-	pi.registerTool({
-		name: "agent_wait",
-		label: "Wait Agent",
-		description:
-			"Collect a background agent's result. If the agent already finished (its result is parked in the mailbox, or the injected follow-up message announced it), returns the result immediately. " +
-			"If it is still running, blocks until it settles and returns the same answers result as a blocking spawn. " +
-			"Unknown ids error and list the known ones. " +
-			"`timeout_seconds` bounds only this wait — the background agent keeps running if the wait expires.",
-		parameters: waitSchema,
-
-		renderCall(args, theme) {
-			return new Text(theme.fg("toolTitle", theme.bold("agent_wait ")) + theme.fg("accent", args.id || "..."), 0, 0);
-		},
-
-		renderResult: renderTextResult,
-
-		async execute(_toolCallId, params, signal) {
-			return spawn.waitAgent(undefined, params, signal);
-		},
-	});
-
 	// ── agent_output ───────────────────────────────────────────────────
 
 	pi.registerTool({
@@ -309,7 +285,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		description:
 			"Non-blocking peek at a background agent: status, model, action count, recent activity lines, reports so far, and its session file. " +
 			"Works for running and suspended (awaiting answers) children. " +
-			"If the agent already finished, points you at the parked result and agent_wait.",
+			"A finished agent is removed after its follow-up message is delivered; the session file remains the audit record.",
 		parameters: outputSchema,
 
 		renderCall(args, theme) {

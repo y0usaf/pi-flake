@@ -1,6 +1,6 @@
 # pi-agents
 
-Multi-agent extension for pi. Root agents get seven orchestration tools — `agent`, `agent_answer`, `agent_kill`, `agent_list`, `agent_wait`, `agent_output`, `agent_loop`. Every spawned child is a literal `pi --mode rpc` subprocess — a full pi session with all built-in tools, context files, skills, and user extensions — plus the child-mode `report`, `submit_answers`, and `ask_parent` wrappers; descendant-scoped orchestration tools are included only when maxDepth allows further nesting.
+Multi-agent extension for pi. Root agents get six orchestration tools — `agent`, `agent_answer`, `agent_kill`, `agent_list`, `agent_output`, `agent_loop`. Every spawned child is a literal `pi --mode rpc` subprocess — a full pi session with all built-in tools, context files, skills, and user extensions — plus the child-mode `report`, `submit_answers`, and `ask_parent` wrappers; descendant-scoped orchestration tools are included only when maxDepth allows further nesting.
 
 Every invocation carries a **contract**: AskUserQuestion-style questions (options, optional free text) the child must answer via `submit_answers` before its run can end. The tool result is those answers as data — the child behaves like a typed function call, not a chat transcript. `report` is a progress channel only.
 
@@ -100,7 +100,7 @@ Multiple `agent` calls in one turn run concurrently (parallel tool execution). S
 
 - `timeout_seconds` — optional, must be a finite number greater than 0. If the child is still running when the deadline expires it is aborted, removed from the registry, and an error is thrown.
 - `panel` — optional `{ size?: number, models?: string[] }` for an independent panel on one identical contract. Model precedence is explicit `models`, then configured `panelModels`, then configured `model`, then the parent session's model. Omitting `models` uses the configured roster; `panel: {}` uses the whole roster, while `size` takes its first N entries (or creates N clones when no roster is configured). If both explicit `models` and `size` are present they must agree, and the final count must be 2–5. Members run concurrently with ids `<id>-1` through `<id>-N`; the panel id itself is never registered. The result is one aggregate containing a per-question agreement tally, with `DISAGREEMENT` leading when members split. Tallying is mechanical only for questions with enumerated options; free-text answers are listed verbatim, not presented as consensus. Panel members do not receive `ask_parent`: a judge answers or punts with `__unable__` rather than suspending. A partial failure kills surviving members and fails the whole panel.
-- `background` — optional boolean. Run the child detached: the tool returns immediately with a session handle (`details { id, sessionFile, background: true }`) while the child runs on a background promise. When it fulfills (or errors or times out) its result is parked in a bounded mailbox and a follow-up message announces it; collect it with `agent_wait` or peek with `agent_output`. A background child that calls `ask_parent` suspends and injects an urgent steer message; `agent_answer` resumes it detached again, and its outcome lands back in the mailbox. Blocking stays the default; `background` with `panel` is a hard error (see Background mode below for the full semantics).
+- `background` — optional boolean. Run the child detached: the tool returns immediately with a session handle (`details { id, sessionFile, background: true }`) while the child runs on a background promise. When it fulfills (or errors or times out) an injected follow-up message announces it (the delivery itself, participating in LLM context); inspect progress with `agent_output`. A background child that calls `ask_parent` suspends and injects an urgent steer message; `agent_answer` resumes it detached again, and its outcome is announced by another injected follow-up message. Blocking stays the default; `background` with `panel` is a hard error (see Background mode below for the full semantics).
 
 **File-system access:** children are full pi sessions, so their `read`/`write`/`edit`/`bash` (and `grep`/`find`/`ls`) are pi's own built-ins, running against the child's inherited working directory. None of them are confined to that tree — absolute paths outside it are accepted, and a child's `bash` has the same OS-level file and network access as the user running pi. There is no sandbox; the working directory is a default, not a boundary.
 
@@ -135,21 +135,17 @@ Example output:
 • docs — running (background), depth 1, root child, anthropic/claude-haiku-4-5, 0 reports, session ~/.pi/agents/sessions/<uuidv7>.jsonl, contract pending
 ```
 
-### `agent_wait(id, [timeout_seconds])`
-
-Collects a background agent's result. If the agent already finished — its result is parked in the mailbox, or its injected follow-up message announced it — returns the result immediately with the same answers-as-data shape a blocking spawn returns. If it is still running, blocks until it settles. `timeout_seconds` bounds only this wait: on expiry the call errors while the background agent keeps running (`agent_output` shows status, or wait again). Unknown ids error and list the known ones; waiting on a non-background agent errors too.
-
 ### `agent_output(id)`
 
-Non-blocking peek at a background agent: status, model, action count, recent activity lines, reports so far, and its session file. Works for running and suspended (awaiting answers) children. If the agent already finished, it points you at the parked result and `agent_wait`; if the mailbox dropped the result (see Caveats), it says so.
+Non-blocking peek at a background agent: status, model, action count, recent activity lines, reports so far, and its session file. Works for running and suspended (awaiting answers) children. A finished agent is removed after its follow-up message is delivered; the session file remains the audit record.
 
 ### Background mode
 
-`background: true` on `agent` splits the deferred-entry wait/status pair — `agent_wait` collects, `agent_output` inspects — and turns the drive loop detached:
+`background: true` on `agent` is push-only: the spawn returns a handle immediately and the drive loop runs detached — fulfillment, error, or timeout is announced by an injected follow-up message, which is the delivery itself:
 
 1. The tool reserves + spawns exactly like a blocking spawn, but returns immediately with `{ id, sessionFile, background: true }`. The child runs on a promise stored on its state; the tool's own abort never kills it.
-2. On fulfillment (or error / timeout) the result is parked in a bounded per-session mailbox (drop-oldest past ~24 entries, with a tombstone warning for the dropped id) and announced by an injected message: `pi.sendMessage` with `deliverAs: "followUp"` and `triggerTurn: true`, so the announcement waits for the running turn to finish and joins the LLM context as a normal message.
-3. A background child that calls `ask_parent` suspends — it now needs an answer — and injects an urgent message with `deliverAs: "steer"` and `triggerTurn: true`, carrying the rendered questions and the `agent_answer` instruction. Answering resumes the child detached again; its outcome lands back in the mailbox.
+2. On fulfillment (or error / timeout) the result is announced by an injected message: `pi.sendMessage` with `deliverAs: "followUp"` and `triggerTurn: true`, so the announcement waits for the running turn to finish and joins the LLM context as a normal message (the delivery — the child's answers travel as rendered text in that message).
+3. A background child that calls `ask_parent` suspends — it now needs an answer — and injects an urgent message with `deliverAs: "steer"` and `triggerTurn: true`, carrying the rendered questions and the `agent_answer` instruction. Answering resumes the child detached again; its outcome is announced by another injected follow-up message.
 4. Background children do not survive session shutdown: `registry.shutdown()` aborts them like any child, so a background agent's lifetime is still exactly the parent session's. Adoption on restart (re-spawning from session files) is deferred.
 
 `panel` + `background` together is a hard error ("panels cannot run in background yet").
@@ -313,12 +309,9 @@ Parent: "Draft the migration docs; I'll keep working meanwhile"
                background=true)
     └─ returns { id: "docs", sessionFile: ".pi/agents/sessions/<uuidv7>.jsonl", background: true } immediately
     └─ parent keeps prompting on other tasks; child runs detached
-    └─ child fulfills → result parked in mailbox → injected follow-up message
+    └─ child fulfills → injected follow-up message is the delivery:
        "[pi-agents] background agent docs finished" joins the LLM context
-
-Parent: "Collect it"
-└─ agent_wait({ id: "docs" })
-    └─ returns the contract answers as data (already parked, so immediately)
+       carrying the answers as rendered text (nothing parked, nothing to collect)
 ```
 
 ## Caveats / Known Limitations
@@ -333,7 +326,6 @@ Parent: "Collect it"
 - **Subtree-scoped control** — descendant agents can only manage agents in their own subtree; they cannot spawn into or kill arbitrary siblings' branches.
 - **No file-system confinement** — child `read`/`write`/`edit`/`bash` are pi's built-in tools running with the user's OS-level file and network access. The working directory is where relative paths resolve, nothing more.
 - **Full environment inheritance** — a child subprocess inherits the parent's entire environment plus the child-mode `PI_AGENTS_*` protocol vars; there is no env allowlist anymore. The old in-process child-bash allowlist was deleted with the rpc-child rewrite because children are full pi sessions that handle their own env. Environment secrets reach the child, and a child can read secrets in files via its own `bash`.
-- **Background mailbox is bounded** — completed background results are parked in a per-session mailbox of at most ~24 entries; past that the oldest is dropped with a tombstone warning, and the injected follow-up message (already delivered) is the only record. `agent_output` reports the tombstone for a dropped id; `agent_wait` will not find it.
 - **Child text is sanitized for the terminal** — reports and activity previews have ANSI/OSC escape sequences stripped before rendering, so a child cannot inject terminal control sequences into the TUI.
 - **Suspended children hold capacity** — a child awaiting answers holds a live slot indefinitely; there is no suspension deadline. Kill it with `agent_kill` if it should be abandoned.
 - **Upward asks are bounded** — each child gets at most 8 `ask_parent` calls; after that it must submit its contract (using `__unable__` where needed).

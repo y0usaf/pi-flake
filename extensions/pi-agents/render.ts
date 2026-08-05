@@ -409,7 +409,7 @@ export function renderAgentResult(
 		);
 	}
 
-	// -- agent_output peek / mailbox pointer: show the content text as-is --
+	// -- agent_output peek: show the content text as-is --
 	if (details.peek) {
 		const t = result.content[0];
 		return new Text(stripControlSequences(t?.type === "text" ? t.text : "(no output)"), 0, 0);

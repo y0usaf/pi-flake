@@ -39,7 +39,7 @@ export interface AgentToolDetails {
 	background?: boolean;
 	/** The background child's durable session JSONL path (background handles). */
 	sessionFile?: string;
-	/** agent_output status peek / mailbox pointer: the renderer shows the content text as-is. */
+	/** agent_output status peek: the renderer shows the content text as-is. */
 	peek?: boolean;
 	nudges?: number;
 	/** Child model as the TUI shows it: bare id, plus "[provider]" when it differs from the parent's. */
@@ -236,10 +236,11 @@ export interface ChildState {
 	sessionFile?: string;
 	/**
 	 * Detached background run (background spawns). The promise never rejects —
-	 * it resolves with the run's AgentToolResult (parked in the registry mailbox
-	 * on fulfill/error, or the suspension result directly on ask_parent), so an
-	 * unhandled rejection can never surface outside the extension. Replaced on
-	 * agent_answer resume with the resumed run's promise.
+	 * it resolves with the run's AgentToolResult, which is delivered via the
+	 * injected follow-up message on fulfill/error (nothing is parked), or the
+	 * suspension result directly on ask_parent; an unhandled rejection can never
+	 * surface outside the extension. Replaced on agent_answer resume with the
+	 * resumed run's promise.
 	 */
 	background?: { promise: Promise<AgentToolResult<AgentToolDetails>> };
 	/** Spawn-time timeout_seconds; reused for detached resumes after ask_parent. */
