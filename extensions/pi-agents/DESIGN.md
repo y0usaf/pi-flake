@@ -1,12 +1,12 @@
 # pi-agents DESIGN
 
 Multi-agent orchestration for pi: root tools `agent`, `agent_answer`,
-`agent_kill`, `agent_list`, `agent_loop`, `agent_wait`, `agent_output`.
+`agent_kill`, `agent_list`, `agent_output`, `agent_loop`.
 Children are literal `pi --mode rpc` subprocesses whose lifetime is exactly
 one contract — spawn, answer, removed (stage 2's rpc-child engine). Stage 3
 adds opted-in background spawns (`background: true` on `agent`): the tool
 returns a session handle immediately, the child runs detached, and the
-outcome is parked in a bounded mailbox and delivered by an injected message
+outcome is delivered solely by an injected message
 (see the 2026-08 background decisions below).
 
 ## Locked decisions
@@ -63,7 +63,7 @@ outcome is parked in a bounded mailbox and delivered by an injected message
   demonstrably exceeds maintainable size. The panel-usage gap fix (member
   `usage` now travels in `AgentToolDetails.panel.members`) rode along.
 - **2026-08 — Leaf children do not receive orchestration tool schemas.** A child that cannot spawn receives no `agent`, `agent_answer`, `agent_kill`, or `agent_list` schemas, avoiding a large unusable contract schema tree. The gate reads the resolved per-cwd config, so project `maxDepth` overrides still allow legitimate nesting. Accepted loss: a leaf cannot use `agent_list` for self-introspection. Reversal condition: a child is observed needing `agent_list` purely for self-status.
-- **2026-08 — Root tools are a noun-prefix family: `agent`, `agent_answer`, `agent_kill`, `agent_list`, `agent_wait`, `agent_output`.** `spawn` was the inaccurate part of the original name: it promised a background handle this extension did not have. Blocking remains default, and the deferred wait/status split landed (stage 3) as `agent_wait` and `agent_output` alongside a `background` flag on `agent` — still noun-prefixed, so the family stays adjacent whenever tools are listed alphabetically. Precedent: Kimi Code CLI groups the same way (`Agent`/`AgentSwarm`, `TaskOutput`/`TaskStop`, `CronList`), as do modern CLIs (`docker container ls`, `gh pr create`). Bare `agent` matches Claude Code, which renamed its subagent tool `Task` to `Agent` in v2.1.63, and OpenCode's `task`; it also matches pi's own bare-word built-ins (`read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`). The smaller thing rejected, per `[[canon:least-code]]`: renaming only the spawn tool and leaving verb_noun siblings — same churn, no grouping benefit. Panel plurality is deliberately not addressed by the name. A panel is still one delegation act with a strategy parameter; a separate swarm tool would relitigate the 2026-08 panels-as-a-parameter decision. Reversal condition: if models measurably mis-select the verb-less `agent` tool, restore a verb.
+- **2026-08 — Root tools are a noun-prefix family: `agent`, `agent_answer`, `agent_kill`, `agent_list`, `agent_output`.** `spawn` was the inaccurate part of the original name: it promised a background handle this extension did not have. Blocking remains default, and the deferred wait/status split landed (stage 3) as `agent_wait` and `agent_output` alongside a `background` flag on `agent` — still noun-prefixed, so the family stays adjacent whenever tools are listed alphabetically. **Amended 2026-08:** the wait/status split was then reversed — `agent_wait` and its mailbox were deleted; a background spawn returns a handle, `agent_output` peeks, and the injected follow-up message is the sole delivery (see the background-delivery reversal decision below). Precedent: Kimi Code CLI groups the same way (`Agent`/`AgentSwarm`, `TaskOutput`/`TaskStop`, `CronList`), as do modern CLIs (`docker container ls`, `gh pr create`). Bare `agent` matches Claude Code, which renamed its subagent tool `Task` to `Agent` in v2.1.63, and OpenCode's `task`; it also matches pi's own bare-word built-ins (`read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`). The smaller thing rejected, per `[[canon:least-code]]`: renaming only the spawn tool and leaving verb_noun siblings — same churn, no grouping benefit. Panel plurality is deliberately not addressed by the name. A panel is still one delegation act with a strategy parameter; a separate swarm tool would relitigate the 2026-08 panels-as-a-parameter decision. Reversal condition: if models measurably mis-select the verb-less `agent` tool, restore a verb.
 - **2026-08 — Panel roster is config data, not per-call LLM output.** Model choice moves down the least-power ladder from generated string to config file; explicit per-call `models` still wins because config is a default, not a lock. A smaller `size` takes the first N configured models, making list order a priority order, and the roster is validated at session start. Reversal condition: if per-call model choice proves necessary for panel quality, revisit the default roster.
 - **2026-08 — Child tools are pi's built-ins, not bespoke copies.** Children
   were first given `createReadTool`/`createWriteTool`/`createEditTool`/
@@ -97,9 +97,10 @@ outcome is parked in a bounded mailbox and delivered by an injected message
 - **2026-08 — Blocking spawn.** The tool returns when the run finishes;
   parallel tool execution provides concurrency. No background-spawn handle
   API until a use case forces one.
-- **2026-08 — Blocking-spawn decision reversed for opted-in background spawns.** The deferred background entry's trigger fired (dated 2026-08): the user needs to keep prompting the main session during long child runs. `agent` gains `background: true` — the tool reserves + launches exactly as a blocking spawn, but returns immediately with a session-file handle (`details {id, sessionFile, background: true}`) while the drive loop runs detached on a promise stored on `ChildState.background`. The shape is the deferred entry's named wait/status split (`agent_wait`/`agent_output`) plus a background flag, not a default change: blocking stays the default because answers-as-tool-result is the cleaner contract when the parent has nothing else to do. The detached drive never rejects (an unhandled rejection must never surface outside the extension), so the promise is always awaitable.
-- **2026-08 — Lifetime rule amended: a mailbox state between fulfillment and collection.** A background child that fulfills (or errors / times out) is torn down exactly like a blocking child — child process SIGTERM→SIGKILL, subtree removed, the `maxLiveAgents` slot freed — but the result is parked, not returned to a tool call: it lives in a per-session bounded mailbox (registry.ts, `Map id → result`, drop-oldest past ~24 entries with a tombstone warning for the dropped id) and is announced by an injected follow-up message. `agent_wait` drains whatever is parked; the injected message itself is the delivery (it participates in LLM context).
-- **2026-08 — Injection defaults: followUp for results, steer for asks.** A finished background child announces via `pi.sendMessage` with `deliverAs: "followUp"` + `triggerTurn: true` — the result waits for the running turn to finish so it cannot derail the parent mid-task (steer after a long run would inject mid-flight answers into an LLM prompt doing something else). A background child's `ask_parent` suspends someone who now needs an answer, so it injects with `deliverAs: "steer"` + `triggerTurn: true` carrying the rendered questions and the `agent_answer` instruction; answering it resumes the child detached (its outcome lands back in the mailbox). `agent_wait`'s own `timeout_seconds` bounds only the wait and never kills the child.
+- **2026-08 — Blocking-spawn decision reversed for opted-in background spawns.** The deferred background entry's trigger fired (dated 2026-08): the user needs to keep prompting the main session during long child runs. `agent` gains `background: true` — the tool reserves + launches exactly as a blocking spawn, but returns immediately with a session-file handle (`details {id, sessionFile, background: true}`) while the drive loop runs detached on a promise stored on `ChildState.background`. The shape was the deferred entry's named wait/status split (`agent_wait`/`agent_output`) plus a background flag, not a default change: blocking stays the default because answers-as-tool-result is the cleaner contract when the parent has nothing else to do. The split landed as `agent_wait`/`agent_output`, then `agent_wait` and its mailbox were deleted (2026-08) because the injected follow-up message is the delivery and participates in LLM context; `agent_output` alone remains for peeking. The detached drive never rejects (an unhandled rejection must never surface outside the extension), so the promise is always awaitable.
+- **2026-08 — Lifetime rule amended: a mailbox state between fulfillment and collection.** **REVERSED 2026-08 — no mailbox exists.** A background child that fulfills (or errors / times out) is torn down exactly like a blocking child — child process SIGTERM→SIGKILL, subtree removed, the `maxLiveAgents` slot freed — and the result is announced by an injected follow-up message, which is the delivery itself (it participates in LLM context). Nothing is parked: there is no bounded queue, no tombstones, no consume. `agent_output` on a finished id reports not-found (the agent is gone from the registry; the session file is the audit record).
+- **2026-08 — Injection defaults: followUp for results, steer for asks.** A finished background child announces via `pi.sendMessage` with `deliverAs: "followUp"` + `triggerTurn: true` — the result waits for the running turn to finish so it cannot derail the parent mid-task (steer after a long run would inject mid-flight answers into an LLM prompt doing something else). A background child's `ask_parent` suspends someone who now needs an answer, so it injects with `deliverAs: "steer"` + `triggerTurn: true` carrying the rendered questions and the `agent_answer` instruction; answering it resumes the child detached (its outcome is announced by another injected follow-up message).
+- **2026-08 — Background results deliver via injected follow-up message only; agent_wait and mailbox deleted.** The wait/status split (`agent_wait`/`agent_output`) LANDED with the background-spawn decision, then `agent_wait` and its entire mailbox/tombstone machinery were REMOVED because the injected follow-up message was already the delivery (per the injection-defaults decision above). Reasoning: the follow-up message participates in LLM context, so a separate pull mechanism (`agent_wait`) was redundant — the message was already the delivery. `agent_output` stays as the peek tool for status during a run. Tradeoff: no structured `details.answers` available to the parent after the fact — answers travel as rendered text in the message, not as parseable data. `agent_wait`'s `timeout_seconds` wait-for-live-child feature was also unused (the follow-up message model is push, not pull).
 - **2026-08 — Background children do not survive session shutdown.** `registry.shutdown` aborts them like any child: a background agent's lifetime is still exactly the parent session's. Adoption on restart (re-spawning from session files) is deferred. `panel` + `background` together are a hard error ("panels cannot run in background yet") — see Deferred.
 - **2026-08 — Child-controlled text is sanitized before rendering.** Reports
   and activity previews pass through `stripControlSequences` (OSC, CSI, C0)
@@ -277,20 +278,18 @@ erased, and no module imports `index.ts`).
   operation (`getCallerState`, `isInSubtree`, `getSubtreeIds`,
   `getScopedEntries`, `formatScopedAgentIds`, `getAccessibleTarget`,
   `killSubtree`, `removeStateIfCurrent`, `listAgentsResult`), plus the
-  session-shutdown teardown (`registry.shutdown()`) and the background-result
-  mailbox (`mailbox` map + `droppedMailbox` tombstones + `parkMailbox`/
-  `consumeMailbox`, bounded drop-oldest; cleared by shutdown). The registry
-  owns child lifecycle and the mailbox (machinery).
+  session-shutdown teardown (`registry.shutdown()`). The registry
+  owns child lifecycle (machinery).
 - `spawn.ts` — spawn machinery: `createSpawnTools({ registry, session,
   getConfig, inject })` returning the `spawnChild`/`spawnPanel`/
-  `answerAgent`/`killAgentResult`/`waitAgent`/`outputAgent` functions (typed
+  `answerAgent`/`killAgentResult`/`outputAgent` functions (typed
   `SpawnChildFn`/`SpawnPanelFn`/`AnswerAgentFn`/`KillAgentResultFn`/
-  `WaitAgentFn`/`OutputAgentFn`), the per-session `SessionState`, the
+  `OutputAgentFn`), the per-session `SessionState`, the
   internal run lifecycle `finishExchange`, the background detached drive
-  `runDetached` (parks results in the registry mailbox and injects
-  followUp-for-results / steer-for-asks via the `inject` dep), and the tool
-  schemas they own (`spawnSchema` + `background`, `answerAgentSchema`,
-  `killSchema`, `listSchema`, `waitSchema`, `outputSchema`).
+  `runDetached` (injects the follow-up message announcing a completed
+  background run — the delivery itself — and steer-for-asks via the `inject`
+  dep), and the tool schemas they own (`spawnSchema` + `background`,
+  `answerAgentSchema`, `killSchema`, `listSchema`, `outputSchema`).
   `spawnChild` no longer assembles an in-process Agent (the old
   `buildChildAgent`/`createChildManagementTools` were deleted with the
   stage-2 rpc-child rewrite); it spawns a literal `pi --mode rpc` subprocess
@@ -312,9 +311,9 @@ erased, and no module imports `index.ts`).
   `sessionTheme` on the `session` object), the registry instance + wiring
   (`getConfig`, `adoptSessionContext`, the spawn/loop/orchestrator factories),
   the inject callback (index.ts owns the `pi` ExtensionAPI handle and bridges
-  spawn.ts's inject policy to `pi.sendMessage`), the seven root-tool
+  spawn.ts's inject policy to `pi.sendMessage`), the six root-tool
   registrations (`agent`, `agent_answer`, `agent_kill`, `agent_list`,
-  `agent_loop`, `agent_wait`, `agent_output`), and the
+  `agent_output`, `agent_loop`), and the
   `session_start`/`session_shutdown` handlers (decision-making + composition)
 
 The child extension boundary is `rpc-child.ts` (stage 2, landed): it spawns
