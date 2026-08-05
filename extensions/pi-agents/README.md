@@ -1,6 +1,6 @@
 # pi-agents
 
-Multi-agent extension for pi. Root agents get four orchestration tools — `agent`, `agent_answer`, `agent_kill`, `agent_list` — plus every spawned child gets `read`, `write`, `edit`, `bash`, `report`, and `submit_answers`; descendant-scoped orchestration tools are included only when maxDepth allows further nesting.
+Multi-agent extension for pi. Root agents get seven orchestration tools — `agent`, `agent_answer`, `agent_kill`, `agent_list`, `agent_wait`, `agent_output`, `agent_loop`. Every spawned child is a literal `pi --mode rpc` subprocess — a full pi session with all built-in tools, context files, skills, and user extensions — plus the child-mode `report`, `submit_answers`, and `ask_parent` wrappers; descendant-scoped orchestration tools are included only when maxDepth allows further nesting.
 
 Every invocation carries a **contract**: AskUserQuestion-style questions (options, optional free text) the child must answer via `submit_answers` before its run can end. The tool result is those answers as data — the child behaves like a typed function call, not a chat transcript. `report` is a progress channel only.
 
@@ -40,7 +40,8 @@ Example:
   "maxLiveAgents": 6,
   "model": "anthropic/claude-haiku-4-5",
   "panelModels": ["anthropic/claude-haiku-4-5", "openai/gpt-4o-mini"],
-  "orchestrator": false
+  "orchestrator": false,
+  "sessionDir": ".pi/agents/sessions"
 }
 ```
 
@@ -61,15 +62,33 @@ Defaults: `maxDepth: 1`, `maxLiveAgents: 6`, no `model` or `panelModels` overrid
 - `"provider/modelId"` — exact, e.g. `"anthropic/claude-haiku-4-5"`, `"vercel-ai-gateway/moonshotai/kimi-k2"` (provider is everything before the first `/`).
 - `"modelId"` — bare id, accepted when exactly one available provider offers it; ambiguous ids are rejected with the list of qualified matches.
 
-Unset means children inherit whatever model the parent session has active. A spec that resolves to nothing fails loudly: the session-start notification reports it and `agent` throws, rather than silently falling back. Descendants use the same configured model, not their parent's.
+Unset means children inherit whatever model the parent session has active. A spec that resolves to nothing fails loudly: the session-start notification reports it and `agent` throws, rather than silently falling back. Descendants use the same configured model, not their parent's. The resolved model is passed to the child process as `--model <provider/modelId>` on its `pi` command line.
+
+`sessionDir` names the directory child session JSONL files are written to, resolved against the parent cwd at use time. Defaults to `.pi/agents/sessions/` under the parent cwd. See [Session files](#session-files) below.
 
 Unknown keys in `pi-agents.json` are a hard error, so a typo like `"models"` is reported instead of being silently ignored: a UI notification fires at session start, and `agent` throws until the config is fixed.
 
+## Session files
+
+Every child writes a durable per-child session JSONL, exactly like a real pi session — because the child is one. The file lives under `sessionDir` (default `.pi/agents/sessions/`) resolved against the parent cwd, and is named by pi (a random uuidv7, not computable). It is the durable transcript of the child's run: inspectable, resumable, and kept out of the parent's `/resume` session list on purpose.
+
+The session file doubles as the audit directory for child activity. A background spawn returns the path immediately in its handle (`agent_list` lines carry a shortened version too), so the transcript of a detached child is discoverable before it finishes.
+
+### Environment protocol (debugging)
+
+The spawn machinery marks a child as a descendant via three env vars it adds to the `pi --mode rpc` subprocess:
+
+- `PI_AGENTS_CHILD=1` — this process is a spawned child.
+- `PI_AGENTS_DEPTH=<n>` — the child's depth (parent depth + 1).
+- `PI_AGENTS_CONTRACT=<json>` — the normalized contract questions (without the host-added `__unable__` option; the child re-adds it).
+
+`index.ts` reads these at the top of `multiAgent()` (`readChildEnv`); a child registers only the three child-mode tools (`submit_answers`/`report`/`ask_parent`) plus, when `depth + 1 <= maxDepth`, the root orchestration tools. The parent does not run the child's tools in-process — it reads the child's tool calls and answers from the RPC event stream. These vars are for debugging the boundary; you normally never touch them.
+
 ## Tools
 
-### `agent(id, system_prompt, task, contract, [timeout_seconds])`
+### `agent(id, system_prompt, task, contract, [timeout_seconds], [background])`
 
-Creates a new child agent with its own system prompt. The child gets `read`, `write`, `edit`, `bash`, `report`, and `submit_answers`, plus descendant-scoped orchestration tools when maxDepth allows further nesting. Blocks until the contract is fulfilled.
+Creates a new child agent with its own system prompt. The child is a literal `pi --mode rpc` subprocess: a full pi session with all built-in tools (`read`/`write`/`edit`/`bash`/`grep`/`find`/`ls`), context files, skills, and user extensions, plus the child-mode `report`, `submit_answers`, and `ask_parent` tools, and descendant-scoped orchestration tools when maxDepth allows further nesting. Blocks until the contract is fulfilled.
 
 `contract` is a non-empty array of questions: `{ id?, label?, prompt, options?: [{label, value?, description?, recommended?}], allowOther? }`. The host normalizes it (caps: 8 questions, 8 options each, dedupe, derived ids) and appends an "Unable to determine" (`__unable__`) option to every question so the child can punt explicitly instead of fabricating. Zero options + `allowOther` (the default) makes a plain free-text question.
 
@@ -81,8 +100,9 @@ Multiple `agent` calls in one turn run concurrently (parallel tool execution). S
 
 - `timeout_seconds` — optional, must be a finite number greater than 0. If the child is still running when the deadline expires it is aborted, removed from the registry, and an error is thrown.
 - `panel` — optional `{ size?: number, models?: string[] }` for an independent panel on one identical contract. Model precedence is explicit `models`, then configured `panelModels`, then configured `model`, then the parent session's model. Omitting `models` uses the configured roster; `panel: {}` uses the whole roster, while `size` takes its first N entries (or creates N clones when no roster is configured). If both explicit `models` and `size` are present they must agree, and the final count must be 2–5. Members run concurrently with ids `<id>-1` through `<id>-N`; the panel id itself is never registered. The result is one aggregate containing a per-question agreement tally, with `DISAGREEMENT` leading when members split. Tallying is mechanical only for questions with enumerated options; free-text answers are listed verbatim, not presented as consensus. Panel members do not receive `ask_parent`: a judge answers or punts with `__unable__` rather than suspending. A partial failure kills surviving members and fails the whole panel.
+- `background` — optional boolean. Run the child detached: the tool returns immediately with a session handle (`details { id, sessionFile, background: true }`) while the child runs on a background promise. When it fulfills (or errors or times out) its result is parked in a bounded mailbox and a follow-up message announces it; collect it with `agent_wait` or peek with `agent_output`. A background child that calls `ask_parent` suspends and injects an urgent steer message; `agent_answer` resumes it detached again, and its outcome lands back in the mailbox. Blocking stays the default; `background` with `panel` is a hard error (see Background mode below for the full semantics).
 
-**File-system access:** child `read`, `write`, `edit`, and `bash` are pi's built-in tools, created against the child's inherited working directory. None of them are confined to that tree — absolute paths outside it are accepted, and `bash` has the same OS-level file and network access as the user running pi. There is no sandbox; the working directory is a default, not a boundary.
+**File-system access:** children are full pi sessions, so their `read`/`write`/`edit`/`bash` (and `grep`/`find`/`ls`) are pi's own built-ins, running against the child's inherited working directory. None of them are confined to that tree — absolute paths outside it are accepted, and a child's `bash` has the same OS-level file and network access as the user running pi. There is no sandbox; the working directory is a default, not a boundary.
 
 ### `ask_parent(questions)` (child-only)
 
@@ -94,7 +114,7 @@ The contract's completion path. `answers` is `[{id, value}]`, one entry per cont
 
 ### `report(message)` (child-only)
 
-Progress channel. Reports stream to the parent via `tool_execution_update` during execution and are appended under the answers in the final result. They are **not** the result — if a child never calls `submit_answers`, the nudge loop kicks in, and after 2 nudges the run errors rather than silently returning prose; each nudge restates the contract questions.
+Progress channel. The parent reads a child's report calls from the child's RPC event stream and appends them under the answers in the final result; they also stream to the TUI during execution. They are **not** the result — if a child never calls `submit_answers`, the nudge loop kicks in, and after 2 nudges the run errors rather than silently returning prose; each nudge restates the contract questions.
 
 ### `agent_answer(id, answers, [timeout_seconds])`
 
@@ -106,13 +126,33 @@ Aborts a running child and frees its resources; descendants are killed recursive
 
 ### `agent_list()`
 
-Lists currently active child agent IDs and their status. Because fulfilled contracts auto-remove agents, entries are in-flight runs. The root agent sees the full registry; descendant agents only see their own subtree.
+Lists currently active child agent IDs and their status. Because fulfilled contracts auto-remove agents, entries are in-flight runs. The root agent sees the full registry; descendant agents only see their own subtree. Background children are marked `(background)` and their line carries the session file path.
 
 Example output:
 ```
 • worker — running, depth 1, root child, anthropic/claude-haiku-4-5, 3 reports, contract pending
 • reviewer — running, depth 2, parent worker, anthropic/claude-haiku-4-5, 0 reports, contract pending
+• docs — running (background), depth 1, root child, anthropic/claude-haiku-4-5, 0 reports, session ~/.pi/agents/sessions/<uuidv7>.jsonl, contract pending
 ```
+
+### `agent_wait(id, [timeout_seconds])`
+
+Collects a background agent's result. If the agent already finished — its result is parked in the mailbox, or its injected follow-up message announced it — returns the result immediately with the same answers-as-data shape a blocking spawn returns. If it is still running, blocks until it settles. `timeout_seconds` bounds only this wait: on expiry the call errors while the background agent keeps running (`agent_output` shows status, or wait again). Unknown ids error and list the known ones; waiting on a non-background agent errors too.
+
+### `agent_output(id)`
+
+Non-blocking peek at a background agent: status, model, action count, recent activity lines, reports so far, and its session file. Works for running and suspended (awaiting answers) children. If the agent already finished, it points you at the parked result and `agent_wait`; if the mailbox dropped the result (see Caveats), it says so.
+
+### Background mode
+
+`background: true` on `agent` splits the deferred-entry wait/status pair — `agent_wait` collects, `agent_output` inspects — and turns the drive loop detached:
+
+1. The tool reserves + spawns exactly like a blocking spawn, but returns immediately with `{ id, sessionFile, background: true }`. The child runs on a promise stored on its state; the tool's own abort never kills it.
+2. On fulfillment (or error / timeout) the result is parked in a bounded per-session mailbox (drop-oldest past ~24 entries, with a tombstone warning for the dropped id) and announced by an injected message: `pi.sendMessage` with `deliverAs: "followUp"` and `triggerTurn: true`, so the announcement waits for the running turn to finish and joins the LLM context as a normal message.
+3. A background child that calls `ask_parent` suspends — it now needs an answer — and injects an urgent message with `deliverAs: "steer"` and `triggerTurn: true`, carrying the rendered questions and the `agent_answer` instruction. Answering resumes the child detached again; its outcome lands back in the mailbox.
+4. Background children do not survive session shutdown: `registry.shutdown()` aborts them like any child, so a background agent's lifetime is still exactly the parent session's. Adoption on restart (re-spawning from session files) is deferred.
+
+`panel` + `background` together is a hard error ("panels cannot run in background yet").
 
 ### `agent_loop(workflow)`
 
@@ -266,6 +306,19 @@ Parent: "Is this diff safe to merge?"
     ├─ diff-judge-2 · gpt-4o-mini → unsafe
     └─ diff-judge-3 · gemini-2.5-flash → safe
     └─ result: DISAGREEMENT — safe: 2, unsafe: 1
+
+Parent: "Draft the migration docs; I'll keep working meanwhile"
+└─ agent("docs", "You draft docs.", "Draft the migration docs for the refactor.",
+               contract=[{prompt: "Docs drafted where?"}],
+               background=true)
+    └─ returns { id: "docs", sessionFile: ".pi/agents/sessions/<uuidv7>.jsonl", background: true } immediately
+    └─ parent keeps prompting on other tasks; child runs detached
+    └─ child fulfills → result parked in mailbox → injected follow-up message
+       "[pi-agents] background agent docs finished" joins the LLM context
+
+Parent: "Collect it"
+└─ agent_wait({ id: "docs" })
+    └─ returns the contract answers as data (already parked, so immediately)
 ```
 
 ## Caveats / Known Limitations
@@ -273,11 +326,14 @@ Parent: "Is this diff safe to merge?"
 - **One model for ordinary spawns** — `model` in `pi-agents.json` applies to every ordinary child and descendant; panels use explicit per-member `models` when supplied, otherwise the configured `panelModels` roster, then `model`. Unset means ordinary children use the parent session's active model.
 - **Panel lifecycle and cost** — killing a panel means killing member ids `<id>-1` through `<id>-N`; the panel id is never registered. A panel multiplies token cost by N, and each member counts individually against `maxLiveAgents`.
 - **Panel consensus is narrow** — consensus is mechanical only on questions with enumerated options; free-text answers are listed verbatim rather than tallied.
-- **Children run in-process** — they are not isolated processes; a crash or infinite loop in a child can affect the parent session.
+- **Children run as subprocesses** — each child is a separate `pi --mode rpc` OS process with real isolation, so a crash or infinite loop in a child is contained rather than taking down the parent session. Teardown signals the child (SIGTERM, then SIGKILL after the grace window); the child's own `session_shutdown` — the SIGTERM handler pi runs — makes the cascade reach grandchildren. A background child is still a child of the parent session: session shutdown aborts it too.
+- **Per-child startup cost** — each child is a fresh pi process, so a spawn pays pi's session startup (extension load, context init) before the contract prompt runs. Several concurrent spawns multiply that on first use; `maxLiveAgents` bounds how far concurrency can go.
+- **`maxLiveAgents` is per-process** — each pi process enforces its own registry cap for its own descendants; there is no global cross-process budget, so a nested child's spawns are capped by its own config, not by the parent's registry.
 - **Recursive spawning is config-bounded** — descendants may spawn more descendants only while doing so stays within configured `maxDepth` and `maxLiveAgents`.
 - **Subtree-scoped control** — descendant agents can only manage agents in their own subtree; they cannot spawn into or kill arbitrary siblings' branches.
 - **No file-system confinement** — child `read`/`write`/`edit`/`bash` are pi's built-in tools running with the user's OS-level file and network access. The working directory is where relative paths resolve, nothing more.
-- **Minimal allowlisted env for `bash`** — child shell commands receive a small allowlisted environment: `PATH`, `HOME`, `SHELL`, `USER`, `LOGNAME`, locale/timezone variables, `TERM`/`COLORTERM`, `TMPDIR`, `XDG_RUNTIME_DIR`, and TLS/CA certificate variables (`SSL_CERT_FILE`, `SSL_CERT_DIR`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`). This filters which *environment variables* children inherit — it does not protect secrets stored in files, since a child can read them via `bash`. Pass genuinely needed extra variables inline per command.
+- **Full environment inheritance** — a child subprocess inherits the parent's entire environment plus the child-mode `PI_AGENTS_*` protocol vars; there is no env allowlist anymore. The old in-process child-bash allowlist was deleted with the rpc-child rewrite because children are full pi sessions that handle their own env. Environment secrets reach the child, and a child can read secrets in files via its own `bash`.
+- **Background mailbox is bounded** — completed background results are parked in a per-session mailbox of at most ~24 entries; past that the oldest is dropped with a tombstone warning, and the injected follow-up message (already delivered) is the only record. `agent_output` reports the tombstone for a dropped id; `agent_wait` will not find it.
 - **Child text is sanitized for the terminal** — reports and activity previews have ANSI/OSC escape sequences stripped before rendering, so a child cannot inject terminal control sequences into the TUI.
 - **Suspended children hold capacity** — a child awaiting answers holds a live slot indefinitely; there is no suspension deadline. Kill it with `agent_kill` if it should be abandoned.
 - **Upward asks are bounded** — each child gets at most 8 `ask_parent` calls; after that it must submit its contract (using `__unable__` where needed).

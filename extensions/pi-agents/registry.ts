@@ -10,12 +10,27 @@
  * createRegistry(), so multiple sessions stay isolated.
  */
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { modelLabel, settleWithGrace, type ChildState } from "./state.js";
+import { settleWithGrace, type AgentToolDetails, type ChildState } from "./state.js";
+import { shortenPath } from "./render.js";
+
+/** A parked background completion result (see `mailbox`); consumed by agent_wait. */
+export interface MailboxEntry {
+	result: AgentToolResult<AgentToolDetails>;
+}
+
+/** Bound on the background result mailbox: park is drop-oldest past this many entries. */
+const MAX_MAILBOX_ENTRIES = 24;
 
 export interface Registry {
 	children: Map<string, ChildState>;
 	/** IDs reserved by in-flight spawns that have not yet inserted into `children`. */
 	reservedIds: Set<string>;
+	/** Parked background completion results (deliverable via agent_wait); bounded, drop-oldest. */
+	mailbox: Map<string, MailboxEntry>;
+	/** Tombstones for mailbox entries dropped by the bound, so a query learns where its result went. */
+	droppedMailbox: Map<string, string>;
+	parkMailbox(id: string, result: AgentToolResult<AgentToolDetails>): void;
+	consumeMailbox(id: string): AgentToolResult<AgentToolDetails> | undefined;
 	getCallerState(callerId: string): ChildState;
 	isInSubtree(targetId: string, ancestorId: string, allowSelf?: boolean): boolean;
 	/** Depth-first preorder: root, then each child's subtree in id order. */
@@ -35,7 +50,34 @@ export function createRegistry(): Registry {
 	const children = new Map<string, ChildState>();
 	/** IDs reserved by in-flight spawns that have not yet inserted into `children`. */
 	const reservedIds = new Set<string>();
+	const mailbox = new Map<string, MailboxEntry>();
+	const droppedMailbox = new Map<string, string>();
 
+	/** Park a background completion result; drop the oldest entry over the bound with a tombstone warning. */
+	function parkMailbox(id: string, result: AgentToolResult<AgentToolDetails>): void {
+		if (mailbox.has(id)) mailbox.delete(id); // re-park at the tail
+		mailbox.set(id, { result });
+		while (mailbox.size > MAX_MAILBOX_ENTRIES) {
+			const oldest = mailbox.keys().next().value as string | undefined;
+			if (oldest === undefined) break;
+			mailbox.delete(oldest);
+			droppedMailbox.set(oldest, `Background result for "${oldest}" was dropped (mailbox bound of ${MAX_MAILBOX_ENTRIES}): its injected follow-up message is the only record.`);
+			while (droppedMailbox.size > MAX_MAILBOX_ENTRIES) {
+				const oldestDropped = droppedMailbox.keys().next().value as string | undefined;
+				if (oldestDropped === undefined) break;
+				droppedMailbox.delete(oldestDropped);
+			}
+		}
+	}
+
+	/** Remove and return a parked result, if any. Also clears any drop tombstone for the id. */
+	function consumeMailbox(id: string): AgentToolResult<AgentToolDetails> | undefined {
+		const entry = mailbox.get(id);
+		if (!entry) return undefined;
+		mailbox.delete(id);
+		droppedMailbox.delete(id);
+		return entry.result;
+	}
 	function getCallerState(callerId: string): ChildState {
 		const state = children.get(callerId);
 		if (!state) throw new Error(`Caller agent "${callerId}" is no longer active.`);
@@ -92,7 +134,7 @@ export function createRegistry(): Registry {
 	}
 
 	/**
-	 * Mark the subtree killed and abort its agents. States with no active run
+	 * Mark the subtree killed and abort its engines. States with no active run
 	 * are removed immediately; a state whose run is in flight stays registered
 	 * (as a killed tombstone) and is removed by that run's finally block once
 	 * the prompt settles, so no work continues against an unregistered agent.
@@ -105,7 +147,7 @@ export function createRegistry(): Registry {
 			if (!state) continue;
 			state.killed = true;
 			reportCount += state.reports.length;
-			state.agent.abort();
+			state.engine?.abort();
 		}
 		for (const id of ids) {
 			const state = children.get(id);
@@ -125,26 +167,29 @@ export function createRegistry(): Registry {
 		if (callerId) getCallerState(callerId);
 		const agents = getScopedEntries(callerId).map(([id, state]) => ({
 			id,
-			status: state.agent.state.isStreaming || state.locked ? "running" : state.contract.pendingAsk ? `awaiting answers (${state.contract.pendingAsk.length}q, ${Math.round((Date.now() - (state.awaitingSince ?? Date.now())) / 1000)}s)` : "idle",
-			model: modelLabel(state.agent),
+			status: state.locked ? "running" : state.contract.pendingAsk ? `awaiting answers (${state.contract.pendingAsk.length}q, ${Math.round((Date.now() - (state.awaitingSince ?? Date.now())) / 1000)}s)` : "idle",
+			background: state.background !== undefined,
+			model: state.modelKey,
 			parentId: state.parentId,
 			rootId: state.rootId,
 			depth: state.depth,
 			cwd: state.cwd,
-			isRunning: state.agent.state.isStreaming || state.locked,
+			isRunning: state.locked,
 			pendingQuestionCount: state.contract.pendingAsk?.length ?? 0,
 			awaitingSince: state.awaitingSince,
 			contractFulfilled: state.contract.answers !== undefined,
 			nudges: state.nudges,
 			reportCount: state.reports.length,
 			activityCount: state.activity.length,
+			sessionFile: state.sessionFile,
 			createdAt: state.createdAt,
 		}));
 		const text = agents.length === 0
 			? "No active child agents."
 			: agents.map((agent) =>
-				`• ${agent.id} — ${agent.status}, depth ${agent.depth}, ` +
+				`• ${agent.id}${agent.background ? " (background)" : ""} — ${agent.status}, depth ${agent.depth}, ` +
 				`${agent.parentId ? `parent ${agent.parentId}` : "root child"}, ${agent.model}, ${agent.reportCount} reports` +
+				`${agent.sessionFile ? `, session ${shortenPath(agent.sessionFile)}` : ""}` +
 				`${agent.nudges > 0 ? `, ${agent.nudges} nudges` : ""}, contract ${agent.contractFulfilled ? "fulfilled" : "pending"}`,
 			).join("\n");
 		return { content: [{ type: "text", text }], details: { agents } };
@@ -152,17 +197,22 @@ export function createRegistry(): Registry {
 
 	async function shutdown(): Promise<void> {
 		const states = [...children.values()];
-		for (const state of states) {
-			state.killed = true;
-			state.agent.abort();
-		}
-		await settleWithGrace(states.map((state) => state.agent.waitForIdle()));
+		const engines = states.map((state) => state.engine).filter((engine): engine is NonNullable<typeof engine> => engine !== null);
+		for (const state of states) state.killed = true;
+		for (const engine of engines) engine.abort();
+		await settleWithGrace(engines.map((engine) => engine.stop()));
 		children.clear();
+		mailbox.clear();
+		droppedMailbox.clear();
 	}
 
 	return {
 		children,
 		reservedIds,
+		mailbox,
+		droppedMailbox,
+		parkMailbox,
+		consumeMailbox,
 		getCallerState,
 		isInSubtree,
 		getSubtreeIds,

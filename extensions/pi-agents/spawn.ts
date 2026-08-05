@@ -1,39 +1,53 @@
 /**
- * pi-agents spawn machinery module: spawnChild/spawnPanel, the child agent
- * assembly (buildChildAgent + createChildManagementTools), the run lifecycle
- * (finishExchange, answerAgent, killAgentResult), and the tool schemas they
- * own (spawnSchema, answerAgentSchema, killSchema, listSchema). Per
- * DESIGN.md: "spawn/kill lifecycle (decision-making)".
+ * pi-agents spawn machinery module: spawnChild/spawnPanel, the run lifecycle
+ * (finishExchange, answerAgent, killAgentResult), the background-spawn
+detached drive (runDetached) plus the agent_wait / agent_output query
+functions, and the tool schemas they own (spawnSchema, answerAgentSchema,
+killSchema, listSchema, waitSchema, outputSchema). Per DESIGN.md:
+ * "spawn/kill lifecycle (decision-making)".
+ *
+ * Since the stage-2 rpc-child rewrite, spawnChild no longer assembles an
+ * in-process Agent (buildChildAgent/createChildManagementTools were deleted);
+ * it spawns a literal `pi --mode rpc` subprocess via rpc-child.ts and drives
+ * it until the contract is fulfilled, the child suspends via ask_parent, or
+ * the run errors out.
+ *
+ * Since stage 3, `background: true` spawns return immediately with a session
+ * handle and run detached: the drive loop runs on a promise stored on
+ * ChildState.background (agent_wait awaits it / agent_output peeks it). On
+ * fulfill/error the result is parked in the registry mailbox and announced by
+ * an injected follow-up message; a background ask_parent keeps the child
+ * alive and injects an urgent steer message. The inject callback is wired by
+ * index.ts to pi.sendMessage; spawn.ts owns the policy (followUp for results,
+ * steer for asks, bounded mailbox), index.ts owns the pi handle.
  *
  * createSpawnTools(deps) is invoked inside multiAgent() with the per-session
- * registry, session state, and config loader; no module-level state, so
- * multiple sessions stay isolated.
+ * registry, session state, config loader, and inject callback; no
+ * module-level state, so multiple sessions stay isolated.
  */
-import { Agent, type AgentTool, type AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
-import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { ModelRegistry, Theme } from "@earendil-works/pi-coding-agent";
+import { resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
 import {
 	UNABLE_VALUE,
-	buildAskParentTool,
-	buildSubmitAnswersTool,
 	contractAnswersSchema,
 	contractSchema,
 	normalizeContract,
 	renderAnswersBlock,
 	renderContractBlock,
-	runUntilContractFulfilled,
+	renderQuestionLines,
 	validateContractAnswers,
 	type ContractBox,
 } from "./contract.js";
+import { readChildEnv } from "./contract.js";
 import {
-	buildReportTool,
 	collectResult,
-	createChildTools,
 	modelDisplay,
-	subscribeChild,
+	subscribeRpcChild,
 	tallyPanel,
+	usageToDetails,
 	withOptionalTimeout,
 	type AgentToolDetails,
 	type ChildState,
@@ -41,6 +55,7 @@ import {
 import { resolveChildModel, type PiAgentsConfig } from "./config.js";
 import type { Registry } from "./registry.js";
 import { stripControlSequences } from "./render.js";
+import { DEFAULT_CHILD_SESSION_DIR, runContract, spawnRpcChild } from "./rpc-child.js";
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -57,7 +72,8 @@ const spawnSchema = Type.Object({
 	system_prompt: Type.String({ description: "System prompt defining the child agent's role and behavior" }),
 	task: Type.String({ description: "Initial task to assign to the child agent" }),
 	contract: contractSchema,
-	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds to wait for the agent to finish (must be > 0). If the deadline expires the agent is aborted, removed from the registry, and an error is thrown." })),
+	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds to wait for the agent to finish (must be > 0). If the deadline expires the agent is aborted, removed from the registry, and an error is thrown. Background children enforce the same deadline (the timeout error is parked and injected as a follow-up message)." })),
+	background: Type.Optional(Type.Boolean({ description: "Run this agent in the background: the tool returns immediately with a session handle while the child runs detached. When it fulfills its contract (or errors or times out) its result is parked in the mailbox and a follow-up message announces it; collect the result with agent_wait({ id }) and inspect progress with agent_output({ id }). A background agent that calls ask_parent suspends as usual and injects an urgent message; agent_answer resumes it detached again. Blocking remains the default — background is for runs you do not want to wait on." })),
 	panel: Type.Optional(Type.Object({
 		size: Type.Optional(Type.Number({ description: "Number of independent panel members (2-5)" })),
 		models: Type.Optional(Type.Array(Type.String(), { description: "One model spec per panel member" })),
@@ -69,6 +85,15 @@ const killSchema = Type.Object({
 });
 
 const listSchema = Type.Object({});
+
+const waitSchema = Type.Object({
+	id: Type.String({ description: "ID of the background agent to wait for" }),
+	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds to wait for it to settle before failing. Bounds only this wait — the background agent keeps running if the wait expires; call agent_output for status or wait again." })),
+});
+
+const outputSchema = Type.Object({
+	id: Type.String({ description: "ID of a background agent to inspect" }),
+});
 
 // ---------------------------------------------------------------------------
 // Session deps
@@ -94,6 +119,7 @@ export type SpawnChildFn = (
 	onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void,
 	modelOverride?: Model<any>,
 	allowAsk?: boolean,
+	background?: boolean,
 ) => Promise<AgentToolResult<AgentToolDetails>>;
 
 export type SpawnPanelFn = (
@@ -114,10 +140,24 @@ export type AnswerAgentFn = (
 
 export type KillAgentResultFn = (callerId: string | undefined, targetId: string) => AgentToolResult<unknown>;
 
+export type WaitAgentFn = (
+	callerId: string | undefined,
+	params: { id: string; timeout_seconds?: number },
+	signal?: AbortSignal,
+	onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void,
+) => Promise<AgentToolResult<AgentToolDetails>>;
+
+export type OutputAgentFn = (callerId: string | undefined, targetId: string) => AgentToolResult<AgentToolDetails>;
+
+/** Session message injection (pi.sendMessage), wired from index.ts. */
+export type InjectMessageFn = (delivery: { deliverAs: "steer" | "followUp"; triggerTurn: boolean; content: string }) => void;
+
 export interface SpawnDeps {
 	registry: Registry;
 	session: SessionState;
 	getConfig: (cwd: string) => Promise<PiAgentsConfig>;
+	/** Injects a custom message into the parent session (pi.sendMessage); owns no pi handle. */
+	inject: InjectMessageFn;
 }
 
 export interface SpawnTools {
@@ -125,101 +165,136 @@ export interface SpawnTools {
 	spawnPanel: SpawnPanelFn;
 	answerAgent: AnswerAgentFn;
 	killAgentResult: KillAgentResultFn;
+	waitAgent: WaitAgentFn;
+	outputAgent: OutputAgentFn;
 }
 
 export function createSpawnTools(deps: SpawnDeps): SpawnTools {
-	const { registry, session, getConfig } = deps;
+	const { registry, session, getConfig, inject } = deps;
 
-	function createChildManagementTools(callerId: string, cwd: string, model: Model<any>): AgentTool<any>[] {
-		const spawnTool: AgentTool<typeof spawnSchema> = {
-			name: "agent",
-			label: "Agent",
-			description:
-				"Spawn a descendant agent within your own subtree. Pass `panel` to get a second opinion instead of judging alone: N independent children answer the same contract on different models and the result is an agreement tally. Requires a contract; " +
-				"the descendant's result is its structured contract answers, and it is removed once it answers. " +
-				"Subject to configured maxDepth and maxLiveAgents limits. If the child calls ask_parent instead, this call returns its questions and the agent stays alive (holding context and a maxLiveAgents slot) until agent_answer resumes it or agent_kill removes it.",
-			parameters: spawnSchema,
-			execute: async (_toolCallId, params, signal, onUpdate) => {
-				return params.panel ? await spawnPanel(callerId, params, model, cwd, signal, onUpdate) : await spawnChild(callerId, params, model, cwd, signal, onUpdate);
-			},
-		};
+	/** Number of recent activity lines agent_output shows. */
+	const MAX_OUTPUT_ACTIVITY = 8;
 
-		const answerTool: AgentTool<typeof answerAgentSchema> = {
-			name: "agent_answer", label: "Answer Agent",
-			description: "Answer questions from a suspended descendant; the call blocks until its contract is fulfilled or it asks again.",
-			parameters: answerAgentSchema,
-			execute: async (_toolCallId, params, signal, onUpdate) => {
-				return answerAgent(callerId, params, signal, onUpdate);
-			},
-		};
-
-
-		const killTool: AgentTool<typeof killSchema> = {
-			name: "agent_kill",
-			label: "Kill Agent",
-			description: "Kill a descendant agent in your subtree. Descendants are killed recursively.",
-			parameters: killSchema,
-			execute: async (_toolCallId, params) => killAgentResult(callerId, params.id),
-		};
-
-		const listTool: AgentTool<typeof listSchema> = {
-			name: "agent_list",
-			label: "List Agents",
-			description: "List agents in your subtree, including yourself.",
-			parameters: listSchema,
-			execute: async () => registry.listAgentsResult(callerId),
-		};
-
-		return [spawnTool as AgentTool<any>, answerTool as AgentTool<any>, killTool as AgentTool<any>, listTool as AgentTool<any>];
+	/** Deliver a background notification; a failed injection must never surface outside the extension. */
+	function tryInject(delivery: Parameters<InjectMessageFn>[0]): void {
+		try {
+			inject(delivery);
+		} catch (err) {
+			console.error(`[pi-agents] failed to inject background message: ${err instanceof Error ? err.message : String(err)}`);
+		}
 	}
 
-	function buildChildAgent(
-		childId: string,
-		systemPrompt: string,
-		model: Model<any>,
-		cwd: string,
-		reports: string[],
-		contract: ContractBox,
-		holder: { state?: ChildState },
-		allowAsk = true,
-		canSpawn = true,
-	): Agent {
-		const reportTool = buildReportTool(childId, reports);
-		const submitTool = buildSubmitAnswersTool(childId, contract);
-		const askTool = allowAsk ? buildAskParentTool(childId, holder) : undefined;
-		const childTools = [
-			...createChildTools(cwd),
-			...(canSpawn ? createChildManagementTools(childId, cwd, model) : []),
-			reportTool as AgentTool<any>,
-			submitTool as AgentTool<any>,
-			...(askTool ? [askTool as AgentTool<any>] : []),
-		];
-		return new Agent({
-			initialState: { systemPrompt, model, tools: childTools },
-			streamFn: streamSimple,
-			getApiKey: session.cachedGetApiKey,
-		});
+	/** Handle-shaped result for a background spawn / agent_answer resume ack. */
+	function backgroundHandle(state: ChildState, text: string): AgentToolResult<AgentToolDetails> {
+		return {
+			content: [{ type: "text", text }],
+			details: { childId: state.id, model: state.modelDisplay, activity: [], reports: [], done: false, background: true, sessionFile: state.sessionFile },
+		};
 	}
 
+	/** Park a background completion in the mailbox and announce it via an injected follow-up message. */
+	function announceCompletion(state: ChildState, result: AgentToolResult<AgentToolDetails>, errorText?: string): void {
+		registry.parkMailbox(state.id, result);
+		const first = result.content[0];
+		const body = first?.type === "text" ? first.text : "(no message)";
+		const lead = errorText
+			? `[pi-agents] background agent ${state.id} finished with error`
+			: `[pi-agents] background agent ${state.id} finished`;
+		tryInject({ deliverAs: "followUp", triggerTurn: true, content: errorText ? `${lead}:\n\n${errorText}` : `${lead}\n\n${body}` });
+	}
+
+	/**
+	 * Drive a background (detached) child run to settlement and deliver the
+	 * outcome. Fulfill/error → park the result in the mailbox + inject a
+	 * follow-up message. ask_parent suspension → keep the child alive and inject
+	 * an urgent steer message so the parent can reply with agent_answer. Never
+	 * rejects: the promise on ChildState.background resolves with the
+	 * AgentToolResult, so agent_wait can await it without an unhandled rejection
+	 * ever surfacing outside the extension.
+	 */
+	async function runDetached(state: ChildState, prompt: string, opts: { timeoutSeconds?: number; allowAsk: boolean }): Promise<AgentToolResult<AgentToolDetails>> {
+		try {
+			const result = await finishExchange(state, prompt, { timeoutSeconds: opts.timeoutSeconds, allowAsk: opts.allowAsk });
+			if (state.contract.pendingAsk && !state.errorMessage && !state.killed) {
+				const questions = state.contract.pendingAsk;
+				const lines = [
+					`[pi-agents] background agent ${state.id} asks:`,
+					"",
+					...renderQuestionLines(questions),
+					"",
+					`Reply with agent_answer({ id: "${state.id}", answers: [{ id, value }, ...] }) to resume it (it stays detached), or agent_kill("${state.id}") to abandon it.`,
+				];
+				tryInject({ deliverAs: "steer", triggerTurn: true, content: lines.join("\n") });
+				return result;
+			}
+			announceCompletion(state, result);
+			return result;
+		} catch (err) {
+			const errorText = err instanceof Error ? err.message : String(err);
+			state.errorMessage = errorText;
+			const result: AgentToolResult<AgentToolDetails> = {
+				content: [{ type: "text", text: `[Error]: ${errorText}` }],
+				details: {
+					childId: state.id,
+					model: state.modelDisplay,
+					activity: [...state.activity],
+					reports: [...state.reports],
+					usage: usageToDetails(state.usage),
+					contract: [...state.contract.questions],
+					answers: state.contract.answers ? [...state.contract.answers] : undefined,
+					error: errorText,
+					done: true,
+					background: true,
+				},
+			};
+			announceCompletion(state, result, errorText);
+			return result;
+		}
+	}
+
+	/** Combined id list (live children + parked mailbox) for unknown-id errors. */
+	function knownAgentIds(): string {
+		const ids = new Set<string>();
+		for (const [id, state] of registry.children) if (!state.killed) ids.add(id);
+		for (const id of registry.mailbox.keys()) ids.add(id);
+		return [...ids].sort().join(", ") || "(none)";
+	}
 	/** The subtree is removed on any error; nothing outlives a failed run. */
-	async function finishExchange(state: ChildState, prompt: string, signal: AbortSignal | undefined, timeoutSeconds: number | undefined, onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void): Promise<AgentToolResult<AgentToolDetails>> {
-		const onAbort = () => state.agent.abort();
-		signal?.addEventListener("abort", onAbort, { once: true });
-		const unsub = subscribeChild(state.agent, state.id, state, onUpdate, session.sessionTheme);
+	async function finishExchange(state: ChildState, prompt: string, opts: { signal?: AbortSignal; timeoutSeconds?: number; allowAsk: boolean; onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void }): Promise<AgentToolResult<AgentToolDetails>> {
+		const engine = state.engine;
+		if (!engine) throw new Error(`Agent "${state.id}" has no live RPC process`);
+		const onAbort = () => engine.abort();
+		opts.signal?.addEventListener("abort", onAbort, { once: true });
+		const unsub = subscribeRpcChild(engine, state.id, state, opts.onUpdate, session.sessionTheme);
 		try {
 			if (state.killed) throw new Error(`Agent "${state.id}" was killed while running`);
-			if (signal?.aborted) throw new Error(`Agent "${state.id}" aborted before start`);
-			if (state.agent.state.errorMessage) throw new Error(state.agent.state.errorMessage);
-			await withOptionalTimeout(state.agent, state.id, runUntilContractFulfilled(state, prompt, signal, !state.panelMember), timeoutSeconds);
+			if (opts.signal?.aborted) throw new Error(`Agent "${state.id}" aborted before start`);
+			if (engine.exitError) throw engine.exitError;
+			await withOptionalTimeout(engine, state.id, runContract(state, { prompt, allowAsk: opts.allowAsk, signal: opts.signal }), opts.timeoutSeconds);
 			if (state.killed) throw new Error(`Agent "${state.id}" was killed while running`);
-			if (signal?.aborted) throw new Error(`Agent "${state.id}" aborted while running`);
-			if (state.agent.state.errorMessage) throw new Error(state.agent.state.errorMessage);
+			if (opts.signal?.aborted) throw new Error(`Agent "${state.id}" aborted while running`);
+			if (state.errorMessage) throw new Error(state.errorMessage);
+			if (engine.exitError) throw engine.exitError;
 		}
-		catch (err) { state.killed = true; registry.killSubtree(state.id); throw err; }
-		finally { state.locked = false; unsub(); signal?.removeEventListener("abort", onAbort); if (state.killed) registry.removeStateIfCurrent(state); }
+		catch (err) {
+			state.errorMessage = err instanceof Error ? err.message : String(err);
+			state.killed = true;
+			await engine.stop().catch(() => {});
+			registry.killSubtree(state.id);
+			throw err;
+		}
+		finally {
+			state.locked = false;
+			unsub();
+			opts.signal?.removeEventListener("abort", onAbort);
+			if (state.killed) registry.removeStateIfCurrent(state);
+		}
 		const result = collectResult(state.id, state, state.reportCursor);
 		state.reportCursor = state.reports.length;
-		if (!(state.contract.pendingAsk && !state.agent.state.errorMessage && !state.killed)) registry.killSubtree(state.id);
+		if (!(state.contract.pendingAsk && !state.errorMessage && !state.killed)) {
+			registry.killSubtree(state.id);
+			await engine.stop().catch(() => {});
+		}
 		return result;
 	}
 
@@ -232,6 +307,7 @@ export function createSpawnTools(deps: SpawnDeps): SpawnTools {
 		onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void,
 		modelOverride?: Model<any>,
 		allowAsk = true,
+		background = false,
 	): Promise<AgentToolResult<AgentToolDetails>> {
 		if (signal?.aborted) throw new Error(`spawn of "${params.id}" aborted before start`);
 
@@ -260,14 +336,23 @@ export function createSpawnTools(deps: SpawnDeps): SpawnTools {
 			if (reservedLive >= config.maxLiveAgents) {
 				throw new Error(
 					`Cannot spawn agent "${params.id}": maxLiveAgents ${config.maxLiveAgents} reached. ` +
-					`Answer or kill suspended agents, or kill others.`, 
+					`Answer or kill suspended agents, or kill others.`,
 				);
 			}
 
 			const contract: ContractBox = { questions: normalizeContract(params.contract, `agent "${params.id}"`) };
 			const reports: string[] = [];
-			const askHolder: { state?: ChildState } = {};
-			const child = buildChildAgent(params.id, params.system_prompt, childModel, cwd, reports, contract, askHolder, allowAsk, childDepth < config.maxDepth);
+			const parentDepth = readChildEnv()?.depth ?? 0;
+			const sessionDir = resolve(cwd, config.sessionDir ?? DEFAULT_CHILD_SESSION_DIR);
+			const engine = await spawnRpcChild({
+				childId: params.id,
+				cwd,
+				systemPrompt: params.system_prompt,
+				model: childModel,
+				contract: contract.questions,
+				parentDepth,
+				sessionDir,
+			});
 			const state: ChildState = {
 				id: params.id,
 				parentId: parentState?.id,
@@ -275,8 +360,9 @@ export function createSpawnTools(deps: SpawnDeps): SpawnTools {
 				depth: childDepth,
 				cwd,
 				createdAt: Date.now(),
+				engine,
 				modelDisplay: modelDisplay(childModel, model),
-				agent: child,
+				modelKey: `${childModel.provider}/${childModel.id}`,
 				reports,
 				activity: [],
 				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
@@ -286,12 +372,27 @@ export function createSpawnTools(deps: SpawnDeps): SpawnTools {
 				contract,
 				locked: true,
 				killed: false,
+				lastAssistantText: "",
+				sessionFile: engine.sessionFile,
+				panelMember: !allowAsk,
+				timeoutSeconds: params.timeout_seconds,
 			};
 			registry.children.set(params.id, state);
 			registry.reservedIds.delete(params.id);
-			askHolder.state = state;
 
-			return await finishExchange(state, `${params.task}\n\n${renderContractBlock(contract.questions, allowAsk)}`, signal, params.timeout_seconds, onUpdate);
+			const prompt = `${params.task}\n\n${renderContractBlock(contract.questions, allowAsk)}`;
+			if (background) {
+				// Detached: the tool returned a handle already (below); the drive loop
+				// runs on a promise that never rejects (an unhandled rejection must
+				// never surface outside the extension). No tool signal is passed — the
+				// agent tool already returned, so its abort must not kill the child.
+				const promise = runDetached(state, prompt, { timeoutSeconds: params.timeout_seconds, allowAsk });
+				state.background = { promise };
+				promise.catch(() => {}); // belt-and-suspenders; runDetached never rejects.
+				return backgroundHandle(state, `spawned in background — session ${state.sessionFile ?? "(not yet recorded)"}`);
+			}
+
+			return await finishExchange(state, prompt, { signal, timeoutSeconds: params.timeout_seconds, allowAsk, onUpdate });
 		} finally {
 			registry.reservedIds.delete(params.id);
 		}
@@ -378,7 +479,134 @@ export function createSpawnTools(deps: SpawnDeps): SpawnTools {
 		const questions = state.contract.pendingAsk;
 		const answers = validateContractAnswers(questions, params.answers);
 		state.contract.pendingAsk = undefined; state.awaitingSince = undefined; state.locked = true;
-		return finishExchange(state, renderAnswersBlock(questions, answers), signal, params.timeout_seconds, onUpdate);
+		const prompt = renderAnswersBlock(questions, answers, !state.panelMember);
+		if (state.background) {
+			// Background resume: the child goes detached again; its outcome lands in
+			// the mailbox and an injected follow-up message, not in this tool result.
+			const resumed = runDetached(state, prompt, { timeoutSeconds: state.timeoutSeconds, allowAsk: !state.panelMember });
+			state.background = { promise: resumed };
+			resumed.catch(() => {}); // belt-and-suspenders; runDetached never rejects.
+			return backgroundHandle(state, `Resumed "${state.id}" in background — it will report back via agent_wait / agent_output when it fulfills its contract, errors, or asks again.`);
+		}
+		return finishExchange(state, prompt, { signal, timeoutSeconds: params.timeout_seconds, allowAsk: !state.panelMember, onUpdate });
+	}
+
+	/** Collect a background agent's result: parked in the mailbox → return immediately; still live → wait for it. */
+	async function waitAgent(callerId: string | undefined, params: { id: string; timeout_seconds?: number }, signal?: AbortSignal): Promise<AgentToolResult<AgentToolDetails>> {
+		if (signal?.aborted) throw new Error(`agent_wait for "${params.id}" aborted before start`);
+		const parked = registry.consumeMailbox(params.id);
+		if (parked) return parked;
+
+		let state: ChildState;
+		try {
+			state = registry.getAccessibleTarget(callerId, params.id, "wait", false);
+		} catch {
+			throw new Error(`Background agent "${params.id}" not found. Known ids: ${knownAgentIds()}.`);
+		}
+		if (!state.background) {
+			throw new Error(`Agent "${params.id}" is not a background agent — agent_wait waits only for background spawns (agent with background: true). Live agents: ${knownAgentIds()}.`);
+		}
+		const backgroundPromise = state.background.promise;
+
+		const deadline = params.timeout_seconds;
+		if (deadline !== undefined && (!Number.isFinite(deadline) || deadline <= 0)) {
+			throw new Error("timeout_seconds must be a finite number greater than 0");
+		}
+		// Bound only this wait (and honor tool abort); never abort the background
+		// child — its own spawn-time timeout is the only thing that kills it.
+		const wait = new Promise<AgentToolResult<AgentToolDetails>>((resolve, reject) => {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			let settled = false;
+
+			function settle(fn: () => void): void {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				signal?.removeEventListener("abort", settleAbort);
+				fn();
+			}
+
+			function settleAbort(): void {
+				settle(() => reject(new Error(`agent_wait for "${state.id}" aborted while waiting (the background agent keeps running)`)));
+			}
+
+			signal?.addEventListener("abort", settleAbort, { once: true });
+			if (deadline !== undefined) {
+				timer = setTimeout(() => settle(() => reject(new Error(`Timed out waiting for background agent "${state.id}" after ${deadline}s (still running — call agent_output({ id: "${state.id}" }) for status)`))), deadline * 1000);
+			}
+			backgroundPromise.then((result) => settle(() => resolve(result)));
+			if (signal?.aborted) settleAbort();
+		});
+		const result = await wait;
+		// Fulfill/error runs park in the mailbox; the awaited value is authoritative either way.
+		return registry.consumeMailbox(params.id) ?? result;
+	}
+
+	/** Non-blocking peek at a live background child (works for suspended children too). */
+	function outputAgent(callerId: string | undefined, targetId: string): AgentToolResult<AgentToolDetails> {
+		const parked = registry.mailbox.get(targetId);
+		if (parked) {
+			return {
+				content: [{ type: "text", text: `Agent "${targetId}" has finished; its result is parked. Call agent_wait({ id: "${targetId}" }) to collect it.` }],
+				details: { childId: targetId, activity: [], reports: [], done: false, background: true, peek: true },
+			};
+		}
+		const dropped = registry.droppedMailbox.get(targetId);
+		if (dropped) {
+			return {
+				content: [{ type: "text", text: dropped }],
+				details: { childId: targetId, activity: [], reports: [], done: false, peek: true },
+			};
+		}
+
+		let state: ChildState;
+		try {
+			state = registry.getAccessibleTarget(callerId, targetId, "inspect", false);
+		} catch {
+			throw new Error(`Background agent "${targetId}" not found. Known ids: ${knownAgentIds()}.`);
+		}
+		const background = state.background !== undefined;
+		const status = state.locked
+			? "running"
+			: state.contract.pendingAsk
+				? `awaiting answers (${state.contract.pendingAsk.length}q, ${Math.round((Date.now() - (state.awaitingSince ?? Date.now())) / 1000)}s)`
+				: "idle";
+		const lines = [
+			`Agent "${targetId}" — ${status}${background ? " (background)" : ""}`,
+			`model: ${state.modelKey}`,
+			`depth ${state.depth} · ${state.activity.length} actions · ${state.reports.length} reports · ${state.nudges} nudges`,
+			`suspended: ${state.awaitingSince ? "awaiting answers — reply with agent_answer" : "no"}`,
+			`session: ${state.sessionFile ?? "(not yet recorded)"}`,
+		];
+		const recent = state.activity.slice(-MAX_OUTPUT_ACTIVITY);
+		if (recent.length > 0) {
+			lines.push(`recent activity (last ${recent.length}):`);
+			for (const item of recent) lines.push(`  ${stripControlSequences(item.label)}`);
+		}
+		if (state.contract.pendingAsk && state.contract.pendingAsk.length > 0) {
+			lines.push("pending questions:");
+			for (const question of state.contract.pendingAsk) lines.push(`  - ${question.id}: ${stripControlSequences(question.prompt)}`);
+		}
+		if (state.reports.length > 0) {
+			lines.push("reports so far:");
+			for (const report of state.reports) lines.push(`  ${stripControlSequences(report)}`);
+		}
+		return {
+			content: [{ type: "text", text: lines.join("\n") }],
+			details: {
+				childId: targetId,
+				model: state.modelDisplay,
+				activity: [...state.activity],
+				reports: [...state.reports],
+				usage: usageToDetails(state.usage),
+				contract: [...state.contract.questions],
+				pendingAsk: state.contract.pendingAsk ? [...state.contract.pendingAsk] : undefined,
+				done: false,
+				background,
+				sessionFile: state.sessionFile,
+				peek: true,
+			},
+		};
 	}
 
 	function killAgentResult(callerId: string | undefined, targetId: string): AgentToolResult<unknown> {
@@ -395,7 +623,9 @@ export function createSpawnTools(deps: SpawnDeps): SpawnTools {
 		spawnPanel,
 		answerAgent,
 		killAgentResult,
+		waitAgent,
+		outputAgent,
 	};
 }
 
-export { spawnSchema, answerAgentSchema, killSchema, listSchema };
+export { spawnSchema, answerAgentSchema, killSchema, listSchema, waitSchema, outputSchema };

@@ -1,24 +1,26 @@
 /**
  * pi-agents child machinery module: child state, activity/usage collection,
- * result collection, timeout and activity helpers, the child's read/write/
- * edit/bash + report tools, and the panel tally. Per DESIGN.md: "child state,
- * subscribeChild, collectResult — machinery"; "createChildTools — thin
- * wrappers over pi built-ins — machinery"; "stripControlSequences, timeout
- * helpers, activity formatting — machinery".
+ * result collection, timeout and activity helpers, the ChildEngine RPC handle
+ * interface (implemented by rpc-child.ts), the RPC event subscription that
+ * feeds ChildState from a live child process, and the panel tally.
+ * Per DESIGN.md: "child state, subscribeChild, collectResult — machinery";
+ * "stripControlSequences, timeout helpers, activity formatting — machinery".
+ *
+ * The old in-process child tools (createChildTools/buildReportTool) and the
+ * in-process `Agent` dependency were deleted in the stage-2 rpc-child
+ * rewrite: children are literal `pi --mode rpc` subprocesses now.
  */
-import type { Agent, AgentEvent, AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
-import { createCodingTools, type Theme } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { Model } from "@earendil-works/pi-ai";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
 	NO_ANSWER_VALUE,
 	UNABLE_VALUE,
 	renderQuestionLines,
-	reportSchema,
 	type ContractAnswer,
 	type ContractBox,
 	type ContractQuestion,
 } from "./contract.js";
-import { buildSafeEnv } from "./config.js";
 import { formatToolCall, stripControlSequences, termBudget, truncLine, type Usage } from "./render.js";
 
 // ---------------------------------------------------------------------------
@@ -33,6 +35,12 @@ export interface ActivityItem {
 
 export interface AgentToolDetails {
 	childId: string;
+	/** Background spawn handle / resumed ack results, plus the agent_list "(background)" marker. */
+	background?: boolean;
+	/** The background child's durable session JSONL path (background handles). */
+	sessionFile?: string;
+	/** agent_output status peek / mailbox pointer: the renderer shows the content text as-is. */
+	peek?: boolean;
 	nudges?: number;
 	/** Child model as the TUI shows it: bare id, plus "[provider]" when it differs from the parent's. */
 	model?: string;
@@ -52,8 +60,6 @@ export interface AgentToolDetails {
 
 interface PanelTallyQuestion { questionId: string; prompt: string; freeText: boolean; unanimous: boolean; groups: { value: string; label: string; memberIds: string[]; count: number }[]; }
 interface PanelTally { questions: PanelTallyQuestion[]; disagreementCount: number; }
-
-export const modelLabel = (agent: Agent): string => `${agent.state.model.provider}/${agent.state.model.id}`;
 
 /** Pure tally; free-text questions are never treated as consensus. */
 export function tallyPanel(questions: ContractQuestion[], members: { id: string; model: string; answers: ContractAnswer[] | undefined }[]): PanelTally {
@@ -87,7 +93,6 @@ export const modelDisplay = (child: Model<any>, parent: Model<any>): string =>
 const MAX_ACTIVITY_STORAGE = 500;
 const SHUTDOWN_GRACE_MS = 5000;
 
-
 class AgentTimeoutError extends Error {
 	constructor(childId: string, timeoutSeconds: number) {
 		super(`Agent "${childId}" timed out after ${timeoutSeconds}s`);
@@ -104,7 +109,7 @@ export async function settleWithGrace(work: Array<Promise<unknown>>, graceMs = S
 }
 
 export async function withOptionalTimeout<T>(
-	agent: Agent,
+	engine: { abort(): void; waitForIdle(): Promise<unknown> },
 	childId: string,
 	work: Promise<T>,
 	timeout: number | undefined,
@@ -123,14 +128,14 @@ export async function withOptionalTimeout<T>(
 			new Promise<never>((_, reject) => {
 				handle = setTimeout(() => {
 					timedOut = true;
-					agent.abort();
+					engine.abort();
 					reject(new AgentTimeoutError(childId, timeout));
 				}, timeout * 1000);
 			}),
 		]);
 	} catch (err) {
 		if (timedOut) {
-			await settleWithGrace([work, agent.waitForIdle()]);
+			await settleWithGrace([work, engine.waitForIdle()]);
 		}
 		throw err;
 	} finally {
@@ -146,17 +151,45 @@ function formatToolActivity(name: string, args: Record<string, unknown>, theme?:
 }
 
 // ---------------------------------------------------------------------------
-// Contract machinery: normalization (ported from pi-interview protocol.ts),
-// validation, prompt rendering, enforcement loop
-
-// ---------------------------------------------------------------------------
-// Child tools: pi built-ins + report
+// ChildEngine / RPC event types (implemented by rpc-child.ts)
 // ---------------------------------------------------------------------------
 
-export function createChildTools(cwd: string): AgentTool<any>[] {
-	return createCodingTools(cwd, {
-		bash: { exposeSessionEnvironment: false, spawnHook: (context) => ({ ...context, env: buildSafeEnv() }) },
-	}) as AgentTool<any>[];
+/** A JSONL line from a child `pi --mode rpc` process (event or response). */
+export type ChildRpcEvent = { type: string } & Record<string, unknown>;
+
+export interface ChildRpcResponse {
+	type: string;
+	success: boolean;
+	id?: string;
+	command?: string;
+	data?: unknown;
+	error?: string;
+}
+
+/**
+ * Live handle to a child `pi --mode rpc` process. Implemented by rpc-child.ts;
+ * owned by ChildState so the registry and abort paths can tear it down
+ * identity-checked exactly like the old in-process Agent.
+ */
+export interface ChildEngine {
+	readonly pid: number;
+	/** The child's durable session JSONL path, from get_state. */
+	readonly sessionFile?: string;
+	/** Process alive and not yet torn down (schedule-wise; exit may be in flight). */
+	readonly alive: boolean;
+	readonly exitError: Error | undefined;
+	/** Subscribe to the child's RPC event stream; returns an unsubscribe. */
+	onEvent(listener: (event: ChildRpcEvent) => void): () => void;
+	/** Subscribe to process exit; fires once (immediately if already exited). */
+	onExit(listener: (info: { code: number | null; signal: string | null }) => void): () => void;
+	/** Send an RPC command; resolves with the matching response record. */
+	send(command: Record<string, unknown>): Promise<ChildRpcResponse>;
+	/** Fire-and-forget graceful teardown (SIGTERM, then SIGKILL after the grace window). */
+	abort(): void;
+	/** Awaitable graceful teardown (SIGTERM, then SIGKILL after the grace window). */
+	stop(): Promise<void>;
+	/** Resolve once the child process has exited. */
+	waitForIdle(): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,9 +203,14 @@ export interface ChildState {
 	depth: number;
 	cwd: string;
 	createdAt: number;
-	agent: Agent;
+	/** Live RPC subprocess engine; null only for a state whose spawn produced no process. */
+	engine: ChildEngine | null;
 	/** Precomputed TUI label; the parent model is only in scope at spawn time. */
 	modelDisplay: string;
+	/** Full "provider/id" key for agent_list lines. */
+	modelKey: string;
+	/** Post-run error message surfaced by collectResult (undefined = success/suspend). */
+	errorMessage?: string;
 	reports: string[];
 	activity: ActivityItem[];
 	panelMember?: boolean;
@@ -192,35 +230,22 @@ export interface ChildState {
 	awaitingSince?: number;
 	/** Accumulated token/cost sums across the child's assistant messages. */
 	usage: Usage;
+	/** Last assistant text (for the report-only fallback in collectResult). */
+	lastAssistantText: string;
+	/** The child's durable session JSONL path from get_state; included in agent_list lines. */
+	sessionFile?: string;
+	/**
+	 * Detached background run (background spawns). The promise never rejects —
+	 * it resolves with the run's AgentToolResult (parked in the registry mailbox
+	 * on fulfill/error, or the suspension result directly on ask_parent), so an
+	 * unhandled rejection can never surface outside the extension. Replaced on
+	 * agent_answer resume with the resumed run's promise.
+	 */
+	background?: { promise: Promise<AgentToolResult<AgentToolDetails>> };
+	/** Spawn-time timeout_seconds; reused for detached resumes after ask_parent. */
+	timeoutSeconds?: number;
 }
 
-
-function extractLastAssistantText(agent: Agent): string {
-	const textParts = agent.state.messages
-		.filter((msg): msg is AssistantMessage => msg.role === "assistant")
-		.map((msg) => msg.content.filter((c): c is TextContent => c.type === "text").map((c) => c.text))
-		.filter((parts) => parts.length > 0);
-	return textParts.at(-1)?.join("") ?? "(no output)";
-}
-
-export function buildReportTool(childId: string, reports: string[]): AgentTool<typeof reportSchema> {
-	return {
-		name: "report",
-		label: "Report",
-		description:
-			"Send a progress report to the parent agent. Use this for intermediate " +
-			"findings; you may call it multiple times and every call is delivered. " +
-			"Progress only — the run's result is your submit_answers contract submission.",
-		parameters: reportSchema,
-		execute: async (_toolCallId, params) => {
-			reports.push(stripControlSequences(params.message));
-			return {
-				content: [{ type: "text", text: "Report delivered to parent." }],
-				details: { childId, reportIndex: reports.length - 1 },
-			};
-		},
-	};
-}
 
 /** Hide a zeroed usage bucket so the header only shows real usage. */
 export function usageToDetails(usage: Usage): Usage | undefined {
@@ -230,10 +255,37 @@ export function usageToDetails(usage: Usage): Usage | undefined {
 	return usage;
 }
 
+interface ChildRpcUsage {
+	input?: number;
+	output?: number;
+	cacheRead?: number;
+	cacheWrite?: number;
+	cost?: { total?: number };
+}
 
-/** Subscribe to child events, push activity + reports to onUpdate. */
-export function subscribeChild(
-	child: Agent,
+const usageFromMessage = (message: { usage?: ChildRpcUsage }): Usage | undefined => {
+	const msg = message.usage;
+	if (!msg) return undefined;
+	return {
+		input: msg.input ?? 0,
+		output: msg.output ?? 0,
+		cacheRead: msg.cacheRead ?? 0,
+		cacheWrite: msg.cacheWrite ?? 0,
+		cost: msg.cost?.total ?? 0,
+	};
+};
+
+/**
+ * Subscribe to an RPC child's event stream, push activity + reports + usage
+ * into ChildState, and schedule TUI partial updates. RPC events are the same
+ * AgentSessionEvent family the in-process Agent emitted; tool args arrive on
+ * tool_execution_start (absent on end), so the tool-start label is rendered
+ * from the start args. Reports are appended by the drive loop's
+ * tool_execution_start handler (state.reports); the end handler renders the
+ * "report" activity line from the just-appended entry.
+ */
+export function subscribeRpcChild(
+	child: ChildEngine,
 	childId: string,
 	state: ChildState,
 	onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void,
@@ -271,27 +323,29 @@ export function subscribeChild(
 		emit();
 	};
 
-	const innerUnsub = child.subscribe((event: AgentEvent) => {
+	const innerUnsub = child.onEvent((event) => {
 		if (event.type === "tool_execution_start") {
-			push("tool_start", formatToolActivity(event.toolName, event.args, theme));
+			push("tool_start", formatToolActivity(String(event.toolName), (event.args as Record<string, unknown> | undefined) ?? {}, theme));
 		} else if (event.type === "tool_execution_end") {
 			if (event.toolName === "report" && !event.isError) {
 				const latest = state.reports.at(-1);
 				if (latest) push("report", `report "${truncLine(stripControlSequences(latest), termBudget(2))}"`);
 			} else {
-				push("tool_end", `${event.toolName} ${event.isError ? "failed" : "done"}`);
+				push("tool_end", `${String(event.toolName)} ${event.isError ? "failed" : "done"}`);
 			}
-		} else if (event.type === "message_end" && event.message.role === "assistant") {
-			const msg = event.message as AssistantMessage;
-			if (msg.usage) {
-				state.usage.input += msg.usage.input;
-				state.usage.output += msg.usage.output;
-				state.usage.cacheRead += msg.usage.cacheRead;
-				state.usage.cacheWrite += msg.usage.cacheWrite;
-				state.usage.cost += msg.usage.cost.total;
+		} else if (event.type === "message_end" && (event.message as { role?: string } | undefined)?.role === "assistant") {
+			const message = event.message as { content?: Array<{ type: string; text?: string }>; usage?: ChildRpcUsage };
+			const usage = usageFromMessage(message);
+			if (usage) {
+				state.usage.input += usage.input;
+				state.usage.output += usage.output;
+				state.usage.cacheRead += usage.cacheRead;
+				state.usage.cacheWrite += usage.cacheWrite;
+				state.usage.cost += usage.cost;
 			}
-			const textParts = msg.content.filter((c): c is TextContent => c.type === "text");
+			const textParts = (message.content ?? []).filter((c): c is { type: string; text: string } => c.type === "text" && typeof c.text === "string");
 			if (textParts.length > 0) {
+				state.lastAssistantText = stripControlSequences(textParts[0].text);
 				push("text", truncLine(stripControlSequences(textParts[0].text.split("\n")[0]), termBudget(2)));
 			}
 		}
@@ -321,9 +375,9 @@ export function collectResult(childId: string, state: ChildState, reportStartIdx
 		text = `Agent "${childId}" asks ${questions.length} question(s) and stays alive awaiting your answers:\n${renderQuestionLines(questions).join("\n")}\nAnswer with agent_answer({ id: "${childId}", answers: [{ id, value }, ...] }), or agent_kill("${childId}") to abandon.`;
 		if (newReports.length > 0) text += `\n\nProgress reports:\n${newReports.join("\n---\n")}`;
 	} else {
-		text = newReports.length > 0 ? newReports.join("\n---\n") : extractLastAssistantText(state.agent);
+		text = newReports.length > 0 ? newReports.join("\n---\n") : state.lastAssistantText || "(no output)";
 	}
-	const error = state.agent.state.errorMessage;
+	const error = state.errorMessage;
 	return {
 		content: [{ type: "text", text: error ? `[Error]: ${error}\n\n${text}` : text }],
 		details: {

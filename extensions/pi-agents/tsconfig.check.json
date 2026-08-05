@@ -12,5 +12,5 @@
 		"resolveJsonModule": true,
 		"types": ["node"]
 	},
-	"include": ["index.ts", "config.ts", "contract.ts", "state.ts", "render.ts", "registry.ts", "spawn.ts", "loop.ts", "orchestrator.ts"]
+	"include": ["index.ts", "config.ts", "contract.ts", "state.ts", "render.ts", "registry.ts", "spawn.ts", "loop.ts", "orchestrator.ts", "rpc-child.ts"]
 }
