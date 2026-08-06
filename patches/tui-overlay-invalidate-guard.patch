@@ -1,0 +1,12 @@
+diff -urN /tmp/pi-pristine-1785597426/packages/tui/src/tui.ts /tmp/pi-mod-1785597426/packages/tui/src/tui.ts
+--- a/packages/tui/src/tui.ts	2026-08-01 11:17:06.831239546 -0400
++++ b/packages/tui/src/tui.ts	2026-08-01 11:17:06.878327125 -0400
+@@ -685,7 +685,7 @@
+ 
+ 	override invalidate(): void {
+ 		for (const root of this.getMountedRoots()) root.invalidate();
+-		for (const overlay of this.overlayStack) overlay.component.invalidate();
++		for (const overlay of this.overlayStack) overlay.component.invalidate?.();
+ 	}
+ 
+ 	start(): void {
