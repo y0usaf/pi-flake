@@ -73,7 +73,7 @@
 
         # Regenerate after dependency changes:
         #   nix build .#pi 2>&1 | grep 'got:' | awk '{print $2}'
-        npmDepsHash = "sha256-D/XelRQFiSeUgoN3TKD+n2JFHK0g1EHNx9yuMvWbm9w=";
+        npmDepsHash = "sha256-Ru0RBpT5i4dQRxiP9EGDrD7oTnjuC0BKJOKIprsDne4=";
 
         nodejs = pkgs.nodejs_22;
 
