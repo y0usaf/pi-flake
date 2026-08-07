@@ -575,6 +575,30 @@
         };
 
       # pi with default extensions pre-bundled.
+      "pi-chronobreak" = let
+        chronobreakPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-chronobreak/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-chronobreak";
+          version = chronobreakPackageJson.version;
+          src = lib.cleanSource ./extensions/pi-chronobreak;
+          dontBuild = true;
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp package.json README.md "$out"/
+            cp -r src "$out"/
+            runHook postInstall
+          '';
+          passthru.packageName = chronobreakPackageJson.name;
+          meta = with lib; {
+            description = chronobreakPackageJson.description;
+            homepage = chronobreakPackageJson.homepage;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
       pi-full = self.lib.piWithExtensions {
         inherit pkgs;
         pi = self.packages.${system}.pi;
@@ -608,6 +632,16 @@
       pi-workflow-build = self.packages.${system}."pi-workflow";
       pi-pantera-build = self.packages.${system}."pi-pantera";
       pi-js-kernel-build = self.packages.${system}."pi-js-kernel";
+      pi-chronobreak-build = self.packages.${system}."pi-chronobreak";
+      pi-chronobreak-test = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-chronobreak-test";
+        version = (builtins.fromJSON (builtins.readFile ./extensions/pi-chronobreak/package.json)).version;
+        src = lib.cleanSource ./extensions/pi-chronobreak;
+        nativeBuildInputs = [pkgs.bun];
+        dontConfigure = true;
+        dontBuild = true;
+        installPhase = ''runHook preInstall; export HOME="$TMPDIR/home"; mkdir -p "$HOME"; bun test; touch "$out"; runHook postInstall '';
+      };
       pi-dark-terminal-build = self.packages.${system}."pi-dark-terminal";
       pi-full-dark-terminal-theme = pkgs.runCommand "pi-full-dark-terminal-theme" {} ''
         test -f ${self.packages.${system}.pi-full}/share/pi/themes/dark-terminal.json
@@ -812,6 +846,7 @@
         continue = self.packages.${system}."pi-continue";
         workflow = self.packages.${system}."pi-workflow";
         "js-kernel" = self.packages.${system}."pi-js-kernel";
+        "chronobreak" = self.packages.${system}."pi-chronobreak";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.
