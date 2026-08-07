@@ -88,7 +88,7 @@ export default function (pi: ExtensionAPI): void {
     if (!pendingNudge) return;
     const nudge = pendingNudge;
     pendingNudge = undefined;
-    pi.sendUserMessage(nudge);
+    pi.sendUserMessage(nudge, { deliverAs: "followUp" });
   });
 
   // User-driven input is a fresh direction: reset the strike counter.
