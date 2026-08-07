@@ -11,6 +11,9 @@
 - `bash` is child-side (a `node child_process.exec` subshell); it never crosses the bridge. (2026)
 - pi-js-kernel vendors pi-agents + pi-hashline source at build time; agents/hashline are retired from pi-full. (2026)
 
+- A-collapse: `js` is the single model-visible tool (`pi.setActiveTools(["js"])` after `registerTool` — setActiveTools ignores unknown tools, so order matters). All host capabilities are bridge handlers reachable as `kernel.*` inside the REPL; built-in tools stay registered so the bridge reuses their cores, but the model only sees `js`. This shrinks the safety/audit surface to one choke point — the host-request dispatcher — instead of per-tool `tool_call` events. (2026-08-01)
+- `kernel.write` is a mutation-queued host handler (same pattern as `edit`) covering create/overwrite; the child exposes it as a `hostRequest("write", ...)`. (2026-08-01)
+
 ## Architecture
 
 - `index.ts` — machinery and tool registration: owns the child process handle, the NDJSON framing, the timeout/abort watchdog, the `js` tool's `registerTool` entry, and the host-bridge dispatcher. This is the extension boundary (canon:functional-core — it never reads kernel internals, only the wire response).
@@ -25,7 +28,8 @@
 - Interrupt-without-kill: abort currently SIGKILLs the kernel and loses state. A signal-based interrupt (child catches SIGINT, discards the running evaluation, keeps the context) is the obvious next step; it needs a way for the child to distinguish "interrupt" from "kill" and a protocol extension to report it.
 - State snapshot/seed on resume: serializing the REPL context so a new session (or a respawned kernel) can be seeded with prior state. The REPL context is not trivially serializable (functions close over the context), so this needs a design of its own.
 - Multi-request pipelining: the wire protocol is strictly request/response, serialized per child. Pipelining would need response ordering and per-request error isolation; single-threaded execution means the throughput win is marginal.
-- Tool-stripping not yet enabled: a config-gated strip of main-session `write`/`edit`/`bash` inside the RLM child is deferred until runtime-verified; `kernel.grep`/`find`/`ls` not yet added.
+- Tool-stripping not yet enabled: a config-gated strip of main-session `write`/`edit`/`bash` inside the RLM child is deferred until runtime-verified.
+- `kernel.grep`/`find`/`ls` not yet added (model uses `kernel.bash` for search/listing); ripgrep-backed grep would add an external binary dependency and is deferred. Images: `kernel.read` throws `[E_IMAGE]` because the bridge lacks the ExtensionContext that `createReadTool` needs; image viewing is out of scope for A until a host image-view path exists.
 - Admission-style `rlm.run` (admission-handle + agent_message delivery) remains deferred; `rlm.run` is blocking by design.
 
 ## Roadmap
@@ -33,3 +37,5 @@
 - Phase 1 — this tool: `js` works end to end in a dev load (`pi -e extensions/pi-js-kernel`): spawn, evaluate, persist state across calls, timeout restarts the kernel with state loss, abort kills the kernel, session shutdown cleans up the child.
 - Phase 2 — nix bundle: flake wiring lands (package derivation with `substituteInPlace` for the node store path, registry entry, `nix build .#pi-js-kernel` and `nix flake check` green), and the bundled extension runs with the store node.
 - Phase 3 — overhaul: tools-inside-REPL (see Deferred) with a new child protocol and a migration path for the scratchpad contract. DONE — the RLM bridge landed: protocol v2 bidirectional host bridge, `kernel.read`/`edit`/`bash`/`rlm.*`, pi-agents + pi-hashline vendored, agents/hashline retired from pi-full.
+
+- Phase 4 — A-collapse: `js` becomes the only tool the model sees. DONE — `pi.setActiveTools(["js"])`, `kernel.write` handler+bridge, js description documents the full `kernel.*` API. Grep/find/ls and image viewing deferred (see Deferred).

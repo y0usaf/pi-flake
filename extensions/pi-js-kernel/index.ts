@@ -28,6 +28,7 @@ import { Type } from "@sinclair/typebox";
 import {
 	readHandler,
 	editHandler,
+	writeHandler,
 	type BridgeHandler,
 	type BridgeCtx,
 } from "./hashline-bridge.js";
@@ -441,9 +442,16 @@ export default function (pi: ExtensionAPI) {
 	// a model registry. Call it once and keep the returned handlers.
 	const rlmBridge = createRlmBridge(pi);
 
+	// The kernel is the tool surface (canon:config-over-code): every host
+	// capability the model reaches lives here as a bridge handler, registered
+	// under the same name the REPL sees as kernel.<name>. Built-in tools stay
+	// registered (the bridge reuses their cores) but are hidden from the model
+	// via setActiveTools below, so the model reasons about one tool: js.
+
 	bridgeHandlers = {
 		read: readHandler,
 		edit: editHandler,
+		write: writeHandler,
 		"rlm.run": rlmBridge.run,
 		"rlm.list": rlmBridge.list,
 		"rlm.kill": rlmBridge.kill,
@@ -453,14 +461,14 @@ export default function (pi: ExtensionAPI) {
 		name: "js",
 		label: "js",
 		description:
-			"persistent JavaScript kernel (RLM) — evaluated code keeps variables, imports, and functions across calls within the session, and can delegate file work and child agents via the kernel API. State dies with the session (a new session starts fresh). Evaluated code may use: kernel.read(path, opts) (hashline v3 LINEID-anchored file preview), kernel.edit({path, edits}) (LINEID-anchored edits), kernel.bash(cmd, {timeoutMs}) (subshell), kernel.rlm.run(task, {contract, model, timeoutSeconds}) (spawn a child agent and await its contract answers), kernel.rlm.list(), kernel.rlm.kill(id). Long-running or never-settling code hits a timeout and the kernel is restarted (state lost); an in-flight kernel.rlm.run is bounded by its own child deadline, not the js timer. Runs single-threaded.",
-		promptSnippet: "js - persistent Node.js kernel (RLM) — file editing and child-agent delegation via kernel.read / kernel.edit / kernel.rlm.*",
+			"persistent JavaScript kernel (RLM) — evaluated code keeps variables, imports, and functions across calls within the session, and can delegate file work and child agents via the kernel API. State dies with the session (a new session starts fresh). js is the single tool: all file/search/shell/agent capabilities are reached through kernel.* inside evaluated code. Available: kernel.read(path, opts) (hashline v3 LINEID-anchored file preview), kernel.edit({path, edits}) (LINEID-anchored edits), kernel.write({path, content}) (create or overwrite a file), kernel.bash(cmd, {timeoutMs}) (subshell), kernel.rlm.run(task, {contract, model, timeoutSeconds}) (spawn a child agent and await its contract answers), kernel.rlm.list(), kernel.rlm.kill(id). Long-running or never-settling code hits a timeout and the kernel is restarted (state lost); an in-flight kernel.rlm.run is bounded by its own child deadline, not the js timer. Runs single-threaded.",
+		promptSnippet: "js - single persistent Node.js kernel (RLM) — all file, shell, and agent work via kernel.read / kernel.edit / kernel.write / kernel.bash / kernel.rlm.*",
 		promptGuidelines: [
 			"State (variables, imports, functions) persists across js calls within this session; a new session starts fresh.",
-			"The kernel is an RLM: prefer kernel.read / kernel.edit / kernel.bash inside js for file work, and kernel.rlm.run for delegating to a child agent. Results come back as awaited data.",
-			"kernel.read returns hashline v3 output (lines prefixed LINEID) that kernel.edit accepts as anchors.",
+			"js is the only tool. Do all file work with kernel.read / kernel.edit / kernel.write, shell work with kernel.bash, and agent delegation with kernel.rlm.run inside js. Results come back as awaited data.",
+			"kernel.read returns hashline v3 output (lines prefixed LINEID) that kernel.edit accepts as anchors. Use kernel.write for new files or complete rewrites.",
 			"Code that exceeds the timeout restarts the kernel and loses all REPL state — keep long-running work incremental. kernel.rlm.run is bounded by its own child timeout, not the js timer.",
-			"Prefer bash for shell tasks; use js for JavaScript-language scratch work and for driving the kernel API.",
+			"Large multi-step work: write helper functions into the REPL and reuse them across calls; the kernel is the working memory.",
 		],
 		parameters: Type.Object({
 			code: Type.String({
@@ -589,4 +597,12 @@ export default function (pi: ExtensionAPI) {
 			};
 		},
 	});
+
+	// A-collapse: js is the single model-visible tool. setActiveTools keeps only
+	// tools already in the registry (unknown names are ignored), so it MUST run
+	// after registerTool or js would be dropped and the toolset emptied. Built-in
+	// tools stay registered under the hood so the bridge keeps reusing their
+	// cores; the model only sees js. This shrinks the safety/audit surface to one
+	// choke point (the host-request dispatcher) instead of per-tool events.
+	pi.setActiveTools(["js"]);
 }

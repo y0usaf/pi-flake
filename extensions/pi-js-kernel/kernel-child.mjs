@@ -203,6 +203,10 @@ const kernel = {
     // args = {path, edits}
     return hostRequest("edit", args || {});
   },
+  write(args) {
+    // args = {path, content} — create or overwrite a file (host-side, mutation-queued)
+    return hostRequest("write", args || {});
+  },
   bash(cmd, options) {
     // CHILD-SIDE subshell: node child_process.exec, never crosses the host bridge.
     const { timeoutMs = 60000 } = options || {};
