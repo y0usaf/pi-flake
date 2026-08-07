@@ -540,9 +540,13 @@
           pname = "pi-js-kernel";
           version = jsKernelPackageJson.version;
           # Vendor pi-agents + pi-hashline source trees alongside pi-js-kernel so
-          # index.ts can import them via relative paths (../pi-agents/spawn.js,
-          # ../pi-hashline/src/hashline.js). node_modules is gitignored so
+          # bridge files in this extension can import them. node_modules is gitignored so
           # lib.cleanSource excludes it, keeping the tree free of bloat.
+          #
+          # The bridge source files (hashline-bridge.ts, rlm-bridge.ts) use
+          # repo-layout sibling paths (../pi-agents/spawn.js, ../pi-hashline/src/hashline.js)
+          # that are only valid before packaging; the installPhase below rewrites
+          # them to the nested bundle layout via substituteInPlace.
           src = lib.cleanSourceWith {
             src = lib.cleanSource ./extensions;
             filter = path: type: let
@@ -558,6 +562,8 @@
             substituteInPlace "$out/index.ts" --replace-fail 'const NODE_BIN = "node";' 'const NODE_BIN = "${pkgs.nodejs_22}/bin/node";'
             cp -r $src/pi-agents "$out/pi-agents"
             cp -r $src/pi-hashline "$out/pi-hashline"
+            substituteInPlace "$out/hashline-bridge.ts" --replace-fail '../pi-hashline/' './pi-hashline/'
+            substituteInPlace "$out/rlm-bridge.ts" --replace-fail '../pi-agents/' './pi-agents/'
             runHook postInstall
           '';
           passthru.packageName = jsKernelPackageJson.name;
