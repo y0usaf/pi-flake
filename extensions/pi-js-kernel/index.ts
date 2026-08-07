@@ -25,6 +25,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Type } from "@sinclair/typebox";
+import { Text } from "@earendil-works/pi-tui";
 import {
 	readHandler,
 	editHandler,
@@ -481,6 +482,33 @@ export default function (pi: ExtensionAPI) {
 			),
 		}),
 		executionMode: "sequential",
+
+		renderCall(args, theme, _context) {
+			const code = args?.code ?? "";
+			const oneLine = code.replace(/\s*\n\s*/g, " ").trim();
+			const snippet = oneLine.length > 100 ? oneLine.slice(0, 100) + "…" : oneLine;
+			const label =
+				theme.fg("toolTitle", theme.bold("js")) + (snippet ? ` ${theme.fg("muted", snippet)}` : "");
+			return new Text(label, 0, 0);
+		},
+
+		renderResult(result, options, theme, context) {
+			const output = (Array.isArray(result.content) ? result.content : [])
+				.filter((c) => c.type === "text" && c.text)
+				.map((c) => c.text)
+				.join("\n");
+			if (!options.expanded && !context.isError) return new Text("", 0, 0);
+			const lines = output.replace(/\s+$/, "").split("\n");
+			const max = options.expanded ? lines.length : 10;
+			const shown = lines
+				.slice(0, max)
+				.map((l) => theme.fg("toolOutput", l))
+				.join("\n");
+			const remaining = lines.length - max;
+			let text = `\n${shown}`;
+			if (remaining > 0) text += theme.fg("muted", `\n... (${remaining} more lines, toggle expand to view)`);
+			return new Text(text, 0, 0);
+		},
 
 		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
 			const timeoutMs = clampTimeout(params.timeoutMs);
