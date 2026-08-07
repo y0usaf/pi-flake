@@ -71,11 +71,11 @@ describe("shared frame renderer (hashline read)", () => {
       theme,
       frameDeps,
     ).map(strip);
-    const contentRows = lines.filter((l) => l.startsWith("|"));
+    const contentRows = lines.filter((l) => l.startsWith("│"));
     expect(contentRows.length).toBe(2);
     // the first wrapped chunk still carries its trailing space (nothing padded
     // over it)
-    expect(contentRows[0]).toBe("| ab |");
+    expect(contentRows[0]).toBe("│ ab │");
   });
 
   test("default trimEndContent true trims before wrapping", () => {
@@ -86,9 +86,9 @@ describe("shared frame renderer (hashline read)", () => {
       theme,
       frameDeps,
     ).map(strip);
-    const contentRows = lines.filter((l) => l.startsWith("|"));
+    const contentRows = lines.filter((l) => l.startsWith("│"));
     expect(contentRows.length).toBe(1);
-    expect(contentRows[0]).toBe("| ab |");
+    expect(contentRows[0]).toBe("│ ab │");
   });
 
   const wrapContinuation = { marker: ">", sepIndexFor: (line: string) => line.indexOf("|") };
@@ -118,10 +118,10 @@ describe("shared frame renderer (hashline read)", () => {
       theme,
       frameDeps,
     ).map(strip);
-    const contentRows = lines.filter((l) => l.startsWith("|"));
-    expect(contentRows[0]).toBe("| 10aphw|    {|");
-    expect(contentRows[1]).toBe("|      >|code}|");
-    expect(contentRows[1].startsWith("|      >|")).toBe(true);
+    const contentRows = lines.filter((l) => l.startsWith("│"));
+    expect(contentRows[0]).toBe("│ 10aphw|    {│");
+    expect(contentRows[1]).toBe("│      >|code}│");
+    expect(contentRows[1].startsWith("│      >|")).toBe(true);
     expectFlush(lines, 15);
   });
 
@@ -139,10 +139,10 @@ describe("shared frame renderer (hashline read)", () => {
       theme,
       frameDeps,
     ).map(strip);
-    const contentRows = lines.filter((l) => l.startsWith("|"));
-    expect(contentRows[0]).toBe("| 9ajgs|    {|");
-    expect(contentRows[1]).toBe("|     >|code}|");
-    expect(contentRows[1].startsWith("|     >|")).toBe(true);
+    const contentRows = lines.filter((l) => l.startsWith("│"));
+    expect(contentRows[0]).toBe("│ 9ajgs|    {│");
+    expect(contentRows[1]).toBe("│     >|code}│");
+    expect(contentRows[1].startsWith("│     >|")).toBe(true);
     expectFlush(lines, 14);
   });
 
@@ -159,11 +159,11 @@ describe("shared frame renderer (hashline read)", () => {
     };
     const withContinuation = renderOutputBlock({ ...options, wrapContinuation }, theme, frameDeps).map(strip);
     const withoutContinuation = renderOutputBlock(options, theme, frameDeps).map(strip);
-    const contentRows = withContinuation.filter((l) => l.startsWith("|"));
+    const contentRows = withContinuation.filter((l) => l.startsWith("│"));
     expect(contentRows.every((l) => !l.includes(">"))).toBe(true);
     // current behavior unchanged: identical rows with or without the option
     expect(withContinuation).toEqual(withoutContinuation);
-    expect(contentRows[0]).toBe("| [Showing lines 8-|");
+    expect(contentRows[0]).toBe("│ [Showing lines 8-│");
     expectFlush(withContinuation, 20);
   });
 
@@ -188,13 +188,13 @@ describe("shared frame renderer (hashline read)", () => {
       frameDeps,
     ).map(strip);
     expectFlush(lines, 15);
-    const contentRows = lines.filter((l) => l.startsWith("|"));
+    const contentRows = lines.filter((l) => l.startsWith("│"));
     // anchored row, its continuation, then the marker-free trailer chunks
-    expect(contentRows[0]).toBe("| 10aphw|    {|");
-    expect(contentRows[1]).toBe("|      >|code}|");
+    expect(contentRows[0]).toBe("│ 10aphw|    {│");
+    expect(contentRows[1]).toBe("│      >|code}│");
     // only the two anchored lines' continuation rows carry the marker; the
     // trailer chunks (no `|`, sep -1) stay marker-free
-    expect(contentRows.filter((l) => l.includes(">"))).toEqual(["|      >|code}|", "|     >|ode}  |"]);
+    expect(contentRows.filter((l) => l.includes(">"))).toEqual(["│      >|code}│", "│     >|ode}  │"]);
     expect(contentRows.slice(4).every((l) => !l.includes(">"))).toBe(true);
   });
 });

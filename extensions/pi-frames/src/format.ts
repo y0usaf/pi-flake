@@ -1,4 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { resolveSymbols } from "../../shared/symbols";
 import { SPECS, LINE_BUDGETS, EXT_BADGES, TREE_SPECS } from "./specs";
 import type { RenderDeps } from "./skin";
 import { renderTreeList } from "./tree";
@@ -19,13 +20,14 @@ export function callHeaderLine(name: string, args: any, theme: Theme, deps: Rend
  * lines, prefixed (dim) by an earlier-lines indicator when anything is
  * clipped — tail, not head, matching oh-my-pi's rendered rows. */
 export function tailBody(name: string, body: string, expanded: boolean, theme: Theme, deps: RenderDeps): string[] {
+  const S = resolveSymbols();
   const lines = body ? body.split("\n") : [];
   if (!lines.length) return [];
   const budget = LINE_BUDGETS[name] ?? { collapsed: 3, expanded: 12 };
   const max = expanded ? budget.expanded : budget.collapsed;
   if (lines.length <= max) return lines;
   const dropped = lines.length - max;
-  const clipped = `… (${dropped} earlier lines, showing ${max} of ${lines.length}) (${deps.keyHint("app.tools.expand", "to expand")})`;
+  const clipped = `${S["clip.ellipsis"]} (${dropped} earlier lines, showing ${max} of ${lines.length}) (${deps.keyHint("app.tools.expand", "to expand")})`;
   return [theme.fg("dim", clipped), ...lines.slice(-max)];
 }
 
@@ -62,6 +64,7 @@ export function resultLines(
   deps: RenderDeps,
   includeFooter: boolean = true,
 ): string[] {
+  const S = resolveSymbols();
   const body = (result?.content ?? []).filter((x: any) => x.type === "text").map((x: any) => x.text ?? "").join("\n");
   let lines: string[];
   if (isError) {
@@ -105,8 +108,9 @@ export function resultLines(
   }
   // Bracketed footer from available status data: upstream tool details carry
   // truncation and hit-limit info but no exit code or duration, so the line
-  // renders a ✓/✗ glyph plus whatever exists (truncation summary, hit limits,
-  // tracked elapsed time) and is omitted entirely when nothing is available.
+  // renders a footer.ok/err glyph (unicode ✓/✗, ascii ok/!!) plus whatever
+  // exists (truncation summary, hit limits, tracked elapsed time) and is
+  // omitted entirely when nothing is available.
   if (includeFooter && (isError || lines.length > 0)) {
     const details = result?.details ?? {};
     const info: string[] = [];
@@ -122,7 +126,7 @@ export function resultLines(
       info.push(`${((ended - state.startedAt) / 1000).toFixed(1)}s`);
     }
     if (info.length > 0) {
-      lines.push(theme.fg(isError ? "error" : "success", `[${isError ? "✗" : "✓"} ${info.join(" · ")}]`));
+      lines.push(theme.fg(isError ? "error" : "success", `[${isError ? S["footer.err"] : S["footer.ok"]} ${info.join(S["sep.dot"])}]`));
     }
   }
   return lines;
