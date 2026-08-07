@@ -1,6 +1,7 @@
 // Vendored from can1357/oh-my-pi (MIT) commit 403931b9, packages/coding-agent/src/tui/tree-list.ts.
 // Trims: trailingSummary/caller-driven collapse, maxCollapsedLines budget, TreeContext depth.
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { resolveSymbols } from "../../shared/symbols";
 import type { RenderDeps } from "./skin";
 
 /** Options consumed by {@link renderTreeList}. The caller maps tool result
@@ -13,14 +14,11 @@ export type TreeListOptions<T> = {
   renderItem: (item: T) => string | string[];
 };
 
-// Local ASCII connector constants replace the upstream theme.tree.* tokens; the
-// continue-prefix lines are kept for multi-line items (unused by find/ls). The
-// last-row `'--` mirrors oh-my-pi's ASCII symbol preset (`theme.tree.last` =
-// `"'" + "--"`).
-const branch = "|--";
-const last = "'--";
-const continuePrefix = "|  ";
-const lastContinuePrefix = "   ";
+// Tree connector glyphs come from the resolved symbol preset (unicode
+// default, ascii opt-in, per-key overrides). The continue-prefix lines are
+// kept for multi-line items (unused by find/ls): tree.cont plus two spaces,
+// and a bare three-space indent for the last row. The `... N more` summary
+// stays literal ASCII.
 
 /** Tabs render as two spaces so indentation never breaks the frame's wrap
  * pass (upstream replaces tabs with a fixed display width too). */
@@ -35,12 +33,18 @@ function formatMoreItems(remaining: number, itemType: string): string {
 }
 
 /** Flatten a tool's result lines into a compact flat tree: each item gets a
- * `|--` branch except the last visible row, which uses `'--` — either the true
- * last item or the clipped summary (`'-- ... N more files`) when collapsed and
- * there are more lines than `maxCollapsed`. The upstream trailingSummary
- * caller-driven collapse, the `maxCollapsedLines` budget, and the
- * TreeContext depth parameter are all trimmed away. */
+ * branch glyph (unicode `├─`, ascii `|--`) except the last visible row, which
+ * uses the last glyph (unicode `└─`, ascii `'--`) — either the true last item
+ * or the clipped summary (`└─ ... N more files`) when collapsed and there are
+ * more lines than `maxCollapsed`. The upstream trailingSummary caller-driven
+ * collapse, the `maxCollapsedLines` budget, and the TreeContext depth
+ * parameter are all trimmed away. */
 export function renderTreeList<T>(options: TreeListOptions<T>, theme: Theme, _deps: RenderDeps): string[] {
+  const S = resolveSymbols();
+  const branch = S["tree.branch"];
+  const last = S["tree.last"];
+  const continuePrefix = `${S["tree.cont"]}  `;
+  const lastContinuePrefix = "   ";
   const { items, expanded = false, maxCollapsed = 8, itemType = "item", renderItem } = options;
   const visibleCount = expanded ? items.length : Math.min(items.length, maxCollapsed);
   const remaining = items.length - visibleCount;

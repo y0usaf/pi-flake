@@ -2,6 +2,7 @@
 // Trims: sixel, render cache, TERMINAL.
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
+import { resolveSymbols } from "./symbols";
 
 export type FrameState = "pending" | "success" | "error";
 
@@ -42,18 +43,9 @@ export type FrameDeps = {
   wrapTextWithAnsi: (s: string, width: number) => string[];
 };
 
-// Local ASCII box constants replace the upstream box-drawing glyphs;
-// the dot separator replaces theme.sep.dot.
-const topLeft = "+";
-const topRight = "+";
-const bottomLeft = "+";
-const bottomRight = "+";
-const vertical = "|";
-const horizontal = "-";
-const teeRight = "+";
-const teeLeft = "+";
-const sep = " · ";
-const cap = horizontal.repeat(3);
+// Box/separator glyphs come from the resolved symbol preset (unicode default,
+// ascii opt-in, per-key overrides). The wrapContinuation marker and hashline
+// `|` separator stay literal ASCII below — that pipe is the hashline anchor.
 
 // Upstream runs five states (pending/running/success/error/warning); the PI
 // tool slots only expose pending/success/error.
@@ -94,6 +86,17 @@ export function outputBlockContentWidth(width: number, contentPaddingLeft?: numb
 
 export function renderOutputBlock(options: OutputBlockOptions, theme: Theme, deps: FrameDeps): string[] {
   const { header, headerMeta, state, sections = [], width, applyBg = true, topBar = true, bottomBar = true } = options;
+  const S = resolveSymbols();
+  const topLeft = S["box.tl"];
+  const topRight = S["box.tr"];
+  const bottomLeft = S["box.bl"];
+  const bottomRight = S["box.br"];
+  const vertical = S["box.v"];
+  const horizontal = S["box.h"];
+  const teeRight = S["box.teeR"];
+  const teeLeft = S["box.teeL"];
+  const sep = S["sep.dot"];
+  const cap = horizontal.repeat(3);
   const lineWidth = Math.max(0, width);
   // The state color now washes the whole box, not just the border strokes:
   // pending uses accent, success uses dim (gray), error keeps its color; an

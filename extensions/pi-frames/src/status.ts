@@ -4,6 +4,7 @@
 // `status.error` `[!!]`), and theme.format bracket tokens are replaced with plain "[" / "]"
 // (upstream pi-tui lacks them).
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { resolveSymbols } from "../../shared/symbols";
 import type { FrameState } from "../../shared/frame";
 
 export type StatusLineOptions = {
@@ -25,17 +26,18 @@ function flattenForHeader(text: string): string {
   return text.replace(/\r\n?|\n/g, " ");
 }
 
-/** ASCII status glyph for a frame state, mirroring oh-my-pi's ASCII symbol
- * preset (`status.pending` `[*]`, `status.success` `[ok]`, `status.error`
- * `[!!]`). Exported so the inline call line can prefix its state icon. */
+/** Status glyph for a frame state from the resolved symbol preset (unicode
+ * default, ascii opt-in, per-key overrides). Exported so the inline call line
+ * can prefix its state icon. */
 export function formatStatusIcon(status: FrameState, theme: Theme): string {
+  const S = resolveSymbols();
   switch (status) {
     case "pending":
-      return theme.fg("muted", "[*]");
+      return theme.fg("muted", S["status.pending"]);
     case "success":
-      return theme.fg("success", "[ok]");
+      return theme.fg("success", S["status.success"]);
     case "error":
-      return theme.fg("error", "[!!]");
+      return theme.fg("error", S["status.error"]);
   }
 }
 
