@@ -1,0 +1,35 @@
+## Locked decisions
+
+- Use a stdio-NDJSON REPL child over Jupyter/ZMQ. The value of a persistent JS tool is the interpreter state, not the Jupyter protocol; a plain `node` child speaking one JSON line per request/response is the smallest thing that delivers it (canon:least-code, canon:least-power — the protocol is a table of two message shapes, not a library). (2026-08-01)
+- The kernel child evaluates with `node:repl`'s default eval, which gives lexical persistence (`let`/`const`/function declarations survive across requests inside the REPL context). A fresh `vm` per request would be stateless by construction and defeat the tool's purpose. (2026-08-01)
+- The host-side timeout is the watchdog: a call that exceeds `timeoutMs` (default 60000, clamped 1000..300000) gets the child SIGKILLed and respawned, losing state. This satisfies canon:functional-core — the watchdog lives in the imperative shell, never in the kernel, and the kernel cannot be left running unbounded work. While a `host_request` is in flight the js watchdog is paused, so long `rlm.run`/`read` calls are not killed by the js timer; abort still kills. (2026-08-01)
+- The node binary is injected at nix build time via `substituteInPlace` on the literal `const NODE_BIN = "node";` (pi-rtk pattern). pi is a Bun-compiled binary; `process.execPath` is not node, so the store path to `nodejs` must be baked in by the derivation. Dev/standalone loads fall back to `node` from `PATH`, and a missing node produces a clear error naming the fix. (2026-08-01)
+- Kernel state dies with the session. The child is spawned lazily on first `js` call (never from the factory), SIGKILLed on `session_shutdown`, and never resurrected for a new session. Resume/revival is deferred (see Deferred); a session boundary is a state boundary by design. (2026-08-01)
+- Wire protocol v2: bidirectional NDJSON host bridge. The child emits `{type:host_request, /request}` and the host answers `{type:host_response,result}`; evaluations remain `{type:eval}`/`{type:result}`. `eval` and `host_request` use independent id spaces. The bridge is exposed as the `kernel` API (`read`/`edit`/`bash`/`rlm.*`). (2026)
+- BLOCKING `rlm.run`: the handler awaits `spawnChild` and returns answers in-cell, reusing pi-agents' spawn machinery (admission-handle + agent_message delivery deferred). (2026)
+- hashline stays HOST-side (`Bun.hash.xxHash32`); the kernel never computes hashes. `read`/`edit` handlers reuse pi-hashline's pure core. (2026)
+- `bash` is child-side (a `node child_process.exec` subshell); it never crosses the bridge. (2026)
+- pi-js-kernel vendors pi-agents + pi-hashline source at build time; agents/hashline are retired from pi-full. (2026)
+
+## Architecture
+
+- `index.ts` — machinery and tool registration: owns the child process handle, the NDJSON framing, the timeout/abort watchdog, the `js` tool's `registerTool` entry, and the host-bridge dispatcher. This is the extension boundary (canon:functional-core — it never reads kernel internals, only the wire response).
+- `kernel-child.mjs` — decision-free execution core: reads one JSON request line, evaluates it in a persistent `node:repl` context, writes one JSON response line. No timeout logic, no session policy, no state beyond the REPL context itself.
+- `hashline-bridge.ts` — host-side hashing: reuses pi-hashline's pure core for `kernel.read`/`edit` LINEID anchors when the host is Bun.
+- `rlm-bridge.ts` — the recursion surface: `kernel.rlm.run`/`list`/`kill` bridge handlers reusing pi-agents' spawn machinery.
+- The wire protocol is the boundary between the two: request `{"id", "code"}`, response `{"id", "ok", "stdout", "stderr", "result"}` or `{"id", "ok": false, ..., "error": {"name", "message", "stack"}}`. Either side can be replaced without touching the other.
+
+## Deferred
+
+- Tools-inside-REPL overhaul: the eventual goal is tools themselves evaluated as JavaScript inside the REPL context (model-authored helpers, reusable functions, richer state than the current pass-through scratchpad). This changes the tool's contract from "evaluate source, return text" to "drive a persistent agentic environment" and would likely move the child protocol from NDJSON to something structured enough to carry tool definitions and call results. Nothing in the current protocol precludes it, but it is not needed for the scratchpad value.
+- Interrupt-without-kill: abort currently SIGKILLs the kernel and loses state. A signal-based interrupt (child catches SIGINT, discards the running evaluation, keeps the context) is the obvious next step; it needs a way for the child to distinguish "interrupt" from "kill" and a protocol extension to report it.
+- State snapshot/seed on resume: serializing the REPL context so a new session (or a respawned kernel) can be seeded with prior state. The REPL context is not trivially serializable (functions close over the context), so this needs a design of its own.
+- Multi-request pipelining: the wire protocol is strictly request/response, serialized per child. Pipelining would need response ordering and per-request error isolation; single-threaded execution means the throughput win is marginal.
+- Tool-stripping not yet enabled: a config-gated strip of main-session `write`/`edit`/`bash` inside the RLM child is deferred until runtime-verified; `kernel.grep`/`find`/`ls` not yet added.
+- Admission-style `rlm.run` (admission-handle + agent_message delivery) remains deferred; `rlm.run` is blocking by design.
+
+## Roadmap
+
+- Phase 1 — this tool: `js` works end to end in a dev load (`pi -e extensions/pi-js-kernel`): spawn, evaluate, persist state across calls, timeout restarts the kernel with state loss, abort kills the kernel, session shutdown cleans up the child.
+- Phase 2 — nix bundle: flake wiring lands (package derivation with `substituteInPlace` for the node store path, registry entry, `nix build .#pi-js-kernel` and `nix flake check` green), and the bundled extension runs with the store node.
+- Phase 3 — overhaul: tools-inside-REPL (see Deferred) with a new child protocol and a migration path for the scratchpad contract. DONE — the RLM bridge landed: protocol v2 bidirectional host bridge, `kernel.read`/`edit`/`bash`/`rlm.*`, pi-agents + pi-hashline vendored, agents/hashline retired from pi-full.
