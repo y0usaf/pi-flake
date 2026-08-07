@@ -1,0 +1,20 @@
+{
+  "name": "pi-chronobreak",
+  "version": "0.1.0",
+  "description": "Terminates assistant generation loops: detects repeated output in a turn, aborts, scrubs the context, and re-runs with a decisive-action directive",
+  "homepage": "https://github.com/y0usaf/pi-flake",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/y0usaf/pi-flake.git",
+    "directory": "extensions/pi-chronobreak"
+  },
+  "keywords": ["pi-package", "pi-extension", "loop", "output-degradation"],
+  "license": "MIT",
+  "files": ["src", "README.md"],
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

@@ -107,6 +107,11 @@
     source = "inline";
     dir = "pi-js-kernel";
   };
+  chronobreak = {
+    stage = "active";
+    source = "inline";
+    dir = "pi-chronobreak";
+  };
 
   agents = {
     # Paused: source kept in tree for pi-js-kernel to vendor; no longer built,
