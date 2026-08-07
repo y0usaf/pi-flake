@@ -2,3 +2,6 @@ node_modules/
 result
 result-*
 ref/
+
+# local pi runtime state (agent session logs)
+.pi/
