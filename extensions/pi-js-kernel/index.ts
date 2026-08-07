@@ -604,5 +604,11 @@ export default function (pi: ExtensionAPI) {
 	// tools stay registered under the hood so the bridge keeps reusing their
 	// cores; the model only sees js. This shrinks the safety/audit surface to one
 	// choke point (the host-request dispatcher) instead of per-tool events.
-	pi.setActiveTools(["js"]);
+	// Deferred to session_start: pi >=0.84 forbids action methods (like
+	// setActiveTools) during extension loading — "Extension runtime not
+	// initialized". registerTool above ran already, so js is in the registry
+	// by the time this fires.
+	pi.on("session_start", () => {
+		pi.setActiveTools(["js"]);
+	});
 }
