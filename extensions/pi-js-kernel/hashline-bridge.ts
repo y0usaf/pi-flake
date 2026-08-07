@@ -1,5 +1,6 @@
 import { constants } from "node:fs";
-import { access as fsAccess } from "node:fs/promises";
+import { access as fsAccess, mkdir as fsMkdir, writeFile as fsWriteFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import {
   DEFAULT_MAX_BYTES,
   formatSize,
@@ -154,5 +155,21 @@ export const editHandler: BridgeHandler = async (payload, ctx) => {
 
     const response = buildChangedAnchorResponse(file.text, result, { maxBytes: DEFAULT_MAX_BYTES });
     return response.text;
+  });
+};
+
+export const writeHandler: BridgeHandler = async (payload, ctx) => {
+  const { path, content } = payload as { path: string; content: string };
+  throwIfAborted(ctx.signal);
+
+  const absolutePath = resolveToCwd(path, ctx.cwd);
+  const targetPath = await resolveMutationTargetPath(absolutePath);
+
+  return withFileMutationQueue(targetPath, async () => {
+    throwIfAborted(ctx.signal);
+    await fsMkdir(dirname(targetPath), { recursive: true });
+    throwIfAborted(ctx.signal);
+    await fsWriteFile(targetPath, content, "utf-8");
+    return `Successfully wrote ${content.length} bytes to ${path}`;
   });
 };
