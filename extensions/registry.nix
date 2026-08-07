@@ -42,7 +42,9 @@
     dir = "pi-webfetch";
   };
   hashline = {
-    stage = "active";
+    # Paused: source kept in tree for pi-js-kernel to vendor; no longer built,
+    # bundled, or checked. Superseded by js-kernel.
+    stage = "paused";
     source = "inline";
     dir = "pi-hashline";
   };
@@ -99,8 +101,17 @@
     dir = "pi-continue";
   };
 
-  agents = {
+  js-kernel = {
+    # Active: supersedes pi-agents + pi-hashline, which are paused.
     stage = "active";
+    source = "inline";
+    dir = "pi-js-kernel";
+  };
+
+  agents = {
+    # Paused: source kept in tree for pi-js-kernel to vendor; no longer built,
+    # bundled, or checked. Superseded by js-kernel.
+    stage = "paused";
     source = "inline";
     dir = "pi-agents";
   };

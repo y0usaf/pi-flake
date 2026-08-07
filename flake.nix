@@ -236,9 +236,10 @@
           version = packageJson.version;
           src = lib.cleanSourceWith {
             src = lib.cleanSource ./extensions;
-            filter = path: type:
-              let rel = lib.removePrefix (toString ./extensions) (toString path);
-              in rel == "" || lib.hasPrefix "/pi-hashline" rel || lib.hasPrefix "/shared" rel;
+            filter = path: type: let
+              rel = lib.removePrefix (toString ./extensions) (toString path);
+            in
+              rel == "" || lib.hasPrefix "/pi-hashline" rel || lib.hasPrefix "/shared" rel;
           };
           dontBuild = true;
           installPhase = ''runHook preInstall; mkdir -p "$out"; cp $src/pi-hashline/package.json $src/pi-hashline/README.md "$out"/; cp -r $src/pi-hashline/src "$out"/; cp -r $src/shared "$out"/; runHook postInstall '';
@@ -258,9 +259,10 @@
           version = packageJson.version;
           src = lib.cleanSourceWith {
             src = lib.cleanSource ./extensions;
-            filter = path: type:
-              let rel = lib.removePrefix (toString ./extensions) (toString path);
-              in rel == "" || lib.hasPrefix "/pi-frames" rel || lib.hasPrefix "/shared" rel;
+            filter = path: type: let
+              rel = lib.removePrefix (toString ./extensions) (toString path);
+            in
+              rel == "" || lib.hasPrefix "/pi-frames" rel || lib.hasPrefix "/shared" rel;
           };
           dontBuild = true;
           installPhase = ''runHook preInstall; mkdir -p "$out"; cp $src/pi-frames/package.json $src/pi-frames/README.md "$out"/; cp -r $src/pi-frames/src "$out"/; cp -r $src/shared "$out"/; runHook postInstall '';
@@ -280,7 +282,7 @@
           version = packageJson.version;
           src = lib.cleanSource ./extensions/pi-agents;
           dontBuild = true;
-                    installPhase = ''runHook preInstall; mkdir -p "$out"; cp package.json README.md index.ts config.ts contract.ts state.ts render.ts registry.ts spawn.ts loop.ts orchestrator.ts rpc-child.ts "$out"/; runHook postInstall '';
+          installPhase = ''runHook preInstall; mkdir -p "$out"; cp package.json README.md index.ts config.ts contract.ts state.ts render.ts registry.ts spawn.ts loop.ts orchestrator.ts rpc-child.ts "$out"/; runHook postInstall '';
           passthru.packageName = packageJson.name;
           meta = with lib; {
             description = packageJson.description;
@@ -531,6 +533,41 @@
           };
         };
 
+      "pi-js-kernel" = let
+        jsKernelPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-js-kernel/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-js-kernel";
+          version = jsKernelPackageJson.version;
+          # Vendor pi-agents + pi-hashline source trees alongside pi-js-kernel so
+          # index.ts can import them via relative paths (../pi-agents/spawn.js,
+          # ../pi-hashline/src/hashline.js). node_modules is gitignored so
+          # lib.cleanSource excludes it, keeping the tree free of bloat.
+          src = lib.cleanSourceWith {
+            src = lib.cleanSource ./extensions;
+            filter = path: type: let
+              rel = lib.removePrefix (toString ./extensions) (toString path);
+            in
+              rel == "" || lib.hasPrefix "/pi-js-kernel" rel || lib.hasPrefix "/pi-agents" rel || lib.hasPrefix "/pi-hashline" rel;
+          };
+          dontBuild = true;
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp -r $src/pi-js-kernel/. "$out"/
+            substituteInPlace "$out/index.ts" --replace-fail 'const NODE_BIN = "node";' 'const NODE_BIN = "${pkgs.nodejs_22}/bin/node";'
+            cp -r $src/pi-agents "$out/pi-agents"
+            cp -r $src/pi-hashline "$out/pi-hashline"
+            runHook postInstall
+          '';
+          passthru.packageName = jsKernelPackageJson.name;
+          meta = with lib; {
+            description = jsKernelPackageJson.description;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
       # pi with default extensions pre-bundled.
       pi-full = self.lib.piWithExtensions {
         inherit pkgs;
@@ -563,8 +600,8 @@
       pi-quiet-build = self.packages.${system}."pi-quiet";
       pi-continue-build = self.packages.${system}."pi-continue";
       pi-workflow-build = self.packages.${system}."pi-workflow";
-      pi-agents-build = self.packages.${system}."pi-agents";
       pi-pantera-build = self.packages.${system}."pi-pantera";
+      pi-js-kernel-build = self.packages.${system}."pi-js-kernel";
       pi-dark-terminal-build = self.packages.${system}."pi-dark-terminal";
       pi-full-dark-terminal-theme = pkgs.runCommand "pi-full-dark-terminal-theme" {} ''
         test -f ${self.packages.${system}.pi-full}/share/pi/themes/dark-terminal.json
@@ -628,23 +665,10 @@
         version = (builtins.fromJSON (builtins.readFile ./extensions/pi-frames/package.json)).version;
         src = lib.cleanSourceWith {
           src = lib.cleanSource ./extensions;
-          filter = path: type:
-            let rel = lib.removePrefix (toString ./extensions) (toString path);
-            in rel == "" || lib.hasPrefix "/pi-frames" rel || lib.hasPrefix "/shared" rel;
-        };
-        nativeBuildInputs = [pkgs.bun];
-        dontConfigure = true;
-        dontBuild = true;
-        installPhase = ''runHook preInstall; bun test; touch $out; runHook postInstall '';
-      };
-      pi-hashline-test = pkgs.stdenvNoCC.mkDerivation {
-        pname = "pi-hashline-tests";
-        version = (builtins.fromJSON (builtins.readFile ./extensions/pi-hashline/package.json)).version;
-        src = lib.cleanSourceWith {
-          src = lib.cleanSource ./extensions;
-          filter = path: type:
-            let rel = lib.removePrefix (toString ./extensions) (toString path);
-            in rel == "" || lib.hasPrefix "/pi-hashline" rel || lib.hasPrefix "/shared" rel;
+          filter = path: type: let
+            rel = lib.removePrefix (toString ./extensions) (toString path);
+          in
+            rel == "" || lib.hasPrefix "/pi-frames" rel || lib.hasPrefix "/shared" rel;
         };
         nativeBuildInputs = [pkgs.bun];
         dontConfigure = true;
@@ -770,9 +794,7 @@
         interview = self.packages.${system}."pi-interview";
         management = self.packages.${system}."pi-management";
         webfetch = self.packages.${system}."pi-webfetch";
-        hashline = self.packages.${system}."pi-hashline";
         frames = self.packages.${system}."pi-frames";
-        agents = self.packages.${system}."pi-agents";
         pantera = self.packages.${system}."pi-pantera";
         dark-terminal = self.packages.${system}."pi-dark-terminal";
 
@@ -783,6 +805,7 @@
         quiet = self.packages.${system}."pi-quiet";
         continue = self.packages.${system}."pi-continue";
         workflow = self.packages.${system}."pi-workflow";
+        "js-kernel" = self.packages.${system}."pi-js-kernel";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.
