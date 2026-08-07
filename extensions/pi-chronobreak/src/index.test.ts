@@ -24,13 +24,13 @@ type AnyHandler = (event: unknown, ctx: unknown) => unknown;
 
 function makeExt() {
   const handlers = new Map<string, AnyHandler>();
-  const sent: string[] = [];
+  const sent: { text: string; options?: unknown }[] = [];
   const pi = {
     on(name: string, fn: AnyHandler) {
       handlers.set(name, fn);
     },
-    sendUserMessage(text: string) {
-      sent.push(text);
+    sendUserMessage(text: string, options?: unknown) {
+      sent.push({ text, options });
     },
   };
   chronobreak(pi as never);
@@ -99,8 +99,9 @@ describe("extension flow", () => {
 
     h.fire("agent_end", {});
     expect(h.sent.length).toBe(1);
-    expect(h.sent[0]).toContain("Repeat detected");
-    expect(h.sent[0]).toContain("ONE decisive action");
+    expect(h.sent[0].text).toContain("Repeat detected");
+    expect(h.sent[0].options).toEqual({ deliverAs: "followUp" });
+    expect(h.sent[0].text).toContain("ONE decisive action");
   });
 
   test("clean turn: message_end untouched, nothing re-injected", () => {
