@@ -8,6 +8,7 @@ import {
   withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { applyEditsToRawContentPreservingLineEndings, buildChangedAnchorResponse, formatHashlineRegion, getVisibleLines, type RawEdit } from "../pi-hashline/src/hashline.js";
+import { prepareEditArguments } from "../pi-hashline/src/edit-shapes.js";
 import { resolveMutationTargetPath, writeTextFileAtomically } from "../pi-hashline/src/fs-write.js";
 import { resolveToCwd } from "../pi-hashline/src/path-utils.js";
 import { isSupportedImageFile, loadTextFileWithSnapshot, normalizeToLF } from "../pi-hashline/src/text-file.js";
@@ -128,7 +129,13 @@ export const readHandler: BridgeHandler = async (payload, ctx) => {
 };
 
 export const editHandler: BridgeHandler = async (payload, ctx) => {
-  const { path, edits } = payload as { path: string; edits: RawEdit[] };
+  const { path } = payload as { path: string; edits?: RawEdit[] };
+  // Fold naive top-level {range}/{append}/{prepend} and legacy v2 op/pos/lines
+  // shapes into strict {loc,content} before the core — same normalizer the
+  // host edit tool runs (prepareArguments), so kernel.edit accepts the same
+  // shapes as the host edit tool.
+  const normalized = prepareEditArguments(payload) as { path: string; edits: RawEdit[] };
+  const edits = normalized.edits;
   throwIfAborted(ctx.signal);
 
   const absolutePath = resolveToCwd(path, ctx.cwd);
