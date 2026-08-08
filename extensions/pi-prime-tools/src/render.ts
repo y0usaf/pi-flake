@@ -1,82 +1,78 @@
-import { type Component, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+// Rail renderers for the skinned builtin tools (and js, via pi-js-kernel).
+//
+// Every tool row renders as a minimalist left rail: a bare `+` corner, a `|`
+// rail per content row, content indented two spaces, no horizontal strokes,
+// no right rail, no background. Glyphs come from the shared symbol preset
+// (PI_SYMBOLS=ascii gives +/|, unicode gives ┌/│). State colors the rail via
+// the frame's fg wash: pending=accent, success=dim, error=error.
+//
+// The call slot owns the top corner, the result slot the bottom, joined into
+// one continuous rail by the hashline invalidate microtask (pi issue #3830).
+// Collapsed non-error rows render nothing; the call keeps its own bottom
+// corner so a collapsed row is still a closed rail.
+import { type Component, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { keyHint, type Theme } from "@earendil-works/pi-coding-agent";
-import { ToolCallCellComponent, ToolResultCellComponent, cellState, type ToolCellResultSummary } from "../../shared/tool-cell";
+import { frameComponent, type FrameDeps, type OutputBlockOptions } from "../../shared/frame";
 import { callHeaderLine } from "./format";
 import { SPECS, TREE_SPECS } from "./specs";
 import { renderTreeList } from "./tree";
 import type { RenderDeps } from "./skin";
 
+const frameDeps: FrameDeps = { visibleWidth, truncateToWidth, wrapTextWithAnsi };
 const renderDeps: RenderDeps = { keyHint, visibleWidth, truncateToWidth };
 
-/** Read the result summary the result slot stashed into context.state. */
-function resultSummary(state: any): ToolCellResultSummary | undefined {
-	return state?.resultSummary;
-}
-
-/** Call slot: one status line — marker · label · call preview · stats ·
- * duration · expand hint. The line is identical collapsed or expanded;
- * expanding only attaches output below (result slot). Stats come from the
- * result summary stashed by the result slot on the previous render pass. */
+/** Call slot: one rail row — the SPECS call line (bold label + colored
+ * primary + dim extras). Pending calls show a thin closed rail; once the
+ * result frame exists and renders expanded, the bottom corner moves to it. */
 export function renderCall(name: string, args: any, theme: Theme, context: any): Component {
 	try {
-		const state = context.state ?? (context.state = {});
-		if (context.executionStarted && state.startedAt === undefined) state.startedAt = Date.now();
-		const summary = resultSummary(state);
-		const settled = !context.isPartial && !context.isError;
-		const component =
-			context.lastComponent instanceof ToolCallCellComponent ? context.lastComponent : new ToolCallCellComponent();
-		component.update({
-			label: SPECS[name]?.label ?? name,
-			preview: callHeaderLine(name, args, theme, renderDeps),
-			state: cellState(context),
-			stats: summary && summary.lineCount > 0
-				? [theme.fg("muted", "↓ " + summary.lineCount + " lines")]
-				: [],
-			durationMs: settled && summary ? summary.durationMs : undefined,
-			errorName: context.isError && summary ? summary.errorName : undefined,
-			hint: keyHint("app.tools.expand", context.expanded ? "to collapse" : "to expand"),
-			theme,
-			invalidate: context.invalidate,
+		const spec = SPECS[name];
+		const line = spec?.prefix
+			? `${theme.fg("toolTitle", theme.bold(spec.label ?? name))} ${callHeaderLine(name, args, theme, renderDeps)}`
+			: callHeaderLine(name, args, theme, renderDeps);
+		const build = (width: number): OutputBlockOptions => ({
+			style: "rail",
+			state: context.isError
+				? "error"
+				: context.isPartial || !context.executionStarted
+					? "pending"
+					: "success",
+			sections: [{ lines: [line] }],
+			width,
+			applyBg: false,
+			contentPaddingLeft: 2,
+			bottomBar: context.state?.hasResult !== true || (!context.expanded && !context.isError),
 		});
-		return component;
+		return frameComponent(build, theme, frameDeps);
 	} catch {
 		return new Text(name, 0, 0);
 	}
 }
 
-/** Result slot: stash the summary for the call line, then render output
- * lines (expanded only). Full output for text tools; tree rows for find/ls. */
-export function renderResult(name: string, result: any, options: any, theme: Theme, context: any): Component {
+/** Result slot: content rows plus the closing bottom corner (expanded or
+ * error only; collapsed non-error rows render nothing). find/ls bodies render
+ * as flat tree rows, everything else as plain lines. */
+export function renderResult(name: string, result: any, _options: any, theme: Theme, context: any): Component {
 	try {
 		const state = context.state ?? (context.state = {});
-		if (!options?.isPartial || context.isError) state.endedAt ??= Date.now();
+		if (!state.hasResult) {
+			state.hasResult = true;
+			if (!state.invalidated) {
+				state.invalidated = true;
+				// Defer past the current updateDisplay pass: a synchronous
+				// invalidate re-enters tool-execution's updateDisplay() from inside
+				// resultRenderer() before this result component is added to the row
+				// container (pi issue #3830). The microtask rebuilds the row
+				// wholesale so the call slot re-renders without its bottom corner.
+				queueMicrotask(() => context.invalidate?.());
+			}
+		}
 		const body = (result?.content ?? [])
 			.filter((x: any) => x.type === "text")
 			.map((x: any) => x.text ?? "")
 			.join("\n");
 		const bodyLines = body ? body.split("\n") : [];
-		state.resultSummary = {
-			lineCount: bodyLines.length,
-			durationMs:
-				state.startedAt !== undefined && state.endedAt !== undefined
-					? state.endedAt - state.startedAt
-					: undefined,
-			errorName: context.isError ? (bodyLines[0] ?? "error").slice(0, 60) : undefined,
-		};
-		// The call line runs before this slot in the same mount pass, so it saw
-		// the previous summary. One microtask refresh repaints it with the new
-		// stats (same double-render guard pi-frames used).
-		if (!state.invalidated) {
-			state.invalidated = true;
-			queueMicrotask(() => context.invalidate?.());
-		}
-		const expanded = context.expanded || options?.expanded;
-		const component =
-			context.lastComponent instanceof ToolResultCellComponent ? context.lastComponent : new ToolResultCellComponent();
-		if (!expanded) {
-			component.update([], theme, false);
-			return component;
-		}
+		if (!context.expanded && !context.isError) return new Text("", 0, 0);
 		let lines: string[];
 		const treeSpec = TREE_SPECS[name];
 		if (treeSpec) {
@@ -105,10 +101,21 @@ export function renderResult(name: string, result: any, options: any, theme: The
 				...extras,
 			];
 		} else {
-			lines = bodyLines.map((line: string) => theme.fg("toolOutput", line));
+			lines = bodyLines;
 		}
-		component.update(lines, theme, true);
-		return component;
+		const build = (width: number): OutputBlockOptions => ({
+			style: "rail",
+			state: context.isError ? "error" : "success",
+			sections: [{ lines }],
+			width,
+			applyBg: false,
+			contentPaddingLeft: 2,
+			// The call slot owns the top corner; this slot only emits the
+			// content rows and the closing bottom corner for one continuous rail.
+			topBar: false,
+			bottomBar: true,
+		});
+		return frameComponent(build, theme, frameDeps);
 	} catch {
 		return new Text(name, 0, 0);
 	}

@@ -13,6 +13,7 @@
 
 - A-collapse: `js` is the single model-visible tool (`pi.setActiveTools(["js"])` after `registerTool` — setActiveTools ignores unknown tools, so order matters). All host capabilities are bridge handlers reachable as `kernel.*` inside the REPL; built-in tools stay registered so the bridge reuses their cores, but the model only sees `js`. This shrinks the safety/audit surface to one choke point — the host-request dispatcher — instead of per-tool `tool_call` events. (2026-08-01)
 - `kernel.write` is a mutation-queued host handler (same pattern as `edit`) covering create/overwrite; the child exposes it as a `hostRequest("write", ...)`. (2026-08-01)
+- Tool rows render as a minimalist left rail (`+` corner, `|` rail, content indented 2), not pi's default bg-colored Box. Reuses shared/frame.ts (vendored oh-my-pi output-block, previously only pi-hashline consumed it) with `renderShell: "self"` — the default Box would wrap the rail in a padded color shell. Glyphs come from the symbols table: the flake wrapper forces `PI_SYMBOLS=ascii` so the rail is `+`/`|`; flipping to unicode (or per-key overrides) restyles it without code changes (canon:least-power — the symbol table is the config). The call slot owns the top corner, the result slot the bottom, joined via the hashline invalidate microtask (pi issue #3830); collapsed non-error rows render nothing and the call keeps its own bottom corner. (2026-08-08)
 
 ## Architecture
 

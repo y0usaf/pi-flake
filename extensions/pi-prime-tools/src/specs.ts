@@ -53,6 +53,19 @@ export const SPECS: Record<string, ToolSpec> = {
 		primary: (a, _deps, theme) => theme.fg("accent", normalize(a?.path ?? ".")),
 		extras: (a) => (a?.depth !== undefined ? [["depth", String(a.depth)]] : []),
 	},
+	js: {
+		label: "js",
+		// No prefix: the label renders as its own bold token in callHeaderLine
+		// (like the other non-bash builtins); the code snippet takes the muted
+		// preview color, capped to one line and 100 chars.
+		primary: (a, _deps, theme) => {
+			const code = normalize(a?.code ?? "");
+			return code
+				? theme.fg("muted", code.length > 100 ? code.slice(0, 100) + "…" : code)
+				: theme.fg("toolOutput", "...");
+		},
+		extras: (a) => (a?.timeoutMs ? [["timeout", String(a.timeoutMs)]] : []),
+	},
 };
 
 export type TreeSpec = {

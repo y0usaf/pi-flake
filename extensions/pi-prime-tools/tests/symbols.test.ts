@@ -18,8 +18,7 @@ describe("symbol presets", () => {
     expect(m["tree.branch"]).toBe("├─");
     expect(m["box.tl"]).toBe("┌");
     expect(m["sep.dot"]).toBe(" · ");
-    expect(m["spinner.1"]).toBe("◇");
-    expect(m["spinner.3"]).toBe("◆");
+
   });
 
   test("ascii preset via PI_SYMBOLS=ascii maps to plain-ASCII glyphs", () => {
@@ -29,8 +28,7 @@ describe("symbol presets", () => {
     expect(m["tree.branch"]).toBe("|--");
     expect(m["box.tl"]).toBe("+");
     expect(m["footer.ok"]).toBe("ok");
-    expect(m["spinner.1"]).toBe("-");
-    expect(m["spinner.4"]).toBe("/");
+
   });
 
   test("PI_SYMBOL_OVERRIDES merges per-key overrides over the preset", () => {

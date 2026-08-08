@@ -1,23 +1,25 @@
 # pi-prime-tools
 
-Prime-agent-style one-line tool cells for the builtin `bash`, `write`, `grep`, `find`, and `ls` rows, plus the `js` kernel tool (via pi-js-kernel's own renderers).
+Minimalist left-rail frames for Pi's builtin tool rows — `bash`, `write`, `grep`, `find`, `ls` — and the `js` kernel tool (skinned here, registered by pi-js-kernel).
 
-Each tool call renders as **one status line** — the ipython-cell pattern from prime-agent:
+Each tool call renders as a left rail: bare `+` corner, `|` rail, content indented two, no horizontal strokes, no right rail, no background. State colors the rail (pending=accent, success=dim, error=error).
 
 ```
-✓ bash · $ cargo build · ↓ 42 lines · 3.2s · (ctrl+o to expand)
-◇ js · await fetch("https://api") · ↓ 1 line · 0.4s · (ctrl+o to expand)
-✗ grep · ls missing · (ctrl+o to expand)
++
+|  bash $ cargo build
+|  out1
+|  out2
++
 ```
 
-The line is identical collapsed or expanded; expanding (toggle tool output) only attaches the output below it. The marker carries the state: queued (muted `…`/`[*]`), running (animated spinner), done (`✓`/`[ok]`), error (`✗`/`[!!]`). All glyphs come from the shared symbol preset, so `PI_SYMBOLS=ascii` swaps markers, spinner, and tree connectors for ASCII.
+Collapsed rows show only the call line inside a closed rail (`+` / `|  bash $ cargo build` / `+`); expanding attaches the output and moves the closing corner to the result. `find`/`ls` results render as flat tree rows (`|--`/`'--`, unicode `├─`/`└─`).
 
-`find`/`ls` results render as flat tree rows (`├─`/`└─`, ascii `|--`/`'--`) when expanded.
+Glyphs come from the shared symbol preset: `PI_SYMBOLS=ascii` gives `+ |`, unicode gives `┌ │`. The flake wrapper forces ascii.
 
-`read` is untouched (pi-hashline owns its hashline frame — a one-line cell would break LINEID anchor alignment). `edit` is untouched (pi's own diff-preview renderer). Both keep their self-shells.
+`read` is untouched (builtin syntax-highlighted, line-numbered renderer — a plain rail would lose the highlighting). `edit` is untouched (builtin diff-preview renderer).
 
 Enable with `pi -e ./extensions/pi-prime-tools` (active by default in the flake bundle).
 
 ## Credits
 
-Call-row formatting and tree rows are adapted from pi-frames (retired 2026-08-08), which vendored them from [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi) (MIT, Copyright 2025 Mario Zechner, Copyright 2025-2026 Can Bölük), commit `403931b9`. The one-line cell layout itself is a port of prime-agent's ipython-cell (`ipython-cell.ts` — collapsed line with marker · preview · stats · duration · expand hint).
+Call-row formatting and tree rows are adapted from the earlier pi-prime-tools cell design, which vendored them from [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi) (MIT, Copyright 2025 Mario Zechner, Copyright 2025-2026 Can Bölük), commit `403931b9`. The rail frame itself is the shared/frame.ts output-block renderer (same vendored source).

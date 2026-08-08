@@ -25,9 +25,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Type } from "@sinclair/typebox";
-import { Text } from "@earendil-works/pi-tui";
-import { keyHint } from "@earendil-works/pi-coding-agent";
-import { ToolCallCellComponent, ToolResultCellComponent, cellState } from "./shared/tool-cell.js";
+
 import {
 	readHandler,
 	editHandler,
@@ -36,6 +34,8 @@ import {
 	type BridgeCtx,
 } from "./hashline-bridge.js";
 import { createRlmBridge } from "./rlm-bridge.js";
+import { skinDefinition } from "../pi-prime-tools/src/skin.js";
+import { renderCall, renderResult } from "../pi-prime-tools/src/render.js";
 
 // Replaced at nix build time with the store node (pi-rtk substituteInPlace pattern).
 // Dev/standalone: falls back to "node" from PATH.
@@ -460,7 +460,7 @@ export default function (pi: ExtensionAPI) {
 		"rlm.kill": rlmBridge.kill,
 	};
 
-	pi.registerTool({
+	const jsToolDefinition = {
 		name: "js",
 		label: "js",
 		description:
@@ -484,69 +484,9 @@ export default function (pi: ExtensionAPI) {
 			),
 		}),
 		executionMode: "sequential",
-		renderShell: "self",
-
-		renderCall(args, theme, context) {
-			// One status line: js · snippet · stats · duration · expand hint.
-			const component =
-				context.lastComponent instanceof ToolCallCellComponent ? context.lastComponent : new ToolCallCellComponent();
-			const code = args?.code ?? "";
-			const oneLine = code.replace(/\s*\n\s*/g, " ").trim();
-			const snippet = oneLine.length > 100 ? oneLine.slice(0, 100) + "…" : oneLine;
-			const summary = context.state?.resultSummary;
-			const settled = !context.isPartial && !context.isError;
-			component.update({
-				label: "js",
-				// accent teal, matching the path/pattern previews of the other cells.
-			preview: snippet ? theme.fg("accent", snippet) : "",
-				state: cellState(context),
-				stats: summary && summary.lineCount > 0 ? [theme.fg("muted", "↓ " + summary.lineCount + " lines")] : [],
-				durationMs: settled && summary ? summary.durationMs : undefined,
-				errorName: context.isError && summary ? summary.errorName : undefined,
-				hint: keyHint("app.tools.expand", context.expanded ? "to collapse" : "to expand"),
-				theme,
-				invalidate: context.invalidate,
-			 });
-			return component;
-		},
-
-		renderResult(result, options, theme, context) {
-			// Stash the summary for the call line (same-pass ordering: the call slot
-			// runs first, so one microtask refresh repaints it with these stats).
-			const state = context.state ?? (context.state = {});
-			if (!options.isPartial || context.isError) state.endedAt ??= Date.now();
-			const output = (Array.isArray(result.content) ? result.content : [])
-				.filter((c) => c.type === "text" && c.text)
-				.map((c) => c.text)
-				.join("\n");
-			const lines = output.replace(/\s+$/, "").split("\n");
-			state.resultSummary = {
-				lineCount: lines.length,
-				durationMs:
-					state.startedAt !== undefined && state.endedAt !== undefined
-						? state.endedAt - state.startedAt
-						: undefined,
-				errorName: context.isError ? (lines[0] ?? "error").slice(0, 60) : undefined,
-			};
-			if (!state.invalidated) {
-				state.invalidated = true;
-				queueMicrotask(() => context.invalidate?.());
-			}
-			const component =
-				context.lastComponent instanceof ToolResultCellComponent ? context.lastComponent : new ToolResultCellComponent();
-			if (!options.expanded && !context.isError) {
-				component.update([], theme, false);
-				return component;
-			}
-			const max = options.expanded ? lines.length : 10;
-			const shown = lines.slice(0, max).map((l) => theme.fg("toolOutput", l));
-			const remaining = lines.length - max;
-			if (remaining > 0) {
-				shown.push(theme.fg("muted", "... (" + remaining + " more lines, toggle expand to view)"));
-			}
-			component.update(shown, theme, true);
-			return component;
-		},
+		// Rendering lives in pi-prime-tools (the universal rail skin); this
+		// registration only carries the kernel. skinDefinition sets
+		// renderShell "self" + forwards the shared rail renderers.
 
 		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
 			const timeoutMs = clampTimeout(params.timeoutMs);
@@ -662,7 +602,8 @@ export default function (pi: ExtensionAPI) {
 				details: { status: response.ok ? ("ok" as const) : ("error" as const) },
 			};
 		},
-	});
+	};
+	pi.registerTool(skinDefinition(jsToolDefinition, renderCall, renderResult));
 
 	// A-collapse: js is the single model-visible tool. setActiveTools keeps only
 	// tools already in the registry (unknown names are ignored), so it MUST run
