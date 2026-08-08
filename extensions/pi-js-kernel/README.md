@@ -23,9 +23,9 @@ Parameters:
 Inside the REPL, the `kernel` object exposes the bidirectional host bridge (protocol v2):
 
 - `kernel.read(path, {offset, limit})` — read a file with hashline v3 LINEID anchors.
-- `kernel.edit({path, edits})` — apply edits by LINEID anchor.
+- `kernel.edit({path, edits})` — apply edits by LINEID anchor. Accepts strict `{loc,content}` (e.g. `{loc:{range:{pos,end}}}`), the naive top-level shape `{range:{pos,end},content}` / `{append:LINEID,content}` / `{prepend:LINEID,content}`, legacy v2 `{op,pos,end,lines}` shapes, and `{oldText,newText}` — same normalizer as the host edit tool.
 - `kernel.bash(cmd, {timeoutMs})` — run a command in a node `child_process.exec` subshell (child-side, never crosses the bridge).
-- `kernel.rlm.run(task, {contract, model, timeoutSeconds})` — blocks, spawns a child agent, returns its contract answers in-cell.
+- `kernel.rlm.run(task, {contract, model, timeoutSeconds, background})` — async by default: spawns a child agent in the background and returns an admission handle `{childId, done, background, sessionFile}` immediately; the child's contract answers arrive later as an injected follow-up message (the agent_message delivery), so the parent keeps prompting while children run. Pass `{background: false}` to block and get the answers in-cell. Poll progress with `kernel.rlm.list()`, abort with `kernel.rlm.kill(id)`.
 - `kernel.rlm.list()` — list running child agents.
 - `kernel.rlm.kill(id)` — kill a child agent.
 

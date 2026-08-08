@@ -6,7 +6,7 @@
 - The node binary is injected at nix build time via `substituteInPlace` on the literal `const NODE_BIN = "node";` (pi-rtk pattern). pi is a Bun-compiled binary; `process.execPath` is not node, so the store path to `nodejs` must be baked in by the derivation. Dev/standalone loads fall back to `node` from `PATH`, and a missing node produces a clear error naming the fix. (2026-08-01)
 - Kernel state dies with the session. The child is spawned lazily on first `js` call (never from the factory), SIGKILLed on `session_shutdown`, and never resurrected for a new session. Resume/revival is deferred (see Deferred); a session boundary is a state boundary by design. (2026-08-01)
 - Wire protocol v2: bidirectional NDJSON host bridge. The child emits `{type:host_request, /request}` and the host answers `{type:host_response,result}`; evaluations remain `{type:eval}`/`{type:result}`. `eval` and `host_request` use independent id spaces. The bridge is exposed as the `kernel` API (`read`/`edit`/`bash`/`rlm.*`). (2026)
-- BLOCKING `rlm.run`: the handler awaits `spawnChild` and returns answers in-cell, reusing pi-agents' spawn machinery (admission-handle + agent_message delivery deferred). (2026)
+- ASYNC-BY-DEFAULT `rlm.run`: spawns the child in the background (pi-agents' `background: true`) and returns an admission handle `{childId, done, background, sessionFile}` immediately; the child's contract answers arrive later via the injected follow-up message (the agent_message delivery), so the parent keeps prompting while children run. `{background: false}` opts into the old blocking in-cell answers. (2026)
 - hashline stays HOST-side (`Bun.hash.xxHash32`); the kernel never computes hashes. `read`/`edit` handlers reuse pi-hashline's pure core. (2026)
 - `bash` is child-side (a `node child_process.exec` subshell); it never crosses the bridge. (2026)
 - pi-js-kernel vendors pi-agents + pi-hashline source at build time; agents/hashline are retired from pi-full. (2026)
@@ -30,7 +30,7 @@
 - Multi-request pipelining: the wire protocol is strictly request/response, serialized per child. Pipelining would need response ordering and per-request error isolation; single-threaded execution means the throughput win is marginal.
 - Tool-stripping not yet enabled: a config-gated strip of main-session `write`/`edit`/`bash` inside the RLM child is deferred until runtime-verified.
 - `kernel.grep`/`find`/`ls` not yet added (model uses `kernel.bash` for search/listing); ripgrep-backed grep would add an external binary dependency and is deferred. Images: `kernel.read` throws `[E_IMAGE]` because the bridge lacks the ExtensionContext that `createReadTool` needs; image viewing is out of scope for A until a host image-view path exists.
-- Admission-style `rlm.run` (admission-handle + agent_message delivery) remains deferred; `rlm.run` is blocking by design.
+- RLM `agent_answer` / two-way mid-run conversation: a background child that suspends via ask_parent keeps its drive loop alive and injects an urgent steer message, but the kernel bridge has no `rlm.answer` handler yet — the host must answer for it. Wiring it means exposing pi-agents' answerAgentResult through the bridge.
 
 ## Roadmap
 
