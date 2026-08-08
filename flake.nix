@@ -93,7 +93,8 @@
           wrapProgram $out/bin/pi \
             --set PI_PACKAGE_DIR $out/share/pi \
             --set PI_SKIP_VERSION_CHECK 1 \
-            --set PI_TELEMETRY 0
+            --set PI_TELEMETRY 0 \
+            --set PI_SYMBOLS ascii
 
           runHook postInstall
         '';
@@ -552,7 +553,7 @@
             filter = path: type: let
               rel = lib.removePrefix (toString ./extensions) (toString path);
             in
-              rel == "" || lib.hasPrefix "/pi-js-kernel" rel || lib.hasPrefix "/pi-agents" rel || lib.hasPrefix "/pi-hashline" rel || lib.hasPrefix "/shared" rel;
+              rel == "" || lib.hasPrefix "/pi-js-kernel" rel || lib.hasPrefix "/pi-agents" rel || lib.hasPrefix "/pi-hashline" rel || lib.hasPrefix "/pi-prime-tools" rel || lib.hasPrefix "/shared" rel;
           };
           dontBuild = true;
           installPhase = ''
@@ -562,9 +563,11 @@
             substituteInPlace "$out/index.ts" --replace-fail 'const NODE_BIN = "node";' 'const NODE_BIN = "${pkgs.nodejs_22}/bin/node";'
             cp -r $src/pi-agents "$out/pi-agents"
             cp -r $src/pi-hashline "$out/pi-hashline"
+            cp -r $src/pi-prime-tools "$out/pi-prime-tools"
             cp -r $src/shared "$out/shared"
             substituteInPlace "$out/hashline-bridge.ts" --replace-fail '../pi-hashline/' './pi-hashline/'
             substituteInPlace "$out/rlm-bridge.ts" --replace-fail '../pi-agents/' './pi-agents/'
+            substituteInPlace "$out/index.ts" --replace-fail '../pi-prime-tools/' './pi-prime-tools/'
             runHook postInstall
           '';
           passthru.packageName = jsKernelPackageJson.name;

@@ -2,86 +2,28 @@
 
 ## Locked decisions
 
-- **One line per tool call, collapsed; output attaches on expand.** Each tool
-  renders a single status line — marker · label · call preview · stats ·
-  duration · expand hint — following prime-agent's ipython-cell pattern
-  (ipython-cell.ts: the top line is identical collapsed or expanded;
-  expanding only attaches code and output below it). The first port attempt
-  (a flat panel with header + always-visible content) was rejected for not
-  matching this look. (2026-08-08)
-- **Marker carries state, no box.** queued (muted …/[*]) → running (animated
-  spinner) → done (✓/[ok]) / error (✗/[!!]). No borders, no background, no
-  state-tinted frame — the marker color and the preview text carry the
-  information, exactly like prime's cells. (2026-08-08)
-- **Spinner is a component-local interval.** TOOL_CELL_PULSE_INTERVAL_MS =
-  250, ticking context.invalidate() (the bash renderer's self-refresh
-  pattern). Tools run sequentially, so one timer at a time suffices; a global
-  pulse ticker (prime's interactive-mode) would need core surgery.
-  (2026-08-08)
-- **Call and result are two slots sharing one line.** The extension API
-  mounts renderCall and renderResult as separate components, so the call slot
-  renders the line and the result slot stashes a summary (line count,
-  duration, error name) into context.state for the call slot to show. A
-  one-shot microtask invalidate (pi-frames' double-render guard) repaints the
-  line with the fresh stats after the same mount pass. (2026-08-08)
-- **Expanded output is full, not clipped.** Collapsed rows show nothing below
-  the line (the line itself is the summary); expanded rows show the full
-  output — tree rows for find/ls, plain lines otherwise. No line budgets, no
-  "N earlier lines" clipping (that was the panel design's tailBody, dropped).
-  The js tool keeps its own 10-line cap: kernel output can be enormous.
-  (2026-08-08)
-- **Content machinery carried over from pi-frames, trimmed.** specs.ts
-  (call rows), tree.ts (find/ls flat trees) survive; format.ts is reduced to
-  callHeaderLine (tailBody/resultLines/badges died with the panel design).
-  Credits preserved: oh-my-pi vendored code stays attributed. (2026-08-08)
-- **read and edit are not skinned.** pi-hashline owns read (its frame keeps
-  LINEID anchors flush); pi's built-in edit renderer owns edit (diff
-  preview). Skinning either would lose functionality for a cosmetic win.
-  (2026-08-08)
-- **Symbols stay shared.** The ascii translator (extensions/shared/symbols.ts)
-  keeps working: cell markers, spinner frames (unicode ◇◈◆◈, ascii -\|/),
-  tree connectors. PI_SYMBOLS=ascii and PI_SYMBOL_OVERRIDES continue to
-  govern. pi-frames is retired; shared/frame.ts survives only because
-  pi-hashline's read-tool (vendored into pi-js-kernel) imports it.
-  (2026-08-08)
+- **Tool rows render as a minimalist left rail, not pi's default bg-colored Box.** Each skinned tool (`bash`, `write`, `grep`, `find`, `ls`, plus `js` via pi-js-kernel) renders with `renderShell: "self"` and a shared frame: bare `+` corner, `|` rail, content indented two, no horizontal strokes, no right rail, no background. State lives in the rail color (pending=accent, success=dim, error=error), not a box. Glyphs come from the shared symbol preset — `PI_SYMBOLS=ascii` gives the `+|+` look, unicode gives `┌│└`; the flake wrapper forces ascii. (2026-08-08)
+- **Call slot owns the top corner, result slot the bottom, one continuous rail.** The two slots mount as separate components, so the result slot's first render signals `state.hasResult` and queues a microtask `context.invalidate()` that rebuilds the row (pi issue #3830's double-render guard) — the call slot then drops its bottom corner. Collapsed non-error rows render nothing and the call keeps its own bottom corner, so a collapsed row is still a closed rail. Errors always render. (2026-08-08)
+- **Rendering is skinned per registration site; the skin is shared, not global.** An extension cannot restyle a tool it does not register: tool renderers resolve per definition (`toolDefinition.renderCall ?? builtIn`), extension-vs-extension same-name tools merge first-wins, and `getAllTools()` exposes metadata only — no execute. So the builtins are skinned here (create*ToolDefinition spread keeps builtin execution), and js is skinned inside pi-js-kernel against this package's renderers. One renderer, two registration sites. (2026-08-08)
+- **Content machinery carried over from the cell design, trimmed.** specs.ts (call rows, now with a js entry), tree.ts (find/ls flat trees), format.ts (callHeaderLine) survive. The cell components — marker, spinner, duration, per-call stats — died with the cell look: a rail carries no marker or spinner; the call line is the summary and expanding attaches output below. (2026-08-08)
+- **read and edit are not skinned.** read keeps its builtin syntax-highlighted, line-numbered renderer (a plain rail would lose the highlighting); edit keeps its builtin diff-preview renderer. Skinning either would lose functionality for a cosmetic win. (2026-08-08)
+- **Symbols stay shared.** extensions/shared/symbols.ts keeps working: rail corners/vertical, tree connectors. `PI_SYMBOLS=ascii` and `PI_SYMBOL_OVERRIDES` continue to govern. The spinner glyphs died with the cells (removed from the preset tables). (2026-08-08)
 
 ## Architecture
 
-- `src/index.ts` — registration: skins bash/write/grep/find/ls definitions
-  via skinDefinition (renderShell "self" + cell renderCall/renderResult).
-- `src/render.ts` — the two render slots: renderCall builds the one-line
-  ToolCallCellComponent (marker · preview · stats · duration · hint);
-  renderResult stashes the summary and renders expanded output (tree rows
-  for find/ls).
-- `src/specs.ts`, `src/format.ts`, `src/tree.ts` — data tables + string
-  formatting (call rows, tree rows). Pure functions; the decision-free core.
-- `extensions/shared/tool-cell.ts` — the cell primitives (cellState,
-  cellMarker, ToolCallCellComponent, ToolResultCellComponent), shared with
-  pi-js-kernel's js tool so one cell style covers builtins and the kernel
-  tool.
-- `extensions/shared/symbols.ts` — the ascii translator, unchanged API.
+- `src/index.ts` — registration: skins bash/write/grep/find/ls definitions via skinDefinition (renderShell "self" + rail renderCall/renderResult); exports skinDefinition + definitions for pi-js-kernel.
+- `src/render.ts` — the two render slots: renderCall builds the SPECS call line in a rail frame; renderResult renders expanded output (tree rows for find/ls) and closes the rail. Imported by pi-js-kernel for the js tool.
+- `src/specs.ts`, `src/format.ts`, `src/tree.ts` — data tables + string formatting (call rows incl. js, tree rows). Pure functions; the decision-free core.
+- `extensions/shared/frame.ts` — the rail frame renderer (vendored oh-my-pi output-block, `style: "rail"`), the single owner of the look.
+- `pi-js-kernel` — applies this skin to its js registration (imports renderCall/renderResult from this package; vendored into its nix bundle); the kernel itself stays untouched.
 
 ## Deferred
 
-- **Latest-tool-only expand hint.** prime suppresses "(to expand)" on all but
-  the newest tool (selectLatestToolExpandHint); the extension API exposes no
-  "is latest" flag, so the hint shows on every cell. Acceptable noise; a
-  core change could pass showExpandHint through the render context.
-- **Elapsed-time clock while running.** prime's bash shows a live duration
-  via a 1s interval. The cell shows duration only after settle; a
-  running-clock interval could be added to ToolCallCellComponent the same
-  way the spinner works.
-- **Edit tool cell.** pi's edit renderer is self-shelled and rich; replacing
-  it with a cell would lose the diff preview — larger than the payoff here.
+- One-line summary stats (line count, duration) on the call row: the cell design had them; the rail intentionally dropped them for minimalism. Re-adding means stashing a result summary in context.state like the cells did.
+- read/edit skinning: blocked on not wanting to lose their builtin renderers, not on mechanism.
 
 ## Roadmap
 
-- Phase 1 — cell extension: bash/write/grep/find/ls render as one-line cells
-  with marker + preview + stats + duration + expand hint; expanded rows show
-  output/tree rows. DONE (2026-08-08).
-- Phase 2 — js tool: pi-js-kernel switches to renderShell "self" and renders
-  through the shared tool-cell module; the flake vendors shared/ into the
-  js-kernel bundle. DONE (2026-08-08).
-- Phase 3 — retirement: pi-frames deleted, the panel patch and panel module
-  (first port attempts) dropped, registry + checks wired to pi-prime-tools.
-  DONE (2026-08-08).
+- Phase 1: rail skin for bash/write/grep/find/ls (done).
+- Phase 2: js tool skinned through this package (done — pi-js-kernel imports the renderers).
+- Phase 3 (check): rail looks right under both symbol presets; collapsed/expanded/error states closed rails.

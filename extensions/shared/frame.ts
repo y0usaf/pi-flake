@@ -16,6 +16,11 @@ export type OutputBlockOptions = {
   contentPaddingLeft?: number;
   contentPaddingRight?: number;
   borderColor?: string;
+  /** Render as a left rail with corner markers instead of a full box: no
+   * horizontal strokes, no right rail. topBar emits the top corner, bottomBar
+   * the bottom corner, content rows the left rail. Section labels become
+   * dimmed content rows (no tee bars). */
+  style?: "box" | "rail";
   /** Draw the labeled top bar. renderResult suppresses it once a call frame
    * already owns the top so the row pair does not double-top the box. When
    * false the content rows start immediately and header/headerMeta are
@@ -64,6 +69,7 @@ const STATE_BG: Record<FrameState, string> = {
 type BlockRow =
   | { kind: "bar"; leftChar: string; rightChar: string; label?: string; meta?: string }
   | { kind: "bottom"; leftChar: string; rightChar: string }
+  | { kind: "corner"; glyph: string }
   | { kind: "content"; inner: string };
 
 function normalizeContentPaddingLeft(value: number | undefined): number {
@@ -85,7 +91,7 @@ export function outputBlockContentWidth(width: number, contentPaddingLeft?: numb
 }
 
 export function renderOutputBlock(options: OutputBlockOptions, theme: Theme, deps: FrameDeps): string[] {
-  const { header, headerMeta, state, sections = [], width, applyBg = true, topBar = true, bottomBar = true } = options;
+  const { header, headerMeta, state, sections = [], width, applyBg = true, topBar = true, bottomBar = true, style = "box" } = options;
   const S = resolveSymbols();
   const topLeft = S["box.tl"];
   const topRight = S["box.tr"];
@@ -130,21 +136,40 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme, dep
 
   const contentPaddingLeft = normalizeContentPaddingLeft(options.contentPaddingLeft);
   const contentPaddingRight = normalizeContentPaddingRight(options.contentPaddingRight);
-  const contentWidth = Math.max(0, lineWidth - vertical.length - contentPaddingLeft - vertical.length - contentPaddingRight);
+  // Rail mode has no right rail, so only the left vertical claims a column.
+  const rightBorder = style === "rail" ? 0 : vertical.length;
+  const contentWidth = Math.max(0, lineWidth - vertical.length - contentPaddingLeft - rightBorder - contentPaddingRight);
   const contentLeftPadding = contentPaddingLeft > 0 ? " ".repeat(contentPaddingLeft) : "";
   const contentRightPadding = contentPaddingRight > 0 ? " ".repeat(contentPaddingRight) : "";
 
   // Layout pass: collect row descriptors before emitting the bordered lines.
   const rows: BlockRow[] = [];
-  if (topBar) rows.push({ kind: "bar", leftChar: topLeft, rightChar: topRight, label: header, meta: headerMeta });
+  if (style === "rail") {
+    // Minimalist left rail: a bare corner marker, no horizontal stroke. A
+    // supplied header/meta become the first content rows under the corner.
+    if (topBar) {
+      rows.push({ kind: "corner", glyph: topLeft });
+      if (header) rows.push({ kind: "content", inner: header });
+      if (headerMeta) rows.push({ kind: "content", inner: headerMeta });
+    }
+  } else if (topBar) {
+    rows.push({ kind: "bar", leftChar: topLeft, rightChar: topRight, label: header, meta: headerMeta });
+  }
 
   const normalizedSections = sections.length > 0 ? sections : [{ lines: [] as string[] }];
   for (let sectionIndex = 0; sectionIndex < normalizedSections.length; sectionIndex++) {
     const section = normalizedSections[sectionIndex]!;
-    // A labeled section always draws its titled separator bar. A label-less
-    // section can still request a plain divider via `separator`, but only
-    // between sections — leading with one would just double the header bar.
-    if (section.label) {
+
+    if (style === "rail") {
+      // No tee bars in rail mode: a labeled section becomes a dimmed content row.
+      if (section.label) rows.push({ kind: "content", inner: theme.fg("dim", section.label) });
+    } else if (section.label) {
+      // A labeled section always draws its titled separator bar. A label-less
+      // section can still request a plain divider via `separator`, but only
+      // between sections — leading with one would just double the header bar.
+      // A labeled section always draws its titled separator bar. A label-less
+      // section can still request a plain divider via `separator`, but only
+      // between sections — leading with one would just double the header bar.
       rows.push({ kind: "bar", leftChar: teeRight, rightChar: teeLeft, label: section.label });
     } else if (section.separator && sectionIndex > 0) {
       rows.push({ kind: "bar", leftChar: teeRight, rightChar: teeLeft });
@@ -189,7 +214,10 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme, dep
     }
   }
 
-  if (bottomBar) rows.push({ kind: "bottom", leftChar: bottomLeft, rightChar: bottomRight });
+  if (bottomBar) {
+    if (style === "rail") rows.push({ kind: "corner", glyph: bottomLeft });
+    else rows.push({ kind: "bottom", leftChar: bottomLeft, rightChar: bottomRight });
+  }
 
   const renderBar = (row: { leftChar: string; rightChar: string; label?: string; meta?: string }): string => {
     const leftGlyphs = `${row.leftChar}${cap}`;
@@ -219,7 +247,9 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme, dep
   };
 
   const renderContent = (inner: string): string =>
-    `${border(vertical)}${contentLeftPadding}${inner}${contentRightPadding}${border(vertical)}`;
+    style === "rail"
+      ? `${border(vertical)}${contentLeftPadding}${inner}`
+      : `${border(vertical)}${contentLeftPadding}${inner}${contentRightPadding}${border(vertical)}`;
 
   const padLine = (line: string): string => {
     // Whole-box state wash: fg under the bg (bg outermost). The state color
@@ -235,7 +265,13 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme, dep
   const lines: string[] = [];
   for (const row of rows) {
     const line =
-      row.kind === "bar" ? renderBar(row) : row.kind === "bottom" ? renderBottom(row) : renderContent(row.inner);
+      row.kind === "bar"
+        ? renderBar(row)
+        : row.kind === "bottom"
+          ? renderBottom(row)
+          : row.kind === "corner"
+            ? border(row.glyph)
+            : renderContent(row.inner);
     lines.push(padLine(line));
   }
   return lines;
