@@ -48,10 +48,10 @@
     source = "inline";
     dir = "pi-hashline";
   };
-  frames = {
+  prime-tools = {
     stage = "active";
     source = "inline";
-    dir = "pi-frames";
+    dir = "pi-prime-tools";
   };
   review = {
     stage = "active";

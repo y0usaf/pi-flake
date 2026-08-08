@@ -251,21 +251,21 @@
           };
         };
 
-      "pi-frames" = let
-        packageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-frames/package.json);
+      "pi-prime-tools" = let
+        packageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-prime-tools/package.json);
       in
         pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-frames";
+          pname = "pi-prime-tools";
           version = packageJson.version;
           src = lib.cleanSourceWith {
             src = lib.cleanSource ./extensions;
             filter = path: type: let
               rel = lib.removePrefix (toString ./extensions) (toString path);
             in
-              rel == "" || lib.hasPrefix "/pi-frames" rel || lib.hasPrefix "/shared" rel;
+              rel == "" || lib.hasPrefix "/pi-prime-tools" rel || lib.hasPrefix "/shared" rel;
           };
           dontBuild = true;
-          installPhase = ''runHook preInstall; mkdir -p "$out"; cp $src/pi-frames/package.json $src/pi-frames/README.md "$out"/; cp -r $src/pi-frames/src "$out"/; cp -r $src/shared "$out"/; runHook postInstall '';
+          installPhase = ''runHook preInstall; mkdir -p "$out"; cp $src/pi-prime-tools/package.json $src/pi-prime-tools/README.md "$out"/; cp -r $src/pi-prime-tools/src "$out"/; cp -r $src/shared "$out"/; runHook postInstall '';
           passthru.packageName = packageJson.name;
           meta = with lib; {
             description = packageJson.description;
@@ -552,7 +552,7 @@
             filter = path: type: let
               rel = lib.removePrefix (toString ./extensions) (toString path);
             in
-              rel == "" || lib.hasPrefix "/pi-js-kernel" rel || lib.hasPrefix "/pi-agents" rel || lib.hasPrefix "/pi-hashline" rel;
+              rel == "" || lib.hasPrefix "/pi-js-kernel" rel || lib.hasPrefix "/pi-agents" rel || lib.hasPrefix "/pi-hashline" rel || lib.hasPrefix "/shared" rel;
           };
           dontBuild = true;
           installPhase = ''
@@ -562,6 +562,7 @@
             substituteInPlace "$out/index.ts" --replace-fail 'const NODE_BIN = "node";' 'const NODE_BIN = "${pkgs.nodejs_22}/bin/node";'
             cp -r $src/pi-agents "$out/pi-agents"
             cp -r $src/pi-hashline "$out/pi-hashline"
+            cp -r $src/shared "$out/shared"
             substituteInPlace "$out/hashline-bridge.ts" --replace-fail '../pi-hashline/' './pi-hashline/'
             substituteInPlace "$out/rlm-bridge.ts" --replace-fail '../pi-agents/' './pi-agents/'
             runHook postInstall
@@ -700,20 +701,21 @@
         dontBuild = true;
         installPhase = ''bun test ./tests; touch "$out" '';
       };
-      pi-frames-test = pkgs.stdenvNoCC.mkDerivation {
-        pname = "pi-frames-tests";
-        version = (builtins.fromJSON (builtins.readFile ./extensions/pi-frames/package.json)).version;
+
+      pi-prime-tools-test = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-prime-tools-tests";
+        version = (builtins.fromJSON (builtins.readFile ./extensions/pi-prime-tools/package.json)).version;
         src = lib.cleanSourceWith {
           src = lib.cleanSource ./extensions;
           filter = path: type: let
             rel = lib.removePrefix (toString ./extensions) (toString path);
           in
-            rel == "" || lib.hasPrefix "/pi-frames" rel || lib.hasPrefix "/shared" rel;
+            rel == "" || lib.hasPrefix "/pi-prime-tools" rel || lib.hasPrefix "/shared" rel;
         };
         nativeBuildInputs = [pkgs.bun];
         dontConfigure = true;
         dontBuild = true;
-        installPhase = ''runHook preInstall; bun test; touch $out; runHook postInstall '';
+        installPhase = ''runHook preInstall; export HOME="$TMPDIR/home"; mkdir -p "$HOME"; bun test; touch $out; runHook postInstall '';
       };
       biome-lint = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-flake-biome-lint";
@@ -834,7 +836,7 @@
         interview = self.packages.${system}."pi-interview";
         management = self.packages.${system}."pi-management";
         webfetch = self.packages.${system}."pi-webfetch";
-        frames = self.packages.${system}."pi-frames";
+        "prime-tools" = self.packages.${system}."pi-prime-tools";
         pantera = self.packages.${system}."pi-pantera";
         dark-terminal = self.packages.${system}."pi-dark-terminal";
 
