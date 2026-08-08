@@ -428,7 +428,12 @@ function composeResultText(r: KernelResponse): string {
 		text += `\n[error] ${r.error.name}: ${r.error.message}`;
 		if (stack) text += `\n${stack}`;
 	}
-	return text.trim();
+	const trimmed = text.trim();
+	if (trimmed) return trimmed;
+	if (r.ok) {
+		return "evaluated to undefined — no stdout/stderr. If you ran kernel.bash or kernel.rlm.*, a declaration as the last statement swallows the result: end with the value (e.g. `r.stdout`) or print it.";
+	}
+	return trimmed;
 }
 
 // ---------------------------------------------------------------------------
@@ -476,6 +481,8 @@ export default function (pi: ExtensionAPI) {
 			"kernel.read returns hashline v3 output (lines prefixed LINEID) that kernel.edit accepts as anchors. Use kernel.write for new files or complete rewrites.",
 			"Code that exceeds the timeout restarts the kernel and loses all REPL state — keep long-running work incremental. A blocking kernel.rlm.run (background:false) is bounded by its own child timeout, not the js timer; background runs are bounded by their own child timeout too; rlm.loop is bounded by its workflow budget or timeoutSeconds. A background child that calls ask_parent injects an urgent steer message with its questions — inspect with kernel.rlm.peek(id), resume with kernel.rlm.answer(id, answers).",
 			"Large multi-step work: write helper functions into the REPL and reuse them across calls; the kernel is the working memory.",
+			"End code with the value you want to see: `const r = await kernel.bash('...')` alone returns an empty result (a declaration's completion value is undefined). End with `r.stdout`, print with console.log, or return the value.",
+			"Multi-line shell scripts via kernel.bash: prefer single-quoted strings — template literals can interpolate and backslashes get eaten. Use kernel.write for new files.",
 		],
 		parameters: Type.Object({
 			code: Type.String({
