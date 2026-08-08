@@ -61,6 +61,8 @@ Preferred v3 edit entries use `{ loc, content }`:
 - `loc: { "range": { "pos": "123wmaa", "end": "125nkgu" } }`: replace inclusive range
 - `content`: literal file content as `string[]` or newline-split `string`; `null` deletes target range
 
+The `loc` wrapper may be omitted for the naive shape `{ "range": {...}, "content": [...] }` (also `{ "append": LINEID, ... }` / `{ "prepend": LINEID, ... }`); it is folded onto the strict form by the same normalizer every entry point runs.
+
 Legacy request shapes remain accepted for compatibility:
 
 - `replace(pos,end?,lines)`

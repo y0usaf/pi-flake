@@ -90,6 +90,9 @@ test("prepareArguments maps legacy edit shapes onto strict v3 shapes", () => {
       { op: "prepend", pos: "1aabb", lines: "head" },
       { op: "replace_text", oldText: "a", newText: "b" },
       { loc: "append", content: ["kept"] },
+      { range: { pos: "4aabb", end: "5ccdd" }, content: ["naive"] },
+      { append: "6aabb", content: ["naive-append"] },
+      { prepend: "7aabb", content: ["naive-prepend"] },
     ],
   })).toEqual({
     path: "f.txt",
@@ -100,6 +103,9 @@ test("prepareArguments maps legacy edit shapes onto strict v3 shapes", () => {
       { loc: { prepend: "1aabb" }, content: "head" },
       { oldText: "a", newText: "b" },
       { loc: "append", content: ["kept"] },
+      { loc: { range: { pos: "4aabb", end: "5ccdd" } }, content: ["naive"] },
+      { loc: { append: "6aabb" }, content: ["naive-append"] },
+      { loc: { prepend: "7aabb" }, content: ["naive-prepend"] },
     ],
   });
 

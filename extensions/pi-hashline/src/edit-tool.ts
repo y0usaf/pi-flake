@@ -20,57 +20,8 @@ import {
 import { resolveToCwd } from "./path-utils";
 import { throwIfAborted } from "./runtime";
 import { loadTextFileWithSnapshot, normalizeToLF } from "./text-file";
+import { isRecord, prepareEditArguments } from "./edit-shapes";
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-const LEGACY_EDIT_KEYS = new Set(["op", "pos", "end", "lines", "oldText", "newText"]);
-
-/**
- * Map one legacy edit entry (op/pos/end/lines, or op "replace_text") onto the
- * strict v3 shapes before schema validation, per Pi's prepareArguments
- * guidance. Anything unrecognized passes through for the schema to reject.
- */
-function normalizeLegacyEdit(entry: unknown): unknown {
-  if (!isRecord(entry) || "loc" in entry || "content" in entry) return entry;
-  if (Object.keys(entry).some((key) => !LEGACY_EDIT_KEYS.has(key))) return entry;
-
-  const { op, pos, end, lines, oldText, newText } = entry;
-  if (op === "replace_text") {
-    return typeof oldText === "string" && typeof newText === "string" &&
-      pos === undefined && end === undefined && lines === undefined
-      ? { oldText, newText }
-      : entry;
-  }
-  if (oldText !== undefined || newText !== undefined || lines === undefined) return entry;
-
-  if (op === "replace" && typeof pos === "string" && (end === undefined || typeof end === "string")) {
-    return { loc: { range: { pos, end: end ?? pos } }, content: lines };
-  }
-  if ((op === "append" || op === "prepend") && end === undefined) {
-    if (pos === undefined) return { loc: op, content: lines };
-    if (typeof pos === "string") {
-      return { loc: op === "append" ? { append: pos } : { prepend: pos }, content: lines };
-    }
-  }
-  return entry;
-}
-
-function prepareEditArguments(args: unknown): unknown {
-  if (!isRecord(args) || typeof args.path !== "string") return args;
-
-  if (Array.isArray(args.edits)) {
-    return { ...args, edits: args.edits.map(normalizeLegacyEdit) };
-  }
-
-  const oldText = args.oldText ?? args.old_text;
-  const newText = args.newText ?? args.new_text;
-  if (typeof oldText === "string" && typeof newText === "string") {
-    return { path: args.path, edits: [{ oldText, newText }] };
-  }
-  return args;
-}
 
 export function registerEditTool(pi: ExtensionAPI): void {
   const editContentSchema = Type.Union([
