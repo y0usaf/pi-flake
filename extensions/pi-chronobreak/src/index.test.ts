@@ -20,6 +20,17 @@ const VARIED_TEXT = [
   "Finally we grep the activation script for the service unit.",
 ].join("\n\n");
 
+const LOOP_WITH_LEADIN = [
+  "First we inspect the system generation to see when it was built.",
+  "Then the module list tells us whether paseo is imported at all.",
+  "Let me check the system mtime and module import.",
+  "Let me check the system mtime and module import now.",
+  "I am trapped. Let me check the system mtime and module import.",
+  "Let me check the system mtime and module import.",
+  "Let me check the system mtime and module import.",
+  "Let me check the system mtime and module import.",
+].join("\n\n");
+
 type AnyHandler = (event: unknown, ctx: unknown) => unknown;
 
 function makeExt() {
@@ -142,5 +153,20 @@ describe("extension flow", () => {
     h.fire("agent_end", {});
     // strike counter restarted: this loop re-injects instead of giving up
     expect(h.sent.length).toBe(3);
+  });
+
+  test("loop with lead-in: keeps the coherent prefix, drops the repeated tail", () => {
+    const h = makeExt();
+    h.fire("message_start", { message: assistant("") });
+    h.fire("message_update", { message: assistant(LOOP_WITH_LEADIN) });
+    expect(h.calls.abort).toBe(1);
+    const scrub = h.fire("message_end", { message: assistant(LOOP_WITH_LEADIN) }) as {
+      message: { content: Array<{ text: string }> };
+    };
+    const kept = scrub.message.content.map((c) => c.text).join("\n");
+    // lead-in survives, looped garbage does not
+    expect(kept).toContain("system generation");
+    expect(kept).not.toContain("system mtime and module import");
+    expect(kept).toContain("truncated here");
   });
 });

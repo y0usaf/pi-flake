@@ -16,10 +16,12 @@ import { detectLoop } from "./detector";
 
 const MAX_STRIKES = 3; // per user-turn give-up: no abort/re-run spin loop
 const SCRUB_TEXT = "[generation loop terminated by chronobreak - re-running]";
+const TRUNCATE_NOTE = "\n\n[chronobreak: generation loop truncated here]";
 
 export default function (pi: ExtensionAPI): void {
   let terminating = false;
   let pendingNudge: string | undefined;
+  let soleLoopStart = -1; // -1: no scrub lead-in captured yet
   let strike = 0;
 
   function textOf(message: { content?: Array<{ type?: string; text?: string }> }): string {
@@ -54,6 +56,7 @@ export default function (pi: ExtensionAPI): void {
     if (!verdict.looping) return;
 
     terminating = true;
+    soleLoopStart = verdict.loopStart;
     strike++;
     if (strike >= MAX_STRIKES) {
       ctx.ui.notify(
@@ -70,16 +73,28 @@ export default function (pi: ExtensionAPI): void {
     ctx.abort();
   });
 
-  // The aborted assistant message is persisted by pi; scrub it to a one-line
-  // marker so the repeated garbage never stays in context.
+  // The aborted assistant message is persisted by pi; rewrite it to keep the
+  // coherent text before the loop began and drop the repeated tail, with the
+  // marker at the cut point so the model never sees the looped garbage again.
   pi.on("message_end", (event) => {
     if (!terminating) return;
     if (event.message.role !== "assistant") return;
     terminating = false;
+    const loopStart = soleLoopStart;
+    soleLoopStart = -1;
+    const full = textOf(event.message as never);
+    let kept: string;
+    if (loopStart > 0 && loopStart < full.length) {
+      // Keep the lead-in, trimmed to a clean character boundary, then note.
+      const lead = full.slice(0, loopStart).trim();
+      kept = lead ? lead + TRUNCATE_NOTE : SCRUB_TEXT;
+    } else {
+      kept = SCRUB_TEXT;
+    }
     return {
       message: {
         ...event.message,
-        content: [{ type: "text" as const, text: SCRUB_TEXT }],
+        content: [{ type: "text" as const, text: kept }],
       },
     };
   });
