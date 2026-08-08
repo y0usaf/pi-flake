@@ -4,8 +4,9 @@
  * Exposes three bridge handlers (`rlm.run`, `rlm.list`, `rlm.kill`) that let the
  * persistent JS kernel spawn child agents, list them, and kill them. The model
  * calls `await kernel.rlm.run(task, opts)` inside the kernel; this module spawns
- * a literal `pi --mode rpc` child and returns the child's fulfill-contract answers
- * as data.
+ * a literal `pi --mode rpc` child. Async by default: the call returns an
+ * admission handle immediately and the child's fulfill-contract answers arrive
+ * later as an injected follow-up message (the agent_message delivery).
  *
  * It reuses pi-agents' spawn machinery verbatim via relative imports. The factory
  * wires the same session-scoped composition as pi-agents' index.ts (registry,
@@ -13,9 +14,12 @@
  * to pi.sendMessage) but eschews the orchestrator, loop, render, and the six
  * root-tool registrations — only the spawn machinery and registry are needed here.
  *
- * v1 design decision: rlm.run is BLOCKING. It spawns a child and awaits its
- * contract fulfillment, returning the answers as data. There is no admission
- * handle / agent_message flow; use rlm.kill to abort a stuck or unwanted child.
+ * v2 design decision: rlm.run is ASYNC by default. It spawns the child in the
+ * background (pi-agents' spawnChild with background=true) and returns an
+ * admission handle {childId, done:false, background:true, sessionFile}; the
+ * answers arrive via the injected follow-up message (the agent_message
+ * delivery), so the parent keeps prompting while children run. {background:false}
+ * opts into the old blocking in-cell answers. Progress: rlm.list(); abort: rlm.kill(id).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -146,6 +150,11 @@ export function createRlmBridge(pi: ExtensionAPI): {
 
 		const timeoutSeconds = typeof p.timeoutSeconds === "number" ? p.timeoutSeconds : undefined;
 
+		// Async by default: spawn detached and return the admission handle; the
+		// injected follow-up message (the agent_message delivery) carries the
+		// contract answers later. Pass {background: false} to block in-cell.
+		const background = p.background !== false;
+
 		const spec = typeof p.model === "string" && p.model.length > 0 ? p.model : ctx.model;
 		const model = resolveModel(spec);
 
@@ -162,9 +171,10 @@ export function createRlmBridge(pi: ExtensionAPI): {
 		// one, so assert the cast once here.
 		const onUpdate = ctx.onUpdate as ((partialResult: AgentToolResult<AgentToolDetails>) => void) | undefined;
 
-		// Blocking spawn: await the child fulfilling its contract. background=false,
-		// allowAsk defaults to true. The child's own timeout_seconds is the bound —
-		// the host composition agent clears the js watchdog while this is in flight.
+		// spawnChild with background=true returns the admission handle immediately
+		// (runDetached drives the child; completion is announced via the inject
+		// callback → pi.sendMessage follow-up). background=false awaits the child
+		// fulfilling its contract in-cell; the child's timeout_seconds is the bound.
 		const result = await spawn.spawnChild(
 			undefined,
 			params,
@@ -174,8 +184,20 @@ export function createRlmBridge(pi: ExtensionAPI): {
 			onUpdate,
 			undefined,
 			undefined,
-			false,
+			background,
 		);
+
+		if (background) {
+			// Admission handle: child runs detached. Poll rlm.list() for progress;
+			// the answers arrive as an injected follow-up message.
+			return {
+				text: extractText(result),
+				childId: result.details?.childId,
+				done: false,
+				background: true,
+				sessionFile: result.details?.sessionFile,
+			};
+		}
 
 		return {
 			text: extractText(result),
