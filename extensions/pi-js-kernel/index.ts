@@ -497,7 +497,8 @@ export default function (pi: ExtensionAPI) {
 			const settled = !context.isPartial && !context.isError;
 			component.update({
 				label: "js",
-				preview: snippet ? theme.fg("muted", snippet) : "",
+				// accent teal, matching the path/pattern previews of the other cells.
+			preview: snippet ? theme.fg("accent", snippet) : "",
 				state: cellState(context),
 				stats: summary && summary.lineCount > 0 ? [theme.fg("muted", "↓ " + summary.lineCount + " lines")] : [],
 				durationMs: settled && summary ? summary.durationMs : undefined,
