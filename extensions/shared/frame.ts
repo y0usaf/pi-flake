@@ -21,6 +21,9 @@ export type OutputBlockOptions = {
    * the bottom corner, content rows the left rail. Section labels become
    * dimmed content rows (no tee bars). */
   style?: "box" | "rail";
+  /** Indent the whole rail block (corners + content rows) from the left
+   * margin, rail mode only. Box mode ignores it. */
+  railIndent?: number;
   /** Draw the labeled top bar. renderResult suppresses it once a call frame
    * already owns the top so the row pair does not double-top the box. When
    * false the content rows start immediately and header/headerMeta are
@@ -142,6 +145,8 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme, dep
   const contentLeftPadding = contentPaddingLeft > 0 ? " ".repeat(contentPaddingLeft) : "";
   const contentRightPadding = contentPaddingRight > 0 ? " ".repeat(contentPaddingRight) : "";
 
+  const railIndent = style === "rail" ? Math.max(0, Math.floor(options.railIndent ?? 0)) : 0;
+  const railPrefix = railIndent > 0 ? " ".repeat(railIndent) : "";
   // Layout pass: collect row descriptors before emitting the bordered lines.
   const rows: BlockRow[] = [];
   if (style === "rail") {
@@ -272,8 +277,9 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme, dep
           : row.kind === "corner"
             ? border(row.glyph)
             : renderContent(row.inner);
-    lines.push(padLine(line));
+    lines.push(padLine(railPrefix + line));
   }
+
   return lines;
 }
 
