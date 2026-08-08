@@ -160,6 +160,17 @@ describe("formatting", () => {
 		expect(callHeaderLine("ls", {}, theme, deps)).toContain("ls .");
 	});
 
+	test("call header colors the preview per tool", () => {
+		// fg mock tags tokens so we can assert which color each part got.
+		const tokenTheme: any = { fg: (token: string, s: string) => `[${token}]${s}`, bold: (s: string) => `[bold]${s}` };
+		expect(callHeaderLine("bash", { command: "cargo build" }, tokenTheme, deps)).toContain("[bashMode]cargo build");
+		expect(callHeaderLine("bash", { command: "cargo build" }, tokenTheme, deps)).toContain("[toolTitle][bold]$");
+		expect(callHeaderLine("write", { path: "a.txt" }, tokenTheme, deps)).toContain("[accent]a.txt");
+		expect(callHeaderLine("grep", { pattern: "needle" }, tokenTheme, deps)).toContain("[accent]needle");
+		expect(callHeaderLine("find", { pattern: "*.ts" }, tokenTheme, deps)).toContain("[accent]*.ts");
+		expect(callHeaderLine("ls", { path: "src" }, tokenTheme, deps)).toContain("[accent]src");
+		expect(callHeaderLine("bash", { command: "ls", timeout: 5 }, tokenTheme, deps)).toContain("[dim]timeout=5");
+	});
 	test("tree rows use unicode branch glyphs by default", () => {
 		const rows = renderTreeList({ items: ["a.ts", "b.ts"], expanded: true, itemType: "file", renderItem: (l) => l }, theme, deps);
 		expect(rows.length).toBe(2);
