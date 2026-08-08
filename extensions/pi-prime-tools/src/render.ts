@@ -41,6 +41,7 @@ export function renderCall(name: string, args: any, theme: Theme, context: any):
 			width,
 			applyBg: false,
 			contentPaddingLeft: 2,
+			railIndent: 2,
 			bottomBar: context.state?.hasResult !== true || (!context.expanded && !context.isError),
 		});
 		return frameComponent(build, theme, frameDeps);
@@ -110,6 +111,7 @@ export function renderResult(name: string, result: any, _options: any, theme: Th
 			width,
 			applyBg: false,
 			contentPaddingLeft: 2,
+			railIndent: 2,
 			// The call slot owns the top corner; this slot only emits the
 			// content rows and the closing bottom corner for one continuous rail.
 			topBar: false,

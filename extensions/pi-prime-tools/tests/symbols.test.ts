@@ -72,6 +72,9 @@ describe("settings.json symbol source", () => {
       .join(" ");
     const script = [
       `process.env.PI_CODING_AGENT_DIR = ${JSON.stringify(dir)};`,
+      // Parent-process env leaks into the spawned bun (rail.test.ts sets
+      // PI_SYMBOLS=ascii); the subprocess must start deterministic.
+      "delete process.env.PI_SYMBOLS;",
       envLines,
       `const { resolveSymbols } = await import(${JSON.stringify(symbolsEntry)});`,
       `console.log(JSON.stringify(resolveSymbols()));`,
