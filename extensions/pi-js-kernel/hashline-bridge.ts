@@ -170,7 +170,15 @@ export const writeHandler: BridgeHandler = async (payload, ctx) => {
   throwIfAborted(ctx.signal);
 
   const absolutePath = resolveToCwd(path, ctx.cwd);
-  const targetPath = await resolveMutationTargetPath(absolutePath);
+	let targetPath: string;
+	try {
+		targetPath = await resolveMutationTargetPath(absolutePath);
+	} catch (error) {
+		// New file: realpath (resolveMutationTargetPath) throws ENOENT for a
+		// nonexistent path. Nothing to resolve — write through the plain path.
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		targetPath = absolutePath;
+	}
 
   return withFileMutationQueue(targetPath, async () => {
     throwIfAborted(ctx.signal);
