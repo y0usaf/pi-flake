@@ -20,7 +20,7 @@
 - `index.ts` — machinery and tool registration: owns the child process handle, the NDJSON framing, the timeout/abort watchdog, the `js` tool's `registerTool` entry, and the host-bridge dispatcher. This is the extension boundary (canon:functional-core — it never reads kernel internals, only the wire response).
 - `kernel-child.mjs` — decision-free execution core: reads one JSON request line, evaluates it in a persistent `node:repl` context, writes one JSON response line. No timeout logic, no session policy, no state beyond the REPL context itself.
 - `hashline-bridge.ts` — host-side hashing: reuses pi-hashline's pure core for `kernel.read`/`edit` LINEID anchors when the host is Bun.
-- `rlm-bridge.ts` — the recursion surface: `kernel.rlm.run`/`list`/`kill` bridge handlers reusing pi-agents' spawn machinery.
+- `rlm-bridge.ts` — the recursion surface: `kernel.rlm.run`/`panel`/`loop`/`answer`/`peek`/`list`/`kill` bridge handlers reusing pi-agents' spawn machinery and workflow interpreter.
 - The wire protocol is the boundary between the two: request `{"id", "code"}`, response `{"id", "ok", "stdout", "stderr", "result"}` or `{"id", "ok": false, ..., "error": {"name", "message", "stack"}}`. Either side can be replaced without touching the other.
 
 ## Deferred
@@ -31,7 +31,7 @@
 - Multi-request pipelining: the wire protocol is strictly request/response, serialized per child. Pipelining would need response ordering and per-request error isolation; single-threaded execution means the throughput win is marginal.
 - Tool-stripping not yet enabled: a config-gated strip of main-session `write`/`edit`/`bash` inside the RLM child is deferred until runtime-verified.
 - `kernel.grep`/`find`/`ls` not yet added (model uses `kernel.bash` for search/listing); ripgrep-backed grep would add an external binary dependency and is deferred. Images: `kernel.read` throws `[E_IMAGE]` because the bridge lacks the ExtensionContext that `createReadTool` needs; image viewing is out of scope for A until a host image-view path exists.
-- RLM `agent_answer` / two-way mid-run conversation: a background child that suspends via ask_parent keeps its drive loop alive and injects an urgent steer message, but the kernel bridge has no `rlm.answer` handler yet — the host must answer for it. Wiring it means exposing pi-agents' answerAgentResult through the bridge.
+- DONE (2026-08): RLM `agent_answer` / two-way mid-run conversation — `rlm.answer`/`rlm.peek` bridge handlers exposing pi-agents' answerAgent/outputAgent; a suspended background child injects the steer message, the host inspects with peek and resumes with answer.
 
 ## Roadmap
 

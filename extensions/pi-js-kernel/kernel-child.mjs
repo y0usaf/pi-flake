@@ -224,6 +224,18 @@ const kernel = {
     run(task, opts) {
       return hostRequest("rlm.run", { task, ...(opts || {}) });
     },
+    panel(task, opts) {
+      return hostRequest("rlm.panel", { task, ...(opts || {}) });
+    },
+    loop(workflow, opts) {
+      return hostRequest("rlm.loop", { workflow, ...(opts || {}) });
+    },
+    answer(id, answers, opts) {
+      return hostRequest("rlm.answer", { id, answers, ...(opts || {}) });
+    },
+    peek(id) {
+      return hostRequest("rlm.peek", { id });
+    },
     list() {
       return hostRequest("rlm.list", {});
     },
