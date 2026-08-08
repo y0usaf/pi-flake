@@ -4,9 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { currentPreset, resolveSymbols, symbol, SYMBOL_PRESETS } from "../../shared/symbols";
 
-const env = (extra: Record<string, string | undefined> = {}) => ({ ...extra });
+// In-process tests force the preset explicitly: settings.json is read once at
+// module load from the real agent dir, so ambient settings (e.g. the user's
+// symbols.preset=ascii) would otherwise leak into "unicode" expectations. The
+// hermetic settings.json behavior is covered by the subprocess tests below.
+const env = (extra: Record<string, string | undefined> = {}) => ({ PI_SYMBOLS: "unicode", ...extra });
 
-describe("pi-frames symbol presets", () => {
+describe("symbol presets", () => {
   test("unicode preset is the default and carries the unicode glyphs", () => {
     expect(currentPreset(env())).toBe("unicode");
     const m = resolveSymbols(env());
@@ -14,6 +18,8 @@ describe("pi-frames symbol presets", () => {
     expect(m["tree.branch"]).toBe("├─");
     expect(m["box.tl"]).toBe("┌");
     expect(m["sep.dot"]).toBe(" · ");
+    expect(m["spinner.1"]).toBe("◇");
+    expect(m["spinner.3"]).toBe("◆");
   });
 
   test("ascii preset via PI_SYMBOLS=ascii maps to plain-ASCII glyphs", () => {
@@ -23,6 +29,8 @@ describe("pi-frames symbol presets", () => {
     expect(m["tree.branch"]).toBe("|--");
     expect(m["box.tl"]).toBe("+");
     expect(m["footer.ok"]).toBe("ok");
+    expect(m["spinner.1"]).toBe("-");
+    expect(m["spinner.4"]).toBe("/");
   });
 
   test("PI_SYMBOL_OVERRIDES merges per-key overrides over the preset", () => {
