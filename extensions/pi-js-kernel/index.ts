@@ -26,6 +26,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Type } from "@sinclair/typebox";
 import { Text } from "@earendil-works/pi-tui";
+import { keyHint } from "@earendil-works/pi-coding-agent";
+import { ToolCallCellComponent, ToolResultCellComponent, cellState } from "./shared/tool-cell.js";
 import {
 	readHandler,
 	editHandler,
@@ -482,32 +484,67 @@ export default function (pi: ExtensionAPI) {
 			),
 		}),
 		executionMode: "sequential",
+		renderShell: "self",
 
-		renderCall(args, theme, _context) {
+		renderCall(args, theme, context) {
+			// One status line: js · snippet · stats · duration · expand hint.
+			const component =
+				context.lastComponent instanceof ToolCallCellComponent ? context.lastComponent : new ToolCallCellComponent();
 			const code = args?.code ?? "";
 			const oneLine = code.replace(/\s*\n\s*/g, " ").trim();
 			const snippet = oneLine.length > 100 ? oneLine.slice(0, 100) + "…" : oneLine;
-			const label =
-				theme.fg("toolTitle", theme.bold("js")) + (snippet ? ` ${theme.fg("muted", snippet)}` : "");
-			return new Text(label, 0, 0);
+			const summary = context.state?.resultSummary;
+			const settled = !context.isPartial && !context.isError;
+			component.update({
+				label: "js",
+				preview: snippet ? theme.fg("muted", snippet) : "",
+				state: cellState(context),
+				stats: summary && summary.lineCount > 0 ? [theme.fg("muted", "↓ " + summary.lineCount + " lines")] : [],
+				durationMs: settled && summary ? summary.durationMs : undefined,
+				errorName: context.isError && summary ? summary.errorName : undefined,
+				hint: keyHint("app.tools.expand", context.expanded ? "to collapse" : "to expand"),
+				theme,
+				invalidate: context.invalidate,
+			 });
+			return component;
 		},
 
 		renderResult(result, options, theme, context) {
+			// Stash the summary for the call line (same-pass ordering: the call slot
+			// runs first, so one microtask refresh repaints it with these stats).
+			const state = context.state ?? (context.state = {});
+			if (!options.isPartial || context.isError) state.endedAt ??= Date.now();
 			const output = (Array.isArray(result.content) ? result.content : [])
 				.filter((c) => c.type === "text" && c.text)
 				.map((c) => c.text)
 				.join("\n");
-			if (!options.expanded && !context.isError) return new Text("", 0, 0);
 			const lines = output.replace(/\s+$/, "").split("\n");
+			state.resultSummary = {
+				lineCount: lines.length,
+				durationMs:
+					state.startedAt !== undefined && state.endedAt !== undefined
+						? state.endedAt - state.startedAt
+						: undefined,
+				errorName: context.isError ? (lines[0] ?? "error").slice(0, 60) : undefined,
+			};
+			if (!state.invalidated) {
+				state.invalidated = true;
+				queueMicrotask(() => context.invalidate?.());
+			}
+			const component =
+				context.lastComponent instanceof ToolResultCellComponent ? context.lastComponent : new ToolResultCellComponent();
+			if (!options.expanded && !context.isError) {
+				component.update([], theme, false);
+				return component;
+			}
 			const max = options.expanded ? lines.length : 10;
-			const shown = lines
-				.slice(0, max)
-				.map((l) => theme.fg("toolOutput", l))
-				.join("\n");
+			const shown = lines.slice(0, max).map((l) => theme.fg("toolOutput", l));
 			const remaining = lines.length - max;
-			let text = `\n${shown}`;
-			if (remaining > 0) text += theme.fg("muted", `\n... (${remaining} more lines, toggle expand to view)`);
-			return new Text(text, 0, 0);
+			if (remaining > 0) {
+				shown.push(theme.fg("muted", "... (" + remaining + " more lines, toggle expand to view)"));
+			}
+			component.update(shown, theme, true);
+			return component;
 		},
 
 		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
