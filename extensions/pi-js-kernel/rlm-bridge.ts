@@ -34,8 +34,7 @@ import { createSpawnTools, type SessionState } from "../pi-agents/spawn.js";
 import { createRegistry } from "../pi-agents/registry.js";
 import { loadPiAgentsConfig, resolveChildModel } from "../pi-agents/config.js";
 import { createLoop, workflowSchema } from "../pi-agents/loop.js";
-import { Check as ValueCheck } from "@sinclair/typebox/value";
-import { Errors as ValueErrors } from "@sinclair/typebox/errors";
+import { Check as ValueCheck, Errors as ValueErrors } from "@sinclair/typebox/value";
 import type { Static } from "@sinclair/typebox";
 
 import type { AgentToolDetails } from "../pi-agents/state.js";
