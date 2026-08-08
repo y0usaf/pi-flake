@@ -34,6 +34,13 @@ const truncateToWidth = (s: string, width: number): string => {
 	return out;
 };
 
+const wrapTextWithAnsi = (s: string, width: number): string[] => {
+	if (width <= 0) return [s];
+	const out: string[] = [];
+	for (let i = 0; i < s.length; i += width) out.push(s.slice(i, i + width));
+	return out.length > 0 ? out : [""];
+};
+
 const deps = {
 	keyHint: (_id: string, d: string) => "ctrl+o " + d,
 	visibleWidth: (s: string) => strip(s).length,
@@ -46,6 +53,7 @@ const deps = {
 mock.module("@earendil-works/pi-tui", () => ({
 	truncateToWidth,
 	visibleWidth: deps.visibleWidth,
+	wrapTextWithAnsi,
 }));
 mock.module("@earendil-works/pi-coding-agent", () => ({
 	keyHint: deps.keyHint,
@@ -146,6 +154,18 @@ describe("result cell", () => {
 		const lines = c.render(40);
 		expect(strip(lines[0])).toContain("out1");
 		expect(strip(lines[1])).toContain("out2");
+	});
+
+	test("wraps long lines and pads every row to the render width", () => {
+		const c = new ToolResultCellComponent();
+		const long = "x".repeat(100);
+		c.update([long], theme, true);
+		const lines = c.render(20);
+		// 100 chars at 18-col content width → 6 rows, each exactly 20 wide.
+		expect(lines.length).toBe(6);
+		for (const line of lines) expect(strip(line).length).toBe(20);
+		expect(strip(lines[0])).toContain("  xx");
+		// Settle nothing: no timer in the result cell.
 	});
 });
 
