@@ -102,10 +102,17 @@
   };
 
   js-kernel = {
-    # Active: supersedes pi-agents + pi-hashline, which are paused.
-    stage = "active";
+    # Paused: superseded by rust-kernel. Source kept in tree; no longer built,
+    # bundled, or checked.
+    stage = "paused";
     source = "inline";
     dir = "pi-js-kernel";
+  };
+  rust-kernel = {
+    # Active: persistent Rust evaluation kernel (evcxr). Supersedes js-kernel.
+    stage = "active";
+    source = "inline";
+    dir = "pi-rust-kernel";
   };
   chronobreak = {
     stage = "active";
