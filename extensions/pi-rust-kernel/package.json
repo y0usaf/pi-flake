@@ -1,0 +1,28 @@
+{
+  "name": "pi-rust-kernel",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Pi extension: persistent Rust evaluation kernel (evcxr) — a scratchpad that keeps variables, functions, and types across calls within the session",
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "pi-package",
+    "repl",
+    "rust",
+    "evcxr"
+  ],
+  "license": "MIT",
+  "files": [
+    "*.ts",
+    "README.md",
+    "child"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-tui": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@sinclair/typebox": "*"
+  }
+}

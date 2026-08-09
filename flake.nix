@@ -603,6 +603,52 @@
           };
         };
 
+      "pi-rust-kernel" = let
+        rustKernelPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-rust-kernel/package.json);
+        rustPlatform = pkgs.rustPlatform;
+        # The child is built with rustPlatform against the evcxr crate. To wrap
+        # it with a runtime Rust toolchain (it compiles user code on the fly),
+        # we copy it into a makeWrapper bin dir rather than buildRustPackage's
+        # install, so the wrapper can be applied to the prebuilt binary.
+        child = rustPlatform.buildRustPackage {
+          pname = "pi-rust-kernel-child";
+          version = rustKernelPackageJson.version;
+          src = lib.cleanSource ./extensions/pi-rust-kernel/child;
+          # evcxr needs RUST_SRC_PATH at build time (rust-analyzer component).
+          env.RUST_SRC_PATH = "${rustPlatform.rustLibSrc}";
+          cargoHash = "sha256-EV/reA90o09w6PJ7k55WoiV/wGvG5J10YpyzklWQMEs=";
+          doCheck = false;
+        };
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-rust-kernel";
+          version = rustKernelPackageJson.version;
+          src = lib.cleanSource ./extensions/pi-rust-kernel;
+          nativeBuildInputs = [pkgs.makeWrapper];
+          dontBuild = true;
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp package.json README.md DESIGN.md index.ts "$out"/
+            cp -r child "$out/child" 2>/dev/null || true
+            # A wrapper that adds the runtime Rust toolchain evcxr needs.
+            mkdir -p "$out/bin"
+            cp ${child}/bin/pi-rust-kernel-child "$out/bin/.pi-rust-kernel-child-raw"
+            wrapProgram "$out/bin/.pi-rust-kernel-child-raw" \
+              --prefix PATH : ${lib.makeBinPath (with pkgs; [cargo gcc rustc mold-unwrapped])} \
+              --set-default RUST_SRC_PATH "${rustPlatform.rustLibSrc}"
+            mv "$out/bin/.pi-rust-kernel-child-raw" "$out/bin/pi-rust-kernel-child"
+            substituteInPlace "$out/index.ts" --replace-fail 'const CHILD_BIN = "child";' "const CHILD_BIN = \"$out/bin/pi-rust-kernel-child\";"
+            runHook postInstall
+          '';
+          passthru.packageName = rustKernelPackageJson.name;
+          meta = with lib; {
+            description = rustKernelPackageJson.description;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
       pi-full = self.lib.piWithExtensions {
         inherit pkgs;
         pi = self.packages.${system}.pi;
@@ -636,6 +682,33 @@
       pi-workflow-build = self.packages.${system}."pi-workflow";
       pi-pantera-build = self.packages.${system}."pi-pantera";
       pi-js-kernel-build = self.packages.${system}."pi-js-kernel";
+      pi-rust-kernel-build = self.packages.${system}."pi-rust-kernel";
+      pi-rust-kernel-test = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-rust-kernel-test";
+        version = (builtins.fromJSON (builtins.readFile ./extensions/pi-rust-kernel/package.json)).version;
+        # Verify the PACKAGED (wrapped) child evaluates code and persists state.
+        src = self.packages.${system}."pi-rust-kernel";
+        nativeBuildInputs = [pkgs.jq];
+        dontConfigure = true;
+        dontBuild = true;
+        installPhase = ''
+          runHook preInstall
+          # Constrain evcxr to a writable tmpdir inside the sandbox.
+          export TMPDIR="$PWD"
+          printf '%s\n' \
+            '{"type":"eval","id":"1","code":"let x = 21 * 2; x"}' \
+            '{"type":"eval","id":"2","code":"x + 1"}' \
+            '{"type":"eval","id":"3","code":"panic!("boom")"}' \
+            | "$src/bin/pi-rust-kernel-child" \
+            | tee eval.out
+          r1=$(${pkgs.jq}/bin/jq -r 'select(.id=="1") | .result' eval.out)
+          r2=$(${pkgs.jq}/bin/jq -r 'select(.id=="2") | .result' eval.out)
+          test "$r1" = "42" || { echo "FAIL: eval 1 expected 42 got $r1"; exit 1; }
+          test "$r2" = "43" || { echo "FAIL: eval 2 expected 43 (state lost?) got $r2"; exit 1; }
+          touch "$out"
+          runHook postInstall
+        '';
+      };
       pi-chronobreak-build = self.packages.${system}."pi-chronobreak";
       pi-chronobreak-test = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-chronobreak-test";
@@ -851,6 +924,7 @@
         continue = self.packages.${system}."pi-continue";
         workflow = self.packages.${system}."pi-workflow";
         "js-kernel" = self.packages.${system}."pi-js-kernel";
+        "rust-kernel" = self.packages.${system}."pi-rust-kernel";
         "chronobreak" = self.packages.${system}."pi-chronobreak";
       };
 
