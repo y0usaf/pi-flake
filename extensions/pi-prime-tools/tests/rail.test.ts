@@ -67,7 +67,7 @@ describe("rail rendering", () => {
 			}),
 		);
 		expect(lines[0]).toBe("  +");
-		expect(lines[1]).toContain("  |  bash $ echo hi");
+		expect(lines[1]).toContain("  | bash $ echo hi");
 		expect(lines[lines.length - 1]).toBe("  +");
 	});
 
@@ -95,8 +95,8 @@ describe("rail rendering", () => {
 				{ isError: false, expanded: true, state: {} },
 			),
 		);
-		expect(lines[0]).toContain("  |  out1");
-		expect(lines[1]).toContain("  |  out2");
+		expect(lines[0]).toContain("  | out1");
+		expect(lines[1]).toContain("  | out2");
 		expect(lines[lines.length - 1]).toBe("  +");
 		expect(lines[0]).not.toBe("  +");
 	});
@@ -132,7 +132,7 @@ describe("rail rendering", () => {
 				executionStarted: false,
 			}),
 		);
-		expect(lines[1]).toContain("  |  js if (a) b()");
+		expect(lines[1]).toContain("  | js if (a) b()");
 	});
 
 	test("find/ls results render as flat tree rows", () => {

@@ -2,17 +2,17 @@
 
 Minimalist left-rail frames for Pi's builtin tool rows — `bash`, `write`, `grep`, `find`, `ls` — and the `js` kernel tool (skinned here, registered by pi-js-kernel).
 
-Each tool call renders as a left rail indented two from the margin: bare `+` corner, `|` rail, content indented two, no horizontal strokes, no right rail, no background. State colors the rail (pending=accent, success=dim, error=error).
+Each tool call renders as a left rail indented two from the margin: bare `+` corner, `|` rail, content indented one, no horizontal strokes, no right rail, no background. State colors the rail (pending=accent, success=dim, error=error).
 
 ```
   +
-  |  bash $ cargo build
-  |  out1
-  |  out2
+  | bash $ cargo build
+  | out1
+  | out2
   +
 ```
 
-Collapsed rows show only the call line inside a closed rail (`  +` / `  |  bash $ cargo build` / `  +`); expanding attaches the output and moves the closing corner to the result. `find`/`ls` results render as flat tree rows (`|--`/`'--`, unicode `├─`/`└─`).
+Collapsed rows show only the call line inside a closed rail (`  +` / `  | bash $ cargo build` / `  +`); expanding attaches the output and moves the closing corner to the result. `find`/`ls` results render as flat tree rows (`|--`/`'--`, unicode `├─`/`└─`).
 
 Glyphs come from the shared symbol preset: `PI_SYMBOLS=ascii` gives `+ |`, unicode gives `┌ │`. The flake wrapper forces ascii.
 
