@@ -102,15 +102,15 @@
   };
 
   js-kernel = {
-    # Paused: superseded by rust-kernel. Source kept in tree; no longer built,
-    # bundled, or checked.
-    stage = "paused";
+    # Active: default JS evaluation kernel shipped in pi-full.
+    stage = "active";
     source = "inline";
     dir = "pi-js-kernel";
   };
   rust-kernel = {
-    # Active: persistent Rust evaluation kernel (evcxr). Supersedes js-kernel.
-    stage = "active";
+    # Testing: optional persistent Rust evaluation kernel (evcxr). Built and
+    # checked but excluded from pi-full; opt-in via programs.pi.extensions.
+    stage = "testing";
     source = "inline";
     dir = "pi-rust-kernel";
   };
