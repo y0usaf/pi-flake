@@ -20,9 +20,16 @@ Parameters:
 
 ## Kernel API
 
-Inside evaluated code, an injected helper is available:
+Inside evaluated code, an injected `kernel` module is available:
 
-- `kernel_bash(cmd) -> String` — run a shell command child-side and return its stdout.
+- `kernel::read(path) -> String` — read a file (hashline-style `LINEID|line` preview).
+- `kernel::write(path, content)` — create or overwrite a file.
+- `kernel::edit(path, edits_json)` — edit a file; `edits_json` is a JSON array of `{oldText,newText}` pairs.
+- `kernel::bash(cmd) -> String` — run a shell command child-side and return its stdout.
+- `kernel::rlm::run(task)` — spawn a child `pi` agent with the task and return its answer (blocking).
+- `kernel::rlm::list()` / `kernel::rlm::kill(id)` — list/kill spawned child agents.
+
+The first four reach the host through the bridge socket; `bash` runs direct in the child.
 
 ## What persists
 
@@ -34,7 +41,7 @@ The kernel runs single-threaded and executes calls sequentially.
 
 - **First call is slow.** The first `rust` call compiles a fresh evcxr module (~5s in a release build). Subsequent calls are incremental and fast (~0.2-0.5s). The host grants the first call extra timeout.
 - **Timeout restarts the kernel.** Long-running or never-settling code hits the per-call timeout and the kernel is killed and restarted — all state is lost. The result text says so explicitly.
-- **No host-bridge yet.** Unlike pi-js-kernel, evaluated code cannot call `kernel.read`/`edit`/`rlm.*` mid-eval. evcxr evaluates code synchronously in a subprocess, so the bidirectional bridge is a deferred phase. The kernel is a pure eval scratchpad plus child-side `kernel_bash`.
+- **`rlm.run` is blocking, not async.** Unlike pi-js-kernel, `kernel::rlm::run` blocks until the child agent finishes and returns its final text; it does not return an admission handle or support panel/loop/answer/peek.
 
 ## Requirements
 

@@ -698,13 +698,25 @@
           printf '%s\n' \
             '{"type":"eval","id":"1","code":"let x = 21 * 2; x"}' \
             '{"type":"eval","id":"2","code":"x + 1"}' \
-            '{"type":"eval","id":"3","code":"panic!("boom")"}' \
+            '{"type":"eval","id":"3","code":"panic!(\"boom\")"}' \
+            '{"type":"eval","id":"4","code":"println!(\"{}é\", \"a\".repeat(65535)); ()"}' \
             | "$src/bin/pi-rust-kernel-child" \
             | tee eval.out
           r1=$(${pkgs.jq}/bin/jq -r 'select(.id=="1") | .result' eval.out)
           r2=$(${pkgs.jq}/bin/jq -r 'select(.id=="2") | .result' eval.out)
+          r3ok=$(${pkgs.jq}/bin/jq -r 'select(.id=="3") | .ok' eval.out)
+          r3err=$(${pkgs.jq}/bin/jq -r 'select(.id=="3") | .stderr | contains("boom")' eval.out)
+          r4ok=$(${pkgs.jq}/bin/jq -r 'select(.id=="4") | .ok' eval.out)
+          r4trunc=$(${pkgs.jq}/bin/jq -r 'select(.id=="4") | .stdout | contains("output truncated")' eval.out)
           test "$r1" = "42" || { echo "FAIL: eval 1 expected 42 got $r1"; exit 1; }
           test "$r2" = "43" || { echo "FAIL: eval 2 expected 43 (state lost?) got $r2"; exit 1; }
+          # evcxr catches user panics (AssertUnwindSafe) and reports them in stderr.
+          test "$r3ok" = "true" || { echo "FAIL: eval 3 expected ok=true got $r3ok"; exit 1; }
+          test "$r3err" = "true" || { echo "FAIL: eval 3 expected panic message in stderr"; exit 1; }
+          # Multi-byte output crossing the 64KB limit must truncate at a char boundary,
+          # not panic the child (regression test for the truncate bug).
+          test "$r4ok" = "true" || { echo "FAIL: eval 4 expected ok=true (child must survive truncation) got $r4ok"; exit 1; }
+          test "$r4trunc" = "true" || { echo "FAIL: eval 4 expected truncation notice in stdout"; exit 1; }
           touch "$out"
           runHook postInstall
         '';
