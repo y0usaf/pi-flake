@@ -10,6 +10,11 @@ import { detectLoop } from "./detector";
  * polluted assistant message down to a one-line marker, re-inject a nudge
  * that re-runs the turn with a decisive-action directive.
  *
+ * Athwart the content question: the loop's real signature is behavioral
+ * STALL, so a message that has emitted a tool call is by definition
+ * progressing and is NEVER eligible for cutting. Only pure-prose output that
+ * is lexically exhausted (redundant + low novelty) can be a loop.
+ *
  * Spectator: never touches files or the JS kernel. Only aborts generation,
  * replaces one assistant message, and queues a user message.
  */
@@ -18,18 +23,25 @@ const MAX_STRIKES = 3; // per user-turn give-up: no abort/re-run spin loop
 const SCRUB_TEXT = "[generation loop terminated by chronobreak - re-running]";
 const TRUNCATE_NOTE = "\n\n[chronobreak: generation loop truncated here]";
 
+function isToolCallBlock(c: { type?: string }): boolean {
+  return c.type === "toolCall";
+}
+function isTextBlock(c: { type?: string; text?: string }): c is { type: string; text: string } {
+  return c.type === "text" && typeof c.text === "string";
+}
+
 export default function (pi: ExtensionAPI): void {
   let terminating = false;
   let pendingNudge: string | undefined;
   let soleLoopStart = -1; // -1: no scrub lead-in captured yet
   let strike = 0;
 
+  /** Text of a message: only non-thinking text blocks. Thinking and tool-call
+   *  content are excluded — thinking is never inspected, and a toolCall makes
+   *  the message ineligible anyway (handled before this is called). */
   function textOf(message: { content?: Array<{ type?: string; text?: string }> }): string {
     if (!message.content) return "";
-    return message.content
-      .filter((c): c is { type: string; text: string } => c.type === "text" && typeof c.text === "string")
-      .map((c) => c.text)
-      .join("\n");
+    return message.content.filter(isTextBlock).map((c) => c.text).join("\n");
   }
 
   function buildNudge(sample: string): string {
@@ -50,6 +62,12 @@ export default function (pi: ExtensionAPI): void {
   pi.on("message_update", (event, ctx) => {
     if (terminating) return;
     if (event.message.role !== "assistant") return;
+
+    // Behavioral eligibility gate: a progressing turn (one that has emitted a
+    // tool call) is never a loop. This is the distribution-free discriminator.
+    const content = event.message.content as Array<{ type?: string; text?: string }> | undefined;
+    if (content?.some(isToolCallBlock)) return;
+
     const text = textOf(event.message as never);
     if (text.length === 0) return;
     const verdict = detectLoop(text);
@@ -65,7 +83,7 @@ export default function (pi: ExtensionAPI): void {
       );
     } else {
       ctx.ui.notify(
-        'chronobreak: generation loop detected ("' + verdict.sample + '"). Re-running the turn.',
+        'chronobreak: generation loop detected ("' + verdict.sample + '" ' + verdict.kind + "). Re-running the turn.",
         "warning",
       );
       pendingNudge = buildNudge(verdict.sample);
