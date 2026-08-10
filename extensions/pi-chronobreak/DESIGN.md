@@ -5,6 +5,12 @@
   producing a settled action (seen live: "Let me check the system mtime and
   module import..." x many). Tool-call fingerprinting misses this (the model
   often abandons the call). (2026)
+- Thinking blocks are scanned as their own stream, separate from visible text.
+  The observed degeneration ("Let me update the doc." restated ~20 ways) lives
+  in thinking as often as in text; separate streams mean a loop in one is never
+  diluted by variety in the other. When the loop is in thinking, the scrub
+  drops all thinking and keeps the (non-looping) visible text plus the
+  truncation marker — thinking has no lead-in worth preserving. (2026-08)
 - The loop's real signature is behavioural STALL, not any content shape. So the
   primary discriminator is content-agnostic: a message that has emitted a tool
   call is by definition progressing and is NEVER eligible for cutting. Only
@@ -36,9 +42,10 @@
   count, sample, loop-start offset) out. No I/O, no state. Re-scans the full
   text on every call so streaming updates never double-count.
 - src/index.ts — the imperative shell: the toolCall eligibility gate, the five
-  event handlers (message_start reset, message_update detect+abort, message_end
-  truncate-and-keep-lead-in, agent_end re-inject, input strike-reset), and the
-  pure-text extraction that excludes thinking blocks.
+  event handlers (message_start reset, message_update detect+abort on the text
+  stream then the thinking stream, message_end truncate-and-keep-lead-in,
+  agent_end re-inject, input strike-reset), and the per-stream extraction of
+  text and thinking blocks.
 
 ## Deferred
 
