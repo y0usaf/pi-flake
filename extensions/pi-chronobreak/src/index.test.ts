@@ -233,7 +233,7 @@ describe("extension flow", () => {
     expect(h.calls.abort).toBe(0);
   });
 
-  test("loop: aborts once, scrubs the message, re-injects a nudge", () => {
+  test("loop: aborts once, scrubs the message, no nudge", () => {
     const h = makeExt();
     h.fire("message_start", { message: assistant("") });
     h.fire("message_update", { message: assistant(LOOP_TEXT) });
@@ -247,13 +247,10 @@ describe("extension flow", () => {
     expect(scrub.message.content[0].text).toContain("chronobreak");
 
     h.fire("agent_end", {});
-    expect(h.sent.length).toBe(1);
-    expect(h.sent[0].text).toContain("Repeat detected");
-    expect(h.sent[0].options).toEqual({ deliverAs: "followUp" });
-    expect(h.sent[0].text).toContain("ONE decisive action");
+    expect(h.sent.length).toBe(0);
   });
 
-  test("clean turn: message_end untouched, nothing re-injected", () => {
+  test("clean turn: message_end untouched, no nudge sent", () => {
     const h = makeExt();
     h.fire("message_start", { message: assistant("") });
     h.fire("message_update", { message: assistant(VARIED_TEXT) });
@@ -261,36 +258,6 @@ describe("extension flow", () => {
     expect(res).toBeUndefined();
     h.fire("agent_end", {});
     expect(h.sent.length).toBe(0);
-  });
-
-  test("three strikes: third loop aborts without re-run", () => {
-    const h = makeExt();
-    for (let i = 0; i < 3; i++) {
-      h.fire("message_start", { message: assistant("") });
-      h.fire("message_update", { message: assistant(LOOP_TEXT) });
-      h.fire("message_end", { message: assistant(LOOP_TEXT) });
-      h.fire("agent_end", {});
-    }
-    expect(h.calls.abort).toBe(3);
-    expect(h.sent.length).toBe(2);
-    expect(h.calls.notices[2]).toContain("strike limit");
-  });
-
-  test("user input resets strikes", () => {
-    const h = makeExt();
-    for (let i = 0; i < 2; i++) {
-      h.fire("message_start", { message: assistant("") });
-      h.fire("message_update", { message: assistant(LOOP_TEXT) });
-      h.fire("message_end", { message: assistant(LOOP_TEXT) });
-      h.fire("agent_end", {});
-    }
-    h.fire("input", { source: "interactive", text: "new direction" });
-    h.fire("message_start", { message: assistant("") });
-    h.fire("message_update", { message: assistant(LOOP_TEXT) });
-    h.fire("message_end", { message: assistant(LOOP_TEXT) });
-    h.fire("agent_end", {});
-    // strike counter restarted: this loop re-injects instead of giving up
-    expect(h.sent.length).toBe(3);
   });
 
   test("loop with lead-in: keeps the coherent prefix, drops the repeated tail", () => {
@@ -337,7 +304,7 @@ describe("extension flow", () => {
     expect(scrub.message.content[0].type).toBe("text");
     expect(scrub.message.content[0].text).toContain("chronobreak");
     h.fire("agent_end", {});
-    expect(h.sent.length).toBe(1);
+    expect(h.sent.length).toBe(0);
   });
 
   test("thinking loop with clean visible text: keeps the text, drops thinking", () => {

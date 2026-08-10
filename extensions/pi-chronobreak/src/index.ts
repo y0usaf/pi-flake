@@ -4,11 +4,9 @@ import { detectLoop } from "./detector";
 /**
  * chronobreak - terminates assistant generation loops.
  *
- * The failure: the model emits the same prose/sentence over and over inside
- * one turn, never settling on an action, and every repetition appends to the
- * session (output degradation). On detection: abort the run, scrub the
- * polluted assistant message down to a one-line marker, re-inject a nudge
- * that re-runs the turn with a decisive-action directive.
+ * The failure: a model emits the same prose over and over inside one turn,
+ * never settling on an action. On detection: abort the run, scrub the
+ * polluted assistant message down to a marker, and let the model retry.
  *
  * Athwart the content question: the loop's real signature is behavioral
  * STALL, so a message that has emitted a tool call is by definition
@@ -20,11 +18,10 @@ import { detectLoop } from "./detector";
  * in visible text. Text and thinking are scanned as separate streams so a
  * loop in one is never diluted by variety in the other.
  *
- * Spectator: never touches files or the JS kernel. Only aborts generation,
- * replaces one assistant message, and queues a user message.
+ * Spectator: never touches files or the JS kernel. Only aborts generation
+ * and replaces the assistant message with a scrub marker.
  */
 
-const MAX_STRIKES = 3; // per user-turn give-up: no abort/re-run spin loop
 const SCRUB_TEXT = "[generation loop terminated by chronobreak - re-running]";
 const TRUNCATE_NOTE = "\n\n[chronobreak: generation loop truncated here]";
 
@@ -37,10 +34,8 @@ function isTextBlock(c: { type?: string; text?: string }): c is { type: string; 
 
 export default function (pi: ExtensionAPI): void {
   let terminating = false;
-  let pendingNudge: string | undefined;
   let soleLoopStart = -1; // -1: no scrub lead-in captured yet
   let loopInThinking = false; // where the detected loop lives
-  let strike = 0;
 
   /** Text of a message: only non-thinking text blocks. Tool-call content is
    *  excluded — a toolCall makes the message ineligible anyway (handled
@@ -58,16 +53,6 @@ export default function (pi: ExtensionAPI): void {
       .filter((c): c is { type: string; thinking: string } => c.type === "thinking" && typeof c.thinking === "string")
       .map((c) => c.thinking)
       .join("\n");
-  }
-
-  function buildNudge(sample: string): string {
-    const sampleLine = sample ? '\n\nRepeat detected: "' + sample + '"' : "";
-    return (
-      "chronobreak terminated a generation loop in your previous attempt." +
-      sampleLine +
-      "\n\nDo NOT repeat yourself. Re-answer the task you were working on with ONE decisive action " +
-      "in this message: either a single clean tool call, or a direct final answer. Do not restate intent."
-    );
   }
 
   pi.on("message_start", (event) => {
@@ -97,19 +82,10 @@ export default function (pi: ExtensionAPI): void {
     terminating = true;
     loopInThinking = inThinking;
     soleLoopStart = verdict.loopStart;
-    strike++;
-    if (strike >= MAX_STRIKES) {
-      ctx.ui.notify(
-        "chronobreak: generation loop detected, but strike limit (" + MAX_STRIKES + ") reached. Aborting without re-run.",
-        "error",
-      );
-    } else {
-      ctx.ui.notify(
-        'chronobreak: generation loop detected ("' + verdict.sample + '" ' + verdict.kind + "). Re-running the turn.",
-        "warning",
-      );
-      pendingNudge = buildNudge(verdict.sample);
-    }
+    ctx.ui.notify(
+      'chronobreak: generation loop detected ("' + verdict.sample + '" ' + verdict.kind + "). Re-running the turn.",
+      "warning",
+    );
     ctx.abort();
   });
 
@@ -146,16 +122,5 @@ export default function (pi: ExtensionAPI): void {
     };
   });
 
-  pi.on("agent_end", () => {
-    if (!pendingNudge) return;
-    const nudge = pendingNudge;
-    pendingNudge = undefined;
-    pi.sendUserMessage(nudge, { deliverAs: "followUp" });
-  });
 
-  // User-driven input is a fresh direction: reset the strike counter.
-  pi.on("input", (event) => {
-    if (event.source === "extension") return;
-    strike = 0;
-  });
 }
