@@ -323,12 +323,65 @@ describe("extension flow", () => {
     expect(h.calls.abort).toBe(0); // progressing turn: eligible excludes toolCall
   });
 
-  test("thinking-only message is never inspected", () => {
+  test("thinking-only loop is detected and scrubbed", () => {
     const h = makeExt();
     h.fire("message_start", { message: assistant("") });
     const msg = { role: "assistant", content: [{ type: "thinking", thinking: LOOSE_LOOP }] };
     h.fire("message_update", { message: msg });
+    expect(h.calls.abort).toBe(1);
+    const scrub = h.fire("message_end", { message: msg }) as {
+      message: { content: Array<{ type: string; text: string }> };
+    };
+    // thinking is dropped entirely; only the marker remains
+    expect(scrub.message.content).toHaveLength(1);
+    expect(scrub.message.content[0].type).toBe("text");
+    expect(scrub.message.content[0].text).toContain("chronobreak");
+    h.fire("agent_end", {});
+    expect(h.sent.length).toBe(1);
+  });
+
+  test("thinking loop with clean visible text: keeps the text, drops thinking", () => {
+    const h = makeExt();
+    h.fire("message_start", { message: assistant("") });
+    const msg = {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: LOOSE_LOOP },
+        { type: "text", text: "The flake check is still running." },
+      ],
+    };
+    h.fire("message_update", { message: msg });
+    expect(h.calls.abort).toBe(1);
+    const scrub = h.fire("message_end", { message: msg }) as {
+      message: { content: Array<{ type: string; text: string }> };
+    };
+    const kept = scrub.message.content.map((c) => c.text).join("\n");
+    expect(kept).toContain("flake check is still running");
+    expect(kept).not.toContain("Let me update");
+    expect(kept).toContain("truncated here");
+  });
+
+  test("varied thinking does not trigger", () => {
+    const h = makeExt();
+    h.fire("message_start", { message: assistant("") });
+    const msg = { role: "assistant", content: [{ type: "thinking", thinking: VARIED_TEXT }] };
+    for (let i = 0; i < 3; i++) h.fire("message_update", { message: msg });
     expect(h.calls.abort).toBe(0);
+  });
+
+  test("looping thinking does not poison a varied text stream verdict (and vice versa)", () => {
+    // streams are scanned separately: a text loop is caught even when thinking is varied
+    const h = makeExt();
+    h.fire("message_start", { message: assistant("") });
+    const msg = {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: VARIED_TEXT },
+        { type: "text", text: LOOP_TEXT },
+      ],
+    };
+    h.fire("message_update", { message: msg });
+    expect(h.calls.abort).toBe(1);
   });
 
 });

@@ -15,6 +15,11 @@ import { detectLoop } from "./detector";
  * progressing and is NEVER eligible for cutting. Only pure-prose output that
  * is lexically exhausted (redundant + low novelty) can be a loop.
  *
+ * Thinking blocks are scanned too: the observed degeneration ("Let me update
+ * the doc." restated dozens of ways) happens inside thinking just as often as
+ * in visible text. Text and thinking are scanned as separate streams so a
+ * loop in one is never diluted by variety in the other.
+ *
  * Spectator: never touches files or the JS kernel. Only aborts generation,
  * replaces one assistant message, and queues a user message.
  */
@@ -34,14 +39,25 @@ export default function (pi: ExtensionAPI): void {
   let terminating = false;
   let pendingNudge: string | undefined;
   let soleLoopStart = -1; // -1: no scrub lead-in captured yet
+  let loopInThinking = false; // where the detected loop lives
   let strike = 0;
 
-  /** Text of a message: only non-thinking text blocks. Thinking and tool-call
-   *  content are excluded — thinking is never inspected, and a toolCall makes
-   *  the message ineligible anyway (handled before this is called). */
+  /** Text of a message: only non-thinking text blocks. Tool-call content is
+   *  excluded — a toolCall makes the message ineligible anyway (handled
+   *  before this is called). */
   function textOf(message: { content?: Array<{ type?: string; text?: string }> }): string {
     if (!message.content) return "";
     return message.content.filter(isTextBlock).map((c) => c.text).join("\n");
+  }
+
+  /** Thinking text of a message: thinking blocks only, scanned as their own
+   *  stream so loops there are not diluted by varied visible text. */
+  function thinkingOf(message: { content?: Array<{ type?: string; thinking?: string }> }): string {
+    if (!message.content) return "";
+    return message.content
+      .filter((c): c is { type: string; thinking: string } => c.type === "thinking" && typeof c.thinking === "string")
+      .map((c) => c.thinking)
+      .join("\n");
   }
 
   function buildNudge(sample: string): string {
@@ -69,11 +85,17 @@ export default function (pi: ExtensionAPI): void {
     if (content?.some(isToolCallBlock)) return;
 
     const text = textOf(event.message as never);
-    if (text.length === 0) return;
-    const verdict = detectLoop(text);
-    if (!verdict.looping) return;
+    let verdict = text.length > 0 ? detectLoop(text) : undefined;
+    let inThinking = false;
+    if (!verdict?.looping) {
+      const thinking = thinkingOf(event.message as never);
+      verdict = thinking.length > 0 ? detectLoop(thinking) : undefined;
+      inThinking = true;
+    }
+    if (!verdict?.looping) return;
 
     terminating = true;
+    loopInThinking = inThinking;
     soleLoopStart = verdict.loopStart;
     strike++;
     if (strike >= MAX_STRIKES) {
@@ -100,9 +122,16 @@ export default function (pi: ExtensionAPI): void {
     terminating = false;
     const loopStart = soleLoopStart;
     soleLoopStart = -1;
+    const inThinking = loopInThinking;
+    loopInThinking = false;
     const full = textOf(event.message as never);
     let kept: string;
-    if (loopStart > 0 && loopStart < full.length) {
+    if (inThinking) {
+      // The loop lived in thinking: drop all thinking, keep the (non-looping)
+      // visible text if any, and mark the cut.
+      const lead = full.trim();
+      kept = lead ? lead + TRUNCATE_NOTE : SCRUB_TEXT;
+    } else if (loopStart > 0 && loopStart < full.length) {
       // Keep the lead-in, trimmed to a clean character boundary, then note.
       const lead = full.slice(0, loopStart).trim();
       kept = lead ? lead + TRUNCATE_NOTE : SCRUB_TEXT;
