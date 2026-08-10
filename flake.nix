@@ -534,45 +534,30 @@
           };
         };
 
-      "pi-js-kernel" = let
-        jsKernelPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-js-kernel/package.json);
+      "pi-rlm" = let
+        rlmPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-rlm/package.json);
       in
         pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-js-kernel";
-          version = jsKernelPackageJson.version;
-          # Vendor pi-agents + pi-hashline source trees alongside pi-js-kernel so
-          # bridge files in this extension can import them. node_modules is gitignored so
-          # lib.cleanSource excludes it, keeping the tree free of bloat.
-          #
-          # The bridge source files (hashline-bridge.ts, rlm-bridge.ts) use
-          # repo-layout sibling paths (../pi-agents/spawn.js, ../pi-hashline/src/hashline.js)
-          # that are only valid before packaging; the installPhase below rewrites
-          # them to the nested bundle layout via substituteInPlace.
-          src = lib.cleanSourceWith {
-            src = lib.cleanSource ./extensions;
-            filter = path: type: let
-              rel = lib.removePrefix (toString ./extensions) (toString path);
-            in
-              rel == "" || lib.hasPrefix "/pi-js-kernel" rel || lib.hasPrefix "/pi-agents" rel || lib.hasPrefix "/pi-hashline" rel || lib.hasPrefix "/pi-prime-tools" rel || lib.hasPrefix "/shared" rel;
-          };
+          pname = "pi-rlm";
+          version = rlmPackageJson.version;
+          # Self-contained: the acorn parser the guest transform needs is vendored
+          # at vendor/acorn (dependency-free pure JS), and the @earendil-works/* /
+          # typebox peer imports resolve from pi's own package dir at runtime (the
+          # same packages pi-js-kernel's host bridge imported). The guest is a Bun
+          # process, so the store bun is baked in below (mirroring pi-js-kernel's
+          # node substitution).
+          src = lib.cleanSource ./extensions/pi-rlm;
           dontBuild = true;
           installPhase = ''
             runHook preInstall
             mkdir -p "$out"
-            cp -r $src/pi-js-kernel/. "$out"/
-            substituteInPlace "$out/index.ts" --replace-fail 'const NODE_BIN = "node";' 'const NODE_BIN = "${pkgs.nodejs_22}/bin/node";'
-            cp -r $src/pi-agents "$out/pi-agents"
-            cp -r $src/pi-hashline "$out/pi-hashline"
-            cp -r $src/pi-prime-tools "$out/pi-prime-tools"
-            cp -r $src/shared "$out/shared"
-            substituteInPlace "$out/hashline-bridge.ts" --replace-fail '../pi-hashline/' './pi-hashline/'
-            substituteInPlace "$out/rlm-bridge.ts" --replace-fail '../pi-agents/' './pi-agents/'
-            substituteInPlace "$out/index.ts" --replace-fail '../pi-prime-tools/' './pi-prime-tools/'
+            cp -r $src/. "$out"/
+            substituteInPlace "$out/src/engine/index.ts" --replace-fail 'const BUN_BIN = "bun";' 'const BUN_BIN = "${pkgs.bun}/bin/bun";'
             runHook postInstall
           '';
-          passthru.packageName = jsKernelPackageJson.name;
+          passthru.packageName = rlmPackageJson.name;
           meta = with lib; {
-            description = jsKernelPackageJson.description;
+            description = rlmPackageJson.description;
             license = licenses.mit;
             platforms = platforms.all;
           };
@@ -681,7 +666,7 @@
       pi-continue-build = self.packages.${system}."pi-continue";
       pi-workflow-build = self.packages.${system}."pi-workflow";
       pi-pantera-build = self.packages.${system}."pi-pantera";
-      pi-js-kernel-build = self.packages.${system}."pi-js-kernel";
+      pi-rlm-build = self.packages.${system}."pi-rlm";
       pi-rust-kernel-build = self.packages.${system}."pi-rust-kernel";
       pi-rust-kernel-test = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-rust-kernel-test";
@@ -935,7 +920,7 @@
         quiet = self.packages.${system}."pi-quiet";
         continue = self.packages.${system}."pi-continue";
         workflow = self.packages.${system}."pi-workflow";
-        "js-kernel" = self.packages.${system}."pi-js-kernel";
+        "js-kernel" = self.packages.${system}."pi-rlm";
         "rust-kernel" = self.packages.${system}."pi-rust-kernel";
         "chronobreak" = self.packages.${system}."pi-chronobreak";
       };
