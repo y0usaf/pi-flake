@@ -200,7 +200,10 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
-		await lifecycle.shutdown();
+		// Don't kill the evaluator — the guest exits on stdin close when pi truly
+		// exits, and killing it on every session transition (quit, new, resume, fork)
+		// destroys in-flight work for long-running agent workflows like Paseo.
+		// The snapshot timer already keeps namespace state current after each cell.
 	});
 
 	pi.on("tool_result", async (event) => {
