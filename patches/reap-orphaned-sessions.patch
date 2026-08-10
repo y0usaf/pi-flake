@@ -1,0 +1,113 @@
+diff --git a/packages/coding-agent/src/core/session-lease.ts b/packages/coding-agent/src/core/session-lease.ts
+index 6c4e2975..0c510703 100644
+--- a/packages/coding-agent/src/core/session-lease.ts
++++ b/packages/coding-agent/src/core/session-lease.ts
+@@ -185,6 +185,18 @@ function isLeaseOwnerAlive(owner: SessionLeaseOwner): boolean {
+ 	return currentStartId === undefined || currentStartId === owner.processStartId;
+ }
+ 
++/**
++ * True when the given session file currently holds a live ownership lease.
++ * Used by the daemon's orphaned-session sweep to avoid deleting a session a
++ * live process is still attached to. A lease is active only while its owner
++ * process is alive; stale owners left by crashed/killed daemons read as
++ * inactive and are safe to reap.
++ */
++export function hasActiveSessionLease(sessionPath: string, agentDir: string): boolean {
++	const owner = readLeaseOwner(leaseDirectory(agentDir, canonicalSessionPath(sessionPath)));
++	return owner !== undefined && isLeaseOwnerAlive(owner);
++}
++
+ function withLeaseGuard<T>(directory: string, action: () => T): T {
+ 	let release: (() => void) | undefined;
+ 	for (let attempt = 0; attempt < 100; attempt++) {
+diff --git a/packages/coding-agent/src/modes/daemon/daemon-mode.ts b/packages/coding-agent/src/modes/daemon/daemon-mode.ts
+index dfebcdf6..cc1a100b 100644
+--- a/packages/coding-agent/src/modes/daemon/daemon-mode.ts
++++ b/packages/coding-agent/src/modes/daemon/daemon-mode.ts
+@@ -15,6 +15,7 @@ import {
+ 	mkdirSync,
+ 	openSync,
+ 	readFileSync,
++	readdirSync,
+ 	renameSync,
+ 	rmSync,
+ 	writeFileSync,
+@@ -107,8 +108,15 @@ import {
+ 	type SessionPassivationSnapshot,
+ } from "../../core/session-action-store.js";
+ import { deleteSessionFile } from "../../core/session-file-actions.js";
+-import { acquireSessionLease, canonicalSessionPath, type SessionLease } from "../../core/session-lease.js";
+ import {
++	acquireSessionLease,
++	canonicalSessionPath,
++	hasActiveSessionLease,
++	type SessionLease,
++} from "../../core/session-lease.js";
++import {
++	getDefaultSessionDir,
++	loadEntriesFromFile,
+ 	readSessionInfo,
+ 	resolveSessionRlmDepth,
+ 	type SessionInfo,
+@@ -406,6 +414,19 @@ type PassiveRlmSubagent = PassiveRlmRoot & {
+ class RuntimeOpenCancelledError extends Error {}
+ class BoundSessionUnavailableError extends Error {}
+ 
++
++// Entry types a session file can hold without any real user content.
++const SESSION_BOOKKEEPING_ENTRY_TYPES = new Set([
++	"session",
++	"model_change",
++	"thinking_level_change",
++	"service_tier_change",
++	"session_state",
++	"agent_status",
++	"git_state",
++	"child_usage_attributed",
++]);
++
+ export async function runDaemonMode(options: DaemonModeOptions): Promise<never> {
+ 	const socketPath = options.socketPath ?? defaultDaemonSocketPath();
+ 	const daemon = new AgentDaemon(socketPath, options);
+@@ -582,6 +603,7 @@ export class AgentDaemon {
+ 		}
+ 		this.installCrashHandlers();
+ 		await prepareDaemonSocketPath(this.socketPath);
++		await this.reapOrphanedEmptySessions();
+ 
+ 		this.server = createServer((socket) => this.handleConnection(socket));
+ 
+@@ -625,6 +647,32 @@ export class AgentDaemon {
+ 		this.startSupervisorMonitor();
+ 	}
+ 
++	/** Delete session files left by crashed daemons that never captured a user turn. */
++	private async reapOrphanedEmptySessions(): Promise<void> {
++		const sessionDir =
++			this.options.defaultSessionConfig.sessionDir ??
++			getDefaultSessionDir(this.options.defaultSessionConfig.cwd ?? process.cwd(), this.agentDir);
++		let files: string[];
++		try {
++			files = readdirSync(sessionDir).filter((name) => name.endsWith(".jsonl"));
++		} catch {
++			return;
++		}
++		for (const file of files) {
++			const sessionPath = join(sessionDir, file);
++			if (hasActiveSessionLease(sessionPath, this.agentDir)) continue;
++			let empty: boolean;
++			try {
++				empty = loadEntriesFromFile(sessionPath).every((entry) =>
++					SESSION_BOOKKEEPING_ENTRY_TYPES.has(entry.type),
++				);
++			} catch {
++				continue; // corrupt/unreadable — leave it for the user
++			}
++			await deleteSessionFile(sessionPath);
++		}
++	}
++
+ 	private startSupervisorMonitor(): void {
+ 		const supervisorSocketPath = process.env[DAEMON_WORKER_SUPERVISOR_SOCKET_ENV];
+ 		if (!this.options.worker || !supervisorSocketPath) {
