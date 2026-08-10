@@ -82,23 +82,19 @@ curl -fsSL https://bun.sh/install | bash
 
 ## Launch
 
-The extension is dormant until asked for. A plain `pi` session is untouched —
-default prompt, default tools, no evaluator. Activation is one flag:
+The extension is active by default: a `pi` session collapses the tool surface
+to `execute` and replaces the system prompt; no flags are needed. To opt out
+back to the stock surface, set `PI_RLM_OFF=1`.
+
+To verify the two worlds:
 
 ```bash
-pi --rlm
+pi -p "what tools do you have?"          # this flake's pi: one tool, execute
+PI_RLM_OFF=1 pi -p "what tools do you have?"   # stock pi: read, bash, edit, ...
 ```
 
-That collapses the tool surface to `execute` and replaces the system prompt;
-no other pi flags are needed. To verify the two worlds:
-
-```bash
-pi -p "what tools do you have?"          # stock pi: read, bash, edit, ...
-pi -p --rlm "what tools do you have?"    # one tool: execute
-```
-
-To run from a clone (development), load the extension explicitly — the flag
-works the same, or set `PI_RLM_FORCE=1` where flag plumbing is awkward:
+To run from a clone (development), load the extension explicitly — `--rlm`
+and `PI_RLM_FORCE=1` both force it on where the default is off:
 
 ```bash
 git clone https://github.com/shift-labs-ai/pi-rlm && cd pi-rlm
@@ -110,6 +106,8 @@ pi --rlm -e ./src/extension/index.ts
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
+| `PI_RLM_OFF` | unset (active) | `1` restores the stock tool surface |
+| `PI_RLM_FORCE` | unset | `1` forces activation regardless of `PI_RLM_OFF`; used by subagent children and test rigs |
 | `PI_RLM_SUBAGENT_MODEL` | `anthropic/haiku` | Model children are spawned with |
 | `PI_RLM_MAX_DEPTH` | `2` | How deep recursive delegation may go |
 | `PI_RLM_DEPTH` | `0` | Depth of the current agent; set on children automatically |
