@@ -102,10 +102,12 @@
   };
 
   js-kernel = {
-    # Active: default JS evaluation kernel shipped in pi-full.
+    # Active: default evaluation kernel shipped in pi-full. pi-rlm replaces the
+    # retired pi-js-kernel: a persistent Bun TypeScript evaluator (single execute
+    # tool) with native subagent panel/loop/peek/kill orchestration.
     stage = "active";
     source = "inline";
-    dir = "pi-js-kernel";
+    dir = "pi-rlm";
   };
   rust-kernel = {
     # Testing: optional persistent Rust evaluation kernel (evcxr). Built and
