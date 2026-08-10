@@ -46,12 +46,6 @@ function syncRenderState(
 const ERROR_STACK_LINES = 10;
 
 /** Header plus stack — without repeating the header when the stack already starts with it. */
-function composeErrorLines(error: { name: string; message: string; stack: string[] }): string[] {
-	const header = `${error.name}: ${error.message}`;
-	const stack = error.stack.slice(0, ERROR_STACK_LINES);
-	return stack[0]?.trim() === header ? stack : [header, ...stack];
-}
-
 const SUBAGENT_MODEL_OVERRIDE = process.env.PI_RLM_SUBAGENT_MODEL;
 const DEPTH = Number(process.env.PI_RLM_DEPTH ?? "0");
 const MAX_DEPTH = Number(process.env.PI_RLM_MAX_DEPTH ?? "2");
@@ -283,7 +277,11 @@ export default function (pi: ExtensionAPI) {
 				// The session_start chat message is not enough: mid-work it scrolls
 				// past, and the loss only shows up as a variable reading undefined.
 				const sections = [lifecycle.takeResetNotice(), r.stdout, r.stderr, r.result];
-				const errorLines = r.error ? composeErrorLines(r.error) : undefined;
+				const errorLines = r.error ? (() => {
+					const header = `${r.error.name}: ${r.error.message}`;
+					const stack = r.error.stack.slice(0, ERROR_STACK_LINES);
+					return stack[0]?.trim() === header ? stack : [header, ...stack];
+				})() : undefined;
 				if (r.status === "error" && errorLines) sections.push(errorLines.join("\n"));
 				if (r.status === "aborted") sections.push("[cell aborted]");
 				const text = sections.filter((section) => section !== undefined && section !== "").join("\n");

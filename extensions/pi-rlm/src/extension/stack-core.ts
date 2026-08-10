@@ -1,11 +1,4 @@
-/**
- * Pure layout for the subagent call stack.
- *
- * A subagent is a stack frame: the cell that called rlm.run is frame #0, and
- * each descendant renders one line — glyph, name, status, age, spawn site —
- * indented by depth, so nesting reads like a trace. Pure and dep-injected for
- * the same reason render-core.ts is: testable outside pi's runtime.
- */
+/** Stack frame layout and rendering; see ARCHITECTURE.md "A subagent is a stack frame". */
 
 import type { FrameRecord } from "./frames.js";
 
@@ -31,7 +24,7 @@ export interface FrameRenderDeps {
 }
 
 const FRAME_INDENT = "  ";
-const SPINNER_FRAMES = ["◐", "◓", "◑", "◒"];
+export const SPINNER_FRAMES = ["◐", "◓", "◑", "◒"];
 
 /**
  * Roots are the frames this cell spawned; descendants attach by parent id

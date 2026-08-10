@@ -1,10 +1,4 @@
-/**
- * Pure layout logic for the `execute` cell renderer.
- *
- * Deliberately free of pi imports so it is unit-testable outside pi's runtime:
- * theme, syntax highlighting, key hints, and width primitives are injected.
- * `render.ts` binds the real implementations.
- */
+/** Cell render logic, pure and testable; theme and helpers injected from render.ts. */
 
 export interface ExecuteDetails {
 	status?: "ok" | "error" | "aborted" | string;
@@ -30,7 +24,7 @@ export interface ExecuteRenderState {
 }
 
 import { previewCell } from "./preview-core.js";
-import { type FrameNode, formatFrameSummary, renderFrames, summarizeFrames } from "./stack-core.js";
+import { type FrameNode, SPINNER_FRAMES, formatFrameSummary, renderFrames, summarizeFrames } from "./stack-core.js";
 
 export type StatusKind = "error" | "aborted" | "running" | "queued" | "done";
 export type BgKind = "toolPendingBg" | "toolSuccessBg" | "toolErrorBg";
@@ -48,7 +42,6 @@ export interface RenderDeps {
 }
 
 const OUTPUT_INDENT = "  ";
-const SPINNER_FRAMES = ["◐", "◓", "◑", "◒"];
 
 export function formatDuration(durationMs: number | undefined): string | undefined {
 	if (durationMs === undefined) return undefined;
