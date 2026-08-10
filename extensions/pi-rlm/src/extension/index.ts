@@ -65,9 +65,11 @@ export default function (pi: ExtensionAPI) {
 	});
 	// CLI flag values are injected after extension factories run (verified by
 	// probe: getFlag is undefined here, true in every event), so activation is
-	// decided per event, never at load. PI_RLM_FORCE is the dev escape hatch:
-	// subagent children and test rigs activate without flag plumbing.
-	const active = () => pi.getFlag("rlm") === true || process.env.PI_RLM_FORCE === "1";
+	// decided per event, never at load. Default is ON: this flake's pi is an RLM
+	// machine. Opt out with PI_RLM_OFF=1; --rlm and PI_RLM_FORCE=1 (the subagent
+	// child / test-rig escape hatch) still force it on regardless.
+	const active = () =>
+		process.env.PI_RLM_OFF !== "1" || process.env.PI_RLM_FORCE === "1" || pi.getFlag("rlm") === true;
 
 	let subagents: SubagentHost | undefined;
 	let piTools: PiToolsHost | undefined;
@@ -256,7 +258,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			if (!active()) {
-				throw new Error("pi-rlm is dormant in this session. Start pi with --rlm (or PI_RLM_FORCE=1) to use execute.");
+				throw new Error("pi-rlm is off in this session (PI_RLM_OFF=1). Unset it (or pass --rlm) to use execute.");
 			}
 			if (ctx?.cwd) location = { cwd: ctx.cwd, sessionFile: ctx.sessionManager?.getSessionFile?.() ?? undefined };
 			// Building the engine here means the previous one went away mid-session;
