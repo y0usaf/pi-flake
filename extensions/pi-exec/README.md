@@ -23,24 +23,35 @@ Registry routes shadow same-named built-ins (e.g. pi-hashline's `read`/`edit`),
 and their descriptions + promptGuidelines are folded into exec's guidelines so
 the model still sees their contracts.
 
-Rendering is delegated: exec forwards `renderCall`/`renderResult` to the
+Frontend is delegated: exec forwards `renderCall`/`renderResult` to the
 routed built-in's own renderers (diffs, syntax highlighting), substituting the
 inner params for `context.args`.
 
+## Always async
+
+Every non-`job` exec call spawns a fire-and-forget job. The model gets a
+quick response with a job id and must collect results with route `job`:
+
+- `exec { "route": "read", "params": { ... } }` → `spawned job-1 (route=read). Collect: exec route "job", params { id:"job-1" }`
+- `exec { "route": "job", "params": { "id": "job-1" } }` → actual read result
+
+Cost: every call adds an extra collect turn. Deliberate trade-off — the model
+never blocks on slow tasks, and all results stream through the same
+collection route.
+
 ## Why
 
-- One tool the LLM sees for base ops. Simpler system prompt, clearer choice.
+- One tool the LLM sees for base ops. Simple system prompt, clearer choice.
 - Parallelism preserved: call `exec` N times in one turn, Pi runs them
   concurrently.
+- Always async means no tool call can hang the dispatcher.
 
 ## Known limit
 
 The public ExtensionAPI exposes no execute handle for other extensions' tools
 (`pi.getAllTools()` is metadata only, there is no `pi.invokeTool()`), so exec
-cannot route extension tools — including built-in overrides like a custom
-`read`. If another extension overrides a built-in name, that override is
-deactivated and exec dispatches to the base implementation instead. Fully
-dynamic routing needs an upstream API; until then extension tools bypass exec.
+cannot route built-in overrides like a custom `read` from another extension.
+Dynamic routing needs an upstream API.
 
 ## Usage
 

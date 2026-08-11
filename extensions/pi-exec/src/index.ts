@@ -25,6 +25,10 @@
  *
  * Rendering and prepareArguments are delegated to the routed definition.
  * Params can be nested ({ route, params: { ... } }) or flat.
+ *
+ * Every non-job call spawns a fire-and-forget job. Collect results via
+ * route "job" with params { id }. This is deliberate: the model always
+ * sees a fast "spawned" response and must explicitly await the result.
  */
 
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
@@ -76,6 +80,7 @@ const builtinGuidelines: Record<string, string> = {
 	grep: 'Route "grep": search file contents. Params { pattern, path?, glob? }',
 	find: 'Route "find": find files by glob. Params { pattern, path? }',
 	ls: 'Route "ls": list directories. Params { path? }',
+	job: 'Route "job": Collect job result by job id. Params { id: string } — every exec call returns a job id immediately; use the "job" route to await the actual result.',
 }
 
 const defsByCwd = new Map<string, Record<string, AnyDef>>()
@@ -120,6 +125,12 @@ function prepared(def: AnyDef, raw: unknown): unknown {
 	}
 }
 
+// ---- job stores (fire-and-forget jobs) ------------------------------------
+
+let jobCounter = 0
+const jobs = new Map<string, { route: string; args: unknown; promise: Promise<any> }>()
+// ponytail: jobs never cancelled/GC'd; add abort/eviction if sessions run long.
+
 // ---- persistence (same pattern as pi-tools) -------------------------------
 
 function storePath(): string {
@@ -149,7 +160,7 @@ function saveRoutes(names: string[]): void {
 
 function registerExec(pi: ExtensionAPI, enabled: Set<string>) {
 	const registry = execRoutes()
-	const routes = [...enabled].join(", ")
+	const routesListed = [...enabled, "job"].join(", ")
 
 	const guidelines: string[] = []
 	for (const name of enabled) {
@@ -161,23 +172,27 @@ function registerExec(pi: ExtensionAPI, enabled: Set<string>) {
 			guidelines.push(builtinGuidelines[name])
 		}
 	}
+	guidelines.push(builtinGuidelines.job)
+	guidelines.push("Always collect edit/write jobs before depending on their results.")
 
 	pi.registerTool({
 		name: "exec",
 		label: "exec",
-		description: `Dispatch tool calls by route (${routes}). Use for all tool ops.`,
+		description:
+			`Dispatch tool calls by route (${routesListed}). Every call spawns a job and returns its id immediately. Collect results via route "job" with params { id }. Always collect edit/write jobs before depending on them.`,
 		promptSnippet:
-			`exec — call any tool by route (${routes}). ` +
-			"Multiple exec calls in one turn = parallel execution.",
-		executionMode: "parallel", // routed tools run concurrently across exec calls; the promptSnippet already promises this.
+			`exec — call any tool by route (${routesListed}). ` +
+			"Every call returns a job id immediately; collect via route \"job\" params { id }. " +
+			"Always collect every spawned job to get actual results. Always collect edit/write before depending on them.",
+		executionMode: "parallel",
 		promptGuidelines: guidelines,
 		parameters: Type.Object(
 			{
-				route: Type.String({ description: `Target tool: ${routes}` }),
+				route: Type.String({ description: `Target tool: ${routesListed}` }),
 				params: Type.Optional(
 					Type.Record(Type.String(), Type.Any(), {
 						description:
-							"Tool parameters. Pass nested under params key, or alongside route at top level.",
+							"Tool parameters. Pass nested under params key, or alongside at top level.",
 					}),
 				),
 			},
@@ -185,16 +200,53 @@ function registerExec(pi: ExtensionAPI, enabled: Set<string>) {
 		),
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const route = (params as Record<string, unknown>).route as string
+
+			// pre-check: job collection — handled before route resolution
+			if (route === "job") {
+				const inner = innerParams(params) as Record<string, unknown>
+				const id = inner?.id as string | undefined
+				if (!id || !jobs.has(id)) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Unknown or missing job id: ${id ?? "<no id>"}. Known jobs: ${[...jobs.keys()].join(", ") || "(none)"}`,
+							},
+						],
+						details: { error: true },
+					}
+				}
+				const job = jobs.get(id)!
+				return await job.promise
+			}
+
 			const def = enabled.has(route) ? resolveRoute(route, ctx.cwd) : undefined
 			if (!def) {
 				return {
 					content: [
-						{ type: "text", text: `Unknown route: ${route}. Available: ${routes}` },
+						{ type: "text", text: `Unknown route: ${route}. Available: ${routesListed}` },
 					],
 					details: { error: true },
 				}
 			}
-			return def.execute(toolCallId, prepared(def, params), signal, onUpdate, ctx)
+
+			const id = `job-${++jobCounter}`
+			const promise = def
+				.execute(toolCallId, prepared(def, params), new AbortController().signal, () => {}, ctx)
+				.catch((err) => ({
+					content: [{ type: "text", text: String(err) }],
+					details: { error: true },
+				}))
+			jobs.set(id, { route, args: innerParams(params), promise })
+			return {
+				content: [
+					{
+						type: "text",
+						text: `spawned ${id} (route=${route}). Collect: exec route "job", params {id:"${id}"}`,
+					},
+				],
+				details: { jobId: id, route },
+			}
 		},
 		renderCall(args, theme, context) {
 			const route = (args as any)?.route as string
@@ -212,7 +264,35 @@ function registerExec(pi: ExtensionAPI, enabled: Set<string>) {
 		},
 		renderResult(result, options, theme, context) {
 			const args = context.args as Record<string, unknown> | undefined
-			const def = resolveRoute(args?.route as string, context.cwd)
+			const route = args?.route as string
+
+			// Spawn results (from fire-and-forget exec) — plain text
+			if (result?.details?.jobId) {
+				const first = result.content?.[0]
+				return new Text(first?.type === "text" ? first.text : "", 0, 0)
+			}
+
+			// Job collection results — delegate to the original route's renderer
+			if (route === "job") {
+				const inner = innerParams(args) as Record<string, unknown>
+				const jobId = inner?.id as string | undefined
+				const job = jobId ? jobs.get(jobId) : undefined
+				if (job) {
+					const def = resolveRoute(job.route, context.cwd)
+					if (def?.renderResult) {
+						return def.renderResult(result as any, options, theme, {
+							...context,
+							args: job.args,
+						})
+					}
+				}
+				// Map miss (history replay) or no renderer — plain text fallback
+				const first = result.content?.[0]
+				return new Text(first?.type === "text" ? first.text : "", 0, 0)
+			}
+
+			// Normal route rendering
+			const def = resolveRoute(route, context.cwd)
 			if (def?.renderResult) {
 				return def.renderResult(result as any, options, theme, {
 					...context,
@@ -247,7 +327,7 @@ export default function execExtension(pi: ExtensionAPI) {
 		const candidates = new Set(candidateRoutes())
 		const routes = saved
 			? saved.filter((n) => candidates.has(n))
-			: // Default mirrors pi: active built-ins only, plus all registry routes.
+			: // Default mirrors pi: active built-ins only plus all registry routes.
 				[
 					...Object.keys(factories).filter((n) => pi.getActiveTools().includes(n)),
 					...execRoutes().keys(),
