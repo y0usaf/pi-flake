@@ -26,7 +26,10 @@ const invoke = async (tool: any, file: string, params: Record<string, unknown>) 
     sessionManager: {
       getSessionFile: () => file,
       getBranch: () => [{ id: "m1" }],
-      getEntries: () => [{ id: "m1" }, { id: "m2" }],
+      getEntries: () => [
+        { type: "message", id: "m1", message: { role: "user", content: [{ type: "text", text: "active lineage token" }] } },
+        { type: "message", id: "m2", message: { role: "user", content: [{ type: "text", text: "off lineage secret" }] } },
+      ],
     },
   });
   return result.content[0].text as string;

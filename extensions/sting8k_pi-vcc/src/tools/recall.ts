@@ -1,16 +1,58 @@
 import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { loadAllMessages } from "../core/load-messages";
+import type { Message } from "@earendil-works/pi-ai";
+import { renderMessage, type RenderedEntry } from "../core/render-entries";
 import { searchEntries } from "../core/search-entries";
 import { formatRecallOutput } from "../core/format-recall";
-import { getActiveLineageEntryIds } from "../core/lineage";
-import { normalizeRecallScope } from "../core/recall-scope";
 
 const DEFAULT_RECENT = 25;
 const PAGE_SIZE = 5;
 
 export const invalidExpandIndices = (requested: number[], available: Set<number>): number[] =>
   requested.filter((i) => !Number.isInteger(i) || !available.has(i));
+
+/** Collect entry IDs from the active branch via sessionManager. */
+const getBranchMessageIds = (ctx: {
+  sessionManager: { getBranch: () => { id?: string }[] };
+}): Set<string> | undefined => {
+  try {
+    const branch = ctx.sessionManager.getBranch() ?? [];
+    const ids = branch.map((e) => e.id).filter((id): id is string => Boolean(id));
+    return ids.length > 0 ? new Set(ids) : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/** Load messages from ctx.sessionManager (no file I/O).
+ *  Works like the old loadAllMessages but uses the in-memory entry tree. */
+const loadMessages = (
+  ctx: {
+    sessionManager: { getEntries: () => { type: string; id: string; message?: Message }[] };
+  },
+  full: boolean,
+  allowedIds?: Set<string>,
+): { rendered: RenderedEntry[]; rawMessages: Message[]; entryIds: string[] } => {
+  const entries = ctx.sessionManager.getEntries();
+  const rendered: RenderedEntry[] = [];
+  const rawMessages: Message[] = [];
+  const entryIds: string[] = [];
+
+  let messageIndex = 0;
+  for (const e of entries) {
+    if (e.type !== "message" || !e.message) continue;
+    if (allowedIds && !allowedIds.has(e.id)) {
+      messageIndex++;
+      continue;
+    }
+    rendered.push(renderMessage(e.message, messageIndex, full));
+    rawMessages.push(e.message);
+    entryIds.push(e.id);
+    messageIndex++;
+  }
+
+  return { rendered, rawMessages, entryIds };
+};
 
 export const registerRecallTool = (pi: ExtensionAPI) => {
   pi.registerTool({
@@ -35,7 +77,7 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
         Type.Union([
           Type.Literal("lineage"),
           Type.Literal("all"),
-        ], { description: "Search scope. Default: lineage; all includes off-lineage branches." }),
+        ], { description: "Search scope. Default: lineage; includes off-lineage branches." }),
       ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -47,15 +89,16 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
         };
       }
 
-      const scope = normalizeRecallScope(params.scope);
-      const lineageEntryIds = scope === "lineage"
-        ? getActiveLineageEntryIds(ctx.sessionManager)
-        : undefined;
+      // scope normalization (was normalizeRecallScope)
+      const scope = typeof params.scope === "string" && params.scope.toLowerCase() === "all" ? "all" : "lineage";
+      // lineage filtering via sessionManager API (was getActiveLineageEntryIds)
+      const allowedIds = scope === "lineage" ? getBranchMessageIds(ctx) : undefined;
+
       const expandSet = new Set(params.expand ?? []);
       const hasExpand = expandSet.size > 0;
 
       if (hasExpand && !params.query) {
-        const { rendered: fullMsgs } = loadAllMessages(sessionFile, true, lineageEntryIds);
+        const { rendered: fullMsgs } = loadMessages(ctx, true, allowedIds);
         const requested = [...expandSet];
         const byIndex = new Map(fullMsgs.map((m) => [m.index, m]));
         const invalid = invalidExpandIndices(requested, new Set(byIndex.keys()));
@@ -74,9 +117,9 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
         };
       }
 
-      const { rendered: msgs, rawMessages } = loadAllMessages(sessionFile, false, lineageEntryIds);
+      const { rendered: msgs, rawMessages } = loadMessages(ctx, false, allowedIds);
       const allResults = params.query?.trim()
-        ? searchEntries(msgs, rawMessages, params.query)
+        ? searchEntries(msgs, rawMessages, params.query.trim())
         : msgs.slice(-DEFAULT_RECENT);
 
       if (params.query?.trim()) {
@@ -106,4 +149,3 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
     },
   });
 };
-
