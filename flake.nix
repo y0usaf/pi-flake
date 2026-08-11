@@ -323,6 +323,8 @@
 
         # Needs network for npm install (lockfile has unreachable packages).
         __noChroot = true;
+        # strip changes .bun section alignment (16384->4096), breaks bun's compiled-binary detection.
+        dontStrip = true;
 
         nativeBuildInputs = with pkgs; [bun pkg-config makeWrapper nodejs_22 gcc gnumake python3Minimal];
         NODE_EXTRA_CA_CERTS = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
@@ -341,9 +343,6 @@
           npm --prefix ../ai run build
           npm --prefix ../agent run build
           npm run build
-          # Strip shebang from bun entry point — bun 1.3.13's --compile requires
-          # "// @bun" as the first line of embedded code, not a shebang.
-          sed -i '1{/^#!/d}' dist/bun/cli.js
           bun build --compile ./dist/bun/cli.js --outfile dist/pi
           npm run copy-binary-assets
 
@@ -351,15 +350,30 @@
         installPhase = ''
           runHook preInstall
           mkdir -p $out/share/pi $out/bin
-#          cd packages/coding-agent
           cp -R dist/. $out/share/pi/
           rm -f $out/share/pi/pi
           install -Dm755 dist/pi $out/bin/prime-agent
           ln -s prime-agent $out/bin/pi
+
+          # Copy zeromq native addon so bun-compiled binary can find it at runtime
+          zeromq_src="$NIX_BUILD_TOP/source/node_modules/zeromq"
+          if [ -d "$zeromq_src" ]; then
+            mkdir -p $out/share/prime-agent-node
+            cp -rL "$zeromq_src/build" "$out/share/prime-agent-node/zeromq-build"
+          fi
+
+          wrapProgram $out/bin/prime-agent \
+            --set PI_PACKAGE_DIR $out/share/pi \
+            --set PI_TELEMETRY 0 \
+            --set PI_SYMBOLS ascii \
+            --set NODE_PATH $out/share/prime-agent-node \
+            --prefix LD_LIBRARY_PATH : ${pkgs.stdenv.cc.cc.lib}/lib
           wrapProgram $out/bin/pi \
             --set PI_PACKAGE_DIR $out/share/pi \
             --set PI_TELEMETRY 0 \
-            --set PI_SYMBOLS ascii
+            --set PI_SYMBOLS ascii \
+            --set NODE_PATH $out/share/prime-agent-node \
+            --prefix LD_LIBRARY_PATH : ${pkgs.stdenv.cc.cc.lib}/lib
           runHook postInstall
         '';
 
