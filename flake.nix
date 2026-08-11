@@ -32,6 +32,12 @@
       url = "github:jonjonrankin/pi-caveman";
       flake = false;
     };
+
+    # pi-recap: Claude Code-style session recap for pi (L2ncE/pi-recap)
+    recapSrc = {
+      url = "github:L2ncE/pi-recap";
+      flake = false;
+    };
   };
 
   outputs = {
@@ -42,6 +48,7 @@
     primeBunSrc,
     ponytailSrc,
     cavemanSrc,
+    recapSrc,
   }: let
     systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
     forAllSystems = nixpkgs.lib.genAttrs systems;
@@ -256,6 +263,7 @@
       # pi-batch: multi-op tool calls in one turn (reduces round-trips)
       "pi-batch" = let
         batchPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-batch/package.json);
+
       in
         pkgs.stdenvNoCC.mkDerivation {
           pname = "pi-batch";
@@ -272,6 +280,29 @@
           passthru.packageName = batchPackageJson.name;
           meta = with lib; {
             description = batchPackageJson.description;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
+      "pi-hashline" = let
+        hashlinePackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-hashline/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-hashline";
+          version = hashlinePackageJson.version;
+          src = lib.cleanSource ./extensions/pi-hashline;
+          dontBuild = true;
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp package.json README.md "$out"/
+            cp -r src "$out"/
+            runHook postInstall
+          '';
+          passthru.packageName = hashlinePackageJson.name;
+          meta = with lib; {
+            description = hashlinePackageJson.description;
             license = licenses.mit;
             platforms = platforms.all;
           };
@@ -345,6 +376,35 @@ function getConfigPath() {\
           meta = with lib; {
             description = cavemanPackageJson.description;
             homepage = "https://github.com/jonjonrankin/pi-caveman";
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
+      # pi-recap: Claude Code-style session recap above the status bar (L2ncE/pi-recap)
+      "pi-recap" = let
+        recapPackageJson = builtins.fromJSON (builtins.readFile "${recapSrc}/package.json");
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-recap";
+          version = recapPackageJson.version;
+          src = recapSrc;
+
+          dontBuild = true;
+
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp package.json LICENSE README.md "$out"/
+            cp -r extensions "$out"/
+            runHook postInstall
+          '';
+
+          passthru.packageName = recapPackageJson.name;
+
+          meta = with lib; {
+            description = recapPackageJson.description;
+            homepage = "https://github.com/L2ncE/pi-recap";
             license = licenses.mit;
             platforms = platforms.all;
           };
@@ -622,9 +682,11 @@ function getConfigPath() {\
         tools = self.packages.${system}."pi-tools";
         "chronobreak" = self.packages.${system}."pi-chronobreak";
         unified-edit = self.packages.${system}."pi-unified-edit";
+        hashline = self.packages.${system}."pi-hashline";
         ponytail = self.packages.${system}."pi-ponytail";
         caveman = self.packages.${system}."pi-caveman";
         batch = self.packages.${system}."pi-batch";
+        recap = self.packages.${system}."pi-recap";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.
