@@ -1,6 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { Type } from "@sinclair/typebox";
+import { Container, Markdown, matchesKey, Text } from "@earendil-works/pi-tui";
 import { readFileSync, mkdtempSync, rmSync, writeFileSync, existsSync, appendFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir, homedir } from "node:os";
@@ -201,15 +203,32 @@ export default function (pi: ExtensionAPI): void {
         return;
       }
 
-      // Format child session events into readable recap text, then inject as
-      // a user message in the parent TUI. No 2nd pi process, no temp files,
-      // no orphan risk — the child's session becomes inline conversation.
+      // Format child session events into readable recap text. Show as
+      // TUI panel, not a fake user message.
       const recap = formatSessionRecap(chosen);
       if (!recap) {
         ctx.ui.notify("Could not parse session data.", "error");
         return;
       }
-      pi.sendUserMessage(recap);
+      await ctx.ui.custom((_tui, theme, _kb, done) => {
+        const container = new Container();
+        const border = new DynamicBorder((s) => theme.fg("accent", s));
+        const mdTheme = getMarkdownTheme();
+        container.addChild(border);
+        container.addChild(new Text(theme.fg("accent", theme.bold("Recursion Recap")), 1, 0));
+        container.addChild(new Markdown(recap, 1, 1, mdTheme));
+        container.addChild(new Text(theme.fg("dim", "Press q, Enter, or Esc to close"), 1, 0));
+        container.addChild(border);
+        return {
+          render: (width) => container.render(width),
+          invalidate: () => container.invalidate(),
+          handleInput: (data) => {
+            if (matchesKey(data, "enter") || matchesKey(data, "escape") || matchesKey(data, "q")) {
+              done(undefined);
+            }
+          },
+        };
+      });
     },
   });
 }
