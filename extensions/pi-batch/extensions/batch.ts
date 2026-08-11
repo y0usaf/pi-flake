@@ -10,8 +10,14 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import { Container, Markdown, Text } from "@earendil-works/pi-tui";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
+interface OpResult {
+  ok: boolean;
+  text: string;
+}
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -116,9 +122,13 @@ export default function (pi: ExtensionAPI) {
       execute(
         _id: string,
         args: Record<string, unknown>,
-      ): Promise<{ content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }> {
+        _signal: AbortSignal | undefined,
+        onUpdate: ((result: any) => void) | undefined,
+        _ctx: any,
+      ): Promise<{ content: Array<{ type: "text"; text: string }>; details: { ops: OpResult[] } }> {
         const ops = (args["operations"] ?? []) as Array<{ tool: string; params?: Record<string, unknown> }>;
         const lines: string[] = [];
+        const results: OpResult[] = [];
         let ok = 0;
 
         for (let i = 0; i < ops.length; i++) {
@@ -166,17 +176,51 @@ export default function (pi: ExtensionAPI) {
           } catch (err) {
             body = err instanceof Error ? err.message : String(err);
           }
-
+          results.push({ ok: success, text: body });
           lines.push(opOut(i + 1, op.tool, success, body));
           if (success) ok++;
+
+          // Stream partial state per op so renderResult can redraw progressively
+          onUpdate?.({
+            content: [{ type: "text", text: `Batch: ${ops.length} ops, ${ok} OK (${results.length}/${ops.length})\n${lines.join("\n")}` }],
+            details: { ops: [...results] },
+          } as any);
         }
 
         return Promise.resolve({
           content: [{ type: "text", text: `Batch: ${ops.length} ops, ${ok} OK\n${lines.join("\n")}` }],
-          details: { total: ops.length, ok },
+          details: { ops: results },
         });
       },
-    });
+      renderResult: (result: any, _options: any, theme: any, context: any) => {
+        const mdTheme = getMarkdownTheme();
+        const ops = (context.args as any)?.operations ?? [];
+        const results: OpResult[] = (result.details as any)?.ops ?? [];
+        const container = new Container();
+        for (let i = 0; i < ops.length; i++) {
+          const op = ops[i];
+          const res = results[i];
+          const ok = res?.ok ?? false;
+          const text = res?.text ?? "";
+
+          // Label: tool name + first meaningful param
+          const p = (op.params ?? {}) as Record<string, unknown>;
+          const label = (getLastStr(p, ["filePath", "path", "command", "cmd"]) ?? "") as string;
+          const hdr = `→ ${op.tool as string}${label ? `: ${label}` : ""}${ok ? "" : " ✗"}`;
+
+          container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+          container.addChild(new Text(theme.fg(ok ? "accent" : "dim", hdr), 1, 0));
+          if (text && ok) {
+            container.addChild(new Markdown(`\`\`\`${op.tool === "bash" ? "bash" : ""}\n${text}\n\`\`\``, 1, 1, getMarkdownTheme()));
+          } else if (text) {
+            container.addChild(new Text(theme.fg("dim", text), 1, 1));
+          }
+          container.addChild(new DynamicBorder((s: string) => theme.fg("dim", s)));
+        }
+
+        return container;
+      },
+    } as any);
   };
 
   pi.on("session_start", register);
