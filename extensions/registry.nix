@@ -21,6 +21,11 @@
     source = "inline";
     dir = "pi-chronobreak";
   };
+  tools = {
+    stage = "active";
+    source = "inline";
+    dir = "pi-tools";
+  };
   recurse = {
     stage = "active";
     source = "inline";
