@@ -41,7 +41,7 @@
     dir = "pi-batch";
   };
   unified-edit = {
-    stage = "active";
+    stage = "testing";
     source = "inline";
     dir = "pi-unified-edit";
   };
