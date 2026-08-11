@@ -179,6 +179,5 @@ export default function (pi: ExtensionAPI) {
     });
   };
 
-  register();
   pi.on("session_start", register);
 }
