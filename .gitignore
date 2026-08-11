@@ -5,3 +5,4 @@ ref/
 
 # local pi runtime state (agent session logs)
 .pi/
+.pi-rlm/

@@ -32,10 +32,10 @@
     source = "inline";
     dir = "retired/pi-tools";
   };
-  recurse = {
+  agent = {
     stage = "active";
     source = "inline";
-    dir = "pi-recurse";
+    dir = "pi-agent";
   };
   sentinel = {
     stage = "active";
@@ -68,5 +68,6 @@
   recap = {
     stage = "active";
     source = "vendored";
+    dir = "pi-recap";
   };
 }

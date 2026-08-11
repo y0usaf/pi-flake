@@ -33,11 +33,6 @@
       flake = false;
     };
 
-    # pi-recap: Claude Code-style session recap for pi (L2ncE/pi-recap)
-    recapSrc = {
-      url = "github:L2ncE/pi-recap";
-      flake = false;
-    };
   };
 
   outputs = {
@@ -48,7 +43,6 @@
     primeBunSrc,
     ponytailSrc,
     cavemanSrc,
-    recapSrc,
   }: let
     systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
     forAllSystems = nixpkgs.lib.genAttrs systems;
@@ -162,31 +156,32 @@
           };
         };
 
-      "pi-recurse" = let
-        recursePackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-recurse/package.json);
+
+
+      "pi-agent" = let
+        agentPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-agent/package.json);
       in
         pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-recurse";
-          version = recursePackageJson.version;
-          src = lib.cleanSource ./extensions/pi-recurse;
+          pname = "pi-agent";
+          version = agentPackageJson.version;
+          src = lib.cleanSource ./extensions/pi-agent;
           dontBuild = true;
           installPhase = ''
             runHook preInstall
             mkdir -p "$out"
             cp package.json README.md "$out"/
-            cp -r src "$out"/
+            cp *.ts "$out"/
             runHook postInstall
           '';
-          passthru.packageName = recursePackageJson.name;
+          passthru.packageName = agentPackageJson.name;
           meta = with lib; {
-            description = recursePackageJson.description;
+            description = agentPackageJson.description;
             license = licenses.mit;
             platforms = platforms.all;
           };
         };
 
-      
-      "pi-exec" = let
+"pi-exec" = let
         execPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-exec/package.json);
       in
         pkgs.stdenvNoCC.mkDerivation {
@@ -407,12 +402,12 @@ function getConfigPath() {\
 
       # pi-recap: Claude Code-style session recap above the status bar (L2ncE/pi-recap)
       "pi-recap" = let
-        recapPackageJson = builtins.fromJSON (builtins.readFile "${recapSrc}/package.json");
+        recapPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-recap/package.json);
       in
         pkgs.stdenvNoCC.mkDerivation {
           pname = "pi-recap";
           version = recapPackageJson.version;
-          src = recapSrc;
+          src = lib.cleanSource ./extensions/pi-recap;
 
           dontBuild = true;
 
@@ -725,7 +720,7 @@ function getConfigPath() {\
     # comes from extensions/registry.nix; paused and retired extensions are excluded.
     lib.extensionPackagesFor = system:
       nixpkgs.lib.filterAttrs (name: _: (extensionRegistry.${name}.stage or "active") != "paused" && (extensionRegistry.${name}.stage or "active") != "retired") {
-        recurse = self.packages.${system}."pi-recurse";
+        agent = self.packages.${system}."pi-agent";
         sentinel = self.packages.${system}."pi-sentinel";
         tools = self.packages.${system}."pi-tools";
         "chronobreak" = self.packages.${system}."pi-chronobreak";

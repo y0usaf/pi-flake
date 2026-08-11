@@ -1,0 +1,19 @@
+{
+  "name": "pi-agent",
+  "version": "0.6.0",
+  "description": "Multi-agent orchestration: spawn, loop, panel, workflows",
+  "keywords": ["pi-package", "pi-extension", "multi-agent"],
+  "files": ["*.ts", "README.md", "package.json"],
+  "type": "module",
+  "homepage": "https://github.com/y0usaf/pi-flake/tree/main/extensions/pi-agent",
+  "repository": {"type": "git", "url": "git+https://github.com/y0usaf/pi-flake.git", "directory": "extensions/pi-agent"},
+  "pi": {"extensions": ["./index.ts", "./workflow.ts"]},
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  },
+  "license": "MIT"
+}
