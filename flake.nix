@@ -197,6 +197,9 @@
         version = primeAgentPackageJson.version;
         src = primeAgentSrc;
 
+        # Needs network for npm install (lockfile has unreachable packages).
+        __noChroot = true;
+
         nativeBuildInputs = with pkgs; [bun pkg-config makeWrapper nodejs_22 gcc gnumake python3Minimal];
         NODE_EXTRA_CA_CERTS = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
         buildInputs = canvasNativeDeps;
