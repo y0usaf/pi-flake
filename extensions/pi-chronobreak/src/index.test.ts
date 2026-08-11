@@ -233,7 +233,7 @@ describe("extension flow", () => {
     expect(h.calls.abort).toBe(0);
   });
 
-  test("loop: aborts once, scrubs the message, no nudge", () => {
+  test("loop: aborts once, scrubs the message, re-runs via nudge", () => {
     const h = makeExt();
     h.fire("message_start", { message: assistant("") });
     h.fire("message_update", { message: assistant(LOOP_TEXT) });
@@ -247,7 +247,25 @@ describe("extension flow", () => {
     expect(scrub.message.content[0].text).toContain("chronobreak");
 
     h.fire("agent_end", {});
-    expect(h.sent.length).toBe(0);
+    expect(h.sent.length).toBe(1);
+    expect(h.sent[0].text).toContain("ONE decisive action");
+    expect(h.sent[0].options).toEqual({ deliverAs: "followUp" });
+
+    // nudge is one-shot: a later clean agent_end sends nothing more
+    h.fire("agent_end", {});
+    expect(h.sent.length).toBe(1);
+  });
+
+  test("no strike limit: every looping turn is cut and re-run, indefinitely", () => {
+    const h = makeExt();
+    for (let turn = 0; turn < 5; turn++) {
+      h.fire("message_start", { message: assistant("") });
+      h.fire("message_update", { message: assistant(LOOP_TEXT) });
+      h.fire("message_end", { message: assistant(LOOP_TEXT) });
+      h.fire("agent_end", {});
+    }
+    expect(h.calls.abort).toBe(5);
+    expect(h.sent.length).toBe(5);
   });
 
   test("clean turn: message_end untouched, no nudge sent", () => {
@@ -304,7 +322,7 @@ describe("extension flow", () => {
     expect(scrub.message.content[0].type).toBe("text");
     expect(scrub.message.content[0].text).toContain("chronobreak");
     h.fire("agent_end", {});
-    expect(h.sent.length).toBe(0);
+    expect(h.sent.length).toBe(1);
   });
 
   test("thinking loop with clean visible text: keeps the text, drops thinking", () => {

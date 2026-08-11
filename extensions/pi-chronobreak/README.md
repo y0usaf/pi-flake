@@ -32,7 +32,8 @@ When a loop is detected:
    (a single clean tool call or a direct answer), re-running the turn from a
    clean context.
 
-It gives up after 3 strikes per user turn to avoid an abort/re-run spin loop.
+There is no strike limit: if the re-run loops again it gets cut and re-run
+again, indefinitely.
 
 chronobreak is a spectator: it never touches files or the JS kernel - it only
 aborts generation, replaces one assistant message, and queues a user message.
@@ -40,7 +41,7 @@ aborts generation, replaces one assistant message, and queues a user message.
 ## Development
 
 Uses pi extension event API (message_start / message_update / message_end /
-agent_end / input). See DESIGN.md.
+agent_end). See DESIGN.md.
 
 Tests: `bun test` (pure detector fixtures + extension flow incl. the toolCall
 eligibility gate and enumeration exemption).

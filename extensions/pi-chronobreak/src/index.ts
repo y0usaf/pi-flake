@@ -18,8 +18,11 @@ import { detectLoop } from "./detector";
  * in visible text. Text and thinking are scanned as separate streams so a
  * loop in one is never diluted by variety in the other.
  *
- * Spectator: never touches files or the JS kernel. Only aborts generation
- * and replaces the assistant message with a scrub marker.
+ * Spectator: never touches files or the JS kernel. Only aborts generation,
+ * replaces the assistant message with a scrub marker, and queues a nudge
+ * that re-runs the turn. There is no strike limit: every detected loop is
+ * cut and re-run, indefinitely - the detector's own thresholds are the only
+ * brake.
  */
 
 const SCRUB_TEXT = "[generation loop terminated by chronobreak - re-running]";
@@ -34,6 +37,7 @@ function isTextBlock(c: { type?: string; text?: string }): c is { type: string; 
 
 export default function (pi: ExtensionAPI): void {
   let terminating = false;
+  let pendingNudge: string | undefined;
   let soleLoopStart = -1; // -1: no scrub lead-in captured yet
   let loopInThinking = false; // where the detected loop lives
 
@@ -86,6 +90,11 @@ export default function (pi: ExtensionAPI): void {
       'chronobreak: generation loop detected ("' + verdict.sample + '" ' + verdict.kind + "). Re-running the turn.",
       "warning",
     );
+    pendingNudge =
+      "chronobreak terminated a generation loop in your previous attempt." +
+      (verdict.sample ? '\n\nRepeat detected: "' + verdict.sample + '"' : "") +
+      "\n\nDo NOT repeat yourself. Re-answer the task you were working on with ONE decisive action " +
+      "in this message: either a single clean tool call, or a direct final answer. Do not restate intent.";
     ctx.abort();
   });
 
@@ -122,5 +131,12 @@ export default function (pi: ExtensionAPI): void {
     };
   });
 
-
+  // Re-run the turn after the aborted run winds down. Unbounded on purpose:
+  // a loop that re-forms just gets cut and re-run again.
+  pi.on("agent_end", () => {
+    if (!pendingNudge) return;
+    const nudge = pendingNudge;
+    pendingNudge = undefined;
+    pi.sendUserMessage(nudge, { deliverAs: "followUp" });
+  });
 }
