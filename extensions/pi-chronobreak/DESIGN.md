@@ -5,72 +5,44 @@
   producing a settled action (seen live: "Let me check the system mtime and
   module import..." x many). Tool-call fingerprinting misses this (the model
   often abandons the call). (2026)
-- Thinking blocks are scanned as their own stream, separate from visible text.
-  The observed degeneration ("Let me update the doc." restated ~20 ways) lives
-  in thinking as often as in text; separate streams mean a loop in one is never
-  diluted by variety in the other. When the loop is in thinking, the scrub
-  drops all thinking and keeps the (non-looping) visible text plus the
-  truncation marker — thinking has no lead-in worth preserving. (2026-08)
-- The loop's real signature is behavioural STALL, not any content shape. So the
-  primary discriminator is content-agnostic: a message that has emitted a tool
-  call is by definition progressing and is NEVER eligible for cutting. Only
-  pure-prose output that is lexically exhausted can be a loop.
-- Three detection tiers, all pure and recomputed from the full text each update:
-  - exact — verbatim normalized segment >= 3 times (unchanged).
-  - stall — paraphrase-tolerant, distribution-free: pairwise near-duplication
-    (Jaccard >= 0.5 OR containment >= 0.6) of a growing tail that is redundant
-    and lexically exhausted (low novelty). Fires the loose loop (same intent,
-    varied wording) and out-of-distribution loops (calculus, code, "is-42").
-  - fragment — verbless/utterance degeneracies ("42. " x20) that evade the
-    MIN_CHUNK_LEN floor.
-- Enumeration exemption: a redundant cluster that shares a LARGE core (>= 60% of
-  median member size — one skeleton, one varying payload word per item) is a
-  legitimate template enumeration ("I updated docs for X module" x14), NOT a
-  loop. A loop shares only a tiny intent core ("update doc") while rewordings
-  diverge.
-- "End the output" = ctx.abort(). Truncate the aborted assistant message back to
-  where the loop began (keeping the coherent lead-in) and re-inject a nudge via
-  pi.sendUserMessage (deliverAs: followUp) at agent_end, re-running the turn.
-- No strike limit. An earlier 3-strike give-up (and a later abort-only variant
-  with no re-run at all) both left the turn dead after a chronobreak; the
-  desired behaviour is to keep restarting for as long as the loop re-forms.
-  The detector's thresholds are the only brake. (2026-08)
-- Truncate + re-inject run at message_end / agent_end (idle), not mid-stream.
-- chronobreak is a spectator: it never changes files, only aborts + replaces one
-  assistant message's text. It never runs kernel code. (canon:least-code,
-  least-power)
+- Segment-level repetition is the signal: within one turn, the same text chunk
+  (line/sentence) appearing >= 3 times flags a loop. Chunks are normalized
+  (case/whitespace folded). A rolling window of recent chunks keeps it per-turn.
+- "End the output" = ctx.abort(). "Checkpoint" granularity is the session entry
+  (one per turn/message): chronobreak rolls back to the last stable entry before
+  the looping turn and re-injects a nudge via pi.sendUserMessage.
+- Rollback + re-inject only run when idle (agent_settled / lazy via message_end),
+  mirroring pi-review: navigateTree is proven from idle, not mid-stream.
+- chronobreak is a spectator: it never changes files, only aborts + navigates
+  the session tree. It never runs kernel code. (canon:least-code, least-power)
 
 ## Architecture
 
-- src/detector.ts — pure loop-detection core: text in + loop verdict (kind,
-  count, sample, loop-start offset) out. No I/O, no state. Re-scans the full
-  text on every call so streaming updates never double-count.
-- src/index.ts — the imperative shell: the toolCall eligibility gate, the four
-  event handlers (message_start reset, message_update detect+abort on the text
-  stream then the thinking stream, message_end truncate-and-keep-lead-in,
-  agent_end re-inject), and the per-stream extraction of text and thinking
-  blocks.
+- src/index.ts — the whole extension, decision-making: segmentize/scan (pure
+  functions: text in, loop verdict out), plus the imperative shell of five
+  event handlers (message_start reset, message_update detect+abort,
+  message_end scrub, agent_end re-inject). No extension
+  boundary of its own: it is a spectator on pi's event API and never exposes
+  state to the model.
 
 ## Deferred
 
 - Cross-turn loop detection (same assistant message repeating across turns):
-  deferred. Exact full-message fingerprints on completed, tool-free turns only
-  if cross-turn loops show up in practice; never token-similarity fingerprints.
+  the observed failure is within-turn; add a small LRU of final message
+  fingerprints only if cross-turn loops show up in practice.
+- Fuzzy/prefix matching (repeated phrase with varying tails): exact normalized
+  segment match >= 3 catches the observed case; add fuzz only on evidence.
 - navigateTree rollback (checkpoint before the looping turn): unnecessary while
-  the loop is within one message — abort + truncate-at-loop-start + re-inject
-  already restarts the turn without tree surgery. Revisit if multi-turn loops
-  appear (the rollback would also be able to drop the lead-in, not just the tail).
-- Pure synonym-rotation loops (update/refresh/modify x doc/file/record with
-  near-zero shared vocabulary): an information-theoretic limit for string-only
-  detection. Deliberately missed rather than risk stopping a legit long answer.
+  the loop is within one message — abort + scrub + re-inject already restarts
+  the turn without tree surgery. Revisit if multi-turn loops appear.
 
 ## Roadmap
 
-- Phase 1 — detection + termination: abort on a tool-free, lexically-exhausted
-  message, truncate back to the loop start (keeping the coherent lead-in),
-  re-inject the nudge, unbounded re-runs. Criterion: nix build .#pi-chronobreak
-  and nix flake check green; live loops get cut and the session keeps the
-  pre-loop lead-in with a truncation marker.
-- Phase 2 — tuning: thresholds tuned from real loops observed with the js-kernel
-  sessions. Criterion: no false trigger across a week of normal use, and the
-  next real loop is cut. Run in shadow mode first (notify-only, no abort).
+- Phase 1 — detection + termination: abort on >= 3 repeated normalized segments
+  in one assistant message, scrub the aborted message, re-inject the nudge.
+  No strike limit: every detected loop is cut and re-run, indefinitely.
+  Criterion: nix build .#pi-chronobreak and nix flake check
+  green; a live loop gets cut and the session shows the scrub marker.
+- Phase 2 — tuning: thresholds (repeat count, min chunk length) adjusted from
+  real loops observed with the js-kernel sessions. Criterion: no false trigger
+  across a week of normal use, and the next real loop is cut.
