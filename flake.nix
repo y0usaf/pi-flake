@@ -14,6 +14,12 @@
       url = "github:y0usaf/prime-agent?ref=pa-prime-nix";
       flake = false;
     };
+
+    # prime-bun: prime-agent fork with Bun-native compilation and sub-agent orchestration
+    primeBunSrc = {
+      url = "github:sng-asyncfunc/prime-bun";
+      flake = false;
+    };
   };
 
   outputs = {
@@ -21,12 +27,14 @@
     nixpkgs,
     piSrc,
     primeAgentSrc,
+    primeBunSrc,
   }: let
     systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
     forAllSystems = nixpkgs.lib.genAttrs systems;
     pkgsFor = forAllSystems (system: import nixpkgs {inherit system;});
     packageJson = builtins.fromJSON (builtins.readFile "${piSrc}/packages/coding-agent/package.json");
     primeAgentPackageJson = builtins.fromJSON (builtins.readFile "${primeAgentSrc}/packages/coding-agent/package.json");
+    primeBunPackageJson = builtins.fromJSON (builtins.readFile "${primeBunSrc}/packages/coding-agent/package.json");
     extensionRegistry = import ./extensions/registry.nix;
     # Kept minimal on purpose: anything achievable via env var or user config
     # must not be a patch (patches rot on every piSrc bump).
@@ -265,6 +273,61 @@
         pi = self.packages.${system}.prime-agent;
         extensions = {
           chronobreak = self.packages.${system}."pi-chronobreak";
+        };
+      };
+
+      # prime-bun: Bun-compiled standalone binary, parallel to prime-agent.
+      # Build uses bun build --compile for a self-contained binary; static assets
+      # (themes, skills, docs, examples) are installed to $out/share/prime-bun/.
+      prime-bun = pkgs.stdenvNoCC.mkDerivation {
+        pname = "prime-bun";
+        version = primeBunPackageJson.version;
+        src = primeBunSrc;
+
+        # Needs network for npm install (lockfile may reference unreachable packages).
+        __noChroot = true;
+
+        nativeBuildInputs = with pkgs; [bun pkg-config makeWrapper nodejs_22 gcc gnumake python3Minimal];
+        NODE_EXTRA_CA_CERTS = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+        buildInputs = canvasNativeDeps;
+
+        patchPhase = ''
+          # Skip model generation (models.generated.ts is committed).
+          sed -i 's|"build": "npm run generate-models && tsgo -p tsconfig.build.json"|"build": "tsgo -p tsconfig.build.json"|' packages/ai/package.json
+        '';
+
+        buildPhase = ''
+          export HOME="$TMPDIR"
+          npm install 2>&1 | tail -20
+          cd $NIX_BUILD_TOP/source/packages/coding-agent
+          npm run build:binary
+        '';
+
+        installPhase = ''
+          runHook preInstall
+          mkdir -p $out/bin $out/share/prime-bun
+          # Install the standalone bun binary
+          install -Dm755 dist/pi $out/bin/prime-bun
+          # Install static assets alongside the binary (themes, skills, docs, etc.)
+          # copy-binary-assets already staged these into dist/; skip JS files.
+          for dir in theme assets export-html docs examples skills; do
+            if [ -d "dist/$dir" ]; then
+              cp -R "dist/$dir" "$out/share/prime-bun/"
+            fi
+          done
+          cp dist/package.json dist/README.md dist/CHANGELOG.md "$out/share/prime-bun/" 2>/dev/null || true
+          wrapProgram $out/bin/prime-bun \
+            --set PI_PACKAGE_DIR $out/share/prime-bun \
+            --set PI_TELEMETRY 0
+          runHook postInstall
+        '';
+
+        meta = with lib; {
+          description = primeBunPackageJson.description;
+          homepage = "https://github.com/sng-asyncfunc/prime-bun";
+          license = licenses.mit;
+          mainProgram = "prime-bun";
+          platforms = platforms.all;
         };
       };
 

@@ -50,11 +50,28 @@
         "type": "github"
       }
     },
+    "primeBunSrc": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1786415380,
+        "narHash": "sha256-FhtGYxtbWEvpqx4gMMSVpoCcScXlVD7waliS2PGxTkY=",
+        "owner": "sng-asyncfunc",
+        "repo": "prime-bun",
+        "rev": "25e980048030954a76f2070511c5882182b9063f",
+        "type": "github"
+      },
+      "original": {
+        "owner": "sng-asyncfunc",
+        "repo": "prime-bun",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
         "piSrc": "piSrc",
-        "primeAgentSrc": "primeAgentSrc"
+        "primeAgentSrc": "primeAgentSrc",
+        "primeBunSrc": "primeBunSrc"
       }
     }
   },
