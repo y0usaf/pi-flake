@@ -336,10 +336,16 @@
           export HOME="$TMPDIR"
           npm install 2>&1 | tail -20
           cd $NIX_BUILD_TOP/source/packages/coding-agent
-          # Use workspace node_modules (npm installed locally)
-          npm install 2>&1 | tail -20
-          cd $NIX_BUILD_TOP/source/packages/coding-agent
-          npm run build:binary
+          # Build workspace deps before tsgo (needed for import resolution)
+          npm --prefix ../tui run build
+          npm --prefix ../ai run build
+          npm --prefix ../agent run build
+          npm run build
+          # Strip shebang from bun entry point — bun 1.3.13's --compile requires
+          # "// @bun" as the first line of embedded code, not a shebang.
+          sed -i '1{/^#!/d}' dist/bun/cli.js
+          bun build --compile ./dist/bun/cli.js --outfile dist/pi
+          npm run copy-binary-assets
 
         '';
         installPhase = ''
