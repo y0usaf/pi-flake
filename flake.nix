@@ -264,6 +264,21 @@
 
           dontBuild = true;
 
+          patches = [];
+
+          postPatch = ''
+            sed -i '/^function getConfigDir() {/,/^}$/c\
+function getConfigDir() {\
+  return path.join(os.homedir(), ".pi", "agent");\
+}
+' hooks/ponytail-config.js
+            sed -i '/^function getConfigPath() {/,/^}$/c\
+function getConfigPath() {\
+  return path.join(getConfigDir(), "ponytail.json");\
+}
+' hooks/ponytail-config.js
+          '';
+
           installPhase = ''
             runHook preInstall
             mkdir -p "$out"
