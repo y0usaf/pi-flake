@@ -31,7 +31,7 @@
     dir = "pi-sentinel";
   };
   unified-edit = {
-    stage = "testing";
+    stage = "active";
     source = "inline";
     dir = "pi-unified-edit";
   };
