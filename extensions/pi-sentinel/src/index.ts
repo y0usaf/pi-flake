@@ -111,6 +111,15 @@ export default function (pi: ExtensionAPI): void {
 					},
 					{ maxTokens: JUDGE_MAX_TOKENS, cacheRetention: "none" },
 				);
+				if (response.stopReason === "error") {
+					// complete() resolves errors as a message, it never throws;
+					// without this check a broken judge is an invisible COMPLETE.
+					ctx.ui.notify(
+						`sentinel: judge failed (${(response as { errorMessage?: string }).errorMessage ?? "unknown error"})`,
+						"warning",
+					);
+					return;
+				}
 				const reply = response.content
 					.filter((c): c is { type: "text"; text: string } => c.type === "text")
 					.map((c) => c.text)
