@@ -70,18 +70,6 @@ in {
     full = mkEnableOption "all bundled pi extensions";
 
     extensions = {
-      "gecko-websearch" = mkEnableOption "pi-gecko-websearch extension";
-      rtk = mkEnableOption "pi-rtk extension";
-      aphrodite = mkEnableOption "pi-aphrodite Aphrodite CCR tool-output compression extension";
-
-      interview = mkEnableOption "pi-interview ask-user questionnaire extension";
-      management = mkEnableOption "pi-management persistent disabled-tools + disabled-extensions UI extension";
-      webfetch = mkEnableOption "pi-webfetch extension";
-      hashline = mkEnableOption "pi-hashline v3 read/edit tool override";
-      review = mkEnableOption "pi-review /review and /end-review code review workflow extension";
-      vcc = mkEnableOption "pi-vcc algorithmic conversation compactor and vcc_recall history search";
-      caveman = mkEnableOption "pi-caveman terse-response mode extension";
-      quiet = mkEnableOption "pi-quiet OMP-style chrome (no header, status-bar editor border, face prompt)";
       recurse = mkEnableOption "pi-recurse recursion primitive (the recurse tool spawns a child pi session to fulfill a task)";
     };
 
