@@ -23,9 +23,9 @@
     dir = "pi-chronobreak";
   };
   z-exec = {
-    stage = "active";
+    stage = "retired";
     source = "inline";
-    dir = "pi-exec";
+    dir = "retired/pi-exec";
   };
   tools = {
     stage = "retired";
@@ -33,9 +33,9 @@
     dir = "retired/pi-tools";
   };
   agent = {
-    stage = "active";
+    stage = "retired";
     source = "inline";
-    dir = "pi-agent";
+    dir = "retired/pi-agent";
   };
   sentinel = {
     stage = "active";

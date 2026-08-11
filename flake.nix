@@ -157,14 +157,13 @@
         };
 
 
-
       "pi-agent" = let
-        agentPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-agent/package.json);
+        agentPackageJson = builtins.fromJSON (builtins.readFile ./extensions/retired/pi-agent/package.json);
       in
         pkgs.stdenvNoCC.mkDerivation {
           pname = "pi-agent";
           version = agentPackageJson.version;
-          src = lib.cleanSource ./extensions/pi-agent;
+          src = lib.cleanSource ./extensions/retired/pi-agent;
           dontBuild = true;
           installPhase = ''
             runHook preInstall
@@ -181,28 +180,6 @@
           };
         };
 
-"pi-exec" = let
-        execPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-exec/package.json);
-      in
-        pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-exec";
-          version = execPackageJson.version;
-          src = lib.cleanSource ./extensions/pi-exec;
-          dontBuild = true;
-          installPhase = ''
-            runHook preInstall
-            mkdir -p "$out"
-            cp package.json README.md "$out"/
-            cp -r src "$out"/
-            runHook postInstall
-          '';
-          passthru.packageName = execPackageJson.name;
-          meta = with lib; {
-            description = execPackageJson.description;
-            license = licenses.mit;
-            platforms = platforms.all;
-          };
-        };
 
       "pi-sentinel" = let
         sentinelPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-sentinel/package.json);
@@ -226,6 +203,30 @@
             platforms = platforms.all;
           };
         };
+
+      "pi-exec" = let
+        execPackageJson = builtins.fromJSON (builtins.readFile ./extensions/retired/pi-exec/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-exec";
+          version = execPackageJson.version;
+          src = lib.cleanSource ./extensions/retired/pi-exec;
+          dontBuild = true;
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp package.json README.md "$out"/
+            cp -r src "$out"/
+            runHook postInstall
+          '';
+          passthru.packageName = execPackageJson.name;
+          meta = with lib; {
+            description = execPackageJson.description;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
 
       "pi-tools" = let
         toolsPackageJson = builtins.fromJSON (builtins.readFile ./extensions/retired/pi-tools/package.json);
@@ -720,7 +721,6 @@ function getConfigPath() {\
     # comes from extensions/registry.nix; paused and retired extensions are excluded.
     lib.extensionPackagesFor = system:
       nixpkgs.lib.filterAttrs (name: _: (extensionRegistry.${name}.stage or "active") != "paused" && (extensionRegistry.${name}.stage or "active") != "retired") {
-        agent = self.packages.${system}."pi-agent";
         sentinel = self.packages.${system}."pi-sentinel";
         tools = self.packages.${system}."pi-tools";
         "chronobreak" = self.packages.${system}."pi-chronobreak";
@@ -731,7 +731,6 @@ function getConfigPath() {\
         batch = self.packages.${system}."pi-batch";
         bash-aliases = self.packages.${system}."pi-bash-aliases";
         recap = self.packages.${system}."pi-recap";
-        z-exec = self.packages.${system}."pi-exec";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.
