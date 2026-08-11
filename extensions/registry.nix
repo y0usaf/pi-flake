@@ -5,11 +5,18 @@
 #   testing  — built and checked, excluded from the default bundle; opt-in
 #              via programs.pi.extensions.<name> (emits a NixOS warning).
 #   paused   — source kept in tree, but not built, bundled, or checked.
-#   retired  — remove the entry here AND delete the source from extensions/.
+#   retired  — source stored in extensions/retired/, not built or bundled.
+#              Purpose: preserves code history without cluttering the
+#              working directory; reanimate by moving back to extensions/.
 #
 # source: "vendored" (third-party tree built inline in flake.nix), or
 #         "inline" (first-party tree in this repo, built inline by the root flake).
 {
+  bash-aliases = {
+    stage = "active";
+    source = "inline";
+    dir = "pi-bash-aliases";
+  };
   chronobreak = {
     stage = "active";
     source = "inline";
@@ -36,26 +43,23 @@
     dir = "pi-hashline";
   };
   batch = {
-    stage = "testing";
+    stage = "retired";
     source = "inline";
-    dir = "pi-batch";
+    dir = "retired/pi-batch";
   };
   unified-edit = {
-    stage = "testing";
+    stage = "retired";
     source = "inline";
-    dir = "pi-unified-edit";
+    dir = "retired/pi-unified-edit";
   };
-
   ponytail = {
     stage = "active";
     source = "vendored";
   };
-
   caveman = {
     stage = "active";
     source = "vendored";
   };
-
   recap = {
     stage = "active";
     source = "vendored";

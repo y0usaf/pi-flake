@@ -185,6 +185,8 @@
           };
         };
 
+      
+
       "pi-sentinel" = let
         sentinelPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-sentinel/package.json);
       in
@@ -238,12 +240,12 @@
         };
 
       "pi-unified-edit" = let
-        unifiedEditPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-unified-edit/package.json);
+        unifiedEditPackageJson = builtins.fromJSON (builtins.readFile ./extensions/retired/pi-unified-edit/package.json);
       in
         pkgs.stdenvNoCC.mkDerivation {
           pname = "pi-unified-edit";
           version = unifiedEditPackageJson.version;
-          src = lib.cleanSource ./extensions/pi-unified-edit;
+          src = lib.cleanSource ./extensions/retired/pi-unified-edit;
           dontBuild = true;
           installPhase = ''
             runHook preInstall
@@ -262,13 +264,13 @@
 
       # pi-batch: multi-op tool calls in one turn (reduces round-trips)
       "pi-batch" = let
-        batchPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-batch/package.json);
+        batchPackageJson = builtins.fromJSON (builtins.readFile ./extensions/retired/pi-batch/package.json);
 
       in
         pkgs.stdenvNoCC.mkDerivation {
           pname = "pi-batch";
           version = batchPackageJson.version;
-          src = lib.cleanSource ./extensions/pi-batch;
+          src = lib.cleanSource ./extensions/retired/pi-batch;
           dontBuild = true;
           installPhase = ''
             runHook preInstall
@@ -405,6 +407,30 @@ function getConfigPath() {\
           meta = with lib; {
             description = recapPackageJson.description;
             homepage = "https://github.com/L2ncE/pi-recap";
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
+      # pi-bash-aliases: wraps bash grep->rg and find->fd for LLM shell calls
+      "pi-bash-aliases" = let
+        bashAliasesPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-bash-aliases/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-bash-aliases";
+          version = bashAliasesPackageJson.version;
+          src = lib.cleanSource ./extensions/pi-bash-aliases;
+          dontBuild = true;
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp package.json "$out"/
+            cp -r extensions "$out"/
+            runHook postInstall
+          '';
+          passthru.packageName = bashAliasesPackageJson.name;
+          meta = with lib; {
+            description = bashAliasesPackageJson.description;
             license = licenses.mit;
             platforms = platforms.all;
           };
@@ -686,6 +712,7 @@ function getConfigPath() {\
         ponytail = self.packages.${system}."pi-ponytail";
         caveman = self.packages.${system}."pi-caveman";
         batch = self.packages.${system}."pi-batch";
+        bash-aliases = self.packages.${system}."pi-bash-aliases";
         recap = self.packages.${system}."pi-recap";
       };
 
@@ -822,6 +849,7 @@ function getConfigPath() {\
           export PI_PACKAGE_DIR="${pi}/share/pi"
           export PI_SKIP_VERSION_CHECK=1
           export PI_TELEMETRY=0
+
 
 
 
