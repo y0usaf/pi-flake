@@ -222,7 +222,8 @@
 #          cd packages/coding-agent
           cp -R dist/. $out/share/pi/
           rm -f $out/share/pi/pi
-          install -Dm755 dist/pi $out/bin/pi
+          install -Dm755 dist/pi $out/bin/prime-agent
+          ln -s prime-agent $out/bin/pi
           wrapProgram $out/bin/pi \
             --set PI_PACKAGE_DIR $out/share/pi \
             --set PI_TELEMETRY 0 \
