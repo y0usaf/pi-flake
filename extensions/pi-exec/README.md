@@ -27,24 +27,13 @@ Frontend is delegated: exec forwards `renderCall`/`renderResult` to the
 routed built-in's own renderers (diffs, syntax highlighting), substituting the
 inner params for `context.args`.
 
-## Always async
-
-Every non-`job` exec call spawns a fire-and-forget job. The model gets a
-quick response with a job id and must collect results with route `job`:
-
-- `exec { "route": "read", "params": { ... } }` → `spawned job-1 (route=read). Collect: exec route "job", params { id:"job-1" }`
-- `exec { "route": "job", "params": { "id": "job-1" } }` → actual read result
-
-Cost: every call adds an extra collect turn. Deliberate trade-off — the model
-never blocks on slow tasks, and all results stream through the same
-collection route.
 
 ## Why
 
 - One tool the LLM sees for base ops. Simple system prompt, clearer choice.
 - Parallelism preserved: call `exec` N times in one turn, Pi runs them
   concurrently.
-- Always async means no tool call can hang the dispatcher.
+- Tool dispatch is synchronous; async lives only in pi-agent (background: true spawns).
 
 ## Known limit
 
