@@ -70,7 +70,6 @@ in {
     full = mkEnableOption "all bundled pi extensions";
 
     extensions = {
-      recurse = mkEnableOption "pi-recurse recursion primitive (the recurse tool spawns a child pi session to fulfill a task)";
     };
 
     extraExtensions = mkOption {
