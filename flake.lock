@@ -1,5 +1,21 @@
 {
   "nodes": {
+    "cavemanSrc": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1785889250,
+        "narHash": "sha256-Wi4jT+gWCYuofqde7Fh05YSp4mHDz5b3dmHdhsYH7oE=",
+        "owner": "jonjonrankin",
+        "repo": "pi-caveman",
+        "rev": "8d326c4e562eeb0cdac41700348c6183efc05189",
+        "type": "github"
+      },
+      "original": {
+        "owner": "jonjonrankin",
+        "repo": "pi-caveman",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1786247143,
@@ -30,6 +46,22 @@
         "owner": "earendil-works",
         "repo": "pi",
         "rev": "bde81c84405514c8b0f57c34405c152fb129c0ce",
+        "type": "github"
+      }
+    },
+    "ponytailSrc": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1786139041,
+        "narHash": "sha256-bGdXvzhWPwGdz3T2Yh2h6lf+3PBRFAfdBxP5pESmCHI=",
+        "owner": "DietrichGebert",
+        "repo": "ponytail",
+        "rev": "2ed6c52c9d7e5e56942508591085fd45dea277d3",
+        "type": "github"
+      },
+      "original": {
+        "owner": "DietrichGebert",
+        "repo": "ponytail",
         "type": "github"
       }
     },
@@ -68,8 +100,10 @@
     },
     "root": {
       "inputs": {
+        "cavemanSrc": "cavemanSrc",
         "nixpkgs": "nixpkgs",
         "piSrc": "piSrc",
+        "ponytailSrc": "ponytailSrc",
         "primeAgentSrc": "primeAgentSrc",
         "primeBunSrc": "primeBunSrc"
       }

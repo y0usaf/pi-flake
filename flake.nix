@@ -20,6 +20,18 @@
       url = "github:sng-asyncfunc/prime-bun";
       flake = false;
     };
+
+    # ponytail: lazy senior dev mode — cuts unnecessary code, keeps safety
+    ponytailSrc = {
+      url = "github:DietrichGebert/ponytail";
+      flake = false;
+    };
+
+    # pi-caveman: why use many token when few do trick (caveman mode)
+    cavemanSrc = {
+      url = "github:jonjonrankin/pi-caveman";
+      flake = false;
+    };
   };
 
   outputs = {
@@ -28,6 +40,8 @@
     piSrc,
     primeAgentSrc,
     primeBunSrc,
+    ponytailSrc,
+    cavemanSrc,
   }: let
     systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
     forAllSystems = nixpkgs.lib.genAttrs systems;
@@ -239,6 +253,64 @@
           };
         };
 
+      # ponytail: lazy senior dev mode (DietrichGebert/ponytail)
+      "pi-ponytail" = let
+        ponytailPackageJson = builtins.fromJSON (builtins.readFile "${ponytailSrc}/package.json");
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "ponytail";
+          version = ponytailPackageJson.version;
+          src = ponytailSrc;
+
+          dontBuild = true;
+
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp package.json LICENSE AGENTS.md "$out"/
+            cp -r pi-extension skills hooks assets "$out"/ 2>/dev/null || true
+            runHook postInstall
+          '';
+
+          passthru.packageName = ponytailPackageJson.name;
+
+          meta = with lib; {
+            description = ponytailPackageJson.description;
+            homepage = "https://github.com/DietrichGebert/ponytail";
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
+      # pi-caveman: why use many token when few do trick (jonjonrankin/pi-caveman)
+      "pi-caveman" = let
+        cavemanPackageJson = builtins.fromJSON (builtins.readFile "${cavemanSrc}/package.json");
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-caveman";
+          version = cavemanPackageJson.version;
+          src = cavemanSrc;
+
+          dontBuild = true;
+
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp package.json LICENSE README.md "$out"/
+            cp -r extensions scripts "$out"/ 2>/dev/null || true
+            runHook postInstall
+          '';
+
+          passthru.packageName = cavemanPackageJson.name;
+
+          meta = with lib; {
+            description = cavemanPackageJson.description;
+            homepage = "https://github.com/jonjonrankin/pi-caveman";
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
       # pi with default extensions pre-bundled.
       # prime-agent builds via its own bun wrapper, not Nix's buildNpmPackage.
       # This avoids issues with unresolvable lockfile packages (undici-types@7.16.0).
@@ -262,6 +334,8 @@
 
         buildPhase = ''
           export HOME="$TMPDIR"
+          npm install 2>&1 | tail -20
+          cd $NIX_BUILD_TOP/source/packages/coding-agent
           # Use workspace node_modules (npm installed locally)
           npm install 2>&1 | tail -20
           cd $NIX_BUILD_TOP/source/packages/coding-agent
@@ -489,6 +563,8 @@
         tools = self.packages.${system}."pi-tools";
         "chronobreak" = self.packages.${system}."pi-chronobreak";
         unified-edit = self.packages.${system}."pi-unified-edit";
+        ponytail = self.packages.${system}."pi-ponytail";
+        caveman = self.packages.${system}."pi-caveman";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.
