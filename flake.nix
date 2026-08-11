@@ -21,6 +21,8 @@
     forAllSystems = nixpkgs.lib.genAttrs systems;
     pkgsFor = forAllSystems (system: import nixpkgs {inherit system;});
     packageJson = builtins.fromJSON (builtins.readFile "${piSrc}/packages/coding-agent/package.json");
+    primeAgentSrc = builtins.fetchGit (builtins.getEnv "HOME" + "/dev/prime-agent");
+    primeAgentPackageJson = builtins.fromJSON (builtins.readFile "${primeAgentSrc}/packages/coding-agent/package.json");
     extensionRegistry = import ./extensions/registry.nix;
     # Kept minimal on purpose: anything achievable via env var or user config
     # must not be a patch (patches rot on every piSrc bump).
@@ -32,6 +34,9 @@
       ./patches/user-message-bar.patch
       ./patches/tui-overlay-invalidate-guard.patch
     ];
+
+    # Prime-agent has models.generated.ts committed, so model regeneration
+    # (requires network) is skipped inline in postPatch.
   in {
     packages = forAllSystems (system: let
       pkgs = pkgsFor.${system};
@@ -73,7 +78,7 @@
         nodejs = pkgs.nodejs_22;
 
         nativeBuildInputs = with pkgs; [bun pkg-config makeWrapper];
-        buildInputs = canvasNativeDeps;
+        buildInputs = canvasNativeDeps ++ (with pkgs; [zeromq]);
 
         installPhase = ''
           runHook preInstall
@@ -83,7 +88,7 @@
           cp -R packages/coding-agent/dist/. $out/share/pi/
           rm -f $out/share/pi/pi
 
-          install -Dm755 packages/coding-agent/dist/pi $out/bin/pi
+          find . -name 'pi' -exec install -Dm755 {} $out/bin/pi \;
           wrapProgram $out/bin/pi \
             --set PI_PACKAGE_DIR $out/share/pi \
             --set PI_SKIP_VERSION_CHECK 1 \
@@ -178,6 +183,61 @@
         };
 
       # pi with default extensions pre-bundled.
+      # prime-agent builds via its own bun wrapper, not Nix's buildNpmPackage.
+      # This avoids issues with unresolvable lockfile packages (undici-types@7.16.0).
+                        # prime-agent — uses pre-installed node_modules because the upstream
+      # lockfile references packages not in the npm registry (@types/node@24.12.2).
+      prime-agent = pkgs.stdenvNoCC.mkDerivation {
+        pname = "prime-agent";
+        version = primeAgentPackageJson.version;
+        src = primeAgentSrc;
+
+        nativeBuildInputs = with pkgs; [bun pkg-config makeWrapper nodejs_22 gcc gnumake python3Minimal];
+        NODE_EXTRA_CA_CERTS = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+        buildInputs = canvasNativeDeps;
+
+        patchPhase = ''
+          sed -i 's|"build": "npm run generate-models && tsgo -p tsconfig.build.json"|"build": "tsgo -p tsconfig.build.json"|' packages/ai/package.json
+        '';
+
+        buildPhase = ''
+          export HOME="$TMPDIR"
+          # Use workspace node_modules (npm installed locally)
+          npm install 2>&1 | tail -20
+          cd $NIX_BUILD_TOP/source/packages/coding-agent
+          npm run build:binary
+
+        '';
+        installPhase = ''
+          runHook preInstall
+          mkdir -p $out/share/pi $out/bin
+#          cd packages/coding-agent
+          cp -R dist/. $out/share/pi/
+          rm -f $out/share/pi/pi
+          install -Dm755 dist/pi $out/bin/pi
+          wrapProgram $out/bin/pi \
+            --set PI_PACKAGE_DIR $out/share/pi \
+            --set PI_TELEMETRY 0 \
+            --set PI_SYMBOLS ascii
+          runHook postInstall
+        '';
+
+        meta = with lib; {
+          description = primeAgentPackageJson.description;
+          homepage = "https://github.com/PrimeIntellect-ai/prime-agent";
+          license = licenses.mit;
+          mainProgram = "pi";
+        };
+      };
+
+      prime-agent-full = self.lib.piWithExtensions {
+        inherit pkgs;
+        pi = self.packages.${system}.prime-agent;
+        extensions = {
+          chronobreak = self.packages.${system}."pi-chronobreak";
+        };
+      };
+
       pi-full = self.lib.piWithExtensions {
         inherit pkgs;
         pi = self.packages.${system}.pi;
@@ -219,11 +279,13 @@
         '';
       };
 
-      # Install telemetry is disabled via env, not a patch: assert both
+      # Install telemetry is disabled via env, not a patch: assert all
       # wrappers really export it (upstream reads PI_TELEMETRY before settings).
       telemetry-disabled = pkgs.runCommand "pi-telemetry-disabled" {} ''
         grep -q 'PI_TELEMETRY' ${self.packages.${system}.pi}/bin/pi
         grep -q 'PI_TELEMETRY=0' ${self.packages.${system}.pi-full}/bin/pi
+        grep -q 'PI_TELEMETRY=0' ${self.packages.${system}."prime-agent"}/bin/pi
+        grep -q 'PI_TELEMETRY=0' ${self.packages.${system}."prime-agent-full"}/bin/pi
         touch $out
       '';
 
@@ -444,6 +506,7 @@
           export PI_PACKAGE_DIR="${pi}/share/pi"
           export PI_SKIP_VERSION_CHECK=1
           export PI_TELEMETRY=0
+
 
 
           if [ -n "''${PI_DEFAULT_PACKAGES:-}" ]; then
