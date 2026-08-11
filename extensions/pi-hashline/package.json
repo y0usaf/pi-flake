@@ -1,0 +1,23 @@
+{
+  "name": "pi-hashline",
+  "private": true,
+  "version": "0.4.0",
+  "type": "module",
+  "description": "Hashline v3 read tool + unified edit tool with LINEID anchor support, row scripts, and patch format",
+  "keywords": ["pi-package", "pi", "coding-agent", "extension", "hashline", "edit", "patch", "row-script"],
+  "scripts": {
+    "test": "bun test"
+  },
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0"
+  }
+}
