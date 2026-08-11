@@ -30,4 +30,9 @@
     source = "inline";
     dir = "pi-sentinel";
   };
+  unified-edit = {
+    stage = "testing";
+    source = "inline";
+    dir = "pi-unified-edit";
+  };
 }

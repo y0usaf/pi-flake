@@ -216,6 +216,29 @@
           };
         };
 
+      "pi-unified-edit" = let
+        unifiedEditPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-unified-edit/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-unified-edit";
+          version = unifiedEditPackageJson.version;
+          src = lib.cleanSource ./extensions/pi-unified-edit;
+          dontBuild = true;
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp package.json "$out"/
+            cp -r src "$out"/
+            runHook postInstall
+          '';
+          passthru.packageName = unifiedEditPackageJson.name;
+          meta = with lib; {
+            description = unifiedEditPackageJson.description;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
       # pi with default extensions pre-bundled.
       # prime-agent builds via its own bun wrapper, not Nix's buildNpmPackage.
       # This avoids issues with unresolvable lockfile packages (undici-types@7.16.0).
@@ -465,6 +488,7 @@
         sentinel = self.packages.${system}."pi-sentinel";
         tools = self.packages.${system}."pi-tools";
         "chronobreak" = self.packages.${system}."pi-chronobreak";
+        unified-edit = self.packages.${system}."pi-unified-edit";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.
