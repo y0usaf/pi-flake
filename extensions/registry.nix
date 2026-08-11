@@ -35,4 +35,14 @@
     source = "inline";
     dir = "pi-unified-edit";
   };
+
+  ponytail = {
+    stage = "active";
+    source = "vendored";
+  };
+
+  caveman = {
+    stage = "active";
+    source = "vendored";
+  };
 }
