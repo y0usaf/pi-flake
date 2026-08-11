@@ -30,8 +30,12 @@
   diverge.
 - "End the output" = ctx.abort(). Truncate the aborted assistant message back to
   where the loop began (keeping the coherent lead-in) and re-inject a nudge via
-  pi.sendUserMessage.
-- Truncate + re-inject run at message_end (idle), not mid-stream.
+  pi.sendUserMessage (deliverAs: followUp) at agent_end, re-running the turn.
+- No strike limit. An earlier 3-strike give-up (and a later abort-only variant
+  with no re-run at all) both left the turn dead after a chronobreak; the
+  desired behaviour is to keep restarting for as long as the loop re-forms.
+  The detector's thresholds are the only brake. (2026-08)
+- Truncate + re-inject run at message_end / agent_end (idle), not mid-stream.
 - chronobreak is a spectator: it never changes files, only aborts + replaces one
   assistant message's text. It never runs kernel code. (canon:least-code,
   least-power)
@@ -41,11 +45,11 @@
 - src/detector.ts — pure loop-detection core: text in + loop verdict (kind,
   count, sample, loop-start offset) out. No I/O, no state. Re-scans the full
   text on every call so streaming updates never double-count.
-- src/index.ts — the imperative shell: the toolCall eligibility gate, the five
+- src/index.ts — the imperative shell: the toolCall eligibility gate, the four
   event handlers (message_start reset, message_update detect+abort on the text
   stream then the thinking stream, message_end truncate-and-keep-lead-in,
-  agent_end re-inject, input strike-reset), and the per-stream extraction of
-  text and thinking blocks.
+  agent_end re-inject), and the per-stream extraction of text and thinking
+  blocks.
 
 ## Deferred
 
@@ -64,7 +68,7 @@
 
 - Phase 1 — detection + termination: abort on a tool-free, lexically-exhausted
   message, truncate back to the loop start (keeping the coherent lead-in),
-  re-inject the nudge, 3-strike give-up. Criterion: nix build .#pi-chronobreak
+  re-inject the nudge, unbounded re-runs. Criterion: nix build .#pi-chronobreak
   and nix flake check green; live loops get cut and the session keeps the
   pre-loop lead-in with a truncation marker.
 - Phase 2 — tuning: thresholds tuned from real loops observed with the js-kernel
