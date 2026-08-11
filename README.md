@@ -150,7 +150,7 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `pi-review` | `/review` and `/end-review` code review workflow |
 | `pi-vcc` | Algorithmic conversation compactor with `/pi-vcc`, `/pi-vcc-recall`, and `vcc_recall` |
 | `pi-caveman` | Terse-response mode with configurable compression levels |
-| `pi-agents` | Multi-agent orchestration: `agent`, `agent_answer`, `agent_kill`, `agent_list` over in-process children |
+| `pi-recurse` | Recursion primitive: the `recurse` tool spawns a full `pi --print` child session to fulfill a task |
 | `pi-quiet` | OMP-style prompt chrome: no header, live status-bar editor border (model/thinking/cwd/ctx/cost), face-prefixed input line |
 
 ## Extension Lifecycle
@@ -224,7 +224,7 @@ inputs.pi-flake.packages.<system>."pi-hashline"
 inputs.pi-flake.packages.<system>."pi-review"
 inputs.pi-flake.packages.<system>."pi-vcc"
 inputs.pi-flake.packages.<system>."pi-caveman"
-inputs.pi-flake.packages.<system>."pi-agents"
+inputs.pi-flake.packages.<system>."pi-recurse"
 inputs.pi-flake.packages.<system>."pi-quiet"
 ```
 
