@@ -29,6 +29,11 @@
     stage = "active";
     source = "inline";
     dir = "pi-sentinel";
+  batch = {
+    stage = "testing";
+    source = "inline";
+    dir = "pi-batch";
+  };
   };
   unified-edit = {
     stage = "active";

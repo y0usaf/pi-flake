@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { Type } from "@sinclair/typebox";
-import { readFileSync, mkdtempSync, rmSync, writeFileSync, unlinkSync, existsSync, appendFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync, writeFileSync, existsSync, appendFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir, homedir } from "node:os";
 
@@ -57,7 +57,7 @@ export default function (pi: ExtensionAPI): void {
     label: "Recurse",
     description: "Spawn a full Pi agent session. Child session is embedded into the parent session.",
     parameters: RUNE_SCHEMA,
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const piModel = params.model ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
       const cwd = params.cwd || ctx.cwd;
       const timeoutMs = params.timeout || 600000;
@@ -102,8 +102,19 @@ export default function (pi: ExtensionAPI): void {
         });
         diag(`child=${child.pid} piBin=${piBin} args=${JSON.stringify(args)}`);
 
-        child.stdout!.on("data", (c: Buffer) => { stdout += c.toString(); });
-        child.stderr!.on("data", (c: Buffer) => { stderr += c.toString(); });
+        child.stdout!.on("data", (c: Buffer) => {
+          stdout += c.toString();
+          // Stream partial output to the tool rendering so parent sees live output
+          if (onUpdate) {
+            onUpdate({ content: [{ type: "text", text: stdout.trim() }] });
+          }
+        });
+        child.stderr!.on("data", (c: Buffer) => {
+          stderr += c.toString();
+          if (onUpdate) {
+            onUpdate({ content: [{ type: "text", text: stdout + (stderr ? "\nstderr:\n" + stderr : "") }] });
+          }
+        });
 
         const timer = setTimeout(() => {
           child.kill();
@@ -115,6 +126,10 @@ export default function (pi: ExtensionAPI): void {
 
         child.on("close", () => {
           diag(`close, exitCode=${child.exitCode}`);
+          // Final update before resolve: ensure last chunk is shown
+          if (onUpdate && stdout) {
+            onUpdate({ content: [{ type: "text", text: stdout.trim() }] });
+          }
           let count = 0;
           try {
             const raw = readFileSync(sessionFile, "utf8");
@@ -153,7 +168,7 @@ export default function (pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("recurse-view", {
-    description: "Browse embedded recursions and open one in an interactive Pi session.",
+    description: "Browse embedded recursions and view one as inline recap.",
     handler: async (_args, ctx) => {
       const entries = ctx.sessionManager.getEntries();
       diag(`recurse-view entries=${entries.length}`);
@@ -178,7 +193,7 @@ export default function (pi: ExtensionAPI): void {
       }
 
       const labels = recursions.map(r => r.label);
-      const chosenLabel = await ctx.ui.select("Recursion to open:", labels);
+      const chosenLabel = await ctx.ui.select("Recursion to view:", labels);
       if (chosenLabel === undefined) return;
       const chosen = recursions.find(r => r.label === chosenLabel);
       if (!chosen || chosen.lines.length === 0) {
@@ -186,26 +201,62 @@ export default function (pi: ExtensionAPI): void {
         return;
       }
 
-      const tmpJsonl = join(tmpdir(), `pi-recurse-view-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jsonl`);
-      try {
-        writeFileSync(tmpJsonl, chosen.lines.join("\n") + "\n", "utf8");
-        const label = chosen.task.slice(0, 50);
-        ctx.ui.notify(`Opening recursion: ${label}...`, "info");
-
-        await new Promise<void>((rs, rj) => {
-          const viewer = spawn(piBin, ["--session", tmpJsonl, "--name", `Recursion: ${label}`], {
-            cwd: process.cwd(),
-            stdio: "inherit",
-            env: { ...process.env, PI_TELEMETRY: "0" },
-          });
-          viewer.on("close", () => rs());
-          viewer.on("error", e => rj(e));
-        });
-
-        ctx.ui.notify("↑ Back to parent session.", "info");
-      } finally {
-        try { unlinkSync(tmpJsonl); } catch {}
+      // Format child session events into readable recap text, then inject as
+      // a user message in the parent TUI. No 2nd pi process, no temp files,
+      // no orphan risk — the child's session becomes inline conversation.
+      const recap = formatSessionRecap(chosen);
+      if (!recap) {
+        ctx.ui.notify("Could not parse session data.", "error");
+        return;
       }
+      pi.sendUserMessage(recap);
     },
   });
+}
+
+/** Format child session JSONL events into a readable conversation recap. */
+function formatSessionRecap(chosen: RecursionSummary): string | undefined {
+  if (!chosen.lines.length) return undefined;
+
+  let output = `## 🔁 Recursion: ${chosen.task}\n\n`;
+  output += `**Model:** ${chosen.model ?? "(default)"}\n`;
+  output += `**Time:** ${chosen.timestamp}\n`;
+  output += `**Events:** ${chosen.lines.length}\n\n`;
+  output += `---\n\n`;
+
+  for (const line of chosen.lines) {
+    try {
+      const event = JSON.parse(line);
+      if (event.type === "message") {
+        const role = event.role === "user" ? "👤 You" : event.role === "assistant" ? "🤖 Pi" : event.role ?? "system";
+        const text = renderContent(event.content);
+        if (text) output += `**${role}:** ${text}\n\n`;
+      }
+    } catch {
+      // skip unparseable
+    }
+  }
+
+  return output.trim() || undefined;
+}
+
+/** Pull display text from a message content array. */
+function renderContent(content: any): string {
+  if (!Array.isArray(content)) return String(content ?? "");
+  const parts: string[] = [];
+  for (const c of content) {
+    if (c.type === "text" && c.text) parts.push(c.text);
+    if (c.type === "tool_use" && c.name) {
+      const arg = c.input?.command || c.input?.path || c.input?.pattern || c.input?.task || "";
+      parts.push(`**\`${c.name}\`**` + (arg ? ` \`${arg.slice(0, 120)}\`` : ""));
+    }
+    if (c.type === "tool_result" && Array.isArray(c.content)) {
+      const toolText = c.content.filter((x: any) => x.type === "text").map((x: any) => x.text).join(" ").slice(0, 2000);
+      if (toolText) parts.push(toolText);
+    }
+    if (c.type === "thinking" && c.thinking) {
+      parts.push(`_thinking…_`);
+    }
+  }
+  return parts.join(" ⇢ ").slice(0, 10000) || "";
 }

@@ -253,6 +253,30 @@
           };
         };
 
+      # pi-batch: multi-op tool calls in one turn (reduces round-trips)
+      "pi-batch" = let
+        batchPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-batch/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-batch";
+          version = batchPackageJson.version;
+          src = lib.cleanSource ./extensions/pi-batch;
+          dontBuild = true;
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp package.json "$out/"
+            cp -r extensions "$out/"
+            runHook postInstall
+          '';
+          passthru.packageName = batchPackageJson.name;
+          meta = with lib; {
+            description = batchPackageJson.description;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
       # ponytail: lazy senior dev mode (DietrichGebert/ponytail)
       "pi-ponytail" = let
         ponytailPackageJson = builtins.fromJSON (builtins.readFile "${ponytailSrc}/package.json");
@@ -600,6 +624,7 @@ function getConfigPath() {\
         unified-edit = self.packages.${system}."pi-unified-edit";
         ponytail = self.packages.${system}."pi-ponytail";
         caveman = self.packages.${system}."pi-caveman";
+        batch = self.packages.${system}."pi-batch";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.
