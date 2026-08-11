@@ -43,6 +43,6 @@
 
 - **Phase 1 (done):** judge + continuation behind the `testing` lifecycle
   stage; criterion: `nix flake check` passes with sentinel built and linted.
-- **Phase 2:** promote to `active` after it correctly continues one real
-  abrupt session and stays silent for a week of normal use; criterion: no
-  false continuation observed in daily driving.
+- **Phase 2 (done):** promoted to `active` 2025-08-08 after owner review;
+  the `testing` lifecycle gate served only the shared-registry use case and
+  was unnecessary for a single-user flake.

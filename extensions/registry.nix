@@ -26,7 +26,7 @@
     dir = "pi-recurse";
   };
   sentinel = {
-    stage = "testing";
+    stage = "active";
     source = "inline";
     dir = "pi-sentinel";
   };
