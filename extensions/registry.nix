@@ -22,6 +22,11 @@
     source = "inline";
     dir = "pi-chronobreak";
   };
+  exec = {
+    stage = "active";
+    source = "inline";
+    dir = "pi-exec";
+  };
   tools = {
     stage = "active";
     source = "inline";

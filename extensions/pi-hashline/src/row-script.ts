@@ -3,7 +3,7 @@
  * `{path, edits}` JSON format.
  *
  * LINEID anchors (@REPLACE 103heah) → hashline {loc:{range:{pos,end}}}
- * Non-anchored operations with content matching → rejected (use unified-edit)
+ * Non-anchored operations with content matching → rejected (use LINEID anchors)
  *
  * validateRowAnchors: reads files, validates all LINEIDs via computeLineHash,
  * returns stale anchors with retry info, or resolves them to line numbers.

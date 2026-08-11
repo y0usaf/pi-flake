@@ -1,14 +1,15 @@
 /**
- * Hashline edit tool — dual input mode.
+ * Hashline edit tool -- dual input mode.
  *
- * Mode A (anchor):  {path, edits} — hashline's native JSON format with LINEID anchors
- * Mode B (script):  {text}        — row-script format (@REPLACE 103heah, @INS.BEFORE, etc.)
+ * Mode A (anchor):  {path, edits} -- hashline's native JSON format with LINEID anchors
+ * Mode B (script):  {text}        -- row-script format (@REPLACE 103heah, @INS.BEFORE, etc.)
  *                                   or patch format (*** Begin Patch ...)
  *
  * Both modes feed into hashline's anchor validator and atomic write flow.
- * Row-scripts without LINEID anchors (content-matching-only) fall through to the
- * unified-edit extension; this tool rejects them with a clear error.
+ * Row-script formulas without LINEID anchors are rejected.
+ * Use anchors from read output.
  */
+
 
 import { constants } from "node:fs";
 import { access as fsAccess } from "node:fs/promises";
@@ -18,10 +19,12 @@ import {
   generateUnifiedPatch,
   renderDiff,
   withFileMutationQueue,
+  defineTool,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
+import { publishExecRoute } from "./exec-route";
 import { resolveMutationTargetPath, writeTextFileAtomically } from "./fs-write";
 import {
   applyEditsToRawContentPreservingLineEndings,
@@ -133,16 +136,14 @@ async function convertRowScriptToHashes(
   const parsed = rowScriptToEdits(text);
 
   if (parsed.hasUnsupported) {
-    // There were content-matching operations in the row-script that
-    // this tool cannot handle. Tell the user to use LINEID anchors
-    // or the unified-edit extension.
-    // But still process any anchor-based edits we did get.
+    // Content-matching row-script ops are not supported via anchors.
+    // Process any anchor-based edits we got.
   }
 
   if (parsed.edits.length === 0) {
     throw new Error(
       "Row script has no anchor-based operations. Use LINEID anchors " +
-      "(e.g. @REPLACE 103heah) or use the unified-edit extension for content-matching row scripts.",
+      "(e.g. @REPLACE LINEID) for anchor-based edits.",
     );
   }
 
@@ -166,7 +167,7 @@ async function convertRowScriptToHashes(
 // ---------------------------------------------------------------------------
 
 export function registerEditTool(pi: ExtensionAPI): void {
-  pi.registerTool({
+  const def = defineTool({
     name: "edit",
     label: "Edit",
     description: [
@@ -189,10 +190,9 @@ export function registerEditTool(pi: ExtensionAPI): void {
       "  @APPEND",
       "  +content",
       "",
-      "  LINEID anchors from current read output. For content-matching row",
-      "  scripts without anchors, use the unified-edit extension.",
+      "  LINEID anchors from current read output. Row scripts must use LINEID",
+      "  anchors from read output. Content-matching rows are not accepted.",
     ].join("\n"),
-    promptSnippet: "Edit files using LINEID anchors from read output.",
     promptGuidelines: [
       "Use read before edit to get current LINEID anchors (e.g. 160sray).",
       "For JSON: use {loc,content} format. For row scripts: use @REPLACE LINEID, @INS.BEFORE LINEID, etc.",
@@ -420,4 +420,6 @@ export function registerEditTool(pi: ExtensionAPI): void {
       });
     },
   });
+  pi.registerTool(def);
+  publishExecRoute(def);
 }
