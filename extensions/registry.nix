@@ -9,7 +9,6 @@
 #
 # source: "vendored" (third-party tree built inline in flake.nix), or
 #         "inline" (first-party tree in this repo, built inline by the root flake).
-
 {
   chronobreak = {
     stage = "active";
@@ -25,5 +24,10 @@
     stage = "active";
     source = "inline";
     dir = "pi-recurse";
+  };
+  sentinel = {
+    stage = "testing";
+    source = "inline";
+    dir = "pi-sentinel";
   };
 }
