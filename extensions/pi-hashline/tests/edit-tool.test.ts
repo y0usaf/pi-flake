@@ -10,6 +10,7 @@ let patchInput: { path: string; oldContent: string; newContent: string } | undef
 
 mock.module("@earendil-works/pi-coding-agent", () => ({
   DEFAULT_MAX_BYTES: 50 * 1024,
+  defineTool: (tool: unknown) => tool,
   generateDiffString(oldContent: string, newContent: string) {
     diffInput = { oldContent, newContent };
     return { diff: "-2 b\n+2 B", firstChangedLine: 2 };

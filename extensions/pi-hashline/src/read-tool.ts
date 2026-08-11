@@ -6,11 +6,12 @@ import {
   DEFAULT_MAX_LINES,
   formatSize,
   truncateHead,
+  defineTool,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { frameComponent, type FrameDeps, type OutputBlockOptions } from "../../shared/frame";
+import { publishExecRoute } from "./exec-route";
 import { resolveMutationTargetPath } from "./fs-write";
 import { formatHashlineRegion, getVisibleLines } from "./hashline";
 import { resolveToCwd } from "./path-utils";
@@ -73,13 +74,9 @@ function formatHashlineReadPreview(
   };
 }
 
-const frameDeps: FrameDeps = { visibleWidth, truncateToWidth, wrapTextWithAnsi };
-
 export function registerReadTool(pi: ExtensionAPI): void {
-  pi.registerTool({
+  const def = defineTool({
     name: "read",
-    // Flush-edged frame needs it (pi-frames DESIGN lock 2026-08-01; without it
-    // the box edges don't sit flush).
     renderShell: "self",
     label: "Read",
     description: `Read a UTF-8 text file. Every returned line is prefixed as LINEID|content (hashline v3). LINEID is line number plus a four-letter, two-bigram content hash. Copy current LINEID anchors into edit. Output is capped at ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}. Supported images are delegated to Pi's built-in read tool.`,
@@ -97,19 +94,8 @@ export function registerReadTool(pi: ExtensionAPI): void {
     renderCall(args, theme, context) {
       try {
         const path = typeof args?.path === "string" ? args.path : "...";
-        const status = context.isError ? "error" : context.isPartial || !context.executionStarted ? "pending" : "success";
         const line = `${theme.fg("toolTitle", theme.bold("read"))} ${theme.fg("accent", path)}`;
-        const build = (width: number): OutputBlockOptions => ({
-          state: status,
-          sections: [{ lines: [line] }],
-          width,
-          // A pending call shows a thin closed box; once the result frame owns
-          // the closure, drop the bottom bar so the pair doesn't double-close.
-          // Collapsed non-error read rows render nothing, so the call keeps its
-          // own bottom bar to stay a closed box.
-          bottomBar: context.state?.hasResult !== true || (!context.expanded && !context.isError),
-        });
-        return frameComponent(build, theme, frameDeps);
+        return new Text(line, 0, 0);
       } catch {
         return new Text("read", 0, 0);
       }
@@ -117,52 +103,16 @@ export function registerReadTool(pi: ExtensionAPI): void {
 
     renderResult(result, { expanded, isPartial }, theme, context) {
       try {
-        const state = context.state ?? (context.state = {});
-        if (!state.hasResult) {
-          state.hasResult = true;
-          if (!state.invalidated) {
-            state.invalidated = true;
-            // Defer past the current updateDisplay pass: a synchronous
-            // invalidate re-enters tool-execution's updateDisplay() from inside
-            // resultRenderer() before this result component is added to the row
-            // container, leaving [call2, result2, result1] — the result frame
-            // rendered twice. The microtask rebuilds the row wholesale instead
-            // (sibling pattern to the edit-tool double-render in pi issue
-            // #3830).
-            queueMicrotask(() => context.invalidate?.());
-          }
-        }
         if (isPartial) {
           return new Text(theme.fg("warning", "Reading..."), 0, 0);
         }
-        // Collapsed rows render nothing, matching Pi's built-in read tool. The
-        // hashline body is a whole file region; printing it in every collapsed
-        // row floods the transcript. Errors always render.
         if (!expanded && !context.isError) {
           return new Text("", 0, 0);
         }
-        const bodyLines = result.content
-          ?.flatMap((entry) => (entry.type === "text" ? entry.text ?? "" : "[attachment]").split("\n")) ?? [];
-        const build = (width: number): OutputBlockOptions => ({
-          state: context.isError ? "error" : "success",
-          sections: [{ label: "Output", lines: bodyLines }],
-          width,
-          // The call slot already owns the plain top bar; this slot only emits
-          // the labeled Output tee, the content rows, and the closing bottom
-          // bar for one continuous box.
-          topBar: false,
-          bottomBar: true,
-          // hashline lines are exact copy targets (LINEID|content); trimming
-          // would silently diverge the displayed line from the hashed content.
-          trimEndContent: false,
-          // nvim breakindent-style continuation: wrapped chunks keep the
-          // anchor column (dim `>` in the final hash cell, plain `|`
-          // separator) so a continuation row can't be mistaken for a new
-          // anchored line. The `[Showing lines ...]` trailer and error lines
-          // carry no `|` (indexOf -1) and keep marker-free wrapping.
-          wrapContinuation: { marker: ">", sepIndexFor: (line: string) => line.indexOf("|") },
-        });
-        return frameComponent(build, theme, frameDeps);
+        const bodyText = result.content
+          ?.flatMap((entry) => (entry.type === "text" ? entry.text ?? "" : "[attachment]").split("\n"))
+          ?.join("\n") ?? "";
+        return new Text(bodyText, 0, 0);
       } catch {
         return new Text("read", 0, 0);
       }
@@ -204,4 +154,6 @@ export function registerReadTool(pi: ExtensionAPI): void {
       };
     },
   });
+  pi.registerTool(def);
+  publishExecRoute(def);
 }

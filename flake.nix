@@ -186,6 +186,28 @@
         };
 
       
+      "pi-exec" = let
+        execPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-exec/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-exec";
+          version = execPackageJson.version;
+          src = lib.cleanSource ./extensions/pi-exec;
+          dontBuild = true;
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp package.json README.md "$out"/
+            cp -r src "$out"/
+            runHook postInstall
+          '';
+          passthru.packageName = execPackageJson.name;
+          meta = with lib; {
+            description = execPackageJson.description;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
 
       "pi-sentinel" = let
         sentinelPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-sentinel/package.json);
@@ -299,7 +321,7 @@
             mkdir -p "$out"
             cp package.json README.md "$out"/
             cp -r src "$out"/
-            cp -r shared "$out"/
+            
             runHook postInstall
           '';
           passthru.packageName = hashlinePackageJson.name;
@@ -700,13 +722,14 @@ function getConfigPath() {\
     nixosModules.default = import ./nix/modules/nixos.nix self;
 
     # Extension package set keyed by bundled extension name. Lifecycle stage
-    # comes from extensions/registry.nix; paused extensions are excluded.
+    # comes from extensions/registry.nix; paused and retired extensions are excluded.
     lib.extensionPackagesFor = system:
-      nixpkgs.lib.filterAttrs (name: _: (extensionRegistry.${name}.stage or "active") != "paused") {
+      nixpkgs.lib.filterAttrs (name: _: (extensionRegistry.${name}.stage or "active") != "paused" && (extensionRegistry.${name}.stage or "active") != "retired") {
         recurse = self.packages.${system}."pi-recurse";
         sentinel = self.packages.${system}."pi-sentinel";
         tools = self.packages.${system}."pi-tools";
         "chronobreak" = self.packages.${system}."pi-chronobreak";
+        exec = self.packages.${system}."pi-exec";
         unified-edit = self.packages.${system}."pi-unified-edit";
         hashline = self.packages.${system}."pi-hashline";
         ponytail = self.packages.${system}."pi-ponytail";
@@ -849,7 +872,6 @@ function getConfigPath() {\
           export PI_PACKAGE_DIR="${pi}/share/pi"
           export PI_SKIP_VERSION_CHECK=1
           export PI_TELEMETRY=0
-
 
 
 
