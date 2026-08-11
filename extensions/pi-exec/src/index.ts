@@ -169,6 +169,7 @@ function registerExec(pi: ExtensionAPI, enabled: Set<string>) {
 		promptSnippet:
 			`exec — call any tool by route (${routes}). ` +
 			"Multiple exec calls in one turn = parallel execution.",
+		executionMode: "parallel", // routed tools run concurrently across exec calls; the promptSnippet already promises this.
 		promptGuidelines: guidelines,
 		parameters: Type.Object(
 			{

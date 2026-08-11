@@ -259,10 +259,12 @@ export function normalizeContractQuestion(raw: unknown, index: number, usedIds: 
 	};
 }
 
+
+const CONTRACT_SHAPE = 'expected shape: [{ prompt: "question", options?: [{ label: "..." }], allowOther?: boolean }]';
 /** Normalize a raw contract or throw. Fail-loud: a contract that normalizes to nothing is a caller bug. */
 export function normalizeContract(raw: unknown, label: string): ContractQuestion[] {
 	if (!Array.isArray(raw) || raw.length === 0) {
-		throw new Error(`${label}: contract must be a non-empty array of questions`);
+		throw new Error(`${label}: contract must be a non-empty array of questions. ${CONTRACT_SHAPE}`);
 	}
 	const questions: ContractQuestion[] = [];
 	const dropped: string[] = [];
@@ -276,7 +278,7 @@ export function normalizeContract(raw: unknown, label: string): ContractQuestion
 		catch (error) { dropped.push(`${index}: ${(error as Error).message}`); }
 	}
 	if (dropped.length > 0) {
-		throw new Error(`${label}: dropped contract questions — ${dropped.join("; ")}`);
+		throw new Error(`${label}: dropped contract questions — ${dropped.join("; ")}. ${CONTRACT_SHAPE}`);
 	}
 	if (questions.length === 0) {
 		throw new Error(
