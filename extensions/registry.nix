@@ -22,15 +22,15 @@
     source = "inline";
     dir = "pi-chronobreak";
   };
-  exec = {
+  z-exec = {
     stage = "active";
     source = "inline";
     dir = "pi-exec";
   };
   tools = {
-    stage = "active";
+    stage = "retired";
     source = "inline";
-    dir = "pi-tools";
+    dir = "retired/pi-tools";
   };
   recurse = {
     stage = "active";

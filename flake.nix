@@ -233,12 +233,12 @@
         };
 
       "pi-tools" = let
-        toolsPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-tools/package.json);
+        toolsPackageJson = builtins.fromJSON (builtins.readFile ./extensions/retired/pi-tools/package.json);
       in
         pkgs.stdenvNoCC.mkDerivation {
           pname = "pi-tools";
           version = toolsPackageJson.version;
-          src = lib.cleanSource ./extensions/pi-tools;
+          src = lib.cleanSource ./extensions/retired/pi-tools;
 
           dontBuild = true;
 
@@ -729,7 +729,6 @@ function getConfigPath() {\
         sentinel = self.packages.${system}."pi-sentinel";
         tools = self.packages.${system}."pi-tools";
         "chronobreak" = self.packages.${system}."pi-chronobreak";
-        exec = self.packages.${system}."pi-exec";
         unified-edit = self.packages.${system}."pi-unified-edit";
         hashline = self.packages.${system}."pi-hashline";
         ponytail = self.packages.${system}."pi-ponytail";
@@ -737,6 +736,7 @@ function getConfigPath() {\
         batch = self.packages.${system}."pi-batch";
         bash-aliases = self.packages.${system}."pi-bash-aliases";
         recap = self.packages.${system}."pi-recap";
+        z-exec = self.packages.${system}."pi-exec";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.
