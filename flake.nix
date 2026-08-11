@@ -564,6 +564,35 @@
           };
         };
 
+      "pi-tools" = let
+        toolsPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-tools/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-tools";
+          version = toolsPackageJson.version;
+          src = lib.cleanSource ./extensions/pi-tools;
+
+          dontBuild = true;
+
+          installPhase = ''
+            runHook preInstall
+
+            mkdir -p "$out"
+            cp package.json "$out"/
+            cp -r extensions "$out"/
+
+            runHook postInstall
+          '';
+
+          passthru.packageName = toolsPackageJson.name;
+
+          meta = with lib; {
+            description = toolsPackageJson.description;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
       # pi with default extensions pre-bundled.
       pi-full = self.lib.piWithExtensions {
         inherit pkgs;
@@ -599,6 +628,7 @@
       pi-pantera-build = self.packages.${system}."pi-pantera";
       pi-chronobreak-build = self.packages.${system}."pi-chronobreak";
       pi-recurse-build = self.packages.${system}."pi-recurse";
+      pi-tools-build = self.packages.${system}."pi-tools";
       pi-chronobreak-test = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-chronobreak-test";
         version = (builtins.fromJSON (builtins.readFile ./extensions/pi-chronobreak/package.json)).version;
@@ -808,6 +838,7 @@
         continue = self.packages.${system}."pi-continue";
         workflow = self.packages.${system}."pi-workflow";
         recurse = self.packages.${system}."pi-recurse";
+        tools = self.packages.${system}."pi-tools";
         "chronobreak" = self.packages.${system}."pi-chronobreak";
       };
 
