@@ -29,11 +29,16 @@
     stage = "active";
     source = "inline";
     dir = "pi-sentinel";
+  };
+  hashline = {
+    stage = "active";
+    source = "inline";
+    dir = "pi-hashline";
+  };
   batch = {
     stage = "testing";
     source = "inline";
     dir = "pi-batch";
-  };
   };
   unified-edit = {
     stage = "active";
@@ -47,6 +52,11 @@
   };
 
   caveman = {
+    stage = "active";
+    source = "vendored";
+  };
+
+  recap = {
     stage = "active";
     source = "vendored";
   };

@@ -98,6 +98,22 @@
         "type": "github"
       }
     },
+    "recapSrc": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1786417136,
+        "narHash": "sha256-9Fcnrh+LK2AXDlKMpvtLbO6z98e9v92LoMwSVqZzzQY=",
+        "owner": "L2ncE",
+        "repo": "pi-recap",
+        "rev": "7642dfbef08fe2a96dc5dd28ba8931de9dae197c",
+        "type": "github"
+      },
+      "original": {
+        "owner": "L2ncE",
+        "repo": "pi-recap",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "cavemanSrc": "cavemanSrc",
@@ -105,7 +121,8 @@
         "piSrc": "piSrc",
         "ponytailSrc": "ponytailSrc",
         "primeAgentSrc": "primeAgentSrc",
-        "primeBunSrc": "primeBunSrc"
+        "primeBunSrc": "primeBunSrc",
+        "recapSrc": "recapSrc"
       }
     }
   },
