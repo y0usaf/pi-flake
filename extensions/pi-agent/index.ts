@@ -62,16 +62,9 @@ import {
 } from "./spawn.js";
 import { createLoop, agentLoopSchema } from "./loop.js";
 import { createOrchestrator } from "./orchestrator.js";
+import { registerAndRoute } from "./exec-route.js";
 
 
-// Exec route registry for pi-exec cross-extension dispatch.
-const execRoutes = () =>
-  ((globalThis as any)[Symbol.for("pi-exec.routes")] ??= new Map<string, any>());
-
-function registerAndRoute(pi: any, def: any): void {
-  execRoutes().set(def.name, def);
-  pi.registerTool(def);
-}
 // ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
@@ -144,9 +137,9 @@ export default function multiAgent(pi: ExtensionAPI) {
 	const resetOrchestrator = orchestratorTools?.resetOrchestrator;
 
 	if (childEnv) {
-		const subDef = buildChildModeSubmitTool(childEnv.contract); execRoutes().set(subDef.name, subDef); pi.registerTool(subDef);
-		const repDef = buildChildModeReportTool(); execRoutes().set(repDef.name, repDef); pi.registerTool(repDef);
-		const askDef = buildChildModeAskTool(childAskBudget); execRoutes().set(askDef.name, askDef); pi.registerTool(askDef);
+		const subDef = buildChildModeSubmitTool(childEnv.contract); registerAndRoute(pi, subDef);
+		const repDef = buildChildModeReportTool(); registerAndRoute(pi, repDef);
+		const askDef = buildChildModeAskTool(childAskBudget); registerAndRoute(pi, askDef);
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
