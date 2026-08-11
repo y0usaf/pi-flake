@@ -294,10 +294,10 @@
           src = lib.cleanSource ./extensions/pi-hashline;
           dontBuild = true;
           installPhase = ''
-            runHook preInstall
             mkdir -p "$out"
             cp package.json README.md "$out"/
             cp -r src "$out"/
+            cp -r shared "$out"/
             runHook postInstall
           '';
           passthru.packageName = hashlinePackageJson.name;
