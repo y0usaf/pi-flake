@@ -275,23 +275,6 @@
           };
         };
 
-      "pi-agents" = let
-        packageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-agents/package.json);
-      in
-        pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-agents";
-          version = packageJson.version;
-          src = lib.cleanSource ./extensions/pi-agents;
-          dontBuild = true;
-          installPhase = ''runHook preInstall; mkdir -p "$out"; cp package.json README.md index.ts config.ts contract.ts state.ts render.ts registry.ts spawn.ts loop.ts orchestrator.ts rpc-child.ts "$out"/; runHook postInstall '';
-          passthru.packageName = packageJson.name;
-          meta = with lib; {
-            description = packageJson.description;
-            license = licenses.mit;
-            platforms = platforms.all;
-          };
-        };
-
       "pi-pantera" = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-pantera";
         version = "0.1.0";
@@ -534,36 +517,6 @@
           };
         };
 
-      "pi-rlm" = let
-        rlmPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-rlm/package.json);
-      in
-        pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-rlm";
-          version = rlmPackageJson.version;
-          # Self-contained: the acorn parser the guest transform needs is vendored
-          # at vendor/acorn (dependency-free pure JS), and the @earendil-works/* /
-          # typebox peer imports resolve from pi's own package dir at runtime (the
-          # same packages pi-js-kernel's host bridge imported). The guest is a Bun
-          # process, so the store bun is baked in below (mirroring pi-js-kernel's
-          # node substitution).
-          src = lib.cleanSource ./extensions/pi-rlm;
-          dontBuild = true;
-          installPhase = ''
-            runHook preInstall
-            mkdir -p "$out"
-            cp -r $src/. "$out"/
-            substituteInPlace "$out/src/engine/index.ts" --replace-fail 'const BUN_BIN = "bun";' 'const BUN_BIN = "${pkgs.bun}/bin/bun";'
-            runHook postInstall
-          '';
-          passthru.packageName = rlmPackageJson.name;
-          meta = with lib; {
-            description = rlmPackageJson.description;
-            license = licenses.mit;
-            platforms = platforms.all;
-          };
-        };
-
-      # pi with default extensions pre-bundled.
       "pi-chronobreak" = let
         chronobreakPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-chronobreak/package.json);
       in
@@ -588,52 +541,30 @@
           };
         };
 
-      "pi-rust-kernel" = let
-        rustKernelPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-rust-kernel/package.json);
-        rustPlatform = pkgs.rustPlatform;
-        # The child is built with rustPlatform against the evcxr crate. To wrap
-        # it with a runtime Rust toolchain (it compiles user code on the fly),
-        # we copy it into a makeWrapper bin dir rather than buildRustPackage's
-        # install, so the wrapper can be applied to the prebuilt binary.
-        child = rustPlatform.buildRustPackage {
-          pname = "pi-rust-kernel-child";
-          version = rustKernelPackageJson.version;
-          src = lib.cleanSource ./extensions/pi-rust-kernel/child;
-          # evcxr needs RUST_SRC_PATH at build time (rust-analyzer component).
-          env.RUST_SRC_PATH = "${rustPlatform.rustLibSrc}";
-          cargoHash = "sha256-EV/reA90o09w6PJ7k55WoiV/wGvG5J10YpyzklWQMEs=";
-          doCheck = false;
-        };
+      "pi-recurse" = let
+        recursePackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-recurse/package.json);
       in
         pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-rust-kernel";
-          version = rustKernelPackageJson.version;
-          src = lib.cleanSource ./extensions/pi-rust-kernel;
-          nativeBuildInputs = [pkgs.makeWrapper];
+          pname = "pi-recurse";
+          version = recursePackageJson.version;
+          src = lib.cleanSource ./extensions/pi-recurse;
           dontBuild = true;
           installPhase = ''
             runHook preInstall
             mkdir -p "$out"
-            cp package.json README.md DESIGN.md index.ts "$out"/
-            cp -r child "$out/child" 2>/dev/null || true
-            # A wrapper that adds the runtime Rust toolchain evcxr needs.
-            mkdir -p "$out/bin"
-            cp ${child}/bin/pi-rust-kernel-child "$out/bin/.pi-rust-kernel-child-raw"
-            wrapProgram "$out/bin/.pi-rust-kernel-child-raw" \
-              --prefix PATH : ${lib.makeBinPath (with pkgs; [cargo gcc rustc mold-unwrapped])} \
-              --set-default RUST_SRC_PATH "${rustPlatform.rustLibSrc}"
-            mv "$out/bin/.pi-rust-kernel-child-raw" "$out/bin/pi-rust-kernel-child"
-            substituteInPlace "$out/index.ts" --replace-fail 'const CHILD_BIN = "child";' "const CHILD_BIN = \"$out/bin/pi-rust-kernel-child\";"
+            cp package.json README.md "$out"/
+            cp -r src "$out"/
             runHook postInstall
           '';
-          passthru.packageName = rustKernelPackageJson.name;
+          passthru.packageName = recursePackageJson.name;
           meta = with lib; {
-            description = rustKernelPackageJson.description;
+            description = recursePackageJson.description;
             license = licenses.mit;
             platforms = platforms.all;
           };
         };
 
+      # pi with default extensions pre-bundled.
       pi-full = self.lib.piWithExtensions {
         inherit pkgs;
         pi = self.packages.${system}.pi;
@@ -666,47 +597,8 @@
       pi-continue-build = self.packages.${system}."pi-continue";
       pi-workflow-build = self.packages.${system}."pi-workflow";
       pi-pantera-build = self.packages.${system}."pi-pantera";
-      pi-rlm-build = self.packages.${system}."pi-rlm";
-      pi-rust-kernel-build = self.packages.${system}."pi-rust-kernel";
-      pi-rust-kernel-test = pkgs.stdenvNoCC.mkDerivation {
-        pname = "pi-rust-kernel-test";
-        version = (builtins.fromJSON (builtins.readFile ./extensions/pi-rust-kernel/package.json)).version;
-        # Verify the PACKAGED (wrapped) child evaluates code and persists state.
-        src = self.packages.${system}."pi-rust-kernel";
-        nativeBuildInputs = [pkgs.jq];
-        dontConfigure = true;
-        dontBuild = true;
-        installPhase = ''
-          runHook preInstall
-          # Constrain evcxr to a writable tmpdir inside the sandbox.
-          export TMPDIR="$PWD"
-          printf '%s\n' \
-            '{"type":"eval","id":"1","code":"let x = 21 * 2; x"}' \
-            '{"type":"eval","id":"2","code":"x + 1"}' \
-            '{"type":"eval","id":"3","code":"panic!(\"boom\")"}' \
-            '{"type":"eval","id":"4","code":"println!(\"{}é\", \"a\".repeat(65535)); ()"}' \
-            | "$src/bin/pi-rust-kernel-child" \
-            | tee eval.out
-          r1=$(${pkgs.jq}/bin/jq -r 'select(.id=="1") | .result' eval.out)
-          r2=$(${pkgs.jq}/bin/jq -r 'select(.id=="2") | .result' eval.out)
-          r3ok=$(${pkgs.jq}/bin/jq -r 'select(.id=="3") | .ok' eval.out)
-          r3err=$(${pkgs.jq}/bin/jq -r 'select(.id=="3") | .stderr | contains("boom")' eval.out)
-          r4ok=$(${pkgs.jq}/bin/jq -r 'select(.id=="4") | .ok' eval.out)
-          r4trunc=$(${pkgs.jq}/bin/jq -r 'select(.id=="4") | .stdout | contains("output truncated")' eval.out)
-          test "$r1" = "42" || { echo "FAIL: eval 1 expected 42 got $r1"; exit 1; }
-          test "$r2" = "43" || { echo "FAIL: eval 2 expected 43 (state lost?) got $r2"; exit 1; }
-          # evcxr catches user panics (AssertUnwindSafe) and reports them in stderr.
-          test "$r3ok" = "true" || { echo "FAIL: eval 3 expected ok=true got $r3ok"; exit 1; }
-          test "$r3err" = "true" || { echo "FAIL: eval 3 expected panic message in stderr"; exit 1; }
-          # Multi-byte output crossing the 64KB limit must truncate at a char boundary,
-          # not panic the child (regression test for the truncate bug).
-          test "$r4ok" = "true" || { echo "FAIL: eval 4 expected ok=true (child must survive truncation) got $r4ok"; exit 1; }
-          test "$r4trunc" = "true" || { echo "FAIL: eval 4 expected truncation notice in stdout"; exit 1; }
-          touch "$out"
-          runHook postInstall
-        '';
-      };
       pi-chronobreak-build = self.packages.${system}."pi-chronobreak";
+      pi-recurse-build = self.packages.${system}."pi-recurse";
       pi-chronobreak-test = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-chronobreak-test";
         version = (builtins.fromJSON (builtins.readFile ./extensions/pi-chronobreak/package.json)).version;
@@ -717,11 +609,6 @@
         installPhase = ''runHook preInstall; export HOME="$TMPDIR/home"; mkdir -p "$HOME"; bun test; touch "$out"; runHook postInstall '';
       };
       pi-dark-terminal-build = self.packages.${system}."pi-dark-terminal";
-      pi-full-dark-terminal-theme = pkgs.runCommand "pi-full-dark-terminal-theme" {} ''
-        test -f ${self.packages.${system}.pi-full}/share/pi/themes/dark-terminal.json
-        ! test -f ${self.packages.${system}.pi-full}/share/pi/themes/pantera.json
-        touch $out
-      '';
 
       pi-aphrodite-test = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-aphrodite-test";
@@ -920,8 +807,7 @@
         quiet = self.packages.${system}."pi-quiet";
         continue = self.packages.${system}."pi-continue";
         workflow = self.packages.${system}."pi-workflow";
-        "js-kernel" = self.packages.${system}."pi-rlm";
-        "rust-kernel" = self.packages.${system}."pi-rust-kernel";
+        recurse = self.packages.${system}."pi-recurse";
         "chronobreak" = self.packages.${system}."pi-chronobreak";
       };
 

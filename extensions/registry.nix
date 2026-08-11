@@ -9,124 +9,107 @@
 #
 # source: "vendored" (third-party tree built inline in flake.nix), or
 #         "inline" (first-party tree in this repo, built inline by the root flake).
+#
+# After merging pi-flake into prime-agent, only chronobreak is kept as an
+# inline extension. All other inline extensions are retired (moved to
+# upstream or replaced by prime-agent/oh-my-pi equivalents).
+
 {
-  gecko-websearch = {
-    stage = "active";
-    source = "inline";
-    dir = "pi-gecko-websearch";
-  };
-  rtk = {
-    stage = "active";
-    source = "inline";
-    dir = "pi-rtk";
-  };
-  aphrodite = {
-    stage = "active";
-    source = "inline";
-    dir = "pi-aphrodite";
-  };
-
-  interview = {
-    stage = "active";
-    source = "inline";
-    dir = "pi-interview";
-  };
-  management = {
-    stage = "active";
-    source = "inline";
-    dir = "pi-management";
-  };
-  webfetch = {
-    stage = "active";
-    source = "inline";
-    dir = "pi-webfetch";
-  };
-  hashline = {
-    # Paused: source kept in tree for pi-js-kernel to vendor; no longer built,
-    # bundled, or checked. Superseded by js-kernel.
-    stage = "paused";
-    source = "inline";
-    dir = "pi-hashline";
-  };
-  prime-tools = {
-    stage = "active";
-    source = "inline";
-    dir = "pi-prime-tools";
-  };
-  review = {
-    stage = "active";
-    source = "vendored";
-    dir = "earendil_pi-review";
-  };
-  vcc = {
-    stage = "active";
-    source = "vendored";
-    dir = "sting8k_pi-vcc";
-  };
-  caveman = {
-    stage = "active";
-    source = "vendored";
-    dir = "jonjonrankin_pi-caveman";
-  };
-  # engram is vendored from the engramSrc flake input (github:nagisanzenin/engram),
-  # built inline in flake.nix; there is no extensions/engram dir.
-  engram = {
-    stage = "active";
-    source = "vendored";
-  };
-  pantera = {
-    stage = "testing";
-    source = "inline";
-    dir = "pi-pantera";
-  };
-  dark-terminal = {
-    stage = "active";
-    source = "inline";
-    dir = "pi-dark-terminal";
-  };
-
-  quiet = {
-    stage = "active";
-    source = "inline";
-    dir = "pi-quiet";
-  };
-  workflow = {
-    stage = "active";
-    source = "inline";
-    dir = "pi-workflow";
-  };
-  continue = {
-    stage = "active";
-    source = "inline";
-    dir = "pi-continue";
-  };
-
-  js-kernel = {
-    # Active: default evaluation kernel shipped in pi-full. pi-rlm replaces the
-    # retired pi-js-kernel: a persistent Bun TypeScript evaluator (single execute
-    # tool) with native subagent panel/loop/peek/kill orchestration.
-    stage = "active";
-    source = "inline";
-    dir = "pi-rlm";
-  };
-  rust-kernel = {
-    # Testing: optional persistent Rust evaluation kernel (evcxr). Built and
-    # checked but excluded from pi-full; opt-in via programs.pi.extensions.
-    stage = "testing";
-    source = "inline";
-    dir = "pi-rust-kernel";
-  };
+  # --- RETAINED ---
   chronobreak = {
     stage = "active";
     source = "inline";
     dir = "pi-chronobreak";
   };
-
-  agents = {
-    # Paused: source kept in tree for pi-js-kernel to vendor; no longer built,
-    # bundled, or checked. Superseded by js-kernel.
-    stage = "paused";
+  recurse = {
+    stage = "active";
     source = "inline";
-    dir = "pi-agents";
+    dir = "pi-recurse";
+  };
+
+  # --- RETIRED (replaced by prime-agent / oh-my-pi builtins) ---
+  gecko-websearch = {
+    stage = "retired";
+    source = "inline";
+    dir = "pi-gecko-websearch";
+  };
+  rtk = {
+    stage = "retired";
+    source = "inline";
+    dir = "pi-rtk";
+  };
+  aphrodite = {
+    stage = "retired";
+    source = "inline";
+    dir = "pi-aphrodite";
+  };
+  interview = {
+    stage = "retired";
+    source = "inline";
+    dir = "pi-interview";
+  };
+  management = {
+    stage = "retired";
+    source = "inline";
+    dir = "pi-management";
+  };
+  webfetch = {
+    stage = "retired";
+    source = "inline";
+    dir = "pi-webfetch";
+  };
+  hashline = {
+    stage = "retired";
+    source = "inline";
+    dir = "pi-hashline";
+  };
+  prime-tools = {
+    stage = "retired";
+    source = "inline";
+    dir = "pi-prime-tools";
+  };
+  review = {
+    stage = "retired";
+    source = "vendored";
+    dir = "earendil_pi-review";
+  };
+  vcc = {
+    stage = "retired";
+    source = "vendored";
+    dir = "sting8k_pi-vcc";
+  };
+  caveman = {
+    stage = "retired";
+    source = "vendored";
+    dir = "jonjonrankin_pi-caveman";
+  };
+  engram = {
+    stage = "retired";
+    source = "vendored";
+  };
+  pantera = {
+    stage = "retired";
+    source = "inline";
+    dir = "pi-pantera";
+  };
+  dark-terminal = {
+    stage = "retired";
+    source = "inline";
+    dir = "pi-dark-terminal";
+  };
+  quiet = {
+    stage = "retired";
+    source = "inline";
+    dir = "pi-quiet";
+  };
+  workflow = {
+    stage = "retired";
+    source = "inline";
+    dir = "pi-workflow";
+  };
+  continue = {
+    stage = "retired";
+    source = "inline";
+    dir = "pi-continue";
   };
 }

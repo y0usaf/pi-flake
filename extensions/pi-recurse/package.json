@@ -1,0 +1,25 @@
+{
+  "name": "pi-recurse",
+  "version": "0.1.0",
+  "description": "Pi extension: recurse spawns a full Pi child session as a sub-process — the recursion primitive",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "recurse",
+    "subagent"
+  ],
+  "license": "MIT",
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@sinclair/typebox": "*"
+  }
+}
