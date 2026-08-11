@@ -6,23 +6,27 @@
 
     piSrc = {
       url = "github:earendil-works/pi/bde81c84405514c8b0f57c34405c152fb129c0ce";
+      flake = false;
+    };
 
+    # prime-agent upstream fork with lockfile fixes for Nix build
+    primeAgentSrc = {
+      url = "github:y0usaf/prime-agent?ref=pa-prime-nix";
       flake = false;
     };
 
   };
-
+  
   outputs = {
     self,
     nixpkgs,
     piSrc,
-    ...
+    primeAgentSrc,
   }: let
     systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
     forAllSystems = nixpkgs.lib.genAttrs systems;
     pkgsFor = forAllSystems (system: import nixpkgs {inherit system;});
     packageJson = builtins.fromJSON (builtins.readFile "${piSrc}/packages/coding-agent/package.json");
-    primeAgentSrc = builtins.fetchGit (builtins.getEnv "HOME" + "/dev/prime-agent");
     primeAgentPackageJson = builtins.fromJSON (builtins.readFile "${primeAgentSrc}/packages/coding-agent/package.json");
     extensionRegistry = import ./extensions/registry.nix;
     # Kept minimal on purpose: anything achievable via env var or user config
