@@ -14,9 +14,8 @@
       url = "github:y0usaf/prime-agent?ref=pa-prime-nix";
       flake = false;
     };
-
   };
-  
+
   outputs = {
     self,
     nixpkgs,
@@ -39,7 +38,6 @@
       ./patches/user-message-bar.patch
       ./patches/tui-overlay-invalidate-guard.patch
     ];
-
     # Prime-agent has models.generated.ts committed, so model regeneration
     # (requires network) is skipped inline in postPatch.
   in {
@@ -158,6 +156,29 @@
           };
         };
 
+      "pi-sentinel" = let
+        sentinelPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-sentinel/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-sentinel";
+          version = sentinelPackageJson.version;
+          src = lib.cleanSource ./extensions/pi-sentinel;
+          dontBuild = true;
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp package.json README.md "$out"/
+            cp -r src "$out"/
+            runHook postInstall
+          '';
+          passthru.packageName = sentinelPackageJson.name;
+          meta = with lib; {
+            description = sentinelPackageJson.description;
+            license = licenses.mit;
+            platforms = platforms.all;
+          };
+        };
+
       "pi-tools" = let
         toolsPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-tools/package.json);
       in
@@ -190,7 +211,7 @@
       # pi with default extensions pre-bundled.
       # prime-agent builds via its own bun wrapper, not Nix's buildNpmPackage.
       # This avoids issues with unresolvable lockfile packages (undici-types@7.16.0).
-                        # prime-agent — uses pre-installed node_modules because the upstream
+      # prime-agent — uses pre-installed node_modules because the upstream
       # lockfile references packages not in the npm registry (@types/node@24.12.2).
       prime-agent = pkgs.stdenvNoCC.mkDerivation {
         pname = "prime-agent";
@@ -378,6 +399,7 @@
     lib.extensionPackagesFor = system:
       nixpkgs.lib.filterAttrs (name: _: (extensionRegistry.${name}.stage or "active") != "paused") {
         recurse = self.packages.${system}."pi-recurse";
+        sentinel = self.packages.${system}."pi-sentinel";
         tools = self.packages.${system}."pi-tools";
         "chronobreak" = self.packages.${system}."pi-chronobreak";
       };

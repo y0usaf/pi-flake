@@ -1,0 +1,20 @@
+{
+  "name": "pi-sentinel",
+  "version": "0.1.0",
+  "description": "Detects abrupt run endings via a sparse context-free judge on the session model, and continues the run when the stop was a cutoff",
+  "homepage": "https://github.com/y0usaf/pi-flake",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/y0usaf/pi-flake.git",
+    "directory": "extensions/pi-sentinel"
+  },
+  "keywords": ["pi-package", "pi-extension", "continuation", "abrupt-stop"],
+  "license": "MIT",
+  "files": ["src", "README.md"],
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
