@@ -14,7 +14,7 @@ import { Type } from "@sinclair/typebox";
 
 let td: any;
 async function getTurndown() {
-	return td ??= new (await import("turndown")).default();
+	return td ??= new (await import("./vendor/turndown.js")).default();
 }
 
 // ---------------------------------------------------------------------------

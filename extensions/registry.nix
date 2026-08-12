@@ -22,6 +22,16 @@
     source = "inline";
     dir = "pi-chronobreak";
   };
+  webfetch = {
+    stage = "active";
+    source = "inline";
+    dir = "pi-webfetch";
+  };
+  gecko-websearch = {
+    stage = "active";
+    source = "inline";
+    dir = "pi-gecko-websearch";
+  };
   z-exec = {
     stage = "retired";
     source = "inline";
