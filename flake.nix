@@ -56,10 +56,10 @@
     #   install telemetry  -> PI_TELEMETRY=0 in the wrappers
     #   tree filter cycle  -> "app.tree.filter.cycleBackward": [] in keybindings.json
     piPatches = [
-      ./patches/avoid-network-model-regeneration.patch
-      ./patches/default-package-sources-env.patch
-      ./patches/user-message-bar.patch
-      ./patches/tui-overlay-invalidate-guard.patch
+      ./patches/pi/avoid-network-model-regeneration.patch
+      ./patches/pi/default-package-sources-env.patch
+      ./patches/pi/user-message-bar.patch
+      ./patches/pi/tui-overlay-invalidate-guard.patch
     ];
     # Prime-agent has models.generated.ts committed, so model regeneration
     # (requires network) is skipped inline in postPatch.
