@@ -1,0 +1,32 @@
+--- a/packages/ai/src/providers/simple-options.ts	2026-08-11 22:23:16.539388972 -0400
++++ b/packages/ai/src/providers/simple-options.ts	2026-08-11 22:23:16.539370518 -0400
+@@ -1,5 +1,20 @@
+ import type { Api, Model, SimpleStreamOptions, StreamOptions, ThinkingBudgets, ThinkingLevel } from "../types.js";
+ 
++
++/**
++ * Read PI_RETRY_MAX env var, default 0 = essentially infinite retries.
++ * Returns 100_000 as "infinite" since SDK maxRetries must be finite.
++ */
++function resolveMaxRetries(optionsVal: number | undefined): number | undefined {
++	const envRaw = typeof process !== "undefined" ? process.env.PI_RETRY_MAX : undefined;
++	if (envRaw === undefined || envRaw === "" || envRaw === "0") {
++		return optionsVal ?? 100_000;
++	}
++	const n = parseInt(envRaw, 10);
++	const envVal = Number.isFinite(n) && n > 0 ? n : 100_000;
++	return optionsVal ?? envVal;
++}
++
+ export function buildBaseOptions(model: Model<Api>, options?: SimpleStreamOptions, apiKey?: string): StreamOptions {
+ 	return {
+ 		temperature: options?.temperature,
+@@ -14,7 +29,7 @@
+ 		onPayload: options?.onPayload,
+ 		onResponse: options?.onResponse,
+ 		timeoutMs: options?.timeoutMs,
+-		maxRetries: options?.maxRetries,
++		maxRetries: resolveMaxRetries(options?.maxRetries),
+ 		maxRetryDelayMs: options?.maxRetryDelayMs,
+ 		metadata: options?.metadata,
+ 	};
