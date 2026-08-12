@@ -42,7 +42,8 @@ export default function (pi: ExtensionAPI): void {
   let intent = "";
   let continuations = 0;
   let providerErrorStatus: number | undefined; // HTTP status from after_provider_response
-  let retriedFromContinue = false; // true after sentinel sends "continue" for a provider error; prevents re-sending on the same cycle
+  let lastProviderRetry = 0;
+  let providerRetries = 0;
   let lastAssistant: {
     role: string;
     stopReason?: string;
@@ -55,7 +56,8 @@ export default function (pi: ExtensionAPI): void {
     intent = event.text;
     continuations = 0;
     providerErrorStatus = undefined;
-    retriedFromContinue = false;
+    lastProviderRetry = 0;
+    providerRetries = 0;
   });
 
   pi.on("agent_end", (event) => {
@@ -80,18 +82,16 @@ export default function (pi: ExtensionAPI): void {
 
     // Provider returned transient HTTP error — retry immediately, no judge.
     if (providerErrorStatus) {
-      if (retriedFromContinue) return;
-      retriedFromContinue = true;
-      const status = providerErrorStatus;
       providerErrorStatus = undefined;
       if (!ctx.isIdle() || ctx.hasPendingMessages()) return;
-      continuations++;
-      ctx.ui.notify(
-        `sentinel: provider returned ${status}, ${continuationLabel(continuations, MAX_CONTINUATIONS)}`,
-        "warning",
-      );
+      // Backoff: exponential up to 5s
+      const now = Date.now();
+      const backoffMs = Math.min(5000, 1000 * Math.pow(1.5, providerRetries));
+      if (now - lastProviderRetry < backoffMs) return;
+      lastProviderRetry = now;
+      providerRetries++;
+      // Silent retry — no notification, no continuation increment
       pi.sendUserMessage(CONTINUE_NUDGE, { deliverAs: "followUp" });
-      return;
     }
 
     let verdict: "COMPLETE" | "ABRUPT";
