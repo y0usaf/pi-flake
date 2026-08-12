@@ -60,7 +60,6 @@
       ./patches/default-package-sources-env.patch
       ./patches/user-message-bar.patch
       ./patches/tui-overlay-invalidate-guard.patch
-      ./patches/pi-retry-max-env.patch
     ];
     # Prime-agent has models.generated.ts committed, so model regeneration
     # (requires network) is skipped inline in postPatch.
