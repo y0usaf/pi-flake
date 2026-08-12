@@ -11,7 +11,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { publishExecRoute } from "./exec-route";
 import { resolveMutationTargetPath } from "./fs-write";
 import { formatHashlineRegion, getVisibleLines } from "./hashline";
 import { resolveToCwd } from "./path-utils";
@@ -155,5 +154,4 @@ export function registerReadTool(pi: ExtensionAPI): void {
     },
   });
   pi.registerTool(def);
-  publishExecRoute(def);
 }

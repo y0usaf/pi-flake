@@ -179,12 +179,6 @@
         copy = ["README.md" "src"];
       };
 
-      "pi-exec" = mkPiExtension {
-        pname = "pi-exec";
-        dir = ./extensions/retired/pi-exec;
-        copy = ["README.md" "src"];
-      };
-
 
       "pi-tools" = mkPiExtension {
         pname = "pi-tools";
