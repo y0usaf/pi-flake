@@ -24,7 +24,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { publishExecRoute } from "./exec-route";
 import { resolveMutationTargetPath, writeTextFileAtomically } from "./fs-write";
 import {
   applyEditsToRawContentPreservingLineEndings,
@@ -441,5 +440,4 @@ export function registerEditTool(pi: ExtensionAPI): void {
     },
   });
   pi.registerTool(def);
-  publishExecRoute(def);
 }
