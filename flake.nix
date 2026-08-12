@@ -308,10 +308,11 @@ function getConfigPath() {\
       };
 
       # pi with default extensions pre-bundled.
-      # prime-agent builds via its own bun wrapper, not Nix's buildNpmPackage.
-      # This avoids issues with unresolvable lockfile packages (undici-types@7.16.0).
-      # prime-agent — uses pre-installed node_modules because the upstream
-      # lockfile references packages not in the npm registry (@types/node@24.12.2).
+      # prime-agent runs the node bundle with a vendored runtime node_modules.
+      # zeromq's NAPI addon needs real node (Bun lacks uv_async_init), so the
+      # upstream bun-compiled binary crashes at startup.
+      # Uses pre-installed node_modules because the upstream lockfile references
+      # packages not in the npm registry (@types/node@24.12.2).
       prime-agent = pkgs.stdenvNoCC.mkDerivation {
         pname = "prime-agent";
         version = primeAgentPackageJson.version;
@@ -319,8 +320,6 @@ function getConfigPath() {\
 
         # Needs network for npm install (lockfile has unreachable packages).
         __noChroot = true;
-        # strip changes .bun section alignment (16384->4096), breaks bun's compiled-binary detection.
-        dontStrip = true;
 
         nativeBuildInputs = with pkgs; [bun pkg-config makeWrapper nodejs_22 gcc gnumake python3Minimal];
         NODE_EXTRA_CA_CERTS = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
@@ -334,49 +333,41 @@ function getConfigPath() {\
           export HOME="$TMPDIR"
           npm install 2>&1 | tail -20
 
-          # Patch zeromq load-addon.js to use ZEROMQ_NODE_ADDON_DIR env var
-          # Bun-compiled binary has __dirname baked to build path.
-          # Env var lets runtime point to the Nix store copy.
-          sed -i 's@path_1\.default\.resolve(__dirname, "\.\.", "build"@process.env.ZEROMQ_NODE_ADDON_DIR || path_1.default.resolve(__dirname, "..", "build"@' \
-            "$NIX_BUILD_TOP/source/node_modules/zeromq/lib/load-addon.js"
-
           cd "$NIX_BUILD_TOP/source/packages/coding-agent"
           npm --prefix ../tui run build
           npm --prefix ../ai run build
           npm --prefix ../agent run build
           npm run build
-          bun build --compile ./dist/bun/cli.js --outfile dist/pi
           npm run copy-binary-assets
         '';
         installPhase = ''
           runHook preInstall
-          mkdir -p $out/share/pi $out/bin
-          
-          cp -R dist/. $out/share/pi/
-          rm -f $out/share/pi/pi
-          install -Dm755 dist/pi $out/bin/prime-agent
-          ln -s prime-agent $out/bin/pi
+          mkdir -p $out/share/pi $out/bin $out/share/node_modules
 
-# Copy full zeromq package so require("zeromq") resolves via NODE_PATH
-# __dirname in store copy is permanent (not stale build path)
-          zmq_pkg="$NIX_BUILD_TOP/source/node_modules/zeromq"
-          if [ -d "$zmq_pkg" ]; then
-            mkdir -p $out/share/node_modules
-            cp -rL "$zmq_pkg" "$out/share/node_modules/zeromq"
+          cp -R dist/. $out/share/pi/
+
+          # Runtime node_modules: the bundle externalizes zeromq, undici,
+          # photon-node and clipboard; zeromq needs cmake-ts at runtime.
+          nm="$NIX_BUILD_TOP/source/node_modules"
+          for p in zeromq cmake-ts undici; do
+            [ -d "$nm/$p" ] && cp -rL "$nm/$p" $out/share/node_modules/
+          done
+          mkdir -p $out/share/node_modules/@silvia-odwyer
+          cp -rL "$nm/@silvia-odwyer/photon-node" $out/share/node_modules/@silvia-odwyer/
+          if [ -d "$nm/@mariozechner/clipboard" ]; then
+            mkdir -p $out/share/node_modules/@mariozechner
+            cp -rL "$nm/@mariozechner/clipboard" $out/share/node_modules/@mariozechner/
           fi
 
-          wrapProgram $out/bin/prime-agent \
-            --set PI_PACKAGE_DIR $out/share/pi \
-            --set PI_TELEMETRY 0 \
-            --set PI_SYMBOLS ascii \
-            --set ZEROMQ_NODE_ADDON_DIR $out/share/node_modules/zeromq/build --set NODE_PATH $out/share/node_modules \
-            --prefix LD_LIBRARY_PATH : ${pkgs.stdenv.cc.cc.lib}/lib
-          wrapProgram $out/bin/pi \
-            --set PI_PACKAGE_DIR $out/share/pi \
-            --set PI_TELEMETRY 0 \
-            --set PI_SYMBOLS ascii \
-            --set ZEROMQ_NODE_ADDON_DIR $out/share/node_modules/zeromq/build --set NODE_PATH $out/share/node_modules \
-            --prefix LD_LIBRARY_PATH : ${pkgs.stdenv.cc.cc.lib}/lib
+          cat > $out/bin/prime-agent <<EOF
+#!/bin/sh
+export PI_PACKAGE_DIR='$out/share/pi'
+export PI_TELEMETRY=0
+export PI_SYMBOLS=ascii
+exec ${pkgs.nodejs_22}/bin/node $out/share/pi/bundle/cli.js "\$@"
+EOF
+          chmod +x $out/bin/prime-agent
+          ln -s prime-agent $out/bin/pi
           runHook postInstall
         '';
 
