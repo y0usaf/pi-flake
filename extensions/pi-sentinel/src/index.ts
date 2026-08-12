@@ -33,6 +33,10 @@ const JUDGE_MAX_TOKENS = 256;
 
 const CONTINUE_NUDGE = "continue";
 
+function continuationLabel(n: number, max: number): string {
+  return max === Infinity ? `continuing (${n})` : `continuing (${n}/${max})`;
+}
+
 export default function (pi: ExtensionAPI): void {
   let intent = "";
   let continuations = 0;
@@ -78,7 +82,7 @@ export default function (pi: ExtensionAPI): void {
       if (!ctx.isIdle() || ctx.hasPendingMessages()) return;
       continuations++;
       ctx.ui.notify(
-        `sentinel: provider returned ${status}, continuing (${continuations}/${MAX_CONTINUATIONS})`,
+        `sentinel: provider returned ${status}, ${continuationLabel(continuations, MAX_CONTINUATIONS)}`,
         "warning",
       );
       pi.sendUserMessage(CONTINUE_NUDGE, { deliverAs: "followUp" });
@@ -133,7 +137,7 @@ export default function (pi: ExtensionAPI): void {
 
     continuations++;
     ctx.ui.notify(
-      `sentinel: run ended abruptly, continuing (${continuations}/${MAX_CONTINUATIONS})`,
+      `sentinel: run ended abruptly, ${continuationLabel(continuations, MAX_CONTINUATIONS)}`,
       "warning",
     );
     pi.sendUserMessage(CONTINUE_NUDGE, { deliverAs: "followUp" });
