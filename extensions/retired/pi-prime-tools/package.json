@@ -1,0 +1,14 @@
+{
+  "name": "pi-prime-tools",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Minimalist left-rail frames for Pi's builtin tool rows — bash, write, grep, find, ls, plus the js kernel tool; ascii symbol preset",
+  "scripts": { "test": "bun test" },
+  "pi": { "extensions": ["./src/index.ts"] },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  }
+}

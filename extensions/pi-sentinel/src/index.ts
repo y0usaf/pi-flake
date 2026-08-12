@@ -20,10 +20,11 @@ import type { ExtensionAPI, AfterProviderResponseEvent } from "@earendil-works/p
  * pressed Esc) is always respected.
  */
 
-// PI_RETRY_MAX env var: default 0 = no cap (infinite). Set to a number to cap continuations.
+// PI_RETRY_MAX env var: default 3 (0 = no cap = infinite).
 const MAX_CONTINUATIONS = (() => {
   const v = process.env.PI_RETRY_MAX;
-  if (v === undefined || v === "" || v === "0") return Infinity;
+  if (v === undefined || v === "") return 3;
+  if (v === "0") return Infinity;
   const n = parseInt(v, 10);
   return Number.isFinite(n) && n > 0 ? n : Infinity;
 })();
@@ -41,6 +42,7 @@ export default function (pi: ExtensionAPI): void {
   let intent = "";
   let continuations = 0;
   let providerErrorStatus: number | undefined; // HTTP status from after_provider_response
+  let retriedFromContinue = false; // true after sentinel sends "continue" for a provider error; prevents re-sending on the same cycle
   let lastAssistant: {
     role: string;
     stopReason?: string;
@@ -53,6 +55,7 @@ export default function (pi: ExtensionAPI): void {
     intent = event.text;
     continuations = 0;
     providerErrorStatus = undefined;
+    retriedFromContinue = false;
   });
 
   pi.on("agent_end", (event) => {
@@ -77,6 +80,8 @@ export default function (pi: ExtensionAPI): void {
 
     // Provider returned transient HTTP error — retry immediately, no judge.
     if (providerErrorStatus) {
+      if (retriedFromContinue) return;
+      retriedFromContinue = true;
       const status = providerErrorStatus;
       providerErrorStatus = undefined;
       if (!ctx.isIdle() || ctx.hasPendingMessages()) return;

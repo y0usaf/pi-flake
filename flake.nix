@@ -484,7 +484,7 @@ function getConfigPath() {\
           # Patch zeromq load-addon.js to use ZEROMQ_NODE_ADDON_DIR env var
           # Bun-compiled binary has __dirname baked to build path.
           # Env var lets runtime point to the Nix store copy.
-          sed -i 's@path_1\.default\.join(__dirname, "\.\.", "build"@process.env.ZEROMQ_NODE_ADDON_DIR || path_1.default.join(__dirname, "..", "build"@' \
+          sed -i 's@path_1\.default\.resolve(__dirname, "\.\.", "build"@process.env.ZEROMQ_NODE_ADDON_DIR || path_1.default.resolve(__dirname, "..", "build"@' \
             "$NIX_BUILD_TOP/source/node_modules/zeromq/lib/load-addon.js"
 
           cd "$NIX_BUILD_TOP/source/packages/coding-agent"
@@ -504,40 +504,25 @@ function getConfigPath() {\
           install -Dm755 dist/pi $out/bin/prime-agent
           ln -s prime-agent $out/bin/pi
 
-          # Copy zeromq native addon for the current platform tree.
-          # zeromq's load-addon.js expects: <dir>/<abi>/addon.node (platform/node/
-          # subtree). We copy the platform-specific node/ contents to
-          # $out/share/prime-agent-node and set ZEROMQ_NODE_ADDON_DIR so the
-          # native addon is found at runtime regardless of build-time __dirname.
-          zmq_root="$NIX_BUILD_TOP/source/node_modules/zeromq/build"
-          case $(uname -s) in
-            Linux)  zmq_os=linux ;;
-            Darwin) zmq_os=darwin ;;
-            *)      zmq_os=linux ;;
-          esac
-          case $(uname -m) in
-            x86_64|amd64)  zmq_arch=x64 ;;
-            aarch64|arm64) zmq_arch=arm64 ;;
-            i?86)          zmq_arch=ia32 ;;
-            *)             zmq_arch=x64 ;;
-          esac
-          zmq_node="$zmq_root/$zmq_os/$zmq_arch/node"
-          if [ -d "$zmq_node" ]; then
-            mkdir -p $out/share/prime-agent-node
-            cp -rL "$zmq_node/." $out/share/prime-agent-node/
+# Copy full zeromq package so require("zeromq") resolves via NODE_PATH
+# __dirname in store copy is permanent (not stale build path)
+          zmq_pkg="$NIX_BUILD_TOP/source/node_modules/zeromq"
+          if [ -d "$zmq_pkg" ]; then
+            mkdir -p $out/share/node_modules
+            cp -rL "$zmq_pkg" "$out/share/node_modules/zeromq"
           fi
 
           wrapProgram $out/bin/prime-agent \
             --set PI_PACKAGE_DIR $out/share/pi \
             --set PI_TELEMETRY 0 \
             --set PI_SYMBOLS ascii \
-            --set ZEROMQ_NODE_ADDON_DIR $out/share/prime-agent-node \
+            --set ZEROMQ_NODE_ADDON_DIR $out/share/node_modules/zeromq/build --set NODE_PATH $out/share/node_modules \
             --prefix LD_LIBRARY_PATH : ${pkgs.stdenv.cc.cc.lib}/lib
           wrapProgram $out/bin/pi \
             --set PI_PACKAGE_DIR $out/share/pi \
             --set PI_TELEMETRY 0 \
             --set PI_SYMBOLS ascii \
-            --set ZEROMQ_NODE_ADDON_DIR $out/share/prime-agent-node \
+            --set ZEROMQ_NODE_ADDON_DIR $out/share/node_modules/zeromq/build --set NODE_PATH $out/share/node_modules \
             --prefix LD_LIBRARY_PATH : ${pkgs.stdenv.cc.cc.lib}/lib
           runHook postInstall
         '';
