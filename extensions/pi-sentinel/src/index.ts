@@ -16,7 +16,13 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
  * pressed Esc) is always respected.
  */
 
-const MAX_CONTINUATIONS = 3;
+// PI_RETRY_MAX env var: default 0 = no cap (infinite). Set to a number to cap continuations.
+const MAX_CONTINUATIONS = (() => {
+  const v = process.env.PI_RETRY_MAX;
+  if (v === undefined || v === "" || v === "0") return Infinity;
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) && n > 0 ? n : Infinity;
+})();
 const INTENT_CHARS = 1200;
 const TAIL_CHARS = 1600;
 const JUDGE_MAX_TOKENS = 256;
