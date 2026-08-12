@@ -60,6 +60,7 @@
       ./patches/default-package-sources-env.patch
       ./patches/user-message-bar.patch
       ./patches/tui-overlay-invalidate-guard.patch
+      ./patches/pi-retry-max-env.patch
     ];
     # Prime-agent has models.generated.ts committed, so model regeneration
     # (requires network) is skipped inline in postPatch.
@@ -430,14 +431,14 @@ function getConfigPath() {\
           };
         };
 
-      # pi-bash-aliases: wraps bash grep->rg and find->fd for LLM shell calls
-      "pi-bash-aliases" = let
-        bashAliasesPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-bash-aliases/package.json);
+      # pi-aliases: wraps bash grep->rg and find->fd for LLM shell calls
+      "pi-aliases" = let
+        bashAliasesPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-aliases/package.json);
       in
         pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-bash-aliases";
+          pname = "pi-aliases";
           version = bashAliasesPackageJson.version;
-          src = lib.cleanSource ./extensions/pi-bash-aliases;
+          src = lib.cleanSource ./extensions/pi-aliases;
           dontBuild = true;
           installPhase = ''
             runHook preInstall
@@ -729,7 +730,7 @@ function getConfigPath() {\
         ponytail = self.packages.${system}."pi-ponytail";
         caveman = self.packages.${system}."pi-caveman";
         batch = self.packages.${system}."pi-batch";
-        bash-aliases = self.packages.${system}."pi-bash-aliases";
+        aliases = self.packages.${system}."pi-aliases";
         recap = self.packages.${system}."pi-recap";
       };
 

@@ -12,10 +12,10 @@
 # source: "vendored" (third-party tree built inline in flake.nix), or
 #         "inline" (first-party tree in this repo, built inline by the root flake).
 {
-  bash-aliases = {
+  aliases = {
     stage = "active";
     source = "inline";
-    dir = "pi-bash-aliases";
+    dir = "pi-aliases";
   };
   chronobreak = {
     stage = "active";
