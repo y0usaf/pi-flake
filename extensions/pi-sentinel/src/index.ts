@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, AfterProviderResponseEvent } from "@earendil-works/pi-coding-agent";
 
 /**
  * sentinel - detects abrupt run endings and continues them.
@@ -9,6 +9,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
  * inspects a sparse excerpt: the user's request plus the tail of the final
  * assistant message. Verdict ABRUPT queues a follow-up user message that
  * resumes the run. COMPLETE does nothing.
+ *
+ * Also detects transient provider errors (5xx, 429) at HTTP level via
+ * after_provider_response, before the stream is consumed. Any such error
+ * on the last turn forces a retry without running the judge.
  *
  * Fail-safe direction: any ambiguity (no model, judge error, empty reply)
  * counts as COMPLETE. The extension can under-fire but never loop; a
@@ -32,6 +36,7 @@ const CONTINUE_NUDGE = "continue";
 export default function (pi: ExtensionAPI): void {
   let intent = "";
   let continuations = 0;
+  let providerErrorStatus: number | undefined; // HTTP status from after_provider_response
   let lastAssistant: {
     role: string;
     stopReason?: string;
@@ -40,15 +45,21 @@ export default function (pi: ExtensionAPI): void {
   let judging = false;
 
   pi.on("input", (event) => {
-    // Extension-sourced messages include our own nudges; must not reset cap
     if (event.source === "extension") return;
     intent = event.text;
     continuations = 0;
+    providerErrorStatus = undefined;
   });
 
   pi.on("agent_end", (event) => {
     const assistants = event.messages.filter((m) => m.role === "assistant");
     lastAssistant = assistants[assistants.length - 1] as typeof lastAssistant;
+  });
+
+  pi.on("after_provider_response", (event: AfterProviderResponseEvent) => {
+    if (event.status >= 500 || event.status === 429) {
+      providerErrorStatus = event.status;
+    }
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
@@ -58,10 +69,24 @@ export default function (pi: ExtensionAPI): void {
     if (!message || !intent) return;
     if (continuations >= MAX_CONTINUATIONS) return;
 
-    // User pressed Esc: intentional stop, never continue.
     if (message.stopReason === "aborted") return;
 
+    // Provider returned transient HTTP error — retry immediately, no judge.
+    if (providerErrorStatus) {
+      const status = providerErrorStatus;
+      providerErrorStatus = undefined;
+      if (!ctx.isIdle() || ctx.hasPendingMessages()) return;
+      continuations++;
+      ctx.ui.notify(
+        `sentinel: provider returned ${status}, continuing (${continuations}/${MAX_CONTINUATIONS})`,
+        "warning",
+      );
+      pi.sendUserMessage(CONTINUE_NUDGE, { deliverAs: "followUp" });
+      return;
+    }
+
     let verdict: "COMPLETE" | "ABRUPT";
+
     if (message.stopReason === "length" || message.stopReason === "error") {
       // Provider truncation or error is abrupt by definition; skip judge.
       verdict = "ABRUPT";
@@ -104,7 +129,6 @@ export default function (pi: ExtensionAPI): void {
     }
 
     if (verdict === "COMPLETE") return;
-    // Judge is async; if user started typing, their turn wins.
     if (!ctx.isIdle() || ctx.hasPendingMessages()) return;
 
     continuations++;
