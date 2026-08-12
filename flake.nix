@@ -165,6 +165,20 @@
         homepage = "https://github.com/y0usaf/pi-flake";
       };
 
+      "pi-webfetch" = mkPiExtension {
+        pname = "pi-webfetch";
+        dir = ./extensions/pi-webfetch;
+        copy = ["README.md" "src" "vendor"];
+        homepage = "https://github.com/y0usaf/pi-flake";
+      };
+
+      "pi-gecko-websearch" = mkPiExtension {
+        pname = "pi-gecko-websearch";
+        dir = ./extensions/pi-gecko-websearch;
+        copy = ["README.md" "src"];
+        homepage = "https://github.com/y0usaf/pi-flake";
+      };
+
 
       "pi-agent" = mkPiExtension {
         pname = "pi-agent";
@@ -577,6 +591,8 @@ function getConfigPath() {\
         batch = self.packages.${system}."pi-batch";
         aliases = self.packages.${system}."pi-aliases";
         recap = self.packages.${system}."pi-recap";
+        webfetch = self.packages.${system}."pi-webfetch";
+        gecko-websearch = self.packages.${system}."pi-gecko-websearch";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.

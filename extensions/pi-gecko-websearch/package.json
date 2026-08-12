@@ -2,6 +2,7 @@
   "name": "pi-gecko-websearch",
   "private": true,
   "version": "1.0.0",
+  "description": "Web search and browsing via headless Gecko browser (Marionette)",
   "type": "module",
   "pi": {
     "extensions": ["./src/index.ts"]
