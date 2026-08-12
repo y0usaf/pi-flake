@@ -68,18 +68,18 @@
     "primeAgentSrc": {
       "flake": false,
       "locked": {
-        "lastModified": 1786446668,
-        "narHash": "sha256-cAqUMfsQr1KU8jAoXeO0hyLMHH9he25v9U2PBVkfTaU=",
-        "owner": "y0usaf",
-        "repo": "prime-agent",
-        "rev": "ae9678029b37cc7a9d7ac9a6d32d05b61a567ac3",
-        "type": "github"
+        "lastModified": 1786564684,
+        "narHash": "sha256-uO3X2BuP5RuAzjNfzJKssIleDoe9zgHVZCvVfbVU0GU=",
+        "ref": "main",
+        "rev": "0987c1ba7637cbcb99afe9efe1180b838a0aa958",
+        "revCount": 4497,
+        "type": "git",
+        "url": "https://github.com/PrimeIntellect-ai/prime-agent"
       },
       "original": {
-        "owner": "y0usaf",
-        "ref": "pa-prime-nix",
-        "repo": "prime-agent",
-        "type": "github"
+        "ref": "main",
+        "type": "git",
+        "url": "https://github.com/PrimeIntellect-ai/prime-agent"
       }
     },
     "primeBunSrc": {

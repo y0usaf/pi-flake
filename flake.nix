@@ -9,9 +9,11 @@
       flake = false;
     };
 
-    # prime-agent upstream fork with lockfile fixes for Nix build
+    # stock prime-agent upstream; lockfile issues fixed upstream (v0.7.2)
     primeAgentSrc = {
-      url = "github:y0usaf/prime-agent?ref=pa-prime-nix";
+      type = "git";
+      url = "https://github.com/PrimeIntellect-ai/prime-agent";
+      ref = "main";
       flake = false;
     };
 
@@ -311,14 +313,14 @@ function getConfigPath() {\
       # prime-agent runs the node bundle with a vendored runtime node_modules.
       # zeromq's NAPI addon needs real node (Bun lacks uv_async_init), so the
       # upstream bun-compiled binary crashes at startup.
-      # Uses pre-installed node_modules because the upstream lockfile references
-      # packages not in the npm registry (@types/node@24.12.2).
+      # Manual npm install + __noChroot because this build does a live
+      # npm install (network); upstream lockfile is now clean (v0.7.2).
       prime-agent = pkgs.stdenvNoCC.mkDerivation {
         pname = "prime-agent";
         version = primeAgentPackageJson.version;
         src = primeAgentSrc;
 
-        # Needs network for npm install (lockfile has unreachable packages).
+        # Needs network for npm install (live install, not pre-fetched).
         __noChroot = true;
 
         nativeBuildInputs = with pkgs; [bun pkg-config makeWrapper nodejs_22 gcc gnumake python3Minimal];
