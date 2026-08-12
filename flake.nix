@@ -313,40 +313,40 @@ function getConfigPath() {\
       # prime-agent runs the node bundle with a vendored runtime node_modules.
       # zeromq's NAPI addon needs real node (Bun lacks uv_async_init), so the
       # upstream bun-compiled binary crashes at startup.
-      # Manual npm install + __noChroot because this build does a live
-      # npm install (network); upstream lockfile is now clean (v0.7.2).
-      prime-agent = pkgs.stdenvNoCC.mkDerivation {
+      prime-agent = pkgs.buildNpmPackage {
         pname = "prime-agent";
         version = primeAgentPackageJson.version;
         src = primeAgentSrc;
 
-        # Needs network for npm install (live install, not pre-fetched).
-        __noChroot = true;
+        # Skip model regeneration: models.generated.ts is committed upstream.
+        # Also vendor a lockfile with resolved+integrity URLs: upstream commits
+        # one that omits them for 243 registry deps, which fetchNpmDeps needs.
+        # Regenerate after primeAgentSrc bumps (see nix/prime-agent-lockfile.sh).
+        postPatch = ''
+          sed -i 's|"build": "npm run generate-models && tsgo -p tsconfig.build.json"|"build": "tsgo -p tsconfig.build.json"|' packages/ai/package.json
+          cp ${./nix/prime-agent-package-lock.json} package-lock.json
+        '';
 
-        nativeBuildInputs = with pkgs; [bun pkg-config makeWrapper nodejs_22 gcc gnumake python3Minimal];
-        NODE_EXTRA_CA_CERTS = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+        # Root "build" script chains tui -> ai -> agent -> coding-agent (node bundle).
+        npmBuildScript = "build";
+        npmDepsFetcherVersion = 2;
+        npmDepsHash = "sha256-1sLVGKQmMfOW2hUNlxf2d2fjdd5EcqFZdhc0y6Wk0X8=";
+
+        nodejs = pkgs.nodejs_22;
+        nativeBuildInputs = with pkgs; [bun pkg-config makeWrapper gcc gnumake python3Minimal];
         buildInputs = canvasNativeDeps;
 
-        patchPhase = ''
-          sed -i 's|"build": "npm run generate-models && tsgo -p tsconfig.build.json"|"build": "tsgo -p tsconfig.build.json"|' packages/ai/package.json
+        # Root "build" runs the tsgo+bundle chain but not copy-binary-assets;
+        # that step stages package.json/theme/assets/docs into dist/.
+        postBuild = ''
+          ( cd packages/coding-agent && npm run copy-binary-assets )
         '';
 
-        buildPhase = ''
-          export HOME="$TMPDIR"
-          npm install 2>&1 | tail -20
-
-          cd "$NIX_BUILD_TOP/source/packages/coding-agent"
-          npm --prefix ../tui run build
-          npm --prefix ../ai run build
-          npm --prefix ../agent run build
-          npm run build
-          npm run copy-binary-assets
-        '';
         installPhase = ''
           runHook preInstall
           mkdir -p $out/share/pi $out/bin $out/share/node_modules
 
-          cp -R dist/. $out/share/pi/
+          cp -R packages/coding-agent/dist/. $out/share/pi/
 
           # Node bundle resolves built-ins under packageDir/dist/ (see config.ts
           # getThemesDir/getExportTemplateDir); our flattened install lacks dist/.
@@ -357,7 +357,7 @@ function getConfigPath() {\
 
           # Runtime node_modules: the bundle externalizes zeromq, undici,
           # photon-node and clipboard; zeromq needs cmake-ts at runtime.
-          nm="$NIX_BUILD_TOP/source/node_modules"
+          nm="$PWD/node_modules"
           for p in zeromq cmake-ts undici; do
             [ -d "$nm/$p" ] && cp -rL "$nm/$p" $out/share/node_modules/
           done
