@@ -1,0 +1,8 @@
+--- load-addon.js	original
++++ load-addon.js	fixed
+@@ -1,4 +1,4 @@
+ const loader_1 = require("cmake-ts/build/loader");
+ const path_1 = require("path");
+-const addon = (0, loader_1.loadAddon)(path_1.default.resolve(__dirname, "..", "build"));
++const addon = (0, loader_1.loadAddon)(process.env.ZEROMQ_NODE_ADDON_DIR || path_1.default.resolve(__dirname, "..", "build"));
+ exports.default = addon;

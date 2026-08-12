@@ -1,0 +1,30 @@
+{
+  "name": "pi-quiet",
+  "version": "0.2.1",
+  "description": "OMP-style prompt bar chrome for pi: status-bar editor border (no header) + face input line",
+  "homepage": "https://github.com/y0usaf/pi-flake",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/y0usaf/pi-flake.git",
+    "directory": "extensions/pi-quiet"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "minimal",
+    "chrome"
+  ],
+  "license": "MIT",
+  "files": [
+    "extensions",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/quiet.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
