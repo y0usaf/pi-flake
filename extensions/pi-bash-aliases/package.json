@@ -1,1 +1,0 @@
-{"name":"pi-bash-aliases","version":"0.1.0","description":"Wraps bash grep→rg and find→fd so LLM shell calls use the fast tools","keywords":["pi-package","pi-extension"],"license":"MIT","files":["extensions"],"pi":{"extensions":["./extensions/bash-aliases.ts"]},"peerDependencies":{"@earendil-works/pi-coding-agent":"*"}}
