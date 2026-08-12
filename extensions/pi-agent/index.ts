@@ -35,7 +35,7 @@
  */
 
 import { type AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { ExtensionAPI, ModelRegistry, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import {
 	formatAgentAnswerLines,
@@ -62,7 +62,6 @@ import {
 } from "./spawn.js";
 import { createLoop, agentLoopSchema } from "./loop.js";
 import { createOrchestrator } from "./orchestrator.js";
-import { registerAndRoute } from "./exec-route.js";
 
 
 // ---------------------------------------------------------------------------
@@ -137,9 +136,9 @@ export default function multiAgent(pi: ExtensionAPI) {
 	const resetOrchestrator = orchestratorTools?.resetOrchestrator;
 
 	if (childEnv) {
-		const subDef = buildChildModeSubmitTool(childEnv.contract); registerAndRoute(pi, subDef);
-		const repDef = buildChildModeReportTool(); registerAndRoute(pi, repDef);
-		const askDef = buildChildModeAskTool(childAskBudget); registerAndRoute(pi, askDef);
+		const subDef = buildChildModeSubmitTool(childEnv.contract); pi.registerTool(subDef);
+		const repDef = buildChildModeReportTool(); pi.registerTool(repDef);
+		const askDef = buildChildModeAskTool(childAskBudget); pi.registerTool(askDef);
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -177,7 +176,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 	function registerRootTools(): void {
 	// ── agent ───────────────────────────────────────────────────────────
 
-	registerAndRoute(pi, {
+	pi.registerTool({
 		name: "agent",
 		label: "Agent",
 		description:
@@ -227,7 +226,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 	// ── agent_answer ────────────────────────────────────────────────────
 
-	registerAndRoute(pi, {
+	pi.registerTool({
 		name: "agent_answer",
 		label: "Answer Agent",
 		description: "Answer a suspended child agent's questions. Validates answers against the questions it asked, resumes it, and blocks until its contract is fulfilled or it asks again.",
@@ -241,7 +240,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 	// ── agent_kill ──────────────────────────────────────────────────────
 
-	registerAndRoute(pi, {
+	pi.registerTool({
 		name: "agent_kill",
 		label: "Kill Agent",
 		description:
@@ -262,7 +261,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 	// ── agent_list ──────────────────────────────────────────────────────
 
-	registerAndRoute(pi, {
+	pi.registerTool({
 		name: "agent_list",
 		label: "List Agents",
 		description: "List all currently active child agent IDs and their status. Includes depth and parent metadata; background children are marked \"(background)\" with their session file.",
@@ -281,7 +280,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 	// ── agent_output ───────────────────────────────────────────────────
 
-	registerAndRoute(pi, {
+	pi.registerTool({
 		name: "agent_output",
 		label: "Agent Output",
 		description:
@@ -303,7 +302,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 	// ── agent_loop ─────────────────────────────────────────────────────
 
-	registerAndRoute(pi, {
+	pi.registerTool({
 		name: "agent_loop",
 		label: "Agent Loop",
 		description:
