@@ -76,6 +76,32 @@
         pango
         pixman
       ];
+
+      # Collapse the near-identical stdenvNoCC extension packages. Each just
+      # copies its package.json plus a few files/dirs into $out and stamps the
+      # standard passthru.packageName + meta. Vendored extensions with postPatch
+      # or tolerant copies (ponytail, caveman) stay explicit below.
+      mkPiExtension = {pname, dir, copy, homepage ? null}: let
+        src = lib.cleanSource dir;
+        pkgJson = builtins.fromJSON (builtins.readFile "${dir}/package.json");
+      in pkgs.stdenvNoCC.mkDerivation {
+        inherit pname src;
+        version = pkgJson.version;
+        dontBuild = true;
+        installPhase =
+          "runHook preInstall\n"
+          + "mkdir -p \"$out\"\n"
+          + "cp package.json \"$out\"/\n"
+          + lib.concatMapStringsSep "\n" (c: "cp -r ${c} \"$out\"/") copy
+          + "\nrunHook postInstall\n";
+        passthru.packageName = pkgJson.name;
+        meta = with lib; {
+          description = pkgJson.description;
+          homepage = homepage or null;
+          license = licenses.mit;
+          platforms = platforms.all;
+        };
+      };
     in {
       pi = pkgs.buildNpmPackage {
         pname = "pi";
@@ -132,201 +158,58 @@
         };
       };
 
-      "pi-chronobreak" = let
-        chronobreakPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-chronobreak/package.json);
-      in
-        pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-chronobreak";
-          version = chronobreakPackageJson.version;
-          src = lib.cleanSource ./extensions/pi-chronobreak;
-          dontBuild = true;
-          installPhase = ''
-            runHook preInstall
-            mkdir -p "$out"
-            cp package.json README.md "$out"/
-            cp -r src "$out"/
-            runHook postInstall
-          '';
-          passthru.packageName = chronobreakPackageJson.name;
-          meta = with lib; {
-            description = chronobreakPackageJson.description;
-            homepage = chronobreakPackageJson.homepage;
-            license = licenses.mit;
-            platforms = platforms.all;
-          };
-        };
+      "pi-chronobreak" = mkPiExtension {
+        pname = "pi-chronobreak";
+        dir = ./extensions/pi-chronobreak;
+        copy = ["README.md" "src"];
+        homepage = "https://github.com/y0usaf/pi-flake";
+      };
 
 
-      "pi-agent" = let
-        agentPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-agent/package.json);
-      in
-        pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-agent";
-          version = agentPackageJson.version;
-          src = lib.cleanSource ./extensions/pi-agent;
-          dontBuild = true;
-          installPhase = ''
-            runHook preInstall
-            mkdir -p "$out"
-            cp package.json README.md "$out"/
-            cp *.ts "$out"/
-            runHook postInstall
-          '';
-          passthru.packageName = agentPackageJson.name;
-          meta = with lib; {
-            description = agentPackageJson.description;
-            license = licenses.mit;
-            platforms = platforms.all;
-          };
-        };
+      "pi-agent" = mkPiExtension {
+        pname = "pi-agent";
+        dir = ./extensions/pi-agent;
+        copy = ["README.md" "*.ts"];
+      };
 
 
-      "pi-sentinel" = let
-        sentinelPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-sentinel/package.json);
-      in
-        pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-sentinel";
-          version = sentinelPackageJson.version;
-          src = lib.cleanSource ./extensions/pi-sentinel;
-          dontBuild = true;
-          installPhase = ''
-            runHook preInstall
-            mkdir -p "$out"
-            cp package.json README.md "$out"/
-            cp -r src "$out"/
-            runHook postInstall
-          '';
-          passthru.packageName = sentinelPackageJson.name;
-          meta = with lib; {
-            description = sentinelPackageJson.description;
-            license = licenses.mit;
-            platforms = platforms.all;
-          };
-        };
+      "pi-sentinel" = mkPiExtension {
+        pname = "pi-sentinel";
+        dir = ./extensions/pi-sentinel;
+        copy = ["README.md" "src"];
+      };
 
-      "pi-exec" = let
-        execPackageJson = builtins.fromJSON (builtins.readFile ./extensions/retired/pi-exec/package.json);
-      in
-        pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-exec";
-          version = execPackageJson.version;
-          src = lib.cleanSource ./extensions/retired/pi-exec;
-          dontBuild = true;
-          installPhase = ''
-            runHook preInstall
-            mkdir -p "$out"
-            cp package.json README.md "$out"/
-            cp -r src "$out"/
-            runHook postInstall
-          '';
-          passthru.packageName = execPackageJson.name;
-          meta = with lib; {
-            description = execPackageJson.description;
-            license = licenses.mit;
-            platforms = platforms.all;
-          };
-        };
+      "pi-exec" = mkPiExtension {
+        pname = "pi-exec";
+        dir = ./extensions/retired/pi-exec;
+        copy = ["README.md" "src"];
+      };
 
 
-      "pi-tools" = let
-        toolsPackageJson = builtins.fromJSON (builtins.readFile ./extensions/retired/pi-tools/package.json);
-      in
-        pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-tools";
-          version = toolsPackageJson.version;
-          src = lib.cleanSource ./extensions/retired/pi-tools;
+      "pi-tools" = mkPiExtension {
+        pname = "pi-tools";
+        dir = ./extensions/retired/pi-tools;
+        copy = ["extensions"];
+      };
 
-          dontBuild = true;
-
-          installPhase = ''
-            runHook preInstall
-
-            mkdir -p "$out"
-            cp package.json "$out"/
-            cp -r extensions "$out"/
-
-            runHook postInstall
-          '';
-
-          passthru.packageName = toolsPackageJson.name;
-
-          meta = with lib; {
-            description = toolsPackageJson.description;
-            license = licenses.mit;
-            platforms = platforms.all;
-          };
-        };
-
-      "pi-unified-edit" = let
-        unifiedEditPackageJson = builtins.fromJSON (builtins.readFile ./extensions/retired/pi-unified-edit/package.json);
-      in
-        pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-unified-edit";
-          version = unifiedEditPackageJson.version;
-          src = lib.cleanSource ./extensions/retired/pi-unified-edit;
-          dontBuild = true;
-          installPhase = ''
-            runHook preInstall
-            mkdir -p "$out"
-            cp package.json "$out"/
-            cp -r src "$out"/
-            runHook postInstall
-          '';
-          passthru.packageName = unifiedEditPackageJson.name;
-          meta = with lib; {
-            description = unifiedEditPackageJson.description;
-            license = licenses.mit;
-            platforms = platforms.all;
-          };
-        };
+      "pi-unified-edit" = mkPiExtension {
+        pname = "pi-unified-edit";
+        dir = ./extensions/retired/pi-unified-edit;
+        copy = ["src"];
+      };
 
       # pi-batch: multi-op tool calls in one turn (reduces round-trips)
-      "pi-batch" = let
-        batchPackageJson = builtins.fromJSON (builtins.readFile ./extensions/retired/pi-batch/package.json);
+      "pi-batch" = mkPiExtension {
+        pname = "pi-batch";
+        dir = ./extensions/retired/pi-batch;
+        copy = ["extensions"];
+      };
 
-      in
-        pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-batch";
-          version = batchPackageJson.version;
-          src = lib.cleanSource ./extensions/retired/pi-batch;
-          dontBuild = true;
-          installPhase = ''
-            runHook preInstall
-            mkdir -p "$out"
-            cp package.json "$out/"
-            cp -r extensions "$out/"
-            runHook postInstall
-          '';
-          passthru.packageName = batchPackageJson.name;
-          meta = with lib; {
-            description = batchPackageJson.description;
-            license = licenses.mit;
-            platforms = platforms.all;
-          };
-        };
-
-      "pi-hashline" = let
-        hashlinePackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-hashline/package.json);
-      in
-        pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-hashline";
-          version = hashlinePackageJson.version;
-          src = lib.cleanSource ./extensions/pi-hashline;
-          dontBuild = true;
-          installPhase = ''
-            mkdir -p "$out"
-            cp package.json README.md "$out"/
-            cp -r src "$out"/
-            
-            runHook postInstall
-          '';
-          passthru.packageName = hashlinePackageJson.name;
-          meta = with lib; {
-            description = hashlinePackageJson.description;
-            license = licenses.mit;
-            platforms = platforms.all;
-          };
-        };
+      "pi-hashline" = mkPiExtension {
+        pname = "pi-hashline";
+        dir = ./extensions/pi-hashline;
+        copy = ["README.md" "src"];
+      };
 
       # ponytail: lazy senior dev mode (DietrichGebert/ponytail)
       "pi-ponytail" = let
@@ -402,57 +285,19 @@ function getConfigPath() {\
         };
 
       # pi-recap: Claude Code-style session recap above the status bar (L2ncE/pi-recap)
-      "pi-recap" = let
-        recapPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-recap/package.json);
-      in
-        pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-recap";
-          version = recapPackageJson.version;
-          src = lib.cleanSource ./extensions/pi-recap;
-
-          dontBuild = true;
-
-          installPhase = ''
-            runHook preInstall
-            mkdir -p "$out"
-            cp package.json LICENSE README.md "$out"/
-            cp -r extensions "$out"/
-            runHook postInstall
-          '';
-
-          passthru.packageName = recapPackageJson.name;
-
-          meta = with lib; {
-            description = recapPackageJson.description;
-            homepage = "https://github.com/L2ncE/pi-recap";
-            license = licenses.mit;
-            platforms = platforms.all;
-          };
-        };
+      "pi-recap" = mkPiExtension {
+        pname = "pi-recap";
+        dir = ./extensions/pi-recap;
+        copy = ["LICENSE" "README.md" "extensions"];
+        homepage = "https://github.com/L2ncE/pi-recap";
+      };
 
       # pi-aliases: wraps bash grep->rg and find->fd for LLM shell calls
-      "pi-aliases" = let
-        bashAliasesPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-aliases/package.json);
-      in
-        pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-aliases";
-          version = bashAliasesPackageJson.version;
-          src = lib.cleanSource ./extensions/pi-aliases;
-          dontBuild = true;
-          installPhase = ''
-            runHook preInstall
-            mkdir -p "$out"
-            cp package.json "$out"/
-            cp -r extensions "$out"/
-            runHook postInstall
-          '';
-          passthru.packageName = bashAliasesPackageJson.name;
-          meta = with lib; {
-            description = bashAliasesPackageJson.description;
-            license = licenses.mit;
-            platforms = platforms.all;
-          };
-        };
+      "pi-aliases" = mkPiExtension {
+        pname = "pi-aliases";
+        dir = ./extensions/pi-aliases;
+        copy = ["extensions"];
+      };
 
       # pi with default extensions pre-bundled.
       # prime-agent builds via its own bun wrapper, not Nix's buildNpmPackage.
