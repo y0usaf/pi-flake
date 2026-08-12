@@ -158,12 +158,12 @@
 
 
       "pi-agent" = let
-        agentPackageJson = builtins.fromJSON (builtins.readFile ./extensions/retired/pi-agent/package.json);
+        agentPackageJson = builtins.fromJSON (builtins.readFile ./extensions/pi-agent/package.json);
       in
         pkgs.stdenvNoCC.mkDerivation {
           pname = "pi-agent";
           version = agentPackageJson.version;
-          src = lib.cleanSource ./extensions/retired/pi-agent;
+          src = lib.cleanSource ./extensions/pi-agent;
           dontBuild = true;
           installPhase = ''
             runHook preInstall

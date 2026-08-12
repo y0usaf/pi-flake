@@ -33,9 +33,9 @@
     dir = "retired/pi-tools";
   };
   agent = {
-    stage = "retired";
+    stage = "active";
     source = "inline";
-    dir = "retired/pi-agent";
+    dir = "pi-agent";
   };
   sentinel = {
     stage = "active";
