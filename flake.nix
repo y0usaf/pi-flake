@@ -346,6 +346,13 @@ function getConfigPath() {\
 
           cp -R dist/. $out/share/pi/
 
+          # Node bundle resolves built-ins under packageDir/dist/ (see config.ts
+          # getThemesDir/getExportTemplateDir); our flattened install lacks dist/.
+          mkdir -p $out/share/pi/dist
+          ln -s ../modes $out/share/pi/dist/modes
+          ln -s ../core $out/share/pi/dist/core
+          ln -s ../skills $out/share/pi/dist/skills
+
           # Runtime node_modules: the bundle externalizes zeromq, undici,
           # photon-node and clipboard; zeromq needs cmake-ts at runtime.
           nm="$NIX_BUILD_TOP/source/node_modules"
