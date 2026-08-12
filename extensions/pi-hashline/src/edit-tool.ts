@@ -83,6 +83,12 @@ const toolParamsSchema = Type.Union([scriptSchema, anchorEditSchema]);
 // prepareArguments
 // ---------------------------------------------------------------------------
 
+/**
+ * Classify raw args into an internal shape tagged with a kind switch. Used by
+ * renderCall/renderResult/execute, which re-derive the mode from whatever the
+ * host passes in (raw or prepared). Not suitable for `prepareArguments` — see
+ * prepareSchemaValidArgs.
+ */
 function prepareEditParams(args: unknown): { kind: "anchor" | "script"; path?: string; edits?: RawEdit[]; text?: string } {
   if (!isRecord(args)) return { kind: "script", text: "" };
 
@@ -114,6 +120,20 @@ function prepareEditParams(args: unknown): { kind: "anchor" | "script"; path?: s
 
   // Last resort: empty anchor
   return { kind: "anchor", path: "...", edits: [] };
+}
+
+/**
+ * Schema-valid `prepareArguments`: strips the internal `kind` tag so the
+ * returned object matches the tool schema (which forbids additional top-level
+ * properties). Pi validates the result of prepareArguments against the schema
+ * before dispatching to execute, so leaking `kind` here made edits fail.
+ */
+function prepareSchemaValidArgs(args: unknown): unknown {
+  const prepared = prepareEditParams(args);
+  if (prepared.kind === "script") {
+    return { text: prepared.text ?? "" };
+  }
+  return { path: prepared.path ?? "...", edits: prepared.edits ?? [] };
 }
 
 // ---------------------------------------------------------------------------
@@ -199,7 +219,7 @@ export function registerEditTool(pi: ExtensionAPI): void {
       "Stale anchors (content changed since read) fail with retry options. Read again to refresh.",
     ],
     parameters: toolParamsSchema,
-    prepareArguments: prepareEditParams,
+    prepareArguments: prepareSchemaValidArgs,
     renderShell: "default",
 
     renderCall(args, theme, context) {
