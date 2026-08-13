@@ -35,17 +35,17 @@
     "piSrc": {
       "flake": false,
       "locked": {
-        "lastModified": 1786544738,
-        "narHash": "sha256-cY/F7/D6M5euTBdE91zqjaP8xN5oMnm6XSmn0whRiLI=",
+        "lastModified": 1786629274,
+        "narHash": "sha256-VvfI+uqoBpDk2TWgpibTuHFVTW1Zt572/1rj4c5jMF0=",
         "owner": "earendil-works",
         "repo": "pi",
-        "rev": "9795d602306ef68a97585909e8e79f92a389057b",
+        "rev": "6f707eb36064e82af9c1320a7634f4dfad21049b",
         "type": "github"
       },
       "original": {
         "owner": "earendil-works",
         "repo": "pi",
-        "rev": "9795d602306ef68a97585909e8e79f92a389057b",
+        "rev": "6f707eb36064e82af9c1320a7634f4dfad21049b",
         "type": "github"
       }
     },
@@ -68,11 +68,11 @@
     "primeAgentSrc": {
       "flake": false,
       "locked": {
-        "lastModified": 1786564684,
-        "narHash": "sha256-uO3X2BuP5RuAzjNfzJKssIleDoe9zgHVZCvVfbVU0GU=",
+        "lastModified": 1786593687,
+        "narHash": "sha256-s+sAxKLhr+LiDcpeDCKmIG1KybcuD+PztoC1OoErj0A=",
         "ref": "main",
-        "rev": "0987c1ba7637cbcb99afe9efe1180b838a0aa958",
-        "revCount": 4497,
+        "rev": "7787f07415d843b9a800f6a4720e0c739bd608e5",
+        "revCount": 4499,
         "type": "git",
         "url": "https://github.com/PrimeIntellect-ai/prime-agent"
       },
