@@ -5,7 +5,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     piSrc = {
-      url = "github:earendil-works/pi/9795d602306ef68a97585909e8e79f92a389057b";
+      url = "github:earendil-works/pi/6f707eb36064e82af9c1320a7634f4dfad21049b";
       flake = false;
     };
 
