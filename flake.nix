@@ -182,10 +182,10 @@
       };
 
 
-      "pi-agent" = mkPiExtension {
-        pname = "pi-agent";
-        dir = ./extensions/pi-agent;
-        copy = ["README.md" "*.ts"];
+      "pi-fleet" = mkPiExtension {
+        pname = "pi-fleet";
+        dir = ./extensions/pi-fleet;
+        copy = ["README.md" "DESIGN.md" "*.ts"];
       };
 
 
@@ -593,6 +593,7 @@ EOF
         recap = self.packages.${system}."pi-recap";
         webfetch = self.packages.${system}."pi-webfetch";
         gecko-websearch = self.packages.${system}."pi-gecko-websearch";
+        fleet = self.packages.${system}."pi-fleet";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.

@@ -11,7 +11,7 @@ import { CONFIG_DIR_NAME, getAgentDir, type ModelRegistry } from "@earendil-work
 // Extension config
 // ---------------------------------------------------------------------------
 
-const CONFIG_FILE_NAME = "pi-agents.json";
+const CONFIG_FILE_NAME = "pi-fleet.json";
 const DEFAULT_MAX_DEPTH = 1;
 const DEFAULT_MAX_LIVE_AGENTS = 6;
 
@@ -26,6 +26,10 @@ export interface PiAgentsConfig {
 	orchestrator: boolean;
 	/** Directory for child session JSONL files, resolved against cwd at use time. Default `.pi/agents/sessions/` under the parent cwd. */
 	sessionDir?: string;
+	/** Path to the reasonix binary; default "reasonix" on PATH. */
+	reasonix?: string;
+	/** Root dir for durable fleet state (fleet.log + per-slice markers/logs). Default `.pi/fleets/` under cwd. */
+	fleetStateDir?: string;
 }
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -61,6 +65,16 @@ const CONFIG_VALIDATORS: Record<keyof PiAgentsConfig, (value: unknown, key: stri
 		return value;
 	},
 	sessionDir: (value, key, path) => {
+		const dir = typeof value === "string" ? value.trim() : "";
+		if (dir === "") throw new Error(`${path}: "${key}" must be a non-empty string`);
+		return dir;
+	},
+	reasonix: (value, key, path) => {
+		const bin = typeof value === "string" ? value.trim() : "";
+		if (bin === "") throw new Error(`${path}: "${key}" must be a non-empty string`);
+		return bin;
+	},
+	fleetStateDir: (value, key, path) => {
 		const dir = typeof value === "string" ? value.trim() : "";
 		if (dir === "") throw new Error(`${path}: "${key}" must be a non-empty string`);
 		return dir;
@@ -109,6 +123,8 @@ export async function loadPiAgentsConfig(cwd: string): Promise<PiAgentsConfig> {
 		panelModels: projectConfig.panelModels ?? globalConfig.panelModels,
 		orchestrator: projectConfig.orchestrator ?? globalConfig.orchestrator ?? false,
 		sessionDir: projectConfig.sessionDir ?? globalConfig.sessionDir,
+		reasonix: projectConfig.reasonix ?? globalConfig.reasonix,
+		fleetStateDir: projectConfig.fleetStateDir ?? globalConfig.fleetStateDir,
 	};
 }
 

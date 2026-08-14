@@ -62,6 +62,7 @@ import {
 } from "./spawn.js";
 import { createLoop, agentLoopSchema } from "./loop.js";
 import { createOrchestrator } from "./orchestrator.js";
+import { createFleet } from "./fleet.js";
 
 
 // ---------------------------------------------------------------------------
@@ -128,6 +129,12 @@ export default function multiAgent(pi: ExtensionAPI) {
 		},
 	});
 	const loop = createLoop({ spawn, registry, getConfig });
+	// Fleet layer: reasonix subagent workers + fleet loop + durable state.
+	// Registered in every mode (root and child) because a fleet-manager child
+	// needs rx_* tools to run its own workers; maxDepth gates pi-child recursion,
+	// not reasonix workers.
+	const fleet = createFleet({ getConfig });
+	fleet.registerTools(pi);
 	// Orchestrator mode is a main-session feature: child processes never apply
 	// it, and createOrchestrator also registers the /orchestrate command plus
 	// a before_agent_start gate hook, both of which are skipped in child mode.
@@ -166,6 +173,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 	pi.on("session_shutdown", async () => {
 		session.configCache = undefined;
 		await registry.shutdown();
+		await fleet.shutdown();
 	});
 
 	const renderTextResult = (result: AgentToolResult<unknown>) => {
