@@ -350,6 +350,14 @@ function getConfigPath() {\
         copy = ["extensions"];
       };
 
+      # pi-claudish-to-english: display-only plain-English rewrite of the final message
+      "pi-claudish-to-english" = mkPiExtension {
+        pname = "pi-claudish-to-english";
+        dir = ./extensions/pi-claudish-to-english;
+        copy = ["README.md" "extensions"];
+        homepage = "https://github.com/gvzdv/claudish-to-english";
+      };
+
       # pi with default extensions pre-bundled.
       # prime-agent runs the node bundle with a vendored runtime node_modules.
       # zeromq's NAPI addon needs real node (Bun lacks uv_async_init), so the
@@ -639,6 +647,7 @@ EOF
         batch = self.packages.${system}."pi-batch";
         aliases = self.packages.${system}."pi-aliases";
         recap = self.packages.${system}."pi-recap";
+        claudish-to-english = self.packages.${system}."pi-claudish-to-english";
         webfetch = self.packages.${system}."pi-webfetch";
         gecko-websearch = self.packages.${system}."pi-gecko-websearch";
         fleet = self.packages.${system}."pi-fleet";

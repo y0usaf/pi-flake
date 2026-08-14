@@ -1,0 +1,90 @@
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
+
+/**
+ * claudish-to-english — a display-only plain-English rewrite of the final
+ * assistant message each turn, ported from gvzdv/claudish-to-english.
+ *
+ * The rewrite is appended as a custom entry ("💬 In plain English: …") after
+ * the original message. Custom entries never enter the model context, so the
+ * agent keeps seeing the original text; only what you read on screen changes.
+ *
+ * Fail-open by construction: if there is no usable model or the rewrite
+ * fails, nothing is appended and the original message stands untouched.
+ */
+
+const ENTRY_KEY = "claudish-to-english";
+
+const SYSTEM_PROMPT = [
+	"Rewrite the assistant message into plain English.",
+	"Preserve every fact, number, file path, code block, and command exactly.",
+	"Cut jargon, filler, and corporate speak; use short direct sentences.",
+	"Output only the rewrite — no preamble, no heading, no commentary.",
+].join("\n");
+
+function extractText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((block) => {
+			if (!block || typeof block !== "object") return "";
+			const item = block as { type?: string; text?: string };
+			return item.type === "text" ? item.text ?? "" : "";
+		})
+		.filter(Boolean)
+		.join(" ");
+}
+
+let lastTranslatedText: string | null = null;
+
+export default function (pi: ExtensionAPI) {
+	pi.registerEntryRenderer(ENTRY_KEY, (entry, _options, theme) => {
+		const translation = (entry.data as { translation?: string } | undefined)?.translation ?? "";
+		return new Text(theme.fg("accent", "💬 In plain English: ") + theme.fg("muted", translation), 0, 0);
+	});
+
+	pi.on("agent_end", async (_event, ctx) => {
+		if (!ctx.hasUI) return;
+
+		// Find the last assistant message in the branch — the final message of
+		// the turn. Walk backwards so tool results after it don't matter.
+		const branch = ctx.sessionManager.getBranch();
+		let text: string | null = null;
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const entry = branch[i];
+			if (entry.type !== "message") continue;
+			if (!("content" in entry.message)) continue;
+			if (entry.message.role !== "assistant") continue;
+			const candidate = extractText(entry.message.content).trim();
+			if (candidate) {
+				text = candidate;
+				break;
+			}
+		}
+		if (!text) return;
+		// Auto-retry / compaction re-fires agent_end on the same final message.
+		if (text === lastTranslatedText) return;
+
+		const model = ctx.model;
+		if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) return;
+
+		try {
+			const response = await ctx.modelRegistry.complete(
+				model,
+				{
+					systemPrompt: SYSTEM_PROMPT,
+					messages: [
+						{ role: "user", content: [{ type: "text", text }], timestamp: Date.now() },
+					],
+				},
+				{ maxTokens: 4096, signal: ctx.signal },
+			);
+			const translation = extractText(response.content).trim();
+			if (!translation || translation === text) return;
+			lastTranslatedText = text;
+			pi.appendEntry(ENTRY_KEY, { translation });
+		} catch {
+			// Fail open: leave the original message as-is.
+		}
+	});
+}
