@@ -215,12 +215,6 @@
         copy = ["extensions"];
       };
 
-      "pi-hashline" = mkPiExtension {
-        pname = "pi-hashline";
-        dir = ./extensions/pi-hashline;
-        copy = ["README.md" "src"];
-      };
-
       # ponytail: lazy senior dev mode (DietrichGebert/ponytail)
       "pi-ponytail" = let
         ponytailPackageJson = builtins.fromJSON (builtins.readFile "${ponytailSrc}/package.json");
@@ -585,7 +579,6 @@ EOF
         tools = self.packages.${system}."pi-tools";
         "chronobreak" = self.packages.${system}."pi-chronobreak";
         unified-edit = self.packages.${system}."pi-unified-edit";
-        hashline = self.packages.${system}."pi-hashline";
         ponytail = self.packages.${system}."pi-ponytail";
         caveman = self.packages.${system}."pi-caveman";
         batch = self.packages.${system}."pi-batch";

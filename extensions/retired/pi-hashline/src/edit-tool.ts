@@ -143,7 +143,7 @@ async function convertRowScriptToHashes(
   text: string,
   ctx: { cwd: string },
 ): Promise<EditRequest[]> {
-  if (isPatchLike(text)) {
+  if (isPatch(text)) {
     // Patch → oldText/newText pairs
     const pairs = parsePatchText(text);
     return pairs.map(p => ({
@@ -155,8 +155,10 @@ async function convertRowScriptToHashes(
   const parsed = rowScriptToEdits(text);
 
   if (parsed.hasUnsupported) {
-    // Content-matching row-script ops are not supported via anchors.
-    // Process any anchor-based edits we got.
+    throw new Error(
+      "Row script contains content-matching operations without LINEID anchors. " +
+      "Add a LINEID anchor from current read output (e.g. @REPLACE 103heah), or use anchor-based ops only.",
+    );
   }
 
   if (parsed.edits.length === 0) {

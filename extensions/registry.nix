@@ -53,9 +53,9 @@
     dir = "pi-sentinel";
   };
   hashline = {
-    stage = "active";
+    stage = "retired";
     source = "inline";
-    dir = "pi-hashline";
+    dir = "retired/pi-hashline";
   };
   batch = {
     stage = "retired";

@@ -119,3 +119,59 @@ test("prepareArguments maps legacy edit shapes onto strict v3 shapes", () => {
     edits: [{ oldText: "a", newText: "b" }],
   });
 });
+
+test("script mode: anchored row script edits a file", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-hashline-edit-script-"));
+  const path = join(cwd, "sample.txt");
+  try {
+    await writeFile(path, "a\nb\nc\n", "utf8");
+    const tool = captureEditTool();
+    const lineId = `2${computeLineHash("b")}`;
+    const result = await tool.execute(
+      "edit-2",
+      { text: `[sample.txt]\n@REPLACE ${lineId}\n+B\n@APPEND\n+d\n` },
+      undefined,
+      undefined,
+      { cwd },
+    );
+
+    expect(await readFile(path, "utf8")).toBe("a\nB\nc\nd\n");
+    expect(result.details.diff).toBe("-2 b\n+2 B");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("script mode: apply_patch edits a file", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-hashline-edit-patch-"));
+  const path = join(cwd, "sample.txt");
+  try {
+    await writeFile(path, "a\nb\nc\n", "utf8");
+    const tool = captureEditTool();
+    const result = await tool.execute(
+      "edit-3",
+      { text: "*** Begin Patch\n*** Update File: sample.txt\n@@\n-b\n+B\n*** End Patch" },
+      undefined,
+      undefined,
+      { cwd },
+    );
+
+    expect(await readFile(path, "utf8")).toBe("a\nB\nc\n");
+    expect(result.details.diff).toBe("-2 b\n+2 B");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("script mode: unsupported payloads fail loudly", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-hashline-edit-reject-"));
+  const tool = captureEditTool();
+  const execute = (text: string) => tool.execute("edit-4", { text }, undefined, undefined, { cwd });
+  try {
+    await expect(async () => await execute("*** Begin Patch\n*** Add File: x.ts\n+x\n*** End Patch")).toThrow(/add file is not supported/);
+    await expect(async () => await execute("[a.ts]\n@REPLACE\n-old\n+new\n")).toThrow(/content-matching operations/);
+    await expect(async () => await execute("[a.ts]\n@INS.PRE 1\n+x\n")).toThrow(/unknown edit operation/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
