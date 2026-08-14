@@ -80,9 +80,4 @@
     source = "vendored";
     dir = "pi-recap";
   };
-  claudish-to-english = {
-    stage = "active";
-    source = "inline";
-    dir = "pi-claudish-to-english";
-  };
 }
