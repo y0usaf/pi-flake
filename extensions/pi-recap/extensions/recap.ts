@@ -28,11 +28,11 @@ const STATE_KEY = "pi-recap";
 const WIDGET_KEY = "pi-recap";
 
 /** Minimum number of user messages before the recap kicks in. */
-const MIN_TURNS = 3;
+const MIN_TURNS = 1;
 /** How many most recent user/assistant rounds feed the recap. */
 const MAX_ROUNDS = 3;
 /** Only attempt an automatic recap update every N agent turns. */
-const AUTO_UPDATE_COOLDOWN_TURNS = 3;
+const AUTO_UPDATE_COOLDOWN_TURNS = 1;
 /** Word-overlap ratio above which a freshly generated recap is considered
  * unchanged and the displayed one is kept. */
 const SIMILARITY_THRESHOLD = 0.7;
