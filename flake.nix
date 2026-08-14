@@ -228,6 +228,13 @@
         homepage = "https://github.com/y0usaf/pi-flake";
       };
 
+      "pi-yourshell" = mkPiExtension {
+        pname = "pi-yourshell";
+        dir = ./extensions/pi-yourshell;
+        copy = ["src"];
+        homepage = "https://github.com/y0usaf/pi-flake";
+      };
+
       "pi-gecko-websearch" = mkPiExtension {
         pname = "pi-gecko-websearch";
         dir = ./extensions/pi-gecko-websearch;
@@ -643,6 +650,7 @@ EOF
         recap = self.packages.${system}."pi-recap";
         webfetch = self.packages.${system}."pi-webfetch";
         gecko-websearch = self.packages.${system}."pi-gecko-websearch";
+        yourshell = self.packages.${system}."pi-yourshell";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.
