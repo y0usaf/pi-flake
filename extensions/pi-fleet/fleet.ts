@@ -38,6 +38,8 @@ const BASE_BACKOFF_SEC = 5;
 const MAX_BACKOFF_SEC = 300;
 const DEP_POLL_MS = 15_000;
 
+const FLEET_TOOL_NAMES = ["rx_run", "rx_fleet", "rx_list", "rx_kill", "rx_output"];
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -295,6 +297,7 @@ export interface FleetHandle {
 
 export function createFleet(deps: FleetDeps): FleetHandle {
 	const workers = new Map<string, WorkerState>();
+	let fleetToolsEnabled = true;
 
 	// ---- rx_run -----------------------------------------------------------
 
@@ -699,6 +702,20 @@ export function createFleet(deps: FleetDeps): FleetHandle {
 		registerRxList(pi);
 		registerRxKill(pi);
 		registerRxOutput(pi);
+
+		pi.registerCommand("fleet", {
+			description: "Toggle fleet tools (rx_run/rx_fleet/rx_list/rx_kill/rx_output) on or off",
+			handler: async (_args, ctx) => {
+				fleetToolsEnabled = !fleetToolsEnabled;
+				const active = new Set(pi.getActiveTools());
+				for (const name of FLEET_TOOL_NAMES) {
+					if (fleetToolsEnabled) active.add(name);
+					else active.delete(name);
+				}
+				pi.setActiveTools([...active]);
+				ctx.ui.notify(`Fleet tools ${fleetToolsEnabled ? "enabled" : "disabled"}`, "info");
+			},
+		});
 	}
 
 	async function shutdown(): Promise<void> {
