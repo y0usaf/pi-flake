@@ -15,12 +15,8 @@ import { Text } from "@earendil-works/pi-tui";
 
 const ENTRY_KEY = "claudish-to-english";
 
-const SYSTEM_PROMPT = [
-	"Rewrite the assistant message into plain English.",
-	"Preserve every fact, number, file path, code block, and command exactly.",
-	"Cut jargon, filler, and corporate speak; use short direct sentences.",
-	"Output only the rewrite — no preamble, no heading, no commentary.",
-].join("\n");
+const SYSTEM_PROMPT =
+	"You rewrite the assistant's message into much simpler, plain English. Keep every fact, name, number, and file path. Use short sentences and everyday words. Leave fenced code blocks unchanged. Output ONLY the rewritten message with no preamble, labels, or commentary.";
 
 function extractText(content: unknown): string {
 	if (typeof content === "string") return content;
