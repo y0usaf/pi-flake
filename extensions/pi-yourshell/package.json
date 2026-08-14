@@ -1,0 +1,14 @@
+{
+  "name": "pi-yourshell",
+  "version": "0.1.0",
+  "description": "Run the bash tool through your own $SHELL instead of pi's hardcoded bash",
+  "keywords": ["pi-package", "pi-extension", "shell"],
+  "license": "MIT",
+  "files": ["src"],
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

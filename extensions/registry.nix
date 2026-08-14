@@ -32,6 +32,11 @@
     source = "inline";
     dir = "pi-webfetch";
   };
+  yourshell = {
+    stage = "active";
+    source = "inline";
+    dir = "pi-yourshell";
+  };
   gecko-websearch = {
     stage = "active";
     source = "inline";
