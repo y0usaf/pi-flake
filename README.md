@@ -156,6 +156,7 @@ Active extensions (shipped in `pi-full`):
 | `pi-ponytail` | Lazy senior dev mode — cuts unnecessary code, keeps safety |
 | `pi-caveman` | Terse-response mode with configurable compression levels |
 | `pi-recap` | Claude Code-style session recap: one-line recap above the status bar |
+| `pi-yourshell` | Runs the bash tool through your own `$SHELL` instead of pi's hardcoded bash |
 
 ## Extension Lifecycle
 
@@ -239,6 +240,8 @@ inputs.pi-flake.packages.<system>."pi-sentinel"
 inputs.pi-flake.packages.<system>."pi-ponytail"
 inputs.pi-flake.packages.<system>."pi-caveman"
 inputs.pi-flake.packages.<system>."pi-recap"
+inputs.pi-flake.packages.<system>."pi-agents"
+inputs.pi-flake.packages.<system>."pi-yourshell"
 ```
 
 ### Library helpers / modules
