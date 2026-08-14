@@ -26,7 +26,6 @@ import type { CustomEntry, ExtensionAPI, ExtensionContext, SessionEntry } from "
 
 const STATE_KEY = "pi-recap";
 const WIDGET_KEY = "pi-recap";
-const RECAP_PREFIX = "※ recap:";
 
 /** Minimum number of user messages before the recap kicks in. */
 const MIN_TURNS = 3;
@@ -446,6 +445,12 @@ export function wrapText(text: string, maxWidth: number): string[] {
 	return lines;
 }
 
+function textWidth(text: string): number {
+	let width = 0;
+	for (const ch of text) width += isWideChar(ch) ? 2 : 1;
+	return width;
+}
+
 let widgetRegistered = false;
 let widgetPlacement: "aboveEditor" | "belowEditor" | null = null;
 let widgetTui: { requestRender(): void } | null = null;
@@ -471,18 +476,26 @@ function registerWidget(ctx: ExtensionContext, placement: "aboveEditor" | "below
 				invalidate() {},
 				render(width: number): string[] {
 					if (!currentRecap) return [];
-					const lines = wrapText(`${RECAP_PREFIX} ${currentRecap}`, Math.max(12, width - 1));
-					return lines.map((line, index) => {
-						if (index === 0) {
-							const prefixLen = RECAP_PREFIX.length;
-							return (
-								theme.fg("dim", line.slice(0, 2)) +
-								theme.fg("accent", theme.bold(line.slice(2, prefixLen))) +
-								theme.fg("muted", theme.italic(line.slice(prefixLen)))
-							);
-						}
-						return theme.fg("muted", theme.italic(line));
-					});
+					const label = "recap";
+					const inner = Math.max(12, width - 2); // Box paddingX=1
+					const lines = wrapText(`${label} — ${currentRecap}`, inner);
+					const bg = "toolSuccessBg";
+					const blank = theme.bg(bg, " ".repeat(width));
+					const strip = (raw: string, styled: string) =>
+						theme.bg(bg, ` ${styled}${" ".repeat(inner - textWidth(raw))}`);
+					return [
+						blank,
+						...lines.map((line, index) => {
+							if (index === 0) {
+								const styled =
+									theme.fg("toolTitle", theme.bold(label)) +
+									theme.fg("toolOutput", line.slice(label.length));
+								return strip(line, styled);
+							}
+							return strip(line, theme.fg("toolOutput", line));
+						}),
+						blank,
+					];
 				},
 			};
 		},
