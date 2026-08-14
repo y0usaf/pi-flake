@@ -11,7 +11,7 @@
 
 import { readFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
-import { computeLineHash, getVisibleLines } from "./hashline";
+import { computeLineHash } from "./hashline";
 import { normalizeToLF, stripBom } from "./text-file";
 
 // ---------------------------------------------------------------------------
@@ -53,10 +53,8 @@ export function rowScriptToEdits(text: string): ParsedResult {
   let curPath = "";
   let curOp: string | null = null;
   let hasAnchor = false;
-  let anchorArg = "";
+  let anchorId = "";
   let plusRows: string[] = [];
-  let minusRows: string[] = [];
-  let inContentMatcher = false;
 
   function flush() {
     if (!curPath || !curOp) return;
@@ -100,8 +98,6 @@ export function rowScriptToEdits(text: string): ParsedResult {
     hasAnchor = false;
     anchorId = "";
     plusRows = [];
-    minusRows = [];
-    inContentMatcher = false;
   }
 
   for (let i = 0; i < lines.length; i++) {
@@ -126,7 +122,7 @@ export function rowScriptToEdits(text: string): ParsedResult {
       const simpleOps = /^@(APPEND|PREPEND)\s*$/i.exec(trimmed);
       if (simpleOps) {
         flush();
-        curOp = simpleOps[1].toUpperCase();
+        curOp = "@" + simpleOps[1].toUpperCase();
         continue;
       }
 
@@ -149,23 +145,15 @@ export function rowScriptToEdits(text: string): ParsedResult {
         continue;
       }
 
-      // Unknown @ — skip
-      flush();
-      continue;
+      throw new Error(`Line ${i + 1}: unknown edit operation ${JSON.stringify(trimmed)}. Supported: @APPEND, @PREPEND, @INS.BEFORE, @INS.AFTER, @REPLACE, @DEL.`);
     }
 
-    // Content rows: + or -
+    // Content rows: + inserts; - and space rows are redundant in anchor mode
     if (raw.startsWith("+")) {
       if (curOp) plusRows.push(raw.slice(1));
       continue;
     }
-    if (raw.startsWith("-")) {
-      if (curOp) minusRows.push(raw.slice(1));
-      continue;
-    }
-    if (raw.startsWith(" ") && curOp) {
-      // context line — for content matching
-      inContentMatcher = true;
+    if (raw.startsWith("-") || (raw.startsWith(" ") && curOp)) {
       continue;
     }
   }
@@ -288,34 +276,59 @@ export function parsePatchText(text: string): Array<{
   const last = lines.length - 2;
 
   while (i <= last) {
-    if (!lines[i].trim()) { i++; continue; }
-    const line = lines[i].trim();
+    const header = lines[i].trim();
+    if (!header) { i++; continue; }
 
-    if (line.startsWith("*** Update File: ")) {
-      const path = line.slice("*** Update File: ".length).trim();
-      i++;
-      let oldLines: string[] = [];
-      let newLines: string[] = [];
-
-      while (i <= last) {
-        const n = lines[i];
-        if (n.trim().startsWith("*** ") || n.trim() === "") { break; }
-        const marker = n[0];
-        const body = n.slice(1);
-        if (marker === " ") { oldLines.push(body); newLines.push(body); }
-        else if (marker === "-") oldLines.push(body);
-        else if (marker === "+") newLines.push(body);
-        else break;
-        i++;
-      }
-
-      if (oldLines.length > 0) {
-        results.push({ path, oldText: oldLines.join("\n"), newText: newLines.join("\n") });
-      }
-      continue;
+    if (header.startsWith("*** Add File: ")) {
+      throw new Error(`Patch add file is not supported (${header.slice("*** Add File: ".length)}). Use the write tool to create files.`);
+    }
+    if (header.startsWith("*** Delete File: ")) {
+      throw new Error(`Patch delete file is not supported (${header.slice("*** Delete File: ".length)}). Delete the file with a shell command.`);
+    }
+    if (!header.startsWith("*** Update File: ")) {
+      throw new Error(`Unexpected patch header: ${JSON.stringify(header)}`);
     }
 
+    const path = header.slice("*** Update File: ".length).trim();
     i++;
+    const hunks: Array<{ oldLines: string[]; newLines: string[] }> = [];
+    let current: { oldLines: string[]; newLines: string[] } | null = null;
+
+    while (i <= last && !lines[i].trim().startsWith("*** ")) {
+      const raw = lines[i];
+      const t = raw.trim();
+      if (t === "@@" || t.startsWith("@@ ")) {
+        if (current) hunks.push(current);
+        current = { oldLines: [], newLines: [] };
+        i++;
+        continue;
+      }
+      if (!current) current = { oldLines: [], newLines: [] };
+      if (raw.length === 0) {
+        current.oldLines.push("");
+        current.newLines.push("");
+      } else {
+        const marker = raw[0];
+        const body = raw.slice(1);
+        if (marker === " ") { current.oldLines.push(body); current.newLines.push(body); }
+        else if (marker === "-") current.oldLines.push(body);
+        else if (marker === "+") current.newLines.push(body);
+        else throw new Error(`Unexpected line in patch for ${path}: ${JSON.stringify(raw)}`);
+      }
+      i++;
+    }
+    if (current) hunks.push(current);
+
+    if (hunks.length === 0) throw new Error(`Update File ${path} has no hunks.`);
+
+    for (const [index, hunk] of hunks.entries()) {
+      if (hunk.oldLines.length === 0) {
+        throw new Error(
+          `Patch hunk ${index + 1} in ${path} has no context or deleted lines to locate the edit. Include a context (space-prefixed) or - line.`,
+        );
+      }
+      results.push({ path, oldText: hunk.oldLines.join("\n"), newText: hunk.newLines.join("\n") });
+    }
   }
 
   return results;
