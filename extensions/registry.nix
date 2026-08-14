@@ -43,9 +43,9 @@
     dir = "retired/pi-tools";
   };
   fleet = {
-    stage = "active";
+    stage = "retired";
     source = "inline";
-    dir = "pi-fleet";
+    dir = "retired/pi-fleet";
   };
   sentinel = {
     stage = "active";

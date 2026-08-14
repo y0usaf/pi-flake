@@ -229,12 +229,6 @@
       };
 
 
-      "pi-fleet" = mkPiExtension {
-        pname = "pi-fleet";
-        dir = ./extensions/pi-fleet;
-        copy = ["README.md" "DESIGN.md" "*.ts"];
-      };
-
 
       "pi-sentinel" = mkPiExtension {
         pname = "pi-sentinel";
@@ -650,7 +644,6 @@ EOF
         claudish-to-english = self.packages.${system}."pi-claudish-to-english";
         webfetch = self.packages.${system}."pi-webfetch";
         gecko-websearch = self.packages.${system}."pi-gecko-websearch";
-        fleet = self.packages.${system}."pi-fleet";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.
