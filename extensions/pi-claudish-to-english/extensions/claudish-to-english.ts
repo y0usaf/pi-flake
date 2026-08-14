@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { Box, Text } from "@earendil-works/pi-tui";
 
 /**
  * claudish-to-english — a display-only plain-English rewrite of the final
@@ -36,7 +36,11 @@ let lastTranslatedText: string | null = null;
 export default function (pi: ExtensionAPI) {
 	pi.registerEntryRenderer(ENTRY_KEY, (entry, _options, theme) => {
 		const translation = (entry.data as { translation?: string } | undefined)?.translation ?? "";
-		return new Text(theme.fg("accent", "💬 In plain English: ") + theme.fg("muted", translation), 0, 0);
+		if (!translation) return undefined;
+		const box = new Box(1, 1, (text) => theme.bg("toolSuccessBg", text));
+		box.addChild(new Text(theme.fg("toolTitle", theme.bold("Agent")), 0, 0));
+		box.addChild(new Text(translation, 0, 0));
+		return box;
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
