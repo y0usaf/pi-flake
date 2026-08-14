@@ -10,7 +10,7 @@
   },
   "keywords": ["pi-package", "pi-extension", "loop", "output-degradation"],
   "license": "MIT",
-  "files": ["src", "README.md"],
+  "files": ["src", "!src/*.test.ts", "README.md"],
   "pi": {
     "extensions": ["./src/index.ts"]
   },
