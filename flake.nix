@@ -104,6 +104,53 @@
           platforms = platforms.all;
         };
       };
+
+      # --- prime-agent ipython kernel ---
+      # The ipython tool runs a real Python process; upstream auto-bootstraps it
+      # at first use via uv (downloads CPython + ipykernel + prime-agent-runtime
+      # + pandas/numpy/scipy/... from PyPI). That needs uv + network and can't
+      # run on NixOS, so build the kernel env here and point PRIME_AGENT_KERNEL_PYTHON
+      # at it (the override path skips auto-bootstrap entirely).
+      py = pkgs.python3Packages;
+      # shtab completion tests fail in this nixpkgs rev
+      tyro = py.tyro.overridePythonAttrs (_: { doCheck = false; });
+      # rlm shim is not on PyPI; build it from the vendored source.
+      prime-agent-runtime = py.buildPythonPackage {
+        pname = "prime-agent-runtime";
+        version = "0.1.0";
+        pyproject = true;
+        src = primeAgentSrc + "/prime-agent-runtime";
+        build-system = [ py.hatchling ];
+        dependencies = [ py.ipykernel py.nest-asyncio tyro ];
+      };
+      # Built-in python skills must be importable in the (read-only) kernel env
+      # or prime-agent disables them.
+      skillDeps = {
+        attach-image = [ py.pillow prime-agent-runtime ];
+        linear = [ py.mcp py.httpx prime-agent-runtime ];
+        notion = [ py.mcp py.httpx prime-agent-runtime ];
+        websearch = [ py.httpx prime-agent-runtime ];
+      };
+      skillDir = primeAgentSrc + "/packages/coding-agent/skills";
+      skillNames = builtins.attrNames (lib.filterAttrs (n: t:
+        t == "directory" && builtins.pathExists (skillDir + "/${n}/pyproject.toml"))
+        (builtins.readDir skillDir));
+      resolveName = n: "prime-agent-skill-${n}";
+      mkSkill = name: py.buildPythonPackage {
+        pname = if builtins.elem name [ "attach-image" "linear" "notion" "websearch" ] then resolveName name else name;
+        version = "0.1.0";
+        pyproject = true;
+        src = skillDir + "/${name}";
+        build-system = [ py.hatchling ];
+        dependencies = skillDeps.${name} or [ ];
+      };
+      pythonSkills = map mkSkill skillNames;
+      kernelPython = pkgs.python3.withPackages (ps: with ps; [
+        ipykernel dill nest-asyncio
+        requests httpx pyyaml tomli python-dotenv
+        pandas numpy scipy beautifulsoup4 lxml pydantic
+        tyro prime-agent-runtime
+      ] ++ pythonSkills);
     in {
       pi = pkgs.buildNpmPackage {
         pname = "pi";
@@ -367,6 +414,7 @@ function getConfigPath() {\
 export PI_PACKAGE_DIR='$out/share/pi'
 export PI_TELEMETRY=0
 export PI_SYMBOLS=ascii
+export PRIME_AGENT_KERNEL_PYTHON='${kernelPython}/bin/python'
 exec ${pkgs.nodejs_22}/bin/node $out/share/pi/bundle/cli.js "\$@"
 EOF
           chmod +x $out/bin/prime-agent
@@ -493,6 +541,13 @@ EOF
         grep -q 'PI_TELEMETRY=0' ${self.packages.${system}.pi-full}/bin/pi
         grep -q 'PI_TELEMETRY=0' ${self.packages.${system}."prime-agent"}/bin/pi
         grep -q 'PI_TELEMETRY=0' ${self.packages.${system}."prime-agent-full"}/bin/pi
+        touch $out
+      '';
+
+      # ipython tool would otherwise auto-bootstrap a venv via uv (needs network,
+      # fails on NixOS); assert the wrapper points it at the built kernel env.
+      kernel-python-wired = pkgs.runCommand "prime-agent-kernel-python-wired" {} ''
+        grep -q 'PRIME_AGENT_KERNEL_PYTHON' ${self.packages.${system}."prime-agent"}/bin/pi
         touch $out
       '';
 
