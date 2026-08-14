@@ -18,7 +18,7 @@
     dir = "pi-aliases";
   };
   agents = {
-    stage = "testing";
+    stage = "active";
     source = "inline";
     dir = "pi-agents";
   };
