@@ -59,6 +59,23 @@ one contract — spawn, answer, removed.
   contract answers already travel as data into the next spawn's task.
   Reversal condition: executors demonstrably rebuilding large context every
   spawn — then revisit persistence, not before.
+- **2026-08 — Panels are a `spawn_agent` parameter, not a separate consult tool.**
+  A panel is N independent judges on one identical contract, fanning out
+  to `<id>-1..N` and aggregating into a per-question agreement tally.
+  Aggregation already has a home in the existing result builder, while a
+  second orchestration tool would trigger the registry extraction this
+  document already names as the condition for splitting the module. Model
+  diversity is the feature, not panel size: N samples from one model
+  correlate because they are the same function, not because the answer is
+  right, so `models` (and the `panelModels` config roster) is first-class and
+  `size` alone is the degenerate case. Consensus is mechanical only for
+  enumerated options; free-text answers are listed verbatim and never
+  tallied, because exact string matches across free text are meaningless.
+  A partial member failure kills surviving members and fails the whole
+  panel. If a third distinct multi-agent shape beyond fan-out/join and
+  executor delegation is being hand-repeated in prose across sessions,
+  extract a declarative workflow format instead of growing more
+  `spawn_agent` parameters.
 - **2026-08 — Orchestrator mode: the main session delegates mutations.**
   The `orchestrator` config key (default false) and the `/orchestrate`
   command strip `write`/`edit`/`bash` from the main session via
@@ -89,7 +106,7 @@ Single-file extension (`index.ts`). Sections, in order:
 - child state, `subscribeChild`, `collectResult` — machinery
 - renderers — machinery (TUI only)
 - `multiAgent()` — registry (`children`, `reservedIds`), subtree
-  authorization, spawn/kill lifecycle — decision-making
+  authorization, spawn/kill lifecycle, panel fan-out/join — decision-making
 
 The registry owns child lifecycle. The extension boundary is
 `createChildTools` + `createChildManagementTools`: everything a child can
@@ -100,9 +117,11 @@ blackboard) appears, extract a registry module both use.
 
 ## Deferred
 
-- **Per-spawn model override** — config sets one model for all children.
-  Deferred until per-role models are actually needed; the tool schema is the
-  obvious extension point.
+- **Per-spawn model override** — config sets one model for ordinary
+  non-panel children. A per-member model is available for panels because
+  model diversity is their purpose; a per-spawn override for an ordinary
+  non-panel child remains deferred, with the tool schema as the obvious
+  extension point.
 - **Background spawn / handle polling** — blocking semantics plus parallel
   tool calls cover current use. A `wait_agent`/`status` split is the planned
   shape if long-running children become common.
