@@ -214,6 +214,13 @@
         homepage = "https://github.com/y0usaf/pi-flake";
       };
 
+      "pi-agents" = mkPiExtension {
+        pname = "pi-agents";
+        dir = ./extensions/pi-agents;
+        copy = ["README.md" "index.ts"];
+        homepage = "https://github.com/y0usaf/pi-flake";
+      };
+
       "pi-webfetch" = mkPiExtension {
         pname = "pi-webfetch";
         dir = ./extensions/pi-webfetch;
@@ -626,6 +633,7 @@ EOF
       nixpkgs.lib.filterAttrs (name: _: (extensionRegistry.${name}.stage or "active") != "paused" && (extensionRegistry.${name}.stage or "active") != "retired") {
         sentinel = self.packages.${system}."pi-sentinel";
         tools = self.packages.${system}."pi-tools";
+        agents = self.packages.${system}."pi-agents";
         "chronobreak" = self.packages.${system}."pi-chronobreak";
         unified-edit = self.packages.${system}."pi-unified-edit";
         ponytail = self.packages.${system}."pi-ponytail";

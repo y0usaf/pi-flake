@@ -17,6 +17,11 @@
     source = "inline";
     dir = "pi-aliases";
   };
+  agents = {
+    stage = "testing";
+    source = "inline";
+    dir = "pi-agents";
+  };
   chronobreak = {
     stage = "active";
     source = "inline";
