@@ -85,6 +85,8 @@ function buildSafeEnv(): NodeJS.ProcessEnv {
 
 /** Host-added answer value: the child's explicit punt, better than fabrication. */
 const UNABLE_VALUE = "__unable__";
+/** Distinct tally value for a member that never answered this question. */
+const NO_ANSWER_VALUE = "__no_answer__";
 const MAX_CONTRACT_QUESTIONS = 8;
 /** Per question, including the host-added "Unable to determine" option. */
 const MAX_CONTRACT_OPTIONS = 8;
@@ -162,6 +164,10 @@ const spawnSchema = Type.Object({
 	task: Type.String({ description: "Initial task to assign to the child agent" }),
 	contract: contractSchema,
 	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds to wait for the agent to finish (must be > 0). If the deadline expires the agent is aborted, removed from the registry, and an error is thrown." })),
+	panel: Type.Optional(Type.Object({
+		size: Type.Optional(Type.Number({ description: "Number of independent panel members (2-5)" })),
+		models: Type.Optional(Type.Array(Type.String(), { description: "One model spec per panel member" })),
+	}, { description: "Consult a panel: spawn N independent children on this same contract and return an agreement tally. Members get ids <id>-1..N. `models` gives each member its own model spec (\"provider/modelId\" or a bare id); when omitted, the configured `panelModels` roster is used if present, and `panel: {}` is legal and uses the whole roster. Model diversity is the point; N clones of one model agree because they are the same function, not because the answer is right." })),
 });
 
 const killSchema = Type.Object({
@@ -182,13 +188,15 @@ const CONFIG_FILE_NAME = "pi-agents.json";
 const DEFAULT_MAX_DEPTH = 1;
 const DEFAULT_MAX_LIVE_AGENTS = 6;
 
-const CONFIG_KEYS = new Set(["maxDepth", "maxLiveAgents", "model", "orchestrator"]);
+const CONFIG_KEYS = new Set(["maxDepth", "maxLiveAgents", "model", "panelModels", "orchestrator"]);
 
 interface PiAgentsConfig {
 	maxDepth: number;
 	maxLiveAgents: number;
 	/** Model for spawned children: "provider/modelId" or a bare modelId. Unset = inherit the parent session's model. */
 	model?: string;
+	/** Default panel member models, one spec per member ("provider/modelId" or a bare modelId). Used when spawn_agent's panel omits models. */
+	panelModels?: string[];
 	/** Strip write/edit from the main session so mutations route through spawned executors. Toggle with /orchestrate. */
 	orchestrator: boolean;
 }
@@ -226,6 +234,21 @@ function normalizeBoolean(value: unknown, key: string, path: string): boolean {
 	return value;
 }
 
+function normalizePanelModels(value: unknown, key: string, path: string): string[] {
+	if (!Array.isArray(value)) {
+		throw new Error(`${path}: "${key}" must be an array`);
+	}
+	if (value.length < 2 || value.length > 5) {
+		throw new Error(`${path}: "${key}" must contain between 2 and 5 models`);
+	}
+	return value.map((spec, index) => {
+		if (typeof spec !== "string" || spec.trim() === "") {
+			throw new Error(`${path}: "${key}" element ${index} must be a non-empty string`);
+		}
+		return spec.trim();
+	});
+}
+
 async function readConfigFragment(path: string): Promise<Partial<PiAgentsConfig>> {
 	let raw: string;
 	try {
@@ -261,6 +284,9 @@ async function readConfigFragment(path: string): Promise<Partial<PiAgentsConfig>
 	if ("model" in parsed) {
 		config.model = normalizeModelSpec(parsed.model, "model", path);
 	}
+	if ("panelModels" in parsed) {
+		config.panelModels = normalizePanelModels(parsed.panelModels, "panelModels", path);
+	}
 	if ("orchestrator" in parsed) {
 		config.orchestrator = normalizeBoolean(parsed.orchestrator, "orchestrator", path);
 	}
@@ -274,6 +300,7 @@ async function loadPiAgentsConfig(cwd: string): Promise<PiAgentsConfig> {
 		maxDepth: projectConfig.maxDepth ?? globalConfig.maxDepth ?? DEFAULT_MAX_DEPTH,
 		maxLiveAgents: projectConfig.maxLiveAgents ?? globalConfig.maxLiveAgents ?? DEFAULT_MAX_LIVE_AGENTS,
 		model: projectConfig.model ?? globalConfig.model,
+		panelModels: projectConfig.panelModels ?? globalConfig.panelModels,
 		orchestrator: projectConfig.orchestrator ?? globalConfig.orchestrator ?? false,
 	};
 }
@@ -320,11 +347,35 @@ interface AgentToolDetails {
 	reports: string[];
 	contract?: ContractQuestion[];
 	answers?: ContractAnswer[];
+	panel?: { members: { id: string; model: string; answers: ContractAnswer[] | undefined; reports: string[] }[]; tally: PanelTally };
 	error?: string;
 	done: boolean;
 }
 
+interface PanelTallyQuestion { questionId: string; prompt: string; freeText: boolean; unanimous: boolean; groups: { value: string; label: string; memberIds: string[]; count: number }[]; }
+interface PanelTally { questions: PanelTallyQuestion[]; disagreementCount: number; }
+
 const modelLabel = (agent: Agent): string => `${agent.state.model.provider}/${agent.state.model.id}`;
+
+/** Pure tally; free-text questions are never treated as consensus. */
+function tallyPanel(questions: ContractQuestion[], members: { id: string; model: string; answers: ContractAnswer[] | undefined }[]): PanelTally {
+	let disagreementCount = 0;
+	const result = questions.map((question) => {
+		const freeText = question.options.filter((o) => o.value !== UNABLE_VALUE).length === 0;
+		const groups = new Map<string, { value: string; label: string; memberIds: string[]; count: number }>();
+		for (const member of members) {
+			const answer = member.answers?.find((a) => a.id === question.id);
+			const value = answer ? answer.value : NO_ANSWER_VALUE;
+			const label = value === NO_ANSWER_VALUE ? "no answer" : value === UNABLE_VALUE ? "unable to determine" : (answer?.label ?? value);
+			const group = groups.get(value) ?? { value, label, memberIds: [], count: 0 };
+			group.memberIds.push(member.id); group.count++; groups.set(value, group);
+		}
+		const unanimous = groups.size === 1 && !groups.has(NO_ANSWER_VALUE);
+		if (!freeText && !unanimous) disagreementCount++;
+		return { questionId: question.id, prompt: question.prompt, freeText, unanimous, groups: [...groups.values()] };
+	});
+	return { questions: result, disagreementCount };
+}
 
 /**
  * Bare model id, with pi's muted "[provider]" badge (as /model renders it) only
@@ -867,7 +918,7 @@ function collectResult(childId: string, state: ChildState, reportStartIdx: numbe
 
 function renderAgentCall(
 	toolLabel: string,
-	args: { id?: string; system_prompt?: string; task?: string; message?: string; contract?: unknown },
+	args: { id?: string; system_prompt?: string; task?: string; message?: string; contract?: unknown; panel?: { size?: number; models?: string[] } },
 	theme: any,
 	_context: any,
 ) {
@@ -876,11 +927,13 @@ function renderAgentCall(
 	const preview = taskText.length > 70 ? taskText.slice(0, 70) + "..." : taskText;
 	let text = theme.fg("toolTitle", theme.bold(`${toolLabel} `)) + theme.fg("accent", id);
 	if (Array.isArray(args.contract)) text += theme.fg("muted", ` · contract: ${args.contract.length}q`);
+	if (args.panel) text += theme.fg("muted", ` · panel ${args.panel.size ?? args.panel.models?.length ?? "?"}`);
 	text += "\n  " + theme.fg("dim", preview);
 	return new Text(text, 0, 0);
 }
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
+const truncate = (text: string, n: number): string => (text.length > n ? text.slice(0, n) + "..." : text);
 
 /** " · N actions · N reports · model" — pi joins metadata with a muted middot. */
 function metaSuffix(model: string | undefined, activityCount: number, reportCount: number | undefined, theme: any): string {
@@ -943,6 +996,39 @@ function renderAgentResult(
 	}
 
 	const { expanded, isPartial } = options;
+
+	// -- panel summary --
+	const panel = details.panel;
+	const panelWellFormed = panel && Array.isArray(panel.members) && panel.members.every((member) =>
+		member && typeof member.id === "string" && typeof member.model === "string" && Array.isArray(member.reports) && member.reports.every((report) => typeof report === "string") &&
+		(member.answers === undefined || Array.isArray(member.answers) && member.answers.every((answer) => answer && typeof answer.id === "string" && typeof answer.value === "string" && (answer.label === undefined || typeof answer.label === "string"))),
+	) && panel.tally && Array.isArray(panel.tally.questions) && panel.tally.questions.every((question) =>
+		question && typeof question.questionId === "string" && typeof question.prompt === "string" && typeof question.freeText === "boolean" && typeof question.unanimous === "boolean" && Array.isArray(question.groups) && question.groups.every((group) =>
+			group && typeof group.value === "string" && typeof group.label === "string" && typeof group.count === "number" && Array.isArray(group.memberIds) && group.memberIds.every((id) => typeof id === "string"),
+		),
+	) && typeof panel.tally.disagreementCount === "number";
+	if (panelWellFormed) {
+		const icon = theme.fg("success", "✓");
+		const header = `${icon} ${theme.fg("toolTitle", theme.bold(stripControlSequences(details.childId)))} · panel ${panel.members.length} · ${panel.tally.disagreementCount} disagreement(s) · ${new Set(panel.members.map((m) => stripControlSequences(m.model))).size} models`;
+		const lines = panel.tally.questions.map((q) => {
+			const mark = q.freeText ? theme.fg("warning", "◌") : q.unanimous ? theme.fg("success", "•") : theme.fg("warning", "⚠");
+			const summary = q.groups.map((g) => `${stripControlSequences(g.label)} (${g.count})`).join(" vs ");
+			return `  ${mark} ${theme.fg("accent", truncate(stripControlSequences(q.prompt), 55))} — ${q.freeText ? "free-text — compare manually, not a consensus" : q.unanimous ? "unanimous" : "split"}: ${summary}`;
+		});
+		if (!expanded) return new Text([header, ...lines].join("\n"), 0, 0);
+		const container = new Container();
+		container.addChild(new Text(header, 0, 0));
+		for (const q of panel.tally.questions) {
+			const mark = q.freeText ? theme.fg("warning", "◌") : q.unanimous ? theme.fg("success", "•") : theme.fg("warning", "⚠");
+			container.addChild(new Text(`  ${mark} ${theme.fg("accent", truncate(stripControlSequences(q.prompt), 55))}`, 0, 0));
+			for (const g of q.groups) for (const id of g.memberIds) {
+				const member = panel.members.find((m) => m.id === id); const answer = member?.answers?.find((a) => a.id === q.questionId);
+				container.addChild(new Text(`    ${stripControlSequences(id)} [${stripControlSequences(member?.model ?? "?")}]: ${stripControlSequences(answer ? (answer.label ?? answer.value) : "no answer")}`, 0, 0));
+			}
+		}
+		for (const member of panel.members) for (const report of member.reports || []) container.addChild(new Text(`    ${stripControlSequences(member.id)}: ${stripControlSequences(report)}`, 0, 0));
+		return container;
+	}
 
 	// -- still running: spinner + live activity feed --
 	if (isPartial && !details.done) {
@@ -1242,12 +1328,12 @@ export default function multiAgent(pi: ExtensionAPI) {
 			name: "spawn_agent",
 			label: "Spawn Agent",
 			description:
-				"Spawn a descendant agent within your own subtree. Requires a contract; " +
+				"Spawn a descendant agent within your own subtree. Pass `panel` to get a second opinion instead of judging alone: N independent children answer the same contract on different models and the result is an agreement tally. Requires a contract; " +
 				"the descendant's result is its structured contract answers, and it is removed once it answers. " +
 				"Subject to configured maxDepth and maxLiveAgents limits.",
 			parameters: spawnSchema,
 			execute: async (_toolCallId, params, signal, onUpdate) => {
-				return await spawnChild(callerId, params, model, cwd, signal, onUpdate);
+				return params.panel ? await spawnPanel(callerId, params, model, cwd, signal, onUpdate) : await spawnChild(callerId, params, model, cwd, signal, onUpdate);
 			},
 		};
 
@@ -1307,6 +1393,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		cwd: string,
 		signal?: AbortSignal,
 		onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void,
+		modelOverride?: Model<any>,
 	): Promise<AgentToolResult<AgentToolDetails>> {
 		if (signal?.aborted) throw new Error(`spawn of "${params.id}" aborted before start`);
 
@@ -1326,7 +1413,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		try {
 			const config = await getConfig(cwd);
 			// config.model overrides the inherited parent model; unset means inherit.
-			const childModel = config.model && cachedRegistry ? resolveChildModel(config.model, cachedRegistry) : model;
+			const childModel = modelOverride ?? (config.model && cachedRegistry ? resolveChildModel(config.model, cachedRegistry) : model);
 			if (childDepth > config.maxDepth) {
 				throw new Error(
 					`Cannot spawn agent "${params.id}": depth ${childDepth} exceeds configured maxDepth ${config.maxDepth}.`,
@@ -1390,6 +1477,63 @@ export default function multiAgent(pi: ExtensionAPI) {
 		}
 	}
 
+	async function spawnPanel(callerId: string | undefined, params: { id: string; system_prompt: string; task: string; timeout_seconds?: number; contract: unknown; panel?: { size?: number; models?: string[] } }, model: Model<any>, cwd: string, signal?: AbortSignal, onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void): Promise<AgentToolResult<AgentToolDetails>> {
+		const config = await getConfig(cwd);
+		const models = params.panel?.models;
+		const size = params.panel?.size;
+		if (models && size !== undefined && models.length !== size) throw new Error(`Panel models length ${models.length} does not match size ${size}`);
+		let resolvedSpecs = models;
+		if (!models && config.panelModels) {
+			if (size !== undefined && size > config.panelModels.length) throw new Error(`Panel size ${size} exceeds configured panelModels length ${config.panelModels.length}`);
+			resolvedSpecs = size === undefined ? config.panelModels : config.panelModels.slice(0, size);
+		}
+		const n = resolvedSpecs?.length ?? size;
+		if (n === undefined) throw new Error("Panel requires size or models");
+		if (!Number.isInteger(n) || n < 2 || n > 5) throw new Error(`Panel size ${n} must be between 2 and 5`);
+		if (children.size + reservedIds.size + n > config.maxLiveAgents) throw new Error(`Panel of ${n} exceeds maxLiveAgents cap ${config.maxLiveAgents} (live count ${children.size + reservedIds.size})`);
+		if (resolvedSpecs && !cachedRegistry) throw new Error("pi-agents: cannot resolve panel models because the model registry is not available");
+		// Precedence: explicit per-member models, configured panelModels, configured child model, then inherited parent model.
+		const memberModels = resolvedSpecs ? resolvedSpecs.map((spec) => resolveChildModel(spec, cachedRegistry as ModelRegistry)) : Array(n).fill(config.model && cachedRegistry ? resolveChildModel(config.model, cachedRegistry) : model);
+		const memberParams = Array.from({ length: n }, (_, i) => ({ ...params, id: `${params.id}-${i + 1}`, panel: undefined }));
+		let finished = 0;
+		// Each member's spawnChild already aborts its agent on the shared signal.
+		let firstFailure: unknown;
+		let failureSeen = false;
+		let teardownStarted = false;
+		const promises = memberParams.map((p, i) => spawnChild(callerId, p, model, cwd, signal, undefined, memberModels[i]).catch((reason: unknown) => {
+			if (!teardownStarted) {
+				teardownStarted = true;
+				firstFailure = reason;
+				failureSeen = true;
+				for (const other of memberParams) if (other.id !== p.id) killSubtree(other.id);
+			}
+			throw reason;
+		}).finally(() => {
+			finished++;
+			onUpdate?.({ content: [{ type: "text", text: `Panel ${params.id}: ${finished}/${n} members finished` }], details: { childId: params.id, activity: [], reports: [], done: false } });
+		}));
+		const settled = await Promise.allSettled(promises);
+		if (failureSeen) throw new Error(`Panel member failed: ${firstFailure instanceof Error ? firstFailure.message : String(firstFailure)}`);
+		const results = settled.map((r) => (r as PromiseFulfilledResult<AgentToolResult<AgentToolDetails>>).value);
+		const members = results.map((r, i) => ({ id: memberParams[i].id, model: `${memberModels[i].provider}/${memberModels[i].id}`, answers: r.details?.answers, reports: r.details?.reports ?? [] }));
+		const questions = normalizeContract(params.contract, `panel "${params.id}"`);
+		const tally = tallyPanel(questions, members);
+		const lines = [`Panel "${params.id}": ${n} members, ${new Set(members.map((m) => m.model)).size} distinct models`];
+		if (tally.disagreementCount) lines.unshift(`DISAGREEMENT on ${tally.disagreementCount}/${tally.questions.filter((q) => !q.freeText).length} tallyable question(s)`);
+		for (const q of tally.questions) {
+			lines.push(`${q.prompt} — ${q.freeText ? "[free-text — compare manually, not a consensus]" : q.unanimous ? "[unanimous]" : "[split]"}`);
+			for (const g of q.groups) {
+				lines.push(`  ${g.value} (${g.count}): ${g.memberIds.join(", ")} [${g.memberIds.map((id) => members.find((m) => m.id === id)?.model).join(", ")}]`);
+				if (q.freeText || !q.unanimous) for (const id of g.memberIds) {
+					const a = members.find((m) => m.id === id)?.answers?.find((a) => a.id === q.questionId);
+					lines.push(`    ${id}: ${stripControlSequences(a ? (a.label ?? a.value) : "no answer")}`);
+				}
+			}
+		}
+		for (const member of members) for (const report of member.reports) lines.push(`  ${member.id}: ${stripControlSequences(report)}`);
+		return { content: [{ type: "text", text: lines.join("\n") }], details: { childId: params.id, activity: [], reports: [], contract: questions, done: true, panel: { members, tally } } };
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
 		clearConfigCache();
 		orchestratorOn = false;
@@ -1399,6 +1543,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		try {
 			const config = await getConfig(ctx.cwd);
 			if (config.model) resolveChildModel(config.model, ctx.modelRegistry);
+			if (config.panelModels) for (const spec of config.panelModels) resolveChildModel(spec, ctx.modelRegistry);
 			if (config.orchestrator) applyOrchestrator(true, ctx);
 		} catch (err) {
 			if (ctx.hasUI) {
@@ -1428,6 +1573,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		label: "Spawn Agent",
 		description:
 			"Spawn a child agent with its own system prompt, task, and contract. " +
+			"Pass `panel` to get a second opinion instead of judging alone: N independent children answer the same contract on different models and the result is an agreement tally. " +
 			"The contract is the child's deliverable: AskUserQuestion-style questions the child must answer " +
 			"via its submit_answers tool before its run can end; the tool result is those answers as data. " +
 			"Children get read, write, edit, bash, report (progress only), submit_answers, and descendant-scoped orchestration tools. " +
@@ -1441,6 +1587,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		parameters: spawnSchema,
 		promptGuidelines: [
 			"When write, edit, and bash are unavailable (orchestrator mode), perform all file mutations by spawning executor agents via spawn_agent; keep using read, find, grep, and ls directly for context and verification.",
+			"Do not self-judge a ship/block, safety, or correctness call — get a second opinion. When the decision is a judgment rather than a lookup, invoke a panel: use `panel: {}` when `panelModels` is configured; otherwise pass an explicit `models` list. Always give the panel an enumerated verdict question; consensus is only mechanical on questions with options.",
 		],
 
 		renderCall(args, theme, context) {
@@ -1457,7 +1604,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 			cachedRegistry ??= ctx.modelRegistry;
 			cachedGetApiKey ??= (provider: string) => ctx.modelRegistry.getApiKeyForProvider(provider);
-			return await spawnChild(undefined, params, model, ctx.cwd, signal, onUpdate);
+			return params.panel ? await spawnPanel(undefined, params, model, ctx.cwd, signal, onUpdate) : await spawnChild(undefined, params, model, ctx.cwd, signal, onUpdate);
 		},
 	});
 

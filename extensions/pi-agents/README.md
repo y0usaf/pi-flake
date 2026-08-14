@@ -40,6 +40,7 @@ Example:
   "maxDepth": 1,
   "maxLiveAgents": 6,
   "model": "anthropic/claude-haiku-4-5",
+  "panelModels": ["anthropic/claude-haiku-4-5", "openai/gpt-4o-mini", "google/gemini-2.5-flash"],
   "orchestrator": false
 }
 ```
@@ -63,11 +64,13 @@ Defaults: `maxDepth: 1`, `maxLiveAgents: 6`, no `model` override, `orchestrator:
 
 Unset means children inherit whatever model the parent session has active. A spec that resolves to nothing fails loudly: the session-start notification reports it and `spawn_agent` throws, rather than silently falling back. Descendants use the same configured model, not their parent's.
 
+`panelModels` is the default roster for panels: an array of 2–5 model specs, one per member. It is used when a `spawn_agent` call passes `panel: {}` (or `panel: { size }`) without an explicit `models` list. Model diversity is the point — N clones of one model agree because they are the same function, not because the answer is right.
+
 Unknown keys in `pi-agents.json` are a hard error, so a typo like `"models"` is reported instead of being silently ignored: a UI notification fires at session start, and `spawn_agent` throws until the config is fixed.
 
 ## Tools
 
-### `spawn_agent(id, system_prompt, task, contract, [timeout_seconds])`
+### `spawn_agent(id, system_prompt, task, contract, [timeout_seconds], [panel])`
 
 Creates a new child agent with its own system prompt. The child gets `read`, `write`, `edit`, `bash`, `report`, `submit_answers`, and descendant-scoped `spawn_agent`/`kill_agent`/`list_agents` tools. Blocks until the contract is fulfilled.
 
@@ -80,6 +83,7 @@ A child is **removed as soon as its contract is fulfilled** — spawn is a typed
 Multiple `spawn_agent` calls in one turn run concurrently (parallel tool execution). Spawning is rejected when it would exceed configured `maxDepth` or `maxLiveAgents`.
 
 - `timeout_seconds` — optional, must be a finite number greater than 0. If the child is still running when the deadline expires it is aborted, removed from the registry, and an error is thrown.
+- `panel` — optional `{ size?: number, models?: string[] }` for an independent panel on one identical contract. `models` gives each member its own model spec, resolved by the same resolver used for configured models; its length sets the member count. `size` alone makes that many clones (of the configured child model, or the parent's). If both are present they must agree, and the final count must be 2–5. Members run concurrently with ids `<id>-1` through `<id>-N`; the panel id itself is never registered. The result is one aggregate containing a per-question agreement tally, with `DISAGREEMENT` leading when members split. Tallying is mechanical only for questions with enumerated options; free-text answers are listed verbatim, not presented as consensus. A partial failure kills surviving members and fails the whole panel.
 
 **File-system access:** child `read`, `write`, `edit`, and `bash` are pi's built-in tools, created against the child's inherited working directory. None of them are confined to that tree — absolute paths outside it are accepted, and `bash` has the same OS-level file and network access as the user running pi. There is no sandbox; the working directory is a default, not a boundary.
 
