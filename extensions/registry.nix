@@ -42,10 +42,10 @@
     source = "inline";
     dir = "retired/pi-tools";
   };
-  agent = {
+  fleet = {
     stage = "active";
     source = "inline";
-    dir = "pi-agent";
+    dir = "pi-fleet";
   };
   sentinel = {
     stage = "active";
