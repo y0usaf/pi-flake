@@ -1,15 +1,18 @@
 # pi-flake
 
-Nix flake for building [pi](https://github.com/earendil-works/pi) with optional extension bundles.
+Nix flake for building [pi](https://github.com/earendil-works/pi) and its forks
+([prime-agent](https://github.com/PrimeIntellect-ai/prime-agent),
+[prime-bun](https://github.com/sng-asyncfunc/prime-bun)) with optional
+extension bundles.
 
 **Features:**
-- Base `pi` package built from source
-- Pre-configured extension packages
-- Upstream tool controls incl. `--exclude-tools`
-- Optional persistent `/tools` + `/extensions` UI via `pi-management`
-- **Builder functions** for custom extension combinations
+- Base `pi` package built from source with upstream patches
+- `prime-agent` and `prime-bun` variants built from their own sources
+- Pre-configured extension packages with lifecycle stages (active/testing/paused/retired)
+- `pi-full`: base pi with all active extensions bundled
+- Builder functions for custom extension combinations
 - Flag-driven extension selection for downstream flakes
-- Bundled extensions load automatically without writing to `settings.json`
+- Bundled extensions load automatically via `PI_DEFAULT_PACKAGES` — no `settings.json` edits
 
 ---
 
@@ -18,25 +21,32 @@ Nix flake for building [pi](https://github.com/earendil-works/pi) with optional 
 ### Install base pi (no extensions)
 
 ```bash
-nix profile install github:your-org/pi-flake#pi
+nix profile install github:y0usaf/pi-flake#pi
 # OR in your flake:
 # inputs.pi-flake.packages.x86_64-linux.pi
 ```
 
-### Install pi with all extensions pre-bundled
+### Install pi with all active extensions
 
 ```bash
-nix profile install github:your-org/pi-flake#pi-full
+nix profile install github:y0usaf/pi-flake#pi-full
 # OR in your flake:
 # inputs.pi-flake.packages.x86_64-linux.pi-full
+```
+
+### Install a fork variant
+
+```bash
+nix profile install github:y0usaf/pi-flake#prime-agent
+nix profile install github:y0usaf/pi-flake#prime-agent-full   # prime-agent + chronobreak
+nix profile install github:y0usaf/pi-flake#prime-bun           # Bun-compiled standalone binary
 ```
 
 ### Build custom extension bundle
 
 ```nix
-# In your flake:
 {
-  inputs.pi-flake.url = "github:your-org/pi-flake";
+  inputs.pi-flake.url = "github:y0usaf/pi-flake";
   inputs.nixpkgs.follows = "pi-flake/nixpkgs";
 
   outputs = { self, pi-flake, nixpkgs }: let
@@ -47,8 +57,7 @@ nix profile install github:your-org/pi-flake#pi-full
       inherit pkgs;
       pi = pi-flake.packages.${system}.pi;
       extensions = {
-        # Only include extensions you want
-        hashline = pi-flake.packages.${system}."pi-hashline";
+        webfetch = pi-flake.packages.${system}."pi-webfetch";
         "gecko-websearch" = pi-flake.packages.${system}."pi-gecko-websearch";
       };
     };
@@ -58,11 +67,12 @@ nix profile install github:your-org/pi-flake#pi-full
 
 ### Build from boolean extension flags
 
-Flake `inputs` cannot pass arbitrary booleans into another flake's outputs. Use a flag attrset in your consuming flake and build a package from it:
+Flake `inputs` cannot pass arbitrary booleans into another flake's outputs.
+Use a flag attrset in your consuming flake:
 
 ```nix
 {
-  inputs.pi-flake.url = "github:your-org/pi-flake";
+  inputs.pi-flake.url = "github:y0usaf/pi-flake";
   inputs.nixpkgs.follows = "pi-flake/nixpkgs";
 
   outputs = { self, pi-flake, nixpkgs }: let
@@ -72,29 +82,28 @@ Flake `inputs` cannot pass arbitrary booleans into another flake's outputs. Use 
     packages.${system}.my-pi = pi-flake.lib.piWithExtensionFlags {
       inherit pkgs;
       extensionFlags = {
-        "gecko-websearch" = false;
-        rtk = false;
-        interview = true;
-        management = false;
+        aliases = true;
+        chronobreak = true;
         webfetch = true;
-        hashline = true;
-
-        review = true;
-        vcc = true;
+        "gecko-websearch" = false;
+        sentinel = true;
+        ponytail = true;
         caveman = true;
+        recap = true;
       };
     };
   };
 }
 ```
 
-Only flags set to `true` are copied into the bundled wrapper.
+Only flags set to `true` are bundled. Unknown flags fail the build with an
+assertion.
 
 ### NixOS module
 
 ```nix
 {
-  inputs.pi-flake.url = "github:your-org/pi-flake";
+  inputs.pi-flake.url = "github:y0usaf/pi-flake";
   inputs.pi-flake.inputs.nixpkgs.follows = "nixpkgs";
 
   outputs = { nixpkgs, pi-flake, ... }: {
@@ -106,18 +115,13 @@ Only flags set to `true` are copied into the bundled wrapper.
           programs.pi = {
             enable = true;
 
-            # Option 1: default bundled extensions, same contents as .#pi-full
+            # Option 1: all active extensions, same contents as .#pi-full
             full = true;
 
-            # Option 2: selected bundled extensions
+            # Option 2: selected extensions
             # extensions = {
-            #   interview = true;
-            #   # management = true; # persistent disabled-tools + disabled-extensions menus
             #   webfetch = true;
-            #   hashline = true;
-
-            #   review = true;
-            #   vcc = true;
+            #   ponytail = true;
             #   caveman = true;
             # };
 
@@ -131,27 +135,27 @@ Only flags set to `true` are copied into the bundled wrapper.
 }
 ```
 
-The module installs `config.programs.pi.finalPackage` into `environment.systemPackages` and sets `PI_SKIP_VERSION_CHECK=1`. Bundled extensions are loaded by the installed wrapper; no `settings.json` entries or extra Nix config are needed.
+The module installs `config.programs.pi.finalPackage` into
+`environment.systemPackages` and sets `PI_SKIP_VERSION_CHECK=1` and
+`PI_TELEMETRY=0`. Bundled extensions load through the installed wrapper; no
+`settings.json` entries or extra Nix config are needed.
 
 ---
 
 ## Available Extensions
 
+Active extensions (shipped in `pi-full`):
+
 | Name | Description |
 |------|-------------|
-| `pi-gecko-websearch` | Web search using Firefox's engine |
-| `pi-rtk` | `rtk rewrite` shell-command optimization that reduces shell output before it reaches the model |
-| `pi-aphrodite` | Intercepts oversized tool output, stores it locally, and substitutes a `<<<CCR:hash|type|size>>>` marker that the `aphrodite_retrieve` tool expands |
-| `pi-interview` | Main-session ask-user questionnaire + optional separate-context auto-answers (`/interview`) |
-| `pi-management` | Persistent disabled-tools (`/tools`) and disabled-extensions (`/extensions`) menus |
-| `pi-webfetch` | HTTP fetching utilities |
-| `pi-hashline` | Strict hashline v3 read/edit tool override |
-
-| `pi-review` | `/review` and `/end-review` code review workflow |
-| `pi-vcc` | Algorithmic conversation compactor with `/pi-vcc`, `/pi-vcc-recall`, and `vcc_recall` |
+| `pi-aliases` | Configurable bash command aliases — defaults: grep→rg, find→fd |
+| `pi-chronobreak` | Terminates assistant generation loops: detects repeated output in a turn, aborts, scrubs context, re-runs with a decisive-action directive |
+| `pi-webfetch` | Fetch a URL and return its content as markdown |
+| `pi-gecko-websearch` | Web search and browsing via headless Gecko browser (Marionette) |
+| `pi-sentinel` | Detects abrupt run endings via a sparse context-free judge, continues the run when the stop was a cutoff |
+| `pi-ponytail` | Lazy senior dev mode — cuts unnecessary code, keeps safety |
 | `pi-caveman` | Terse-response mode with configurable compression levels |
-| `pi-recurse` | Recursion primitive: the `recurse` tool spawns a full `pi --print` child session to fulfill a task |
-| `pi-quiet` | OMP-style prompt chrome: no header, live status-bar editor border (model/thinking/cwd/ctx/cost), face-prefixed input line |
+| `pi-recap` | Claude Code-style session recap: one-line recap above the status bar |
 
 ## Extension Lifecycle
 
@@ -162,24 +166,30 @@ The module installs `config.programs.pi.finalPackage` into `environment.systemPa
 | `active` | In the default bundle (`pi-full`) and built by `nix flake check` |
 | `testing` | Built and checked, but excluded from the default bundle; opt-in via `programs.pi.extensions.<name>` (NixOS module emits a warning) |
 | `paused` | Source kept in the tree, but not built, bundled, or checked |
-| `retired` | Entry removed from the registry and source deleted from `extensions/` |
+| `retired` | Source moved to `extensions/retired/`, not built or bundled |
 
-Promote/demote an extension by editing its `stage` in `extensions/registry.nix`; the flake's packages, checks, default bundle, and the NixOS module all follow from that single declaration.
+Promote/demote an extension by editing its `stage` in
+`extensions/registry.nix`; packages, checks, the default bundle, and the NixOS
+module all follow from that single declaration.
 
 ---
 
 ## How Extension Auto-Discovery Works
 
-**Bundled** extensions are copied into `$out/share/pi/extensions/<name>/`. The wrapper exposes `$out/share/pi` through `PI_DEFAULT_PACKAGES`, and the patched Pi package manager treats that path as a temporary/default package source at runtime.
+Bundled extensions are copied into `$out/share/pi/extensions/<name>/`. The
+wrapper exposes `$out/share/pi` through `PI_DEFAULT_PACKAGES`, and the patched
+Pi package manager treats that path as a temporary/default package source at
+runtime.
 
 When you run the wrapped `pi`:
 
 1. The wrapper prepends its bundled package root to `PI_DEFAULT_PACKAGES`.
 2. Pi resolves resources from that package root using the same package/convention discovery as normal package sources.
-3. The extensions are loaded for that process only.
+3. The extensions load for that process only.
 4. User/project `settings.json` files are not created or modified.
 
-`--no-extensions` still disables these bundled defaults because they enter through the normal package resolution path, not as CLI-forced extension paths.
+`--no-extensions` still disables these bundled defaults because they enter
+through the normal package resolution path, not as CLI-forced extension paths.
 
 ---
 
@@ -194,14 +204,14 @@ If you want full control:
 
 2. Build your chosen extensions:
    ```bash
-   nix build .#pi-hashline
+   nix build .#pi-webfetch
    ```
 
 3. Add to `~/.pi/agent/settings.json`:
    ```json
    {
      "packages": [
-       "/path/to/result-pi-hashline"
+       "/path/to/result-pi-webfetch"
      ]
    }
    ```
@@ -210,34 +220,26 @@ If you want full control:
 
 ## Packages
 
-### Extension packages
-
-```nix
-inputs.pi-flake.packages.<system>."pi-gecko-websearch"
-inputs.pi-flake.packages.<system>."pi-rtk"
-inputs.pi-flake.packages.<system>."pi-aphrodite"
-inputs.pi-flake.packages.<system>."pi-interview"
-inputs.pi-flake.packages.<system>."pi-management"
-inputs.pi-flake.packages.<system>."pi-webfetch"
-inputs.pi-flake.packages.<system>."pi-hashline"
-
-inputs.pi-flake.packages.<system>."pi-review"
-inputs.pi-flake.packages.<system>."pi-vcc"
-inputs.pi-flake.packages.<system>."pi-caveman"
-inputs.pi-flake.packages.<system>."pi-recurse"
-inputs.pi-flake.packages.<system>."pi-quiet"
-```
-
-`pi-interview` is bundled in `pi-full` but defaults to `off`. Use `/interview manual`, `/interview auto [provider/model]`, or `/interview strict`; configuration persists to `~/.pi/agent/interview.json`.
-
-`pi-review` PR review mode shells out to `gh`; install and authenticate GitHub CLI separately if you want `/review pr ...`.
-
-`pi-vcc` registers `/pi-vcc`, `/pi-vcc-recall`, `vcc_recall`, and a `session_before_compact` hook. By default it does not override Pi's normal `/compact`; set `overrideDefaultCompaction: true` in `~/.pi/agent/pi-vcc-config.json` to make VCC handle all compaction paths.
-
 ### Variants
 
 - `pi` - Base pi, no extensions
-- `pi-full` - pi with default extensions bundled and loaded at runtime
+- `pi-full` - pi with all active extensions bundled
+- `prime-agent` - Prime Intellect fork, node bundle with vendored runtime node_modules
+- `prime-agent-full` - prime-agent + chronobreak
+- `prime-bun` - Bun-compiled standalone binary, parallel to prime-agent
+
+### Extension packages
+
+```nix
+inputs.pi-flake.packages.<system>."pi-aliases"
+inputs.pi-flake.packages.<system>."pi-chronobreak"
+inputs.pi-flake.packages.<system>."pi-webfetch"
+inputs.pi-flake.packages.<system>."pi-gecko-websearch"
+inputs.pi-flake.packages.<system>."pi-sentinel"
+inputs.pi-flake.packages.<system>."pi-ponytail"
+inputs.pi-flake.packages.<system>."pi-caveman"
+inputs.pi-flake.packages.<system>."pi-recap"
+```
 
 ### Library helpers / modules
 
@@ -245,6 +247,9 @@ inputs.pi-flake.packages.<system>."pi-quiet"
 - `pi-flake.lib.piWithExtensions { pkgs; pi; extensions; }` - bundle an explicit extension attrset
 - `pi-flake.lib.piWithExtensionFlags { pkgs; extensionFlags; }` - bundle extensions whose flags are `true`
 - `pi-flake.lib.extensionPackagesFor system` - available extension attrset keyed by bundled name
+- `pi-flake.lib.defaultExtensionPackagesFor system` - active-stage extensions only (what `pi-full` uses)
+- `pi-flake.lib.enabledExtensions { system; extensionFlags; }` - resolve flags to extension packages
+- `pi-flake.lib.extensionRegistry` - the lifecycle registry
 
 ---
 
@@ -254,10 +259,15 @@ inputs.pi-flake.packages.<system>."pi-quiet"
 # Build base pi
 nix build .#pi
 
-# Build extension
-nix build .#pi-hashline
+# Build an extension
+nix build .#pi-webfetch
+
 # Build full bundle
 nix build .#pi-full
+
+# Build fork variants
+nix build .#prime-agent
+nix build .#prime-bun
 
 # Enter dev shell
 nix develop
@@ -267,7 +277,6 @@ nix develop -c biome lint .
 
 # Run the Biome flake check only (replace the system if needed)
 nix build .#checks.x86_64-linux.biome-lint
-
 ```
 
 ---
@@ -283,6 +292,7 @@ Current patch set applied to upstream `pi`:
 - `avoid-network-model-regeneration.patch` - Uses checked-in model registry during builds
 - `default-package-sources-env.patch` - Adds non-persistent `PI_DEFAULT_PACKAGES` package sources for Nix-bundled resources
 - `user-message-bar.patch` - Adds an optional theme-gated Crush-style user-message gutter bar
+- `tui-overlay-invalidate-guard.patch` - Guards TUI overlay invalidation
 
 Removed patches and their replacements:
 
