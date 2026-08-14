@@ -704,8 +704,15 @@ EOF
     }: let
       # Each bundled extension dir is its own package root so readPiManifest
       # finds its package.json and loads .pi.extensions/.pi.skills/.pi.prompts.
+      # Load order is explicit priority (ascending), not alphabetical: pi
+      # resolves tool-name collisions first-wins, so pi-agents (priority 10)
+      # must load before pi-yourshell (100) or the main session keeps the
+      # $SHELL bash tool after orchestrator mode strips it.
       extensionPackageSources = pkgs.lib.concatStringsSep ":" (
-        pkgs.lib.mapAttrsToList (name: _: "@out@/share/pi/extensions/${name}") extensions
+        map (name: "@out@/share/pi/extensions/${name}")
+          (pkgs.lib.sort
+            (a: b: (extensionRegistry.${a}.priority or 100) < (extensionRegistry.${b}.priority or 100))
+            (builtins.attrNames extensions))
       );
     in
       pkgs.stdenvNoCC.mkDerivation {

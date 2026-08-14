@@ -16,31 +16,37 @@
     stage = "active";
     source = "inline";
     dir = "pi-aliases";
+    priority = 20;
   };
   agents = {
     stage = "active";
     source = "inline";
     dir = "pi-agents";
+    priority = 10;
   };
   chronobreak = {
     stage = "active";
     source = "inline";
     dir = "pi-chronobreak";
+    priority = 40;
   };
   webfetch = {
     stage = "active";
     source = "inline";
     dir = "pi-webfetch";
+    priority = 90;
   };
   yourshell = {
     stage = "active";
     source = "inline";
     dir = "pi-yourshell";
+    priority = 100;
   };
   gecko-websearch = {
     stage = "active";
     source = "inline";
     dir = "pi-gecko-websearch";
+    priority = 50;
   };
   z-exec = {
     stage = "retired";
@@ -61,6 +67,7 @@
     stage = "active";
     source = "inline";
     dir = "pi-sentinel";
+    priority = 80;
   };
   hashline = {
     stage = "retired";
@@ -80,14 +87,17 @@
   ponytail = {
     stage = "active";
     source = "vendored";
+    priority = 60;
   };
   caveman = {
     stage = "active";
     source = "vendored";
+    priority = 30;
   };
   recap = {
     stage = "active";
     source = "vendored";
     dir = "pi-recap";
+    priority = 70;
   };
 }
