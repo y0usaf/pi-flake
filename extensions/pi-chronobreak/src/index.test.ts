@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { detectLoop } from "./detector";
+import { detectLoop } from "./index";
 import chronobreak from "./index";
 
 // Real text from the session that motivated this extension.

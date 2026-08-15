@@ -1,5 +1,4 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { detectLoop } from "./detector";
 
 /**
  * chronobreak - terminates assistant generation loops.
@@ -17,23 +16,55 @@ import { detectLoop } from "./detector";
 
 const SCRUB_TEXT = "[generation loop terminated by chronobreak - re-running]";
 
-// PI_RETRY_MAX: max consecutive loop re-runs per user message. 0 or unset = no cap.
-const MAX_RETRIES = (() => {
-  const v = process.env.PI_RETRY_MAX;
-  if (v === undefined || v === "" || v === "0") return 0;
-  const n = parseInt(v, 10);
-  return Number.isFinite(n) && n > 0 ? n : 0;
-})();
-let retryCount = 0;
+// --- Loop detection core (pure: text in, verdict out, no state) ---
+
+const MAX_SEGMENT_REPEAT = 3;
+const MIN_CHUNK_LEN = 12;
+
+export interface LoopVerdict {
+  looping: boolean;
+  sample: string;
+  count: number;
+}
+
+function keyOf(chunk: string): string {
+  return chunk
+    .replace(/\s+/g, " ")
+    .replace(/[^\p{L}\p{N} ]/gu, "")
+    .trim()
+    .toLowerCase();
+}
+
+function segmentize(text: string): string[] {
+  return text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map(keyOf)
+    .filter((s) => s.length >= MIN_CHUNK_LEN);
+}
+
+/**
+ * Verdict is computed fresh from the full text. This is deliberate: the
+ * message_update event carries the WHOLE accumulated message, so keeping
+ * counts across calls would double-count earlier segments and false-trigger.
+ */
+export function detectLoop(text: string): LoopVerdict {
+  const counts = new Map<string, number>();
+  let sample = "";
+  let count = 0;
+  for (const key of segmentize(text)) {
+    const n = (counts.get(key) ?? 0) + 1;
+    counts.set(key, n);
+    if (n > count) {
+      count = n;
+      sample = key;
+    }
+  }
+  return { looping: count >= MAX_SEGMENT_REPEAT, sample, count };
+}
 
 export default function (pi: ExtensionAPI): void {
   let terminating = false;
   let pendingNudge: string | undefined;
-
-  pi.on("input", (event) => {
-    if (event.source === "extension") return;
-    retryCount = 0;
-  });
 
   function textOf(message: { content?: Array<{ type?: string; text?: string }> }): string {
     if (!message.content) return "";
@@ -65,15 +96,6 @@ export default function (pi: ExtensionAPI): void {
     if (text.length === 0) return;
     const verdict = detectLoop(text);
     if (!verdict.looping) return;
-
-    retryCount++;
-    if (MAX_RETRIES > 0 && retryCount > MAX_RETRIES) {
-      ctx.ui.notify(
-        'chronobreak: retry cap hit (' + MAX_RETRIES + '), leaving loop uncut.',
-        "warning",
-      );
-      return;
-    }
 
     terminating = true;
     ctx.ui.notify(
