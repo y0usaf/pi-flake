@@ -43,9 +43,7 @@ async function safeFetch(url: string, signal?: AbortSignal): Promise<Response> {
 	let current = url;
 
 	for (let i = 0; i <= MAX_REDIRECTS; i++) {
-		const signals = signal
-			? [signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]
-			: [AbortSignal.timeout(FETCH_TIMEOUT_MS)];
+		const signals = [AbortSignal.timeout(FETCH_TIMEOUT_MS), ...(signal ? [signal] : [])];
 		const res = await fetch(current, {
 			redirect: "manual",
 			signal: AbortSignal.any(signals),
@@ -79,12 +77,13 @@ async function safeFetch(url: string, signal?: AbortSignal): Promise<Response> {
 // Pi's fallback result renderer prints every content line regardless of the
 // row's expanded state, so a 2000-line page dump floods collapsed rows too.
 // Collapsed rows get a head slice plus an expand hint, matching built-in grep.
+const COLLAPSED_LINES = 10;
+
 function renderCollapsibleText(
 	result: { content: { type: string; text?: string }[] },
 	options: { expanded: boolean; isPartial: boolean },
 	theme: any,
 	context: any,
-	collapsedLines: number,
 ): Text {
 	const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 	const body = result.content.map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("\n");
@@ -99,14 +98,14 @@ function renderCollapsibleText(
 	}
 
 	const lines = body.split("\n");
-	if (options.expanded || lines.length <= collapsedLines) {
+	if (options.expanded || lines.length <= COLLAPSED_LINES) {
 		text.setText(theme.fg("toolOutput", body));
 		return text;
 	}
 
-	const remaining = lines.length - collapsedLines;
+	const remaining = lines.length - COLLAPSED_LINES;
 	text.setText(
-		theme.fg("toolOutput", lines.slice(0, collapsedLines).join("\n")) +
+		theme.fg("toolOutput", lines.slice(0, COLLAPSED_LINES).join("\n")) +
 			theme.fg("muted", `\n... (${remaining} more lines, `) +
 			keyHint("app.tools.expand", "to expand") +
 			theme.fg("muted", ")"),
@@ -147,7 +146,7 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderResult(result: any, options: any, theme: any, context: any) {
-			return renderCollapsibleText(result, options, theme, context, 10);
+			return renderCollapsibleText(result, options, theme, context);
 		},
 
 		async execute(_toolCallId, params, signal, onUpdate, _ctx) {
@@ -175,7 +174,7 @@ export default function (pi: ExtensionAPI) {
 				fallbackUrl = originalUrl;
 			}
 
-			onUpdate?.({ content: [{ type: "text", text: `Fetching ${fetchUrl}...` }], details: undefined });
+			onUpdate?.({ content: [{ type: "text", text: `Fetching ${fetchUrl}...` }] });
 
 			let lastAttemptUrl = fetchUrl;
 			try {
@@ -186,10 +185,7 @@ export default function (pi: ExtensionAPI) {
 					res = await safeFetch(fetchUrl, signal);
 				} catch (err) {
 					if (!fallbackUrl || signal?.aborted) throw err;
-					onUpdate?.({
-						content: [{ type: "text", text: `HTTPS fetch failed; retrying ${fallbackUrl}...` }],
-						details: undefined,
-					});
+					onUpdate?.({ content: [{ type: "text", text: `HTTPS fetch failed; retrying ${fallbackUrl}...` }] });
 					effectiveUrl = fallbackUrl;
 					lastAttemptUrl = fallbackUrl;
 					res = await safeFetch(fallbackUrl, signal);
@@ -205,7 +201,7 @@ export default function (pi: ExtensionAPI) {
 
 				let content: string;
 				if (contentType.includes("text/html")) {
-					onUpdate?.({ content: [{ type: "text", text: "Converting HTML to markdown..." }], details: undefined });
+					onUpdate?.({ content: [{ type: "text", text: "Converting HTML to markdown..." }] });
 					const td = await getTurndown();
 					content = td.turndown(rawText);
 				} else {
