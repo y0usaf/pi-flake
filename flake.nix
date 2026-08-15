@@ -35,6 +35,14 @@
       flake = false;
     };
 
+    # fff: fast file search SDK; pi-fff extension overrides grep/find with a
+    # frecency-ranked fuzzy index. Pinned to the published 0.10.3 commit so the
+    # source matches the 0.10.3 prebuilt native binaries fetched from npm.
+    fffSrc = {
+      url = "github:dmtrKovalenko/fff/e2cad2f09ea617d4c024f396f21d80e557f23a17";
+      flake = false;
+    };
+
   };
 
   outputs = {
@@ -45,6 +53,7 @@
     primeBunSrc,
     ponytailSrc,
     cavemanSrc,
+    fffSrc,
   }: let
     systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
     forAllSystems = nixpkgs.lib.genAttrs systems;
@@ -233,6 +242,72 @@
         dir = ./extensions/pi-yourshell;
         copy = ["src"];
         homepage = "https://github.com/y0usaf/pi-flake";
+      };
+
+      # pi-fff: FFF-backed grep/find override. Lazy index (builds on first
+      # grep/find call); pi-agents orchestrator mode activates those tools.
+      # Native libs are prebuilt npm binaries pinned by sha512 (no Rust build).
+      "pi-fff" = let
+        fffPkgJson = builtins.fromJSON (builtins.readFile "${fffSrc}/packages/pi-fff/package.json");
+        fffFetch = url: hash: pkgs.fetchurl { inherit url hash; };
+        fff-bun = fffFetch
+          "https://registry.npmjs.org/@ff-labs/fff-bun/-/fff-bun-0.10.3.tgz"
+          "sha512-KukJ61YeLHvWGgLZQGtAWIkYWhQYVdXcujEioq0UWjjlnSnJvsvm7EMN0JZIDXgG+MOJNii4Ir1+udPxRROf9A==";
+        fff-bin-linux-x64-gnu = fffFetch
+          "https://registry.npmjs.org/@ff-labs/fff-bin-linux-x64-gnu/-/fff-bin-linux-x64-gnu-0.10.3.tgz"
+          "sha512-F1H0tP92FbaJfVzm79ptvHmR21QggNw+tQXUxq77HfKlnBLoT944pWH5MHaKGoz4pkF1Vg/hh0ROUaBTvF9Rmw==";
+        fff-bin-linux-arm64-gnu = fffFetch
+          "https://registry.npmjs.org/@ff-labs/fff-bin-linux-arm64-gnu/-/fff-bin-linux-arm64-gnu-0.10.3.tgz"
+          "sha512-3MsSDY3GHLpA+RygqXs6lMeRRn5NfnhWNf/hWLGK/tmczPdQoMEjH25MhVk0HoCMOgrCP86jsBzF8QD9xgdglQ==";
+        fff-bin-darwin-x64 = fffFetch
+          "https://registry.npmjs.org/@ff-labs/fff-bin-darwin-x64/-/fff-bin-darwin-x64-0.10.3.tgz"
+          "sha512-w2X8VmqjEWASmM5LgoytBUtuJTfnZQycpFE67MytfH+57mIO4SJ7cyxvdXw/LRCMIJOToh2A9hJGrEYSLPLa5Q==";
+        fff-bin-darwin-arm64 = fffFetch
+          "https://registry.npmjs.org/@ff-labs/fff-bin-darwin-arm64/-/fff-bin-darwin-arm64-0.10.3.tgz"
+          "sha512-vMn3N39B+AJsjc24jvYsLvrc5VPo4ztSieeSjBkOYgQaG6coaVpSKPcgipJqPdv8VNLzLXd8j9O6FNP3e7HLrw==";
+      in pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-fff";
+        version = fffPkgJson.version;
+        src = fffSrc + "/packages/pi-fff";
+
+        postPatch = ''
+          # Default to override mode: register grep/find under the built-in names
+          # so pi's first-wins collision resolution replaces the fd/rg-backed tools.
+          sed -i 's/^    "tools-and-ui";$/    "override";/' src/index.ts
+
+          # Lazy indexing: skip the eager index build + autocomplete at session_start.
+          # The index builds on the first grep/find call — which only happens once
+          # pi-agents orchestrator mode activates those tools.
+          sed -i 's/^      registerAutocompleteProvider(ctx);$/      if (currentMode !== "override") registerAutocompleteProvider(ctx);/' src/index.ts
+          sed -i 's/^      await ensureFinder(activeCwd);$/      if (currentMode !== "override") await ensureFinder(activeCwd);/' src/index.ts
+          sed -i 's/^      const atHome = enableHomeDirScanning && isHomeDir(activeCwd);$/      const atHome = currentMode !== "override" \&\& enableHomeDirScanning \&\& isHomeDir(activeCwd);/' src/index.ts
+        '';
+
+        dontBuild = true;
+
+        installPhase = ''
+          runHook preInstall
+          mkdir -p "$out"
+          cp package.json "$out"/
+          cp -r src "$out"/
+
+          mkdir -p "$out/node_modules/@ff-labs"
+          tar -xzf ${fff-bun} -C "$out/node_modules/@ff-labs" && mv "$out/node_modules/@ff-labs/package" "$out/node_modules/@ff-labs/fff-bun"
+          tar -xzf ${fff-bin-linux-x64-gnu} -C "$out/node_modules/@ff-labs" && mv "$out/node_modules/@ff-labs/package" "$out/node_modules/@ff-labs/fff-bin-linux-x64-gnu"
+          tar -xzf ${fff-bin-linux-arm64-gnu} -C "$out/node_modules/@ff-labs" && mv "$out/node_modules/@ff-labs/package" "$out/node_modules/@ff-labs/fff-bin-linux-arm64-gnu"
+          tar -xzf ${fff-bin-darwin-x64} -C "$out/node_modules/@ff-labs" && mv "$out/node_modules/@ff-labs/package" "$out/node_modules/@ff-labs/fff-bin-darwin-x64"
+          tar -xzf ${fff-bin-darwin-arm64} -C "$out/node_modules/@ff-labs" && mv "$out/node_modules/@ff-labs/package" "$out/node_modules/@ff-labs/fff-bin-darwin-arm64"
+          runHook postInstall
+        '';
+
+        passthru.packageName = fffPkgJson.name;
+
+        meta = with lib; {
+          description = fffPkgJson.description;
+          homepage = "https://github.com/dmtrKovalenko/fff";
+          license = licenses.mit;
+          platforms = platforms.all;
+        };
       };
 
       "pi-gecko-websearch" = mkPiExtension {
@@ -516,6 +591,15 @@ EOF
     in {
       pi-build = self.packages.${system}.pi;
 
+      # pi-fff sed patches landed: override mode + lazy index. A silent sed
+      # no-op would leave built-in grep/find untouched — catch it here.
+      pi-fff-override = pkgs.runCommand "pi-fff-override-check" {} ''
+        grep -q '^    "override";$' ${self.packages.${system}."pi-fff"}/src/index.ts
+        grep -q 'if (currentMode !== "override") await ensureFinder' ${self.packages.${system}."pi-fff"}/src/index.ts
+        grep -q 'if (currentMode !== "override") registerAutocompleteProvider' ${self.packages.${system}."pi-fff"}/src/index.ts
+        touch $out
+      '';
+
       biome-lint = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-flake-biome-lint";
         version = "1";
@@ -651,6 +735,7 @@ EOF
         webfetch = self.packages.${system}."pi-webfetch";
         gecko-websearch = self.packages.${system}."pi-gecko-websearch";
         yourshell = self.packages.${system}."pi-yourshell";
+        fff = self.packages.${system}."pi-fff";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.

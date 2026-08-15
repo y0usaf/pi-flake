@@ -94,6 +94,11 @@
     source = "vendored";
     priority = 30;
   };
+  fff = {
+    stage = "active";
+    source = "vendored";
+    priority = 45;
+  };
   recap = {
     stage = "active";
     source = "vendored";

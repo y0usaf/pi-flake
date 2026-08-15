@@ -16,6 +16,23 @@
         "type": "github"
       }
     },
+    "fffSrc": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1786073211,
+        "narHash": "sha256-pE4DsaCvlvgTKJtyV8uGhAQvbJpxpgXlIkoVh8I15qw=",
+        "owner": "dmtrKovalenko",
+        "repo": "fff",
+        "rev": "e2cad2f09ea617d4c024f396f21d80e557f23a17",
+        "type": "github"
+      },
+      "original": {
+        "owner": "dmtrKovalenko",
+        "repo": "fff",
+        "rev": "e2cad2f09ea617d4c024f396f21d80e557f23a17",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1786247143,
@@ -101,6 +118,7 @@
     "root": {
       "inputs": {
         "cavemanSrc": "cavemanSrc",
+        "fffSrc": "fffSrc",
         "nixpkgs": "nixpkgs",
         "piSrc": "piSrc",
         "ponytailSrc": "ponytailSrc",
