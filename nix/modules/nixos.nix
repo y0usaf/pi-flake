@@ -69,7 +69,13 @@ in {
 
     full = mkEnableOption "all bundled pi extensions";
 
-    extensions = {
+    extensions = mkOption {
+      type = types.attrsOf types.bool;
+      default = {};
+      description = ''
+        Per-extension enable flags keyed by extension name. Only lifecycle-active
+        extensions are accepted; unknown names fail the build.
+      '';
     };
 
     extraExtensions = mkOption {
