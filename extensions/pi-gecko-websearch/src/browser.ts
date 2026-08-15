@@ -77,9 +77,9 @@ export class BrowserManager {
 	private readonly waiters: BrowserLease[] = [];
 	private shuttingDown = false;
 
-	constructor(cwd: string = process.cwd()) {
+	constructor() {
 		const globalSettings = readSettings(path.join(getAgentDir(), "settings.json"));
-		const projectSettings = readSettings(path.join(cwd, ".pi", "settings.json"));
+		const projectSettings = readSettings(path.join(process.cwd(), ".pi", "settings.json"));
 		this.settings = { ...globalSettings, ...projectSettings };
 		this.maxBrowsers = clampMaxBrowsers(positiveInt(process.env.PI_GECKO_MAX_BROWSERS) ?? this.settings.maxBrowsers);
 	}
