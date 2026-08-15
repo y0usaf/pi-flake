@@ -23,6 +23,9 @@ const SEARCH_URLS: Record<string, (q: string) => string> = {
 
 const DEFAULT_ENGINE = "duckduckgo";
 
+/** Extract visible page text as a plain JS string. */
+const INNER_TEXT_SCRIPT = `return document.body?.innerText || document.documentElement?.innerText || ""`;
+
 function formatResults(results: SearchResult[]): string {
 	if (results.length === 0) return "No search results found.";
 	return results
@@ -165,7 +168,7 @@ export default function (pi: ExtensionAPI) {
 
 				if (results.length === 0) {
 					const pageText = await client
-						.executeScript(`return document.body?.innerText || document.documentElement?.innerText || ""`, [], 5000)
+						.executeScript(INNER_TEXT_SCRIPT, [], 5000)
 						.catch(() => "");
 					const diagnostic = typeof pageText === "string" ? searchFailureDiagnostic(pageText, engine) : null;
 					if (diagnostic) {
@@ -248,11 +251,7 @@ export default function (pi: ExtensionAPI) {
 					content = typeof result === "string" ? result : JSON.stringify(result, null, 2);
 				} else {
 					update(onUpdate, "Extracting page content...");
-					content = await client.executeScript(
-						`return document.body?.innerText || document.documentElement?.innerText || ""`,
-						[],
-						10_000,
-					);
+					content = await client.executeScript(INNER_TEXT_SCRIPT, [], 10_000);
 				}
 
 				const header = `Content from ${params.url} (${formatSize(Buffer.byteLength(content, "utf-8"))}):\n\n`;
