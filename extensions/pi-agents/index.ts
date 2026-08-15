@@ -164,6 +164,7 @@ const spawnSchema = Type.Object({
 	task: Type.String({ description: "Initial task to assign to the child agent" }),
 	contract: contractSchema,
 	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds to wait for the agent to finish (must be > 0). If the deadline expires the agent is aborted, removed from the registry, and an error is thrown." })),
+	async: Type.Optional(Type.Boolean({ description: "Return immediately after the agent starts; it keeps running in the background. Retrieve its result later with collect_agent. Not valid with panel (panels always block). Default false." })),
 	panel: Type.Optional(Type.Object({
 		size: Type.Optional(Type.Number({ description: "Number of independent panel members (2-5)" })),
 		models: Type.Optional(Type.Array(Type.String(), { description: "One model spec per panel member" })),
@@ -179,6 +180,10 @@ const reportSchema = Type.Object({
 });
 
 const listSchema = Type.Object({});
+
+const collectSchema = Type.Object({
+	id: Type.String({ description: "ID of the asynchronously spawned agent to collect results from" }),
+});
 
 // ---------------------------------------------------------------------------
 // Extension config
@@ -761,6 +766,10 @@ interface ChildState {
 	locked: boolean;
 	/** Set by killSubtree. The owning run removes this state once its prompt settles. */
 	killed: boolean;
+	/** Set for async spawns: the background run promise. */
+	runPromise?: Promise<AgentToolResult<AgentToolDetails>>;
+	/** Error message if an async run failed; surfaced by collect_agent. */
+	error?: string;
 }
 
 function extractLastAssistantText(agent: Agent): string {
@@ -1312,13 +1321,15 @@ export default function multiAgent(pi: ExtensionAPI) {
 			reportCount: state.reports.length,
 			activityCount: state.activity.length,
 			createdAt: state.createdAt,
+			error: state.error,
 		}));
 		const text = agents.length === 0
 			? "No active child agents."
 			: agents.map((agent) =>
 				`• ${agent.id} — ${agent.isRunning ? "running" : "idle"}, depth ${agent.depth}, ` +
 				`${agent.parentId ? `parent ${agent.parentId}` : "root child"}, ${agent.model}, ${agent.reportCount} reports, ` +
-				`contract ${agent.contractFulfilled ? "fulfilled" : "pending"}`,
+				`contract ${agent.contractFulfilled ? "fulfilled" : "pending"}` +
+				`${agent.error ? `, error: ${agent.error}` : ""}`,
 			).join("\n");
 		return { content: [{ type: "text", text }], details: { agents } };
 	}
@@ -1333,7 +1344,8 @@ export default function multiAgent(pi: ExtensionAPI) {
 				"Subject to configured maxDepth and maxLiveAgents limits.",
 			parameters: spawnSchema,
 			execute: async (_toolCallId, params, signal, onUpdate) => {
-				return params.panel ? await spawnPanel(callerId, params, model, cwd, signal, onUpdate) : await spawnChild(callerId, params, model, cwd, signal, onUpdate);
+				if (params.panel && params.async) throw new Error("Async panel spawn is not supported; panels always block until the tally is complete.");
+				return params.panel ? await spawnPanel(callerId, params, model, cwd, signal, onUpdate) : await spawnChild(callerId, params, model, cwd, signal, onUpdate, undefined, params.async);
 			},
 		};
 
@@ -1360,7 +1372,15 @@ export default function multiAgent(pi: ExtensionAPI) {
 			execute: async () => listAgentsResult(callerId),
 		};
 
-		return [spawnTool as AgentTool<any>, killTool as AgentTool<any>, listTool as AgentTool<any>];
+		const collectTool: AgentTool<typeof collectSchema> = {
+			name: "collect_agent",
+			label: "Collect Agent",
+			description: "Collect the result of an asynchronously spawned descendant (spawn_agent with async: true). Blocks until its run finishes, returns its contract answers, and removes it. Throws its error if the run failed.",
+			parameters: collectSchema,
+			execute: async (_toolCallId, params) => collectAgent(callerId, params),
+		};
+
+		return [spawnTool as AgentTool<any>, killTool as AgentTool<any>, listTool as AgentTool<any>, collectTool as AgentTool<any>];
 	}
 
 	function buildChildAgent(
@@ -1394,6 +1414,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		signal?: AbortSignal,
 		onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void,
 		modelOverride?: Model<any>,
+		asyncMode?: boolean,
 	): Promise<AgentToolResult<AgentToolDetails>> {
 		if (signal?.aborted) throw new Error(`spawn of "${params.id}" aborted before start`);
 
@@ -1449,31 +1470,68 @@ export default function multiAgent(pi: ExtensionAPI) {
 			const onAbort = () => child.abort();
 			signal?.addEventListener("abort", onAbort, { once: true });
 
-			const unsub = subscribeChild(child, params.id, state, onUpdate);
-			try {
-				const runPromise = runUntilContractFulfilled(state, `${params.task}\n\n${renderContractBlock(contract.questions)}`, signal);
-				await withOptionalTimeout(child, params.id, runPromise, params.timeout_seconds);
-				if (state.killed) {
-					throw new Error(`Agent "${params.id}" was killed while running`);
+			// Async must not emit partial updates after the tool returns; drop
+			// onUpdate, activity is still recorded for list_agents/collect.
+			const unsub = subscribeChild(child, params.id, state, asyncMode ? undefined : onUpdate);
+
+			const run = async (): Promise<AgentToolResult<AgentToolDetails>> => {
+				try {
+					const runPromise = runUntilContractFulfilled(state, `${params.task}\n\n${renderContractBlock(contract.questions)}`, signal);
+					await withOptionalTimeout(child, params.id, runPromise, params.timeout_seconds);
+					if (state.killed) {
+						throw new Error(`Agent "${params.id}" was killed while running`);
+					}
+					return collectResult(params.id, state, 0);
+				} finally {
+					state.locked = false;
+					unsub();
+					signal?.removeEventListener("abort", onAbort);
 				}
-			} catch (err) {
-				// The subtree is removed on any error; nothing outlives a failed run.
-				state.killed = true;
-				killSubtree(params.id);
-				throw err;
-			} finally {
-				state.locked = false;
-				unsub();
-				signal?.removeEventListener("abort", onAbort);
-				if (state.killed) removeStateIfCurrent(state);
+			};
+
+			if (!asyncMode) {
+				try {
+					const result = await run();
+					// Agent-as-tool: a fulfilled contract ends the agent.
+					killSubtree(params.id);
+					return result;
+				} catch (err) {
+					// The subtree is removed on any error; nothing outlives a failed run.
+					state.killed = true;
+					killSubtree(params.id);
+					throw err;
+				}
 			}
 
-			const result = collectResult(params.id, state, 0);
-			// Agent-as-tool: a fulfilled contract ends the agent.
-			killSubtree(params.id);
-			return result;
+			// Async: fire the run in the background, return a handle immediately.
+			// The state stays registered (tombstone) until collect_agent or
+			// kill_agent removes it.
+			state.runPromise = run();
+			void state.runPromise.then(
+				() => undefined,
+				(err) => {
+					state.error = err instanceof Error ? err.message : String(err);
+					if (state.killed) removeStateIfCurrent(state);
+				},
+			);
+			return {
+				content: [{ type: "text", text: `Spawned "${params.id}" asynchronously; it is running in the background. Call collect_agent("${params.id}") to retrieve its result, list_agents() for status, or kill_agent("${params.id}") to abort.` }],
+				details: { childId: params.id, activity: [], reports: [], done: false },
+			};
 		} finally {
 			reservedIds.delete(params.id);
+		}
+	}
+
+	async function collectAgent(callerId: string | undefined, params: { id: string }): Promise<AgentToolResult<AgentToolDetails>> {
+		const state = getAccessibleTarget(callerId, params.id, "collect");
+		if (!state.runPromise) {
+			throw new Error(`Agent "${params.id}" was not spawned asynchronously; its result was already returned to spawn_agent. Use spawn_agent with async: true.`);
+		}
+		try {
+			return await state.runPromise;
+		} finally {
+			killSubtree(state.id);
 		}
 	}
 
@@ -1604,7 +1662,8 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 			cachedRegistry ??= ctx.modelRegistry;
 			cachedGetApiKey ??= (provider: string) => ctx.modelRegistry.getApiKeyForProvider(provider);
-			return params.panel ? await spawnPanel(undefined, params, model, ctx.cwd, signal, onUpdate) : await spawnChild(undefined, params, model, ctx.cwd, signal, onUpdate);
+			if (params.panel && params.async) throw new Error("Async panel spawn is not supported; panels always block until the tally is complete.");
+			return params.panel ? await spawnPanel(undefined, params, model, ctx.cwd, signal, onUpdate) : await spawnChild(undefined, params, model, ctx.cwd, signal, onUpdate, undefined, params.async);
 		},
 	});
 
@@ -1656,6 +1715,30 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 		async execute() {
 			return listAgentsResult();
+		},
+	});
+
+	// ── collect_agent ───────────────────────────────────────────────────
+
+	pi.registerTool({
+		name: "collect_agent",
+		label: "Collect Agent",
+		description:
+			"Collect the result of an asynchronously spawned agent (spawn_agent with async: true). " +
+			"Blocks until the agent's run finishes, returns its contract answers (the same result a blocking spawn would return), and removes the agent. " +
+			"Throws the agent's error if its run failed.",
+		parameters: collectSchema,
+
+		renderCall(args, theme) {
+			return new Text(theme.fg("toolTitle", theme.bold("collect_agent ")) + theme.fg("accent", args.id || "..."), 0, 0);
+		},
+
+		renderResult(result, options, theme, context) {
+			return renderAgentResult(result, options, theme, context);
+		},
+
+		async execute(_toolCallId, params) {
+			return await collectAgent(undefined, params);
 		},
 	});
 }
