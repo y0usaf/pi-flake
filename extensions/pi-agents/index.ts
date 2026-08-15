@@ -164,7 +164,6 @@ const spawnSchema = Type.Object({
 	task: Type.String({ description: "Initial task to assign to the child agent" }),
 	contract: contractSchema,
 	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds to wait for the agent to finish (must be > 0). If the deadline expires the agent is aborted, removed from the registry, and an error is thrown." })),
-	async: Type.Optional(Type.Boolean({ description: "Return immediately after the agent starts; it keeps running in the background. Retrieve its result later with collect_agent. Not valid with panel (panels always block). Default false." })),
 	panel: Type.Optional(Type.Object({
 		size: Type.Optional(Type.Number({ description: "Number of independent panel members (2-5)" })),
 		models: Type.Optional(Type.Array(Type.String(), { description: "One model spec per panel member" })),
@@ -180,10 +179,6 @@ const reportSchema = Type.Object({
 });
 
 const listSchema = Type.Object({});
-
-const collectSchema = Type.Object({
-	id: Type.String({ description: "ID of the asynchronously spawned agent to collect results from" }),
-});
 
 // ---------------------------------------------------------------------------
 // Extension config
@@ -766,10 +761,6 @@ interface ChildState {
 	locked: boolean;
 	/** Set by killSubtree. The owning run removes this state once its prompt settles. */
 	killed: boolean;
-	/** Set for async spawns: the background run promise. */
-	runPromise?: Promise<AgentToolResult<AgentToolDetails>>;
-	/** Error message if an async run failed; surfaced by collect_agent. */
-	error?: string;
 }
 
 function extractLastAssistantText(agent: Agent): string {
@@ -1300,13 +1291,6 @@ export default function multiAgent(pi: ExtensionAPI) {
 		return { killedIds: ids, reportCount };
 	}
 
-	/** Remove exactly this state if it is still the registered one and has no active run. */
-	function removeStateIfCurrent(state: ChildState): void {
-		if (!state.locked && children.get(state.id) === state) {
-			children.delete(state.id);
-		}
-	}
-
 	function listAgentsResult(callerId?: string): AgentToolResult<unknown> {
 		if (callerId) getCallerState(callerId);
 		const agents = getScopedEntries(callerId).map(([id, state]) => ({
@@ -1321,15 +1305,13 @@ export default function multiAgent(pi: ExtensionAPI) {
 			reportCount: state.reports.length,
 			activityCount: state.activity.length,
 			createdAt: state.createdAt,
-			error: state.error,
 		}));
 		const text = agents.length === 0
 			? "No active child agents."
 			: agents.map((agent) =>
 				`• ${agent.id} — ${agent.isRunning ? "running" : "idle"}, depth ${agent.depth}, ` +
 				`${agent.parentId ? `parent ${agent.parentId}` : "root child"}, ${agent.model}, ${agent.reportCount} reports, ` +
-				`contract ${agent.contractFulfilled ? "fulfilled" : "pending"}` +
-				`${agent.error ? `, error: ${agent.error}` : ""}`,
+				`contract ${agent.contractFulfilled ? "fulfilled" : "pending"}`,
 			).join("\n");
 		return { content: [{ type: "text", text }], details: { agents } };
 	}
@@ -1340,12 +1322,11 @@ export default function multiAgent(pi: ExtensionAPI) {
 			label: "Spawn Agent",
 			description:
 				"Spawn a descendant agent within your own subtree. Pass `panel` to get a second opinion instead of judging alone: N independent children answer the same contract on different models and the result is an agreement tally. Requires a contract; " +
-				"the descendant's result is its structured contract answers, and it is removed once it answers. " +
+				"the descendant runs in the background and its result is pushed to the parent when it finishes, then it is removed. " +
 				"Subject to configured maxDepth and maxLiveAgents limits.",
 			parameters: spawnSchema,
-			execute: async (_toolCallId, params, signal, onUpdate) => {
-				if (params.panel && params.async) throw new Error("Async panel spawn is not supported; panels always block until the tally is complete.");
-				return params.panel ? await spawnPanel(callerId, params, model, cwd, signal, onUpdate) : await spawnChild(callerId, params, model, cwd, signal, onUpdate, undefined, params.async);
+			execute: async (_toolCallId, params, signal) => {
+				return params.panel ? await spawnPanel(callerId, params, model, cwd, signal) : await spawnChild(callerId, params, model, cwd, signal);
 			},
 		};
 
@@ -1372,15 +1353,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			execute: async () => listAgentsResult(callerId),
 		};
 
-		const collectTool: AgentTool<typeof collectSchema> = {
-			name: "collect_agent",
-			label: "Collect Agent",
-			description: "Collect the result of an asynchronously spawned descendant (spawn_agent with async: true). Blocks until its run finishes, returns its contract answers, and removes it. Throws its error if the run failed.",
-			parameters: collectSchema,
-			execute: async (_toolCallId, params) => collectAgent(callerId, params),
-		};
-
-		return [spawnTool as AgentTool<any>, killTool as AgentTool<any>, listTool as AgentTool<any>, collectTool as AgentTool<any>];
+		return [spawnTool as AgentTool<any>, killTool as AgentTool<any>, listTool as AgentTool<any>];
 	}
 
 	function buildChildAgent(
@@ -1406,16 +1379,15 @@ export default function multiAgent(pi: ExtensionAPI) {
 		});
 	}
 
-	async function spawnChild(
+	/** Spawn a child and start its run. Returns the state and the run promise (resolves to the result). */
+	async function spawnChildRun(
 		callerId: string | undefined,
 		params: { id: string; system_prompt: string; task: string; timeout_seconds?: number; contract: unknown },
 		model: Model<any>,
 		cwd: string,
 		signal?: AbortSignal,
-		onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void,
 		modelOverride?: Model<any>,
-		asyncMode?: boolean,
-	): Promise<AgentToolResult<AgentToolDetails>> {
+	): Promise<{ state: ChildState; runPromise: Promise<AgentToolResult<AgentToolDetails>> }> {
 		if (signal?.aborted) throw new Error(`spawn of "${params.id}" aborted before start`);
 
 		// Reserve ID and capacity synchronously, before any await, so parallel
@@ -1470,9 +1442,9 @@ export default function multiAgent(pi: ExtensionAPI) {
 			const onAbort = () => child.abort();
 			signal?.addEventListener("abort", onAbort, { once: true });
 
-			// Async must not emit partial updates after the tool returns; drop
-			// onUpdate, activity is still recorded for list_agents/collect.
-			const unsub = subscribeChild(child, params.id, state, asyncMode ? undefined : onUpdate);
+			// Runs are always backgrounded; no partial updates after the tool
+			// returns. Activity is still recorded for list_agents.
+			const unsub = subscribeChild(child, params.id, state);
 
 			const run = async (): Promise<AgentToolResult<AgentToolDetails>> => {
 				try {
@@ -1489,53 +1461,42 @@ export default function multiAgent(pi: ExtensionAPI) {
 				}
 			};
 
-			if (!asyncMode) {
-				try {
-					const result = await run();
-					// Agent-as-tool: a fulfilled contract ends the agent.
-					killSubtree(params.id);
-					return result;
-				} catch (err) {
-					// The subtree is removed on any error; nothing outlives a failed run.
-					state.killed = true;
-					killSubtree(params.id);
-					throw err;
-				}
-			}
-
-			// Async: fire the run in the background, return a handle immediately.
-			// The state stays registered (tombstone) until collect_agent or
-			// kill_agent removes it.
-			state.runPromise = run();
-			void state.runPromise.then(
-				() => undefined,
-				(err) => {
-					state.error = err instanceof Error ? err.message : String(err);
-					if (state.killed) removeStateIfCurrent(state);
-				},
-			);
-			return {
-				content: [{ type: "text", text: `Spawned "${params.id}" asynchronously; it is running in the background. Call collect_agent("${params.id}") to retrieve its result, list_agents() for status, or kill_agent("${params.id}") to abort.` }],
-				details: { childId: params.id, activity: [], reports: [], done: false },
-			};
+			return { state, runPromise: run() };
 		} finally {
 			reservedIds.delete(params.id);
 		}
 	}
 
-	async function collectAgent(callerId: string | undefined, params: { id: string }): Promise<AgentToolResult<AgentToolDetails>> {
-		const state = getAccessibleTarget(callerId, params.id, "collect");
-		if (!state.runPromise) {
-			throw new Error(`Agent "${params.id}" was not spawned asynchronously; its result was already returned to spawn_agent. Use spawn_agent with async: true.`);
-		}
-		try {
-			return await state.runPromise;
-		} finally {
-			killSubtree(state.id);
-		}
+	async function spawnChild(
+		callerId: string | undefined,
+		params: { id: string; system_prompt: string; task: string; timeout_seconds?: number; contract: unknown },
+		model: Model<any>,
+		cwd: string,
+		signal?: AbortSignal,
+	): Promise<AgentToolResult<AgentToolDetails>> {
+		const { state, runPromise } = await spawnChildRun(callerId, params, model, cwd, signal);
+		void runPromise.then(
+			(result) => {
+				const text = result.content[0]?.type === "text" ? result.content[0].text : "(no output)";
+				pi.sendMessage({ customType: "pi-agents", content: text, display: true }, { deliverAs: "followUp", triggerTurn: true });
+				killSubtree(state.id);
+			},
+			(err) => {
+				if (!state.killed) {
+					const msg = err instanceof Error ? err.message : String(err);
+					pi.sendMessage({ customType: "pi-agents", content: `[Error] ${msg}`, display: true }, { deliverAs: "followUp", triggerTurn: true });
+				}
+				state.killed = true;
+				killSubtree(state.id);
+			},
+		);
+		return {
+			content: [{ type: "text", text: `Spawned "${params.id}"; it is running in the background. Its result will be delivered when it finishes. Call list_agents() for status or kill_agent("${params.id}") to abort.` }],
+			details: { childId: params.id, activity: [], reports: [], done: false },
+		};
 	}
 
-	async function spawnPanel(callerId: string | undefined, params: { id: string; system_prompt: string; task: string; timeout_seconds?: number; contract: unknown; panel?: { size?: number; models?: string[] } }, model: Model<any>, cwd: string, signal?: AbortSignal, onUpdate?: (partialResult: AgentToolResult<AgentToolDetails>) => void): Promise<AgentToolResult<AgentToolDetails>> {
+	async function spawnPanel(callerId: string | undefined, params: { id: string; system_prompt: string; task: string; timeout_seconds?: number; contract: unknown; panel?: { size?: number; models?: string[] } }, model: Model<any>, cwd: string, signal?: AbortSignal): Promise<AgentToolResult<AgentToolDetails>> {
 		const config = await getConfig(cwd);
 		const models = params.panel?.models;
 		const size = params.panel?.size;
@@ -1553,43 +1514,42 @@ export default function multiAgent(pi: ExtensionAPI) {
 		// Precedence: explicit per-member models, configured panelModels, configured child model, then inherited parent model.
 		const memberModels = resolvedSpecs ? resolvedSpecs.map((spec) => resolveChildModel(spec, cachedRegistry as ModelRegistry)) : Array(n).fill(config.model && cachedRegistry ? resolveChildModel(config.model, cachedRegistry) : model);
 		const memberParams = Array.from({ length: n }, (_, i) => ({ ...params, id: `${params.id}-${i + 1}`, panel: undefined }));
-		let finished = 0;
-		// Each member's spawnChild already aborts its agent on the shared signal.
-		let firstFailure: unknown;
-		let failureSeen = false;
-		let teardownStarted = false;
-		const promises = memberParams.map((p, i) => spawnChild(callerId, p, model, cwd, signal, undefined, memberModels[i]).catch((reason: unknown) => {
-			if (!teardownStarted) {
-				teardownStarted = true;
-				firstFailure = reason;
-				failureSeen = true;
-				for (const other of memberParams) if (other.id !== p.id) killSubtree(other.id);
-			}
-			throw reason;
-		}).finally(() => {
-			finished++;
-			onUpdate?.({ content: [{ type: "text", text: `Panel ${params.id}: ${finished}/${n} members finished` }], details: { childId: params.id, activity: [], reports: [], done: false } });
-		}));
-		const settled = await Promise.allSettled(promises);
-		if (failureSeen) throw new Error(`Panel member failed: ${firstFailure instanceof Error ? firstFailure.message : String(firstFailure)}`);
-		const results = settled.map((r) => (r as PromiseFulfilledResult<AgentToolResult<AgentToolDetails>>).value);
-		const members = results.map((r, i) => ({ id: memberParams[i].id, model: `${memberModels[i].provider}/${memberModels[i].id}`, answers: r.details?.answers, reports: r.details?.reports ?? [] }));
-		const questions = normalizeContract(params.contract, `panel "${params.id}"`);
-		const tally = tallyPanel(questions, members);
-		const lines = [`Panel "${params.id}": ${n} members, ${new Set(members.map((m) => m.model)).size} distinct models`];
-		if (tally.disagreementCount) lines.unshift(`DISAGREEMENT on ${tally.disagreementCount}/${tally.questions.filter((q) => !q.freeText).length} tallyable question(s)`);
-		for (const q of tally.questions) {
-			lines.push(`${q.prompt} — ${q.freeText ? "[free-text — compare manually, not a consensus]" : q.unanimous ? "[unanimous]" : "[split]"}`);
-			for (const g of q.groups) {
-				lines.push(`  ${g.value} (${g.count}): ${g.memberIds.join(", ")} [${g.memberIds.map((id) => members.find((m) => m.id === id)?.model).join(", ")}]`);
-				if (q.freeText || !q.unanimous) for (const id of g.memberIds) {
-					const a = members.find((m) => m.id === id)?.answers?.find((a) => a.id === q.questionId);
-					lines.push(`    ${id}: ${stripControlSequences(a ? (a.label ?? a.value) : "no answer")}`);
+
+		const members = await Promise.all(memberParams.map((p, i) => spawnChildRun(callerId, p, model, cwd, signal, memberModels[i])));
+
+		void Promise.allSettled(members.map((m) => m.runPromise)).then((settled) => {
+			const failed = settled.find((r) => r.status === "rejected");
+			if (failed) {
+				const reason = (failed as PromiseRejectedResult).reason;
+				const msg = reason instanceof Error ? reason.message : String(reason);
+				pi.sendMessage({ customType: "pi-agents", content: `[Error] Panel "${params.id}" member failed: ${msg}`, display: true }, { deliverAs: "followUp", triggerTurn: true });
+			} else {
+				const results = settled.map((r) => (r as PromiseFulfilledResult<AgentToolResult<AgentToolDetails>>).value);
+				const memberInfos = results.map((r, i) => ({ id: memberParams[i].id, model: `${memberModels[i].provider}/${memberModels[i].id}`, answers: r.details?.answers, reports: r.details?.reports ?? [] }));
+				const questions = normalizeContract(params.contract, `panel "${params.id}"`);
+				const tally = tallyPanel(questions, memberInfos);
+				const lines = [`Panel "${params.id}": ${n} members, ${new Set(memberInfos.map((m) => m.model)).size} distinct models`];
+				if (tally.disagreementCount) lines.unshift(`DISAGREEMENT on ${tally.disagreementCount}/${tally.questions.filter((q) => !q.freeText).length} tallyable question(s)`);
+				for (const q of tally.questions) {
+					lines.push(`${q.prompt} — ${q.freeText ? "[free-text — compare manually, not a consensus]" : q.unanimous ? "[unanimous]" : "[split]"}`);
+					for (const g of q.groups) {
+						lines.push(`  ${g.value} (${g.count}): ${g.memberIds.join(", ")} [${g.memberIds.map((id) => memberInfos.find((m) => m.id === id)?.model).join(", ")}]`);
+						if (q.freeText || !q.unanimous) for (const id of g.memberIds) {
+							const a = memberInfos.find((m) => m.id === id)?.answers?.find((a) => a.id === q.questionId);
+							lines.push(`    ${id}: ${stripControlSequences(a ? (a.label ?? a.value) : "no answer")}`);
+						}
+					}
 				}
+				for (const member of memberInfos) for (const report of member.reports) lines.push(`  ${member.id}: ${stripControlSequences(report)}`);
+				pi.sendMessage({ customType: "pi-agents", content: lines.join("\n"), display: true }, { deliverAs: "followUp", triggerTurn: true });
 			}
-		}
-		for (const member of members) for (const report of member.reports) lines.push(`  ${member.id}: ${stripControlSequences(report)}`);
-		return { content: [{ type: "text", text: lines.join("\n") }], details: { childId: params.id, activity: [], reports: [], contract: questions, done: true, panel: { members, tally } } };
+			for (const m of members) killSubtree(m.state.id);
+		});
+
+		return {
+			content: [{ type: "text", text: `Spawned panel "${params.id}" (${n} members); it is running in the background. Its tally will be delivered when all members finish.` }],
+			details: { childId: params.id, activity: [], reports: [], done: false },
+		};
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -1633,14 +1593,12 @@ export default function multiAgent(pi: ExtensionAPI) {
 			"Spawn a child agent with its own system prompt, task, and contract. " +
 			"Pass `panel` to get a second opinion instead of judging alone: N independent children answer the same contract on different models and the result is an agreement tally. " +
 			"The contract is the child's deliverable: AskUserQuestion-style questions the child must answer " +
-			"via its submit_answers tool before its run can end; the tool result is those answers as data. " +
+			"via its submit_answers tool before its run can end. " +
 			"Children get read, write, edit, bash, report (progress only), submit_answers, and descendant-scoped orchestration tools. " +
 			"Recursive spawning is bounded by pi-agents.json maxDepth/maxLiveAgents, which also picks the child model. " +
-			"This call blocks until the contract is fulfilled; an unfulfilled contract is nudged up to 10 times, then errors. " +
-			"Multiple spawn_agent calls in the same turn run concurrently. " +
-			"The agent is removed as soon as its contract is fulfilled — spawn is a typed function call: " +
-			"contract in, answers out, agent gone. Follow-ups are new spawns with the prior answers folded into the task. " +
-			"kill_agent aborts a running agent. " +
+			"Spawning is asynchronous: the call returns immediately and the agent runs in the background; its result is pushed into the session when it finishes. " +
+			"An unfulfilled contract is nudged up to 10 times, then errors. " +
+			"kill_agent aborts a running agent; list_agents shows status. " +
 			"On any error (including timeout) the agent subtree is removed from the registry automatically.",
 		parameters: spawnSchema,
 		promptGuidelines: [
@@ -1656,14 +1614,13 @@ export default function multiAgent(pi: ExtensionAPI) {
 			return renderAgentResult(result, options, theme, context);
 		},
 
-		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const model = ctx.model;
 			if (!model) throw new Error("No model selected");
 
 			cachedRegistry ??= ctx.modelRegistry;
 			cachedGetApiKey ??= (provider: string) => ctx.modelRegistry.getApiKeyForProvider(provider);
-			if (params.panel && params.async) throw new Error("Async panel spawn is not supported; panels always block until the tally is complete.");
-			return params.panel ? await spawnPanel(undefined, params, model, ctx.cwd, signal, onUpdate) : await spawnChild(undefined, params, model, ctx.cwd, signal, onUpdate, undefined, params.async);
+			return params.panel ? await spawnPanel(undefined, params, model, ctx.cwd, signal) : await spawnChild(undefined, params, model, ctx.cwd, signal);
 		},
 	});
 
@@ -1715,30 +1672,6 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 		async execute() {
 			return listAgentsResult();
-		},
-	});
-
-	// ── collect_agent ───────────────────────────────────────────────────
-
-	pi.registerTool({
-		name: "collect_agent",
-		label: "Collect Agent",
-		description:
-			"Collect the result of an asynchronously spawned agent (spawn_agent with async: true). " +
-			"Blocks until the agent's run finishes, returns its contract answers (the same result a blocking spawn would return), and removes the agent. " +
-			"Throws the agent's error if its run failed.",
-		parameters: collectSchema,
-
-		renderCall(args, theme) {
-			return new Text(theme.fg("toolTitle", theme.bold("collect_agent ")) + theme.fg("accent", args.id || "..."), 0, 0);
-		},
-
-		renderResult(result, options, theme, context) {
-			return renderAgentResult(result, options, theme, context);
-		},
-
-		async execute(_toolCallId, params) {
-			return await collectAgent(undefined, params);
 		},
 	});
 }
