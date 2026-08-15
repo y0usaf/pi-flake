@@ -96,6 +96,12 @@ one contract — spawn, answer, removed.
   serialize while consuming the shared maxLiveAgents budget. Reversal: a
   demonstrated executor→verifier need raises maxDepth per-project, not
   the default.
+- **2026-08 — Per-spawn working directory.** `spawn_agent` takes an optional
+  `cwd`, resolved against the spawner's cwd (session cwd for the root, the
+  spawning agent's cwd for descendants); default is the session cwd. No
+  confinement — cwd is a default, not a boundary, consistent with the existing
+  no-file-system-confinement decision. Enables one orchestrator to fan out
+  children across multiple project folders.
 
 ## Architecture
 
