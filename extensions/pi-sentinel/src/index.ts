@@ -1,4 +1,4 @@
-import type { ExtensionAPI, AfterProviderResponseEvent } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 /**
  * sentinel - detects abrupt run endings and continues them.
@@ -20,14 +20,7 @@ import type { ExtensionAPI, AfterProviderResponseEvent } from "@earendil-works/p
  * pressed Esc) is always respected.
  */
 
-// PI_RETRY_MAX env var: default 3 (0 = no cap = infinite).
-const MAX_CONTINUATIONS = (() => {
-  const v = process.env.PI_RETRY_MAX;
-  if (v === undefined || v === "") return 3;
-  if (v === "0") return Infinity;
-  const n = parseInt(v, 10);
-  return Number.isFinite(n) && n > 0 ? n : Infinity;
-})();
+const MAX_CONTINUATIONS = 3;
 const INTENT_CHARS = 1200;
 const TAIL_CHARS = 1600;
 const JUDGE_MAX_TOKENS = 256;
@@ -35,15 +28,12 @@ const JUDGE_MAX_TOKENS = 256;
 const CONTINUE_NUDGE = "continue";
 
 function continuationLabel(n: number, max: number): string {
-  return max === Infinity ? `continuing (${n})` : `continuing (${n}/${max})`;
+  return `continuing (${n}/${max})`;
 }
 
 export default function (pi: ExtensionAPI): void {
   let intent = "";
   let continuations = 0;
-  let providerErrorStatus: number | undefined; // HTTP status from after_provider_response
-  let lastProviderRetry = 0;
-  let providerRetries = 0;
   let lastAssistant: {
     role: string;
     stopReason?: string;
@@ -55,20 +45,11 @@ export default function (pi: ExtensionAPI): void {
     if (event.source === "extension") return;
     intent = event.text;
     continuations = 0;
-    providerErrorStatus = undefined;
-    lastProviderRetry = 0;
-    providerRetries = 0;
   });
 
   pi.on("agent_end", (event) => {
     const assistants = event.messages.filter((m) => m.role === "assistant");
     lastAssistant = assistants[assistants.length - 1] as typeof lastAssistant;
-  });
-
-  pi.on("after_provider_response", (event: AfterProviderResponseEvent) => {
-    if (event.status >= 500 || event.status === 429) {
-      providerErrorStatus = event.status;
-    }
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
@@ -79,20 +60,6 @@ export default function (pi: ExtensionAPI): void {
     if (continuations >= MAX_CONTINUATIONS) return;
 
     if (message.stopReason === "aborted") return;
-
-    // Provider returned transient HTTP error — retry immediately, no judge.
-    if (providerErrorStatus) {
-      providerErrorStatus = undefined;
-      if (!ctx.isIdle() || ctx.hasPendingMessages()) return;
-      // Backoff: exponential up to 5s
-      const now = Date.now();
-      const backoffMs = Math.min(5000, 1000 * Math.pow(1.5, providerRetries));
-      if (now - lastProviderRetry < backoffMs) return;
-      lastProviderRetry = now;
-      providerRetries++;
-      // Silent retry — no notification, no continuation increment
-      pi.sendUserMessage(CONTINUE_NUDGE, { deliverAs: "followUp" });
-    }
 
     let verdict: "COMPLETE" | "ABRUPT";
 
@@ -110,7 +77,7 @@ export default function (pi: ExtensionAPI): void {
             messages: [
               {
                 role: "user",
-                content: [{ type: "text", text: buildJudgePrompt(intent, textOf(message)) }],
+                content: [{ type: "text", text: buildJudgePrompt(intent, textOf(message.content)) }],
                 timestamp: Date.now(),
               },
             ],
@@ -124,10 +91,7 @@ export default function (pi: ExtensionAPI): void {
           );
           return;
         }
-        const reply = response.content
-          .filter((c): c is { type: "text"; text: string } => c.type === "text")
-          .map((c) => c.text)
-          .join(" ");
+        const reply = textOf(response.content);
         verdict = /\bABRUPT\b/i.test(reply) ? "ABRUPT" : "COMPLETE";
       } catch {
         // Judge unavailable: fail toward doing nothing.
@@ -149,12 +113,10 @@ export default function (pi: ExtensionAPI): void {
   });
 }
 
-function textOf(message: {
-  content?: Array<{ type?: string; text?: string }>;
-}): string {
-  if (!Array.isArray(message.content)) return "";
-  return message.content
-    .filter((c): c is { type: string; text: string } => c.type === "text" && typeof c.text === "string")
+function textOf(content: Array<{ type?: string; text?: string }> | undefined): string {
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((c): c is { type: "text"; text: string } => c.type === "text" && typeof c.text === "string")
     .map((c) => c.text)
     .join("\n");
 }
