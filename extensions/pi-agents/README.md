@@ -14,9 +14,8 @@ Bundled by this flake. Enable via the NixOS module:
 programs.pi.extensions.agents = true;
 ```
 
-`agents` is a `testing`-stage extension: built and checked, but not in the
-default `pi-full` bundle, so it stays opt-in until the orchestration path has
-been exercised end to end.
+`agents` is an `active`-stage extension: built, checked, and shipped in the
+default `pi-full` bundle.
 
 For a one-off session without installing anything:
 
@@ -70,7 +69,7 @@ Unknown keys in `pi-agents.json` are a hard error, so a typo like `"models"` is 
 
 ## Tools
 
-### `spawn_agent(id, system_prompt, task, contract, [timeout_seconds], [panel])`
+### `spawn_agent(id, system_prompt, task, contract, [timeout_seconds], [panel], [async])`
 
 Creates a new child agent with its own system prompt. The child gets `read`, `write`, `edit`, `bash`, `report`, `submit_answers`, and descendant-scoped `spawn_agent`/`kill_agent`/`list_agents` tools. Blocks until the contract is fulfilled.
 
@@ -84,6 +83,7 @@ Multiple `spawn_agent` calls in one turn run concurrently (parallel tool executi
 
 - `timeout_seconds` — optional, must be a finite number greater than 0. If the child is still running when the deadline expires it is aborted, removed from the registry, and an error is thrown.
 - `panel` — optional `{ size?: number, models?: string[] }` for an independent panel on one identical contract. `models` gives each member its own model spec, resolved by the same resolver used for configured models; its length sets the member count. `size` alone makes that many clones (of the configured child model, or the parent's). If both are present they must agree, and the final count must be 2–5. Members run concurrently with ids `<id>-1` through `<id>-N`; the panel id itself is never registered. The result is one aggregate containing a per-question agreement tally, with `DISAGREEMENT` leading when members split. Tallying is mechanical only for questions with enumerated options; free-text answers are listed verbatim, not presented as consensus. A partial failure kills surviving members and fails the whole panel.
+- `async` — optional boolean, default false. When true, `spawn_agent` returns immediately with a handle and the agent keeps running in the background; the agent stays in the registry until collected or killed. Not valid with `panel` (panels always block). Retrieve the result later with `collect_agent`.
 
 **File-system access:** child `read`, `write`, `edit`, and `bash` are pi's built-in tools, created against the child's inherited working directory. None of them are confined to that tree — absolute paths outside it are accepted, and `bash` has the same OS-level file and network access as the user running pi. There is no sandbox; the working directory is a default, not a boundary.
 
@@ -109,9 +109,13 @@ Example output:
 • reviewer — running, depth 2, parent worker, anthropic/claude-haiku-4-5, 0 reports, contract pending
 ```
 
+### `collect_agent(id)`
+
+Collects the result of an asynchronously spawned agent (`spawn_agent` with `async: true`). Blocks until that agent's run settles, returns its contract answers (the same result a blocking spawn would return), and removes the agent from the registry. If the run failed, it rethrows the stored error. Calling it on an agent that was not spawned asynchronously is an error.
+
 ## Nix
 
-A subflake, wired into the root flake as the `piAgents` path input. All commands below run from the repository root.
+Built inline by the root flake via `mkPiExtension`.
 
 ```bash
 # Build this extension alone
@@ -121,7 +125,7 @@ nix build .#pi-agents
 nix build .#pi-full
 
 # Dev shell with node 22
-nix develop ./extensions/pi-agents
+nix develop
 ```
 
 The package is the extension directory itself; the root flake's

@@ -27,9 +27,16 @@ one contract — spawn, answer, removed.
   unregistered agent.
 - **2026-08 — The subtree is removed on any error.** A failed run leaves
   nothing behind; there is no partially-alive agent state to reason about.
-- **2026-08 — Blocking spawn.** The tool returns when the run finishes;
-  parallel tool execution provides concurrency. No background-spawn handle
-  API until a use case forces one.
+- **2026-08 — Blocking spawn, with an async escape hatch.** The tool returns
+  when the run finishes; parallel tool execution provides concurrency. A
+  background-spawn handle exists as `spawn_agent({async: true})` + `collect_agent`:
+  async spawn returns a handle immediately and leaves the agent running in the
+  registry; `collect_agent(id)` blocks until that run settles, returns the same
+  result a blocking spawn would, and removes the agent (or rethrows its error).
+  The finished-but-uncollected agent is a tombstone in the registry, bounded by
+  `maxLiveAgents`; `list_agents` is the status channel and `kill_agent` aborts
+  running or finished agents alike. Panels stay blocking — fan-out/join is
+  inherently a join — so `async` with `panel` is a hard error.
 - **2026-08 — Child-controlled text is sanitized before rendering.** Reports
   and activity previews pass through `stripControlSequences` (OSC, CSI, C0)
   so a prompt-injected child cannot write terminal escapes into the TUI.
@@ -122,9 +129,8 @@ blackboard) appears, extract a registry module both use.
   model diversity is their purpose; a per-spawn override for an ordinary
   non-panel child remains deferred, with the tool schema as the obvious
   extension point.
-- **Background spawn / handle polling** — blocking semantics plus parallel
-  tool calls cover current use. A `wait_agent`/`status` split is the planned
-  shape if long-running children become common.
+- **Background spawn / handle polling** — shipped as `async: true` +
+  `collect_agent` (see Locked decisions). `list_agents` is the status channel.
 - **Hard process-wide caps on config values** — project `.pi/pi-agents.json`
   can raise `maxDepth`/`maxLiveAgents` arbitrarily. Accepted because the user
   opts into the extension per-project; hard caps land if multi-agent runs
