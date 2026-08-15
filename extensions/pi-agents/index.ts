@@ -162,6 +162,9 @@ const spawnSchema = Type.Object({
 	id: Type.String({ description: "Unique identifier for the child agent" }),
 	system_prompt: Type.String({ description: "System prompt defining the child agent's role and behavior" }),
 	task: Type.String({ description: "Initial task to assign to the child agent" }),
+	cwd: Type.Optional(Type.String({
+		description: "Working directory for the child agent. Defaults to the current session cwd. Relative paths resolve against the session cwd (for the root) or the spawning agent's cwd (for descendants).",
+	})),
 	contract: contractSchema,
 	timeout_seconds: Type.Optional(Type.Number({ description: "Maximum wall-clock seconds to wait for the agent to finish (must be > 0). If the deadline expires the agent is aborted, removed from the registry, and an error is thrown." })),
 	panel: Type.Optional(Type.Object({
@@ -205,48 +208,16 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function normalizeNonNegativeInteger(value: unknown, key: string, path: string): number {
-	if (!Number.isInteger(value) || (value as number) < 0) {
-		throw new Error(`${path}: "${key}" must be an integer ≥ 0`);
+/**
+ * Single generic dual-use normalizer for config fragments. `check` returns the coerced value on
+ * success or an error message on failure (single use, so no separate per-type helpers).
+ */
+function normalize<T>(value: unknown, key: string, path: string, check: (value: unknown) => { value: T } | { error: string }): T {
+	const result = check(value);
+	if ("error" in result) {
+		throw new Error(`${path}: "${key}" ${result.error}`);
 	}
-	return value as number;
-}
-
-function normalizePositiveInteger(value: unknown, key: string, path: string): number {
-	if (!Number.isInteger(value) || (value as number) < 1) {
-		throw new Error(`${path}: "${key}" must be an integer ≥ 1`);
-	}
-	return value as number;
-}
-
-function normalizeModelSpec(value: unknown, key: string, path: string): string {
-	const spec = typeof value === "string" ? value.trim() : "";
-	if (spec === "") {
-		throw new Error(`${path}: "${key}" must be a non-empty string ("provider/modelId" or "modelId")`);
-	}
-	return spec;
-}
-
-function normalizeBoolean(value: unknown, key: string, path: string): boolean {
-	if (typeof value !== "boolean") {
-		throw new Error(`${path}: "${key}" must be a boolean`);
-	}
-	return value;
-}
-
-function normalizePanelModels(value: unknown, key: string, path: string): string[] {
-	if (!Array.isArray(value)) {
-		throw new Error(`${path}: "${key}" must be an array`);
-	}
-	if (value.length < 2 || value.length > 5) {
-		throw new Error(`${path}: "${key}" must contain between 2 and 5 models`);
-	}
-	return value.map((spec, index) => {
-		if (typeof spec !== "string" || spec.trim() === "") {
-			throw new Error(`${path}: "${key}" element ${index} must be a non-empty string`);
-		}
-		return spec.trim();
-	});
+	return result.value;
 }
 
 async function readConfigFragment(path: string): Promise<Partial<PiAgentsConfig>> {
@@ -276,19 +247,36 @@ async function readConfigFragment(path: string): Promise<Partial<PiAgentsConfig>
 
 	const config: Partial<PiAgentsConfig> = {};
 	if ("maxDepth" in parsed) {
-		config.maxDepth = normalizeNonNegativeInteger(parsed.maxDepth, "maxDepth", path);
+		config.maxDepth = normalize(parsed.maxDepth, "maxDepth", path, (v) =>
+			Number.isInteger(v) && (v as number) >= 0 ? { value: v as number } : { error: "must be an integer ≥ 0" },
+		);
 	}
 	if ("maxLiveAgents" in parsed) {
-		config.maxLiveAgents = normalizePositiveInteger(parsed.maxLiveAgents, "maxLiveAgents", path);
+		config.maxLiveAgents = normalize(parsed.maxLiveAgents, "maxLiveAgents", path, (v) =>
+			Number.isInteger(v) && (v as number) >= 1 ? { value: v as number } : { error: "must be an integer ≥ 1" },
+		);
 	}
 	if ("model" in parsed) {
-		config.model = normalizeModelSpec(parsed.model, "model", path);
+		config.model = normalize(parsed.model, "model", path, (v) =>
+			typeof v === "string" && v.trim() !== "" ? { value: v.trim() } : { error: 'must be a non-empty string ("provider/modelId" or "modelId")' },
+		);
 	}
 	if ("panelModels" in parsed) {
-		config.panelModels = normalizePanelModels(parsed.panelModels, "panelModels", path);
+		config.panelModels = normalize(parsed.panelModels, "panelModels", path, (v) => {
+			if (!Array.isArray(v)) return { error: "must be an array" };
+			if (v.length < 2 || v.length > 5) return { error: "must contain between 2 and 5 models" };
+			const specs: string[] = [];
+			for (let i = 0; i < v.length; i++) {
+				if (typeof v[i] !== "string" || (v[i] as string).trim() === "") return { error: `element ${i} must be a non-empty string` };
+				specs.push((v[i] as string).trim());
+			}
+			return { value: specs };
+		});
 	}
 	if ("orchestrator" in parsed) {
-		config.orchestrator = normalizeBoolean(parsed.orchestrator, "orchestrator", path);
+		config.orchestrator = normalize(parsed.orchestrator, "orchestrator", path, (v) =>
+			typeof v === "boolean" ? { value: v } : { error: "must be a boolean" },
+		);
 	}
 	return config;
 }
@@ -933,7 +921,6 @@ function renderAgentCall(
 }
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
-const truncate = (text: string, n: number): string => (text.length > n ? text.slice(0, n) + "..." : text);
 
 /** " · N actions · N reports · model" — pi joins metadata with a muted middot. */
 function metaSuffix(model: string | undefined, activityCount: number, reportCount: number | undefined, theme: any): string {
@@ -996,39 +983,6 @@ function renderAgentResult(
 	}
 
 	const { expanded, isPartial } = options;
-
-	// -- panel summary --
-	const panel = details.panel;
-	const panelWellFormed = panel && Array.isArray(panel.members) && panel.members.every((member) =>
-		member && typeof member.id === "string" && typeof member.model === "string" && Array.isArray(member.reports) && member.reports.every((report) => typeof report === "string") &&
-		(member.answers === undefined || Array.isArray(member.answers) && member.answers.every((answer) => answer && typeof answer.id === "string" && typeof answer.value === "string" && (answer.label === undefined || typeof answer.label === "string"))),
-	) && panel.tally && Array.isArray(panel.tally.questions) && panel.tally.questions.every((question) =>
-		question && typeof question.questionId === "string" && typeof question.prompt === "string" && typeof question.freeText === "boolean" && typeof question.unanimous === "boolean" && Array.isArray(question.groups) && question.groups.every((group) =>
-			group && typeof group.value === "string" && typeof group.label === "string" && typeof group.count === "number" && Array.isArray(group.memberIds) && group.memberIds.every((id) => typeof id === "string"),
-		),
-	) && typeof panel.tally.disagreementCount === "number";
-	if (panelWellFormed) {
-		const icon = theme.fg("success", "✓");
-		const header = `${icon} ${theme.fg("toolTitle", theme.bold(stripControlSequences(details.childId)))} · panel ${panel.members.length} · ${panel.tally.disagreementCount} disagreement(s) · ${new Set(panel.members.map((m) => stripControlSequences(m.model))).size} models`;
-		const lines = panel.tally.questions.map((q) => {
-			const mark = q.freeText ? theme.fg("warning", "◌") : q.unanimous ? theme.fg("success", "•") : theme.fg("warning", "⚠");
-			const summary = q.groups.map((g) => `${stripControlSequences(g.label)} (${g.count})`).join(" vs ");
-			return `  ${mark} ${theme.fg("accent", truncate(stripControlSequences(q.prompt), 55))} — ${q.freeText ? "free-text — compare manually, not a consensus" : q.unanimous ? "unanimous" : "split"}: ${summary}`;
-		});
-		if (!expanded) return new Text([header, ...lines].join("\n"), 0, 0);
-		const container = new Container();
-		container.addChild(new Text(header, 0, 0));
-		for (const q of panel.tally.questions) {
-			const mark = q.freeText ? theme.fg("warning", "◌") : q.unanimous ? theme.fg("success", "•") : theme.fg("warning", "⚠");
-			container.addChild(new Text(`  ${mark} ${theme.fg("accent", truncate(stripControlSequences(q.prompt), 55))}`, 0, 0));
-			for (const g of q.groups) for (const id of g.memberIds) {
-				const member = panel.members.find((m) => m.id === id); const answer = member?.answers?.find((a) => a.id === q.questionId);
-				container.addChild(new Text(`    ${stripControlSequences(id)} [${stripControlSequences(member?.model ?? "?")}]: ${stripControlSequences(answer ? (answer.label ?? answer.value) : "no answer")}`, 0, 0));
-			}
-		}
-		for (const member of panel.members) for (const report of member.reports || []) container.addChild(new Text(`    ${stripControlSequences(member.id)}: ${stripControlSequences(report)}`, 0, 0));
-		return container;
-	}
 
 	// -- still running: spinner + live activity feed --
 	if (isPartial && !details.done) {
@@ -1142,6 +1096,11 @@ export default function multiAgent(pi: ExtensionAPI) {
 	let cachedConfig: PiAgentsConfig | undefined;
 	let cachedConfigCwd: string | undefined;
 	let cachedConfigError: Error | undefined;
+
+	function initModelCaches(ctx: { modelRegistry: ModelRegistry }) {
+		cachedRegistry ??= ctx.modelRegistry;
+		cachedGetApiKey ??= (provider: string) => ctx.modelRegistry.getApiKeyForProvider(provider);
+	}
 
 	async function getConfig(cwd: string): Promise<PiAgentsConfig> {
 		if (cachedConfig && cachedConfigCwd === cwd) return cachedConfig;
@@ -1332,7 +1291,8 @@ export default function multiAgent(pi: ExtensionAPI) {
 				"Subject to configured maxDepth and maxLiveAgents limits.",
 			parameters: spawnSchema,
 			execute: async (_toolCallId, params, signal) => {
-				return params.panel ? await spawnPanel(callerId, params, model, cwd, signal) : await spawnChild(callerId, params, model, cwd, signal);
+				const targetCwd = params.cwd ? resolve(cwd, params.cwd) : cwd;
+				return params.panel ? await spawnPanel(callerId, params, model, targetCwd, signal) : await spawnChild(callerId, params, model, targetCwd, signal);
 			},
 		};
 
@@ -1562,8 +1522,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		clearConfigCache();
 		orchestratorOn = false;
 		toolsBeforeOrchestrator = undefined;
-		cachedRegistry ??= ctx.modelRegistry;
-		cachedGetApiKey ??= (provider: string) => ctx.modelRegistry.getApiKeyForProvider(provider);
+		initModelCaches(ctx);
 		try {
 			const config = await getConfig(ctx.cwd);
 			if (config.model) resolveChildModel(config.model, ctx.modelRegistry);
@@ -1624,9 +1583,9 @@ export default function multiAgent(pi: ExtensionAPI) {
 			const model = ctx.model;
 			if (!model) throw new Error("No model selected");
 
-			cachedRegistry ??= ctx.modelRegistry;
-			cachedGetApiKey ??= (provider: string) => ctx.modelRegistry.getApiKeyForProvider(provider);
-			return params.panel ? await spawnPanel(undefined, params, model, ctx.cwd, signal) : await spawnChild(undefined, params, model, ctx.cwd, signal);
+			initModelCaches(ctx);
+			const childCwd = params.cwd ? resolve(ctx.cwd, params.cwd) : ctx.cwd;
+			return params.panel ? await spawnPanel(undefined, params, model, childCwd, signal) : await spawnChild(undefined, params, model, childCwd, signal);
 		},
 	});
 

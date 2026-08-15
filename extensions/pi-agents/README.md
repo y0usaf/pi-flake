@@ -69,9 +69,11 @@ Unknown keys in `pi-agents.json` are a hard error, so a typo like `"models"` is 
 
 ## Tools
 
-### `spawn_agent(id, system_prompt, task, contract, [timeout_seconds], [panel])`
+### `spawn_agent(id, system_prompt, task, contract, [timeout_seconds], [panel], [cwd])`
 
 Creates a new child agent with its own system prompt. The child gets `read`, `write`, `edit`, `bash`, `report`, `submit_answers`, and descendant-scoped `spawn_agent`/`kill_agent`/`list_agents` tools. Returns immediately; the agent runs in the background and its result is pushed into the session when it finishes.
+
+`cwd` sets the child's working directory — defaults to the session cwd; relative paths resolve against the spawner's cwd (session cwd for the root, the spawning agent's cwd for descendants). This lets one orchestrator fan out children across multiple project folders, e.g. parallel autoresearch loops: set `cwd` to each target project and pass the autoresearch protocol (`.auto/` layout, `METRIC name=value` output) in the child's `system_prompt`; the child runs the loop with its own `bash`/`write`/`edit` tools.
 
 `contract` is a non-empty array of questions: `{ id?, label?, prompt, options?: [{label, value?, description?, recommended?}], allowOther? }`. The host normalizes it (caps: 8 questions, 8 options each, dedupe, derived ids) and appends an "Unable to determine" (`__unable__`) option to every question so the child can punt explicitly instead of fabricating. Zero options + `allowOther` (the default) makes a plain free-text question.
 
