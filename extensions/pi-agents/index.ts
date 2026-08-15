@@ -1169,13 +1169,18 @@ export default function multiAgent(pi: ExtensionAPI) {
 
 	// ── Orchestrator mode ───────────────────────────────────────────────
 	// Strip write/edit/bash from the main session so mutations route through
-	// spawned executors; read/find/grep/ls stay for context-gathering and
+	// spawned executors; read/find/grep/ls are added (built-in but inactive by
+	// default) for context-gathering and
 	// verification. Removing the tools from the schema (setActiveTools)
 	// beats blocking tool_call: the model never sees them, so no turns are
 	// burned on rejections. bash is stripped too — it is the write escape
 	// hatch (sed -i), and without it there is nothing to police.
 
 	const ORCHESTRATOR_STRIPPED = new Set(["write", "edit", "bash"]);
+	// grep/find/ls are built-in but inactive by default (pi defaults to
+	// [read, bash, edit, write]); orchestrator mode must ADD them, not just
+	// strip the mutating tools.
+	const ORCHESTRATOR_READ_ONLY = ["read", "grep", "find", "ls"];
 	let orchestratorOn = false;
 	let toolsBeforeOrchestrator: string[] | undefined;
 
@@ -1184,7 +1189,8 @@ export default function multiAgent(pi: ExtensionAPI) {
 		orchestratorOn = on;
 		if (on) {
 			toolsBeforeOrchestrator ??= pi.getActiveTools();
-			pi.setActiveTools(toolsBeforeOrchestrator.filter((name) => !ORCHESTRATOR_STRIPPED.has(name)));
+			const stripped = toolsBeforeOrchestrator.filter((name) => !ORCHESTRATOR_STRIPPED.has(name));
+			pi.setActiveTools([...new Set([...stripped, ...ORCHESTRATOR_READ_ONLY])]);
 		} else {
 			if (toolsBeforeOrchestrator) pi.setActiveTools(toolsBeforeOrchestrator);
 			toolsBeforeOrchestrator = undefined;

@@ -54,7 +54,7 @@ Depth is counted from the root session at depth `0`:
 
 Defaults: `maxDepth: 1`, `maxLiveAgents: 6`, no `model` override, `orchestrator: false`.
 
-`orchestrator: true` strips `write`/`edit`/`bash` from the main session at session start, so file mutations route through spawned executor agents; `read`/`find`/`grep`/`ls` stay for context-gathering and verification. The `/orchestrate` command toggles the same mode at runtime. `bash` is stripped because it is the write escape hatch (`sed -i`) — remove the hatch rather than police it.
+`orchestrator: true` strips `write`/`edit`/`bash` from the main session at session start, so file mutations route through spawned executor agents; `read`/`find`/`grep`/`ls` are added for context-gathering and verification. The `/orchestrate` command toggles the same mode at runtime. `bash` is stripped because it is the write escape hatch (`sed -i`) — remove the hatch rather than police it.
 
 `model` picks the model every spawned child runs on — the point being to push delegated work onto a cheaper model than the parent session. Accepted forms:
 
