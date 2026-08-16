@@ -1,0 +1,20 @@
+{
+  "name": "pi-heartbeat",
+  "version": "0.1.0",
+  "description": "Paced re-prompting for the meta session: every interval, if idle, re-prompt a follow-up turn so the boss session keeps driving worker sessions and subagents",
+  "homepage": "https://github.com/y0usaf/pi-flake",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/y0usaf/pi-flake.git",
+    "directory": "extensions/pi-heartbeat"
+  },
+  "keywords": ["pi-package", "pi-extension", "orchestrator", "pacer", "recursion"],
+  "license": "MIT",
+  "files": ["src", "README.md"],
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

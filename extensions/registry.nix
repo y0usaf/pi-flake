@@ -69,6 +69,12 @@
     dir = "pi-sentinel";
     priority = 80;
   };
+  heartbeat = {
+    stage = "active";
+    source = "inline";
+    dir = "pi-heartbeat";
+    priority = 75;
+  };
   hashline = {
     stage = "retired";
     source = "inline";
