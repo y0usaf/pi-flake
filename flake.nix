@@ -325,6 +325,12 @@
         copy = ["README.md" "src"];
       };
 
+      "pi-heartbeat" = mkPiExtension {
+        pname = "pi-heartbeat";
+        dir = ./extensions/pi-heartbeat;
+        copy = ["README.md" "src"];
+      };
+
 
       "pi-tools" = mkPiExtension {
         pname = "pi-tools";
@@ -725,6 +731,7 @@ EOF
     lib.extensionPackagesFor = system:
       nixpkgs.lib.filterAttrs (name: _: (extensionRegistry.${name}.stage or "active") != "paused" && (extensionRegistry.${name}.stage or "active") != "retired") {
         sentinel = self.packages.${system}."pi-sentinel";
+        heartbeat = self.packages.${system}."pi-heartbeat";
         tools = self.packages.${system}."pi-tools";
         agents = self.packages.${system}."pi-agents";
         "chronobreak" = self.packages.${system}."pi-chronobreak";
