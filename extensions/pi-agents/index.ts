@@ -1147,7 +1147,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 	const ORCHESTRATOR_GATE =
 		"ORCHESTRATOR MODE: write, edit, and bash are unavailable. You cannot mutate files, run builds or tests, " +
 		"or inspect git — spawn an executor via spawn_agent for any of it. read, grep, find, and ls are yours: " +
-		"use them to ground the contracts you write.";
+		"use them to ground the contracts you write. After batch-spawning executors, end your turn: each result arrives as a follow-up you are woken for. Never poll list_agents while waiting.";
 	let orchestratorOn = false;
 	let toolsBeforeOrchestrator: string[] | undefined;
 
@@ -1473,7 +1473,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 			},
 		);
 		return {
-			content: [{ type: "text", text: `Spawned "${params.id}"; it is running in the background. Its result will be delivered when it finishes. Call list_agents() for status or kill_agent("${params.id}") to abort.` }],
+			content: [{ type: "text", text: `Spawned "${params.id}"; it is running in the background. Do not poll for status: its contract result is delivered to you automatically as a follow-up when it finishes. Use kill_agent("${params.id}") only to abort it.` }],
 			details: { childId: params.id, activity: [], reports: [], done: false },
 		};
 	}
@@ -1585,6 +1585,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 		promptGuidelines: [
 			"When write, edit, and bash are unavailable (orchestrator mode), perform all file mutations by spawning executor agents via spawn_agent; keep using read, find, grep, and ls directly for context and verification.",
 			"Do not self-judge a ship/block, safety, or correctness call — get a second opinion. When the decision is a judgment rather than a lookup, invoke a panel: use `panel: {}` when `panelModels` is configured; otherwise pass an explicit `models` list. Always give the panel an enumerated verdict question; consensus is only mechanical on questions with options.",
+			"spawn_agent is asynchronous: it returns immediately, you keep working, and each agent's result is delivered to you as a follow-up when it settles. Batch every independent unit into ONE set of parallel spawn_agent calls, then end your turn and let the results arrive. Do NOT call list_agents to wait or check progress — children report their own completion and are auto-settled once their result is delivered.",
 		],
 
 		renderCall(args, theme, context) {
