@@ -1140,6 +1140,10 @@ export default function multiAgent(pi: ExtensionAPI) {
 	// [read, bash, edit, write]); orchestrator mode must ADD them, not just
 	// strip the mutating tools.
 	const ORCHESTRATOR_READ_ONLY = ["read", "grep", "find", "ls"];
+	const ORCHESTRATOR_GATE =
+		"ORCHESTRATOR MODE: write, edit, and bash are unavailable. You cannot mutate files, run builds or tests, " +
+		"or inspect git — spawn an executor via spawn_agent for any of it. read, grep, find, and ls are yours: " +
+		"use them to ground the contracts you write.";
 	let orchestratorOn = false;
 	let toolsBeforeOrchestrator: string[] | undefined;
 
@@ -1156,6 +1160,11 @@ export default function multiAgent(pi: ExtensionAPI) {
 		}
 		if (ctx.hasUI) ctx.ui.setStatus("pi-agents", on ? "orchestrator" : undefined);
 	}
+
+	pi.on("before_agent_start", async (event) => {
+		if (!orchestratorOn) return;
+		return { systemPrompt: `${event.systemPrompt}\n\n${ORCHESTRATOR_GATE}` };
+	});
 
 	pi.registerCommand("orchestrate", {
 		description: "Toggle orchestrator mode (strip write/edit/bash; delegate mutations via spawn_agent)",
