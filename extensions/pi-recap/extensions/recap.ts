@@ -99,8 +99,7 @@ function extractText(content: unknown): string {
 	return content
 		.map((block) => {
 			if (!block || typeof block !== "object") return "";
-			const item = block as { type?: string; text?: string };
-			if (item.type === "text") return item.text ?? "";
+			if (isTextBlock(block)) return block.text ?? "";
 			return "";
 		})
 		.filter(Boolean)
@@ -113,12 +112,19 @@ function extractToolNames(content: unknown): string[] {
 	const names: string[] = [];
 	for (const block of content) {
 		if (!block || typeof block !== "object") continue;
-		const item = block as { type?: string; name?: string };
-		if (item.type === "toolCall" && typeof item.name === "string") {
-			names.push(item.name);
+		if (isToolCallBlock(block)) {
+			names.push(block.name);
 		}
 	}
 	return names;
+}
+
+function isTextBlock(value: object): value is { type: string; text?: string } {
+	return isPlainObject(value) && value.type === "text";
+}
+
+function isToolCallBlock(value: object): value is { type: string; name: string } {
+	return isPlainObject(value) && value.type === "toolCall" && typeof value.name === "string";
 }
 
 export function cleanLine(line: string): string {
@@ -272,6 +278,19 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+/** Parse the `recap` settings field at the JSON boundary rather than cast it. */
+function parseRecapField(value: unknown): Settings["recap"] {
+	if (!isPlainObject(value)) return {};
+	const recap: Settings["recap"] = {};
+	if (typeof value.model === "string") recap.model = value.model;
+	if (typeof value.maxWords === "number" && Number.isFinite(value.maxWords)) recap.maxWords = Math.floor(value.maxWords);
+	if (value.placement === "above" || value.placement === "below") recap.placement = value.placement;
+	if (isPlainObject(value.prompts) && typeof value.prompts.recap === "string") {
+		recap.prompts = { recap: value.prompts.recap };
+	}
+	return recap;
+}
+
 function mergeSettings(base: Record<string, unknown>, override: Record<string, unknown>): Record<string, unknown> {
 	const result = { ...base };
 	for (const [key, value] of Object.entries(override)) {
@@ -284,7 +303,7 @@ function mergeSettings(base: Record<string, unknown>, override: Record<string, u
 function getRecapConfig(ctx: ExtensionContext): { model: string | undefined; maxWords: number; prompt: string; placement: "aboveEditor" | "belowEditor" } {
 	const globalSettings = readJsonFile(join(getAgentDir(), "settings.json"));
 	const projectSettings = readJsonFile(join(ctx.cwd, ".pi", "settings.json"));
-	const recap = (mergeSettings(globalSettings, projectSettings) as Settings).recap;
+	const recap = parseRecapField(mergeSettings(globalSettings, projectSettings).recap);
 
 	const configuredMaxWords = recap?.maxWords;
 	const maxWords =
@@ -520,6 +539,8 @@ function getStoredState(ctx: ExtensionContext): SessionState {
 	for (let i = branch.length - 1; i >= 0; i--) {
 		const entry = branch[i];
 		if (entry.type !== "custom" || entry.customType !== STATE_KEY) continue;
+		// SAFETY: persistState is the sole writer of custom entry STATE_KEY and
+		// always stores a SessionState payload, so the data field is SessionState.
 		return (entry as CustomEntry<SessionState>).data ?? {};
 	}
 	return {};
