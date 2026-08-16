@@ -49,7 +49,7 @@ export default function (pi: ExtensionAPI): void {
 
   pi.on("agent_end", (event) => {
     const assistants = event.messages.filter((m) => m.role === "assistant");
-    lastAssistant = assistants[assistants.length - 1] as typeof lastAssistant;
+    lastAssistant = assistants.at(-1);
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
@@ -86,7 +86,7 @@ export default function (pi: ExtensionAPI): void {
         );
         if (response.stopReason === "error") {
           ctx.ui.notify(
-            `sentinel: judge failed (${(response as { errorMessage?: string }).errorMessage ?? "unknown error"})`,
+            `sentinel: judge failed (${("errorMessage" in response ? response.errorMessage : undefined) ?? "unknown error"})`,
             "warning",
           );
           return;
