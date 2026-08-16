@@ -12,9 +12,11 @@ import { Type } from "@sinclair/typebox";
 // Turndown — lazy singleton
 // ---------------------------------------------------------------------------
 
-let td: any;
+type Turndown = { turndown(input: string): string };
+
+let td: Turndown | undefined;
 async function getTurndown() {
-	return td ??= new (await import("./vendor/turndown.js")).default();
+	return (td ??= new (await import("./vendor/turndown.js")).default());
 }
 
 // ---------------------------------------------------------------------------
@@ -85,6 +87,7 @@ function renderCollapsibleText(
 	theme: any,
 	context: any,
 ): Text {
+	// SAFETY: pi sets context.lastComponent to a Text instance for renderResult and renderCall; falls back to a fresh Text when unset.
 	const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 	const body = result.content.map((c) => (c.type === "text" ? (c.text ?? "") : "")).join("\n");
 
@@ -138,6 +141,7 @@ export default function (pi: ExtensionAPI) {
 		}),
 
 		renderCall(args: { url: string; prompt?: string }, theme: any, context: any) {
+			// SAFETY: pi sets context.lastComponent to a Text instance; falls back to a fresh Text when unset.
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 			let s = theme.fg("toolTitle", theme.bold("web_fetch "));
 			s += theme.fg("muted", args.url);
