@@ -53,11 +53,6 @@
     source = "inline";
     dir = "retired/pi-exec";
   };
-  tools = {
-    stage = "retired";
-    source = "inline";
-    dir = "retired/pi-tools";
-  };
   fleet = {
     stage = "retired";
     source = "inline";
@@ -79,16 +74,6 @@
     stage = "retired";
     source = "inline";
     dir = "retired/pi-hashline";
-  };
-  batch = {
-    stage = "retired";
-    source = "inline";
-    dir = "retired/pi-batch";
-  };
-  unified-edit = {
-    stage = "retired";
-    source = "inline";
-    dir = "retired/pi-unified-edit";
   };
   ponytail = {
     stage = "active";
