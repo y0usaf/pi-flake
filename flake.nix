@@ -332,25 +332,6 @@
       };
 
 
-      "pi-tools" = mkPiExtension {
-        pname = "pi-tools";
-        dir = ./extensions/retired/pi-tools;
-        copy = ["extensions"];
-      };
-
-      "pi-unified-edit" = mkPiExtension {
-        pname = "pi-unified-edit";
-        dir = ./extensions/retired/pi-unified-edit;
-        copy = ["src"];
-      };
-
-      # pi-batch: multi-op tool calls in one turn (reduces round-trips)
-      "pi-batch" = mkPiExtension {
-        pname = "pi-batch";
-        dir = ./extensions/retired/pi-batch;
-        copy = ["extensions"];
-      };
-
       # ponytail: lazy senior dev mode (DietrichGebert/ponytail)
       "pi-ponytail" = let
         ponytailPackageJson = builtins.fromJSON (builtins.readFile "${ponytailSrc}/package.json");
@@ -519,14 +500,6 @@ EOF
         };
       };
 
-      prime-agent-full = self.lib.piWithExtensions {
-        inherit pkgs;
-        pi = self.packages.${system}.prime-agent;
-        extensions = {
-          chronobreak = self.packages.${system}."pi-chronobreak";
-        };
-      };
-
       # prime-bun: Bun-compiled standalone binary, parallel to prime-agent.
       # Build uses bun build --compile for a self-contained binary; static assets
       # (themes, skills, docs, examples) are installed to $out/share/prime-bun/.
@@ -640,7 +613,6 @@ EOF
         grep -q 'PI_TELEMETRY' ${self.packages.${system}.pi}/bin/pi
         grep -q 'PI_TELEMETRY=0' ${self.packages.${system}.pi-full}/bin/pi
         grep -q 'PI_TELEMETRY=0' ${self.packages.${system}."prime-agent"}/bin/pi
-        grep -q 'PI_TELEMETRY=0' ${self.packages.${system}."prime-agent-full"}/bin/pi
         touch $out
       '';
 
@@ -732,13 +704,10 @@ EOF
       nixpkgs.lib.filterAttrs (name: _: (extensionRegistry.${name}.stage or "active") != "paused" && (extensionRegistry.${name}.stage or "active") != "retired") {
         sentinel = self.packages.${system}."pi-sentinel";
         heartbeat = self.packages.${system}."pi-heartbeat";
-        tools = self.packages.${system}."pi-tools";
         agents = self.packages.${system}."pi-agents";
         "chronobreak" = self.packages.${system}."pi-chronobreak";
-        unified-edit = self.packages.${system}."pi-unified-edit";
         ponytail = self.packages.${system}."pi-ponytail";
         caveman = self.packages.${system}."pi-caveman";
-        batch = self.packages.${system}."pi-batch";
         aliases = self.packages.${system}."pi-aliases";
         recap = self.packages.${system}."pi-recap";
         webfetch = self.packages.${system}."pi-webfetch";

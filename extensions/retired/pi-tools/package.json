@@ -1,1 +1,0 @@
-{"name":"pi-tools","version":"0.1.0","description":"Interactive tool toggles via /tools — same UI as /settings","keywords":["pi-package","pi-extension"],"license":"MIT","files":["extensions"],"pi":{"extensions":["./extensions/tools.ts"]},"peerDependencies":{"@earendil-works/pi-coding-agent":"*"}}

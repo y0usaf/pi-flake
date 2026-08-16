@@ -1,1 +1,0 @@
-{"name":"pi-batch","version":"0.1.0","description":"Batch tool — execute multiple operations in one turn (read, write, edit, bash)","keywords":["pi-package","pi-extension"],"license":"MIT","files":["extensions"],"pi":{"extensions":["./extensions/batch.ts"]},"peerDependencies":{"@earendil-works/pi-coding-agent":"*"}}

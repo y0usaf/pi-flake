@@ -38,7 +38,6 @@ nix profile install github:y0usaf/pi-flake#pi-full
 
 ```bash
 nix profile install github:y0usaf/pi-flake#prime-agent
-nix profile install github:y0usaf/pi-flake#prime-agent-full   # prime-agent + chronobreak
 nix profile install github:y0usaf/pi-flake#prime-bun           # Bun-compiled standalone binary
 ```
 
@@ -226,7 +225,6 @@ If you want full control:
 - `pi` - Base pi, no extensions
 - `pi-full` - pi with all active extensions bundled
 - `prime-agent` - Prime Intellect fork, node bundle with vendored runtime node_modules
-- `prime-agent-full` - prime-agent + chronobreak
 - `prime-bun` - Bun-compiled standalone binary, parallel to prime-agent
 
 ### Extension packages
