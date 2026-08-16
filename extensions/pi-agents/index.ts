@@ -30,7 +30,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { Agent, type AgentTool, type AgentToolResult, type AgentEvent } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import {
 	createBashTool,
@@ -40,6 +40,7 @@ import {
 	getAgentDir,
 	type ExtensionAPI,
 	type ModelRegistry,
+	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import { Text, Container, Spacer } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
@@ -297,14 +298,14 @@ async function loadPiAgentsConfig(cwd: string): Promise<PiAgentsConfig> {
  * Resolve a config model spec against the session's model registry.
  * Accepts "provider/modelId" (exact) or a bare modelId (unique across available providers).
  */
-function resolveChildModel(spec: string, registry: ModelRegistry): Model<any> {
+function resolveChildModel(spec: string, registry: ModelRegistry): Model<Api> {
 	const slash = spec.indexOf("/");
 	if (slash > 0) {
 		const scoped = registry.find(spec.slice(0, slash), spec.slice(slash + 1));
-		if (scoped) return scoped as Model<any>;
+		if (scoped) return scoped;
 	}
 	const matches = registry.getAvailable().filter((candidate) => candidate.id === spec);
-	if (matches.length === 1) return matches[0] as Model<any>;
+	if (matches.length === 1) return matches[0];
 	if (matches.length > 1) {
 		throw new Error(
 			`pi-agents: model "${spec}" is ambiguous (${matches.map((m) => `${m.provider}/${m.id}`).join(", ")}). ` +
@@ -907,8 +908,8 @@ function collectResult(childId: string, state: ChildState, reportStartIdx: numbe
 function renderAgentCall(
 	toolLabel: string,
 	args: { id?: string; system_prompt?: string; task?: string; message?: string; contract?: unknown; panel?: { size?: number; models?: string[] } },
-	theme: any,
-	_context: any,
+	theme: Theme,
+	_context: unknown,
 ) {
 	const id = args.id || "...";
 	const taskText = args.task || args.message || "...";
@@ -923,14 +924,14 @@ function renderAgentCall(
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 /** " · N actions · N reports · model" — pi joins metadata with a muted middot. */
-function metaSuffix(model: string | undefined, activityCount: number, reportCount: number | undefined, theme: any): string {
+function metaSuffix(model: string | undefined, activityCount: number, reportCount: number | undefined, theme: Theme): string {
 	const parts = [plural(activityCount, "action")];
 	if (reportCount !== undefined) parts.push(plural(reportCount, "report"));
 	if (model) parts.push(model);
 	return theme.fg("muted", parts.map((part) => ` · ${part}`).join(""));
 }
 
-function formatAnswerLines(answers: ContractAnswer[], theme: any): string {
+function formatAnswerLines(answers: ContractAnswer[], theme: Theme): string {
 	let text = "";
 	for (const answer of answers) {
 		const punted = answer.value === UNABLE_VALUE;
@@ -941,14 +942,14 @@ function formatAnswerLines(answers: ContractAnswer[], theme: any): string {
 	}
 	return text;
 }
-function activityIcon(item: ActivityItem, theme: any): string {
+function activityIcon(item: ActivityItem, theme: Theme): string {
 	if (item.type === "report") return theme.fg("warning", "↑");
 	if (item.type === "tool_start") return theme.fg("accent", "→");
 	if (item.type === "text") return theme.fg("dim", "·");
 	return theme.fg("success", "✓");
 }
 
-function formatActivityTail(activity: ActivityItem[], theme: any): string {
+function formatActivityTail(activity: ActivityItem[], theme: Theme): string {
 	const visible = activity.slice(-MAX_RENDERED_ACTIVITY);
 	const skipped = activity.length - visible.length;
 	let text = "";
@@ -967,9 +968,9 @@ function clearSpinner(context: any): void {
 }
 
 function renderAgentResult(
-	result: { content: any[]; details?: unknown },
+	result: AgentToolResult<unknown>,
 	options: { expanded: boolean; isPartial: boolean },
-	theme: any,
+	theme: Theme,
 	context: any,
 ) {
 	const details = (result.details && typeof result.details === "object" && "childId" in result.details)
@@ -1147,7 +1148,7 @@ export default function multiAgent(pi: ExtensionAPI) {
 	let orchestratorOn = false;
 	let toolsBeforeOrchestrator: string[] | undefined;
 
-	function applyOrchestrator(on: boolean, ctx: { hasUI: boolean; ui: any }): void {
+	function applyOrchestrator(on: boolean, ctx: { hasUI: boolean; ui: { setStatus(key: string, value: string | undefined): void; notify(message: string, type?: "info" | "warning" | "error"): void } }): void {
 		if (on === orchestratorOn) return;
 		orchestratorOn = on;
 		if (on) {
