@@ -10,6 +10,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
  * assistant message. Verdict ABRUPT queues a follow-up user message that
  * resumes the run. COMPLETE does nothing.
  *
+ * Toggle: /sentinel on/off enables or disables all checks.
+ *
  * Also detects transient provider errors (5xx, 429) at HTTP level via
  * after_provider_response, before the stream is consumed. Any such error
  * on the last turn forces a retry without running the judge.
@@ -32,6 +34,7 @@ function continuationLabel(n: number, max: number): string {
 }
 
 export default function (pi: ExtensionAPI): void {
+  let enabled = true;
   let intent = "";
   let continuations = 0;
   let lastAssistant: {
@@ -52,8 +55,19 @@ export default function (pi: ExtensionAPI): void {
     lastAssistant = assistants.at(-1);
   });
 
+  pi.registerCommand("sentinel", {
+    description: "sentinel on/off - toggle abrupt-ending detection",
+    handler: async (args) => {
+      const arg = args.trim().toLowerCase();
+      if (arg === "on") enabled = true;
+      else if (arg === "off") enabled = false;
+      else return `sentinel is ${enabled ? "on" : "off"} (usage: /sentinel on|off)`;
+      return `sentinel ${enabled ? "on" : "off"}`;
+    },
+  });
+
   pi.on("agent_settled", async (_event, ctx) => {
-    if (judging) return;
+    if (!enabled || judging) return;
     const message = lastAssistant;
     lastAssistant = undefined;
     if (!message || !intent) return;
