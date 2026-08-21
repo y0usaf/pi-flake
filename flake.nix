@@ -230,6 +230,15 @@
         homepage = "https://github.com/y0usaf/pi-flake";
       };
 
+      # Vendored Autoprompt 1.0.4 doctrine, roles, and frameworks, adapted to
+      # Earendil Pi's skill packages and the pi-agents spawn contract.
+      "pi-autoprompt" = mkPiExtension {
+        pname = "pi-autoprompt";
+        dir = ./extensions/pi-autoprompt;
+        copy = ["LICENSE" "README.md" "UPSTREAM_REVISION" "skills"];
+        homepage = "https://github.com/Spielewoy/autoprompt-skill";
+      };
+
       "pi-webfetch" = mkPiExtension {
         pname = "pi-webfetch";
         dir = ./extensions/pi-webfetch;
@@ -579,6 +588,33 @@ EOF
         touch $out
       '';
 
+      # The vendored package must expose one explicit-only Pi skill plus the
+      # complete upstream OMP role/framework payload used by its adapter.
+      pi-autoprompt-package = pkgs.runCommand "pi-autoprompt-package-check" {
+        nativeBuildInputs = [pkgs.jq pkgs.python3];
+      } ''
+        pkg=${self.packages.${system}."pi-autoprompt"}
+        test "$(${pkgs.jq}/bin/jq -r '.pi.skills[0]' "$pkg/package.json")" = "./skills"
+        grep -q '^disable-model-invocation: true$' "$pkg/skills/autoprompt/SKILL.md"
+        grep -q 'PI-AUTOPROMPT ADAPTER CONTRACT' "$pkg/skills/autoprompt/SKILL.md"
+        test "$(find "$pkg/skills/autoprompt/agents" -maxdepth 1 -name 'ap-*.md' | wc -l)" -eq 25
+        test "$(find "$pkg/skills/autoprompt/frameworks" -maxdepth 1 -name '*.md' | wc -l)" -eq 18
+        ${pkgs.python3}/bin/python - <<'PY'
+import pathlib
+root = pathlib.Path("${self.packages.${system}."pi-autoprompt"}/skills/autoprompt/agents")
+names = {p.stem for p in root.glob("ap-*.md")}
+for path in root.glob("ap-*.md"):
+    text = path.read_text()
+    if not text.startswith("---\n"):
+        raise SystemExit(f"missing frontmatter: {path}")
+    for line in text.split("---", 2)[1].splitlines():
+        role = line.strip().removeprefix("- ")
+        if role.startswith("ap-") and role not in names:
+            raise SystemExit(f"unknown spawn role {role} in {path}")
+PY
+        touch $out
+      '';
+
       biome-lint = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-flake-biome-lint";
         version = "1";
@@ -705,6 +741,7 @@ EOF
         sentinel = self.packages.${system}."pi-sentinel";
         heartbeat = self.packages.${system}."pi-heartbeat";
         agents = self.packages.${system}."pi-agents";
+        autoprompt = self.packages.${system}."pi-autoprompt";
         "chronobreak" = self.packages.${system}."pi-chronobreak";
         ponytail = self.packages.${system}."pi-ponytail";
         caveman = self.packages.${system}."pi-caveman";

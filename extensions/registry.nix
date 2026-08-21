@@ -24,6 +24,12 @@
     dir = "pi-agents";
     priority = 10;
   };
+  autoprompt = {
+    stage = "active";
+    source = "vendored";
+    dir = "pi-autoprompt";
+    priority = 15;
+  };
   chronobreak = {
     stage = "active";
     source = "inline";

@@ -148,6 +148,8 @@ Active extensions (shipped in `pi-full`):
 | Name | Description |
 |------|-------------|
 | `pi-aliases` | Configurable bash command aliases — defaults: grep→rg, find→fd |
+| `pi-agents` | Recursive contract-based child-agent orchestration (`spawn_agent`, `kill_agent`, `list_agents`) |
+| `pi-autoprompt` | Vendored Autoprompt 1.0.4 skill adapted to `pi-agents`; invoke explicitly with `/skill:autoprompt <mission>` |
 | `pi-chronobreak` | Terminates assistant generation loops: detects repeated output in a turn, aborts, scrubs context, re-runs with a decisive-action directive |
 | `pi-webfetch` | Fetch a URL and return its content as markdown |
 | `pi-gecko-websearch` | Web search and browsing via headless Gecko browser (Marionette) |
@@ -239,6 +241,7 @@ inputs.pi-flake.packages.<system>."pi-ponytail"
 inputs.pi-flake.packages.<system>."pi-caveman"
 inputs.pi-flake.packages.<system>."pi-recap"
 inputs.pi-flake.packages.<system>."pi-agents"
+inputs.pi-flake.packages.<system>."pi-autoprompt"
 inputs.pi-flake.packages.<system>."pi-yourshell"
 ```
 
