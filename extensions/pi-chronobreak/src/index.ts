@@ -10,6 +10,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
  * that re-runs the turn with a decisive-action directive. There is no strike
  * limit: every detected loop is cut and re-run, indefinitely.
  *
+ * Toggle: /chronobreak on/off enables or disables loop detection.
+ *
  * Spectator: never touches files or the JS kernel. Only aborts generation,
  * replaces one assistant message, and queues a user message.
  */
@@ -63,6 +65,7 @@ export function detectLoop(text: string): LoopVerdict {
 }
 
 export default function (pi: ExtensionAPI): void {
+  let enabled = true;
   let terminating = false;
   let pendingNudge: string | undefined;
 
@@ -89,8 +92,19 @@ export default function (pi: ExtensionAPI): void {
     terminating = false;
   });
 
+  pi.registerCommand("chronobreak", {
+    description: "chronobreak on/off - toggle loop detection",
+    handler: async (args) => {
+      const arg = args.trim().toLowerCase();
+      if (arg === "on") enabled = true;
+      else if (arg === "off") enabled = false;
+      else return `chronobreak is ${enabled ? "on" : "off"} (usage: /chronobreak on|off)`;
+      return `chronobreak ${enabled ? "on" : "off"}`;
+    },
+  });
+
   pi.on("message_update", (event, ctx) => {
-    if (terminating) return;
+    if (!enabled || terminating) return;
     if (event.message.role !== "assistant") return;
     const text = textOf(event.message as never);
     if (text.length === 0) return;
