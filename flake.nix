@@ -5,7 +5,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     piSrc = {
-      url = "github:earendil-works/pi/6f707eb36064e82af9c1320a7634f4dfad21049b";
+      url = "github:earendil-works/pi/f4585b8bec581d005cbb1edfc07edfcce723d0ae";
       flake = false;
     };
 
@@ -130,7 +130,8 @@
         pyproject = true;
         src = primeAgentSrc + "/prime-agent-runtime";
         build-system = [ py.hatchling ];
-        dependencies = [ py.ipykernel py.nest-asyncio tyro ];
+        dependencies = [ py.ipykernel py.mcp py.nest-asyncio tyro ];
+        pythonRelaxDeps = [ "mcp" ];
       };
       # Built-in python skills must be importable in the (read-only) kernel env
       # or prime-agent disables them.
@@ -183,7 +184,7 @@
 
         # Regenerate after dependency changes:
         #   nix build .#pi 2>&1 | grep 'got:' | awk '{print $2}'
-        npmDepsHash = "sha256-tIFX/vDb3hM9QiB/BtybZcgiH5I6TYlyfSSxhpA3VwY=";
+        npmDepsHash = "sha256-a+q6PoOLp2MMmCs+IzHdqMkP1a7NcbmuYoHbJAiLvjU=";
 
         nodejs = pkgs.nodejs_22;
 
