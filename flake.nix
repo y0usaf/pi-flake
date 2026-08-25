@@ -224,21 +224,6 @@
         homepage = "https://github.com/y0usaf/pi-flake";
       };
 
-      "pi-agents" = mkPiExtension {
-        pname = "pi-agents";
-        dir = ./extensions/pi-agents;
-        copy = ["README.md" "index.ts"];
-        homepage = "https://github.com/y0usaf/pi-flake";
-      };
-
-      # Vendored Autoprompt 1.0.4 doctrine, roles, and frameworks, adapted to
-      # Earendil Pi's skill packages and the pi-agents spawn contract.
-      "pi-autoprompt" = mkPiExtension {
-        pname = "pi-autoprompt";
-        dir = ./extensions/pi-autoprompt;
-        copy = ["LICENSE" "README.md" "UPSTREAM_REVISION" "skills"];
-        homepage = "https://github.com/Spielewoy/autoprompt-skill";
-      };
 
       "pi-webfetch" = mkPiExtension {
         pname = "pi-webfetch";
@@ -255,7 +240,7 @@
       };
 
       # pi-fff: FFF-backed grep/find override. Lazy index (builds on first
-      # grep/find call); pi-agents orchestrator mode activates those tools.
+      # grep/find call); override mode keeps the built-in tools authoritative.
       # Native libs are prebuilt npm binaries pinned by sha512 (no Rust build).
       "pi-fff" = let
         fffPkgJson = builtins.fromJSON (builtins.readFile "${fffSrc}/packages/pi-fff/package.json");
@@ -286,8 +271,7 @@
           sed -i 's/^    "tools-and-ui";$/    "override";/' src/index.ts
 
           # Lazy indexing: skip the eager index build + autocomplete at session_start.
-          # The index builds on the first grep/find call — which only happens once
-          # pi-agents orchestrator mode activates those tools.
+          # The index builds on the first grep/find call.
           sed -i 's/^      registerAutocompleteProvider(ctx);$/      if (currentMode !== "override") registerAutocompleteProvider(ctx);/' src/index.ts
           sed -i 's/^      await ensureFinder(activeCwd);$/      if (currentMode !== "override") await ensureFinder(activeCwd);/' src/index.ts
           sed -i 's/^      const atHome = enableHomeDirScanning && isHomeDir(activeCwd);$/      const atHome = currentMode !== "override" \&\& enableHomeDirScanning \&\& isHomeDir(activeCwd);/' src/index.ts
@@ -589,32 +573,6 @@ EOF
         touch $out
       '';
 
-      # The vendored package must expose one explicit-only Pi skill plus the
-      # complete upstream OMP role/framework payload used by its adapter.
-      pi-autoprompt-package = pkgs.runCommand "pi-autoprompt-package-check" {
-        nativeBuildInputs = [pkgs.jq pkgs.python3];
-      } ''
-        pkg=${self.packages.${system}."pi-autoprompt"}
-        test "$(${pkgs.jq}/bin/jq -r '.pi.skills[0]' "$pkg/package.json")" = "./skills"
-        grep -q '^disable-model-invocation: true$' "$pkg/skills/autoprompt/SKILL.md"
-        grep -q 'PI-AUTOPROMPT ADAPTER CONTRACT' "$pkg/skills/autoprompt/SKILL.md"
-        test "$(find "$pkg/skills/autoprompt/agents" -maxdepth 1 -name 'ap-*.md' | wc -l)" -eq 25
-        test "$(find "$pkg/skills/autoprompt/frameworks" -maxdepth 1 -name '*.md' | wc -l)" -eq 18
-        ${pkgs.python3}/bin/python - <<'PY'
-import pathlib
-root = pathlib.Path("${self.packages.${system}."pi-autoprompt"}/skills/autoprompt/agents")
-names = {p.stem for p in root.glob("ap-*.md")}
-for path in root.glob("ap-*.md"):
-    text = path.read_text()
-    if not text.startswith("---\n"):
-        raise SystemExit(f"missing frontmatter: {path}")
-    for line in text.split("---", 2)[1].splitlines():
-        role = line.strip().removeprefix("- ")
-        if role.startswith("ap-") and role not in names:
-            raise SystemExit(f"unknown spawn role {role} in {path}")
-PY
-        touch $out
-      '';
 
       biome-lint = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-flake-biome-lint";
@@ -733,16 +691,13 @@ PY
 
     formatter = forAllSystems (system: pkgsFor.${system}.alejandra);
 
-    nixosModules.default = import ./nix/modules/nixos.nix self;
-
     # Extension package set keyed by bundled extension name. Lifecycle stage
     # comes from extensions/registry.nix; paused and retired extensions are excluded.
+
     lib.extensionPackagesFor = system:
       nixpkgs.lib.filterAttrs (name: _: (extensionRegistry.${name}.stage or "active") != "paused" && (extensionRegistry.${name}.stage or "active") != "retired") {
         sentinel = self.packages.${system}."pi-sentinel";
         heartbeat = self.packages.${system}."pi-heartbeat";
-        agents = self.packages.${system}."pi-agents";
-        autoprompt = self.packages.${system}."pi-autoprompt";
         "chronobreak" = self.packages.${system}."pi-chronobreak";
         ponytail = self.packages.${system}."pi-ponytail";
         caveman = self.packages.${system}."pi-caveman";
@@ -805,10 +760,8 @@ PY
     }: let
       # Each bundled extension dir is its own package root so readPiManifest
       # finds its package.json and loads .pi.extensions/.pi.skills/.pi.prompts.
-      # Load order is explicit priority (ascending), not alphabetical: pi
-      # resolves tool-name collisions first-wins, so pi-agents (priority 10)
-      # must load before pi-yourshell (100) or the main session keeps the
-      # $SHELL bash tool after orchestrator mode strips it.
+      # Load order is explicit priority (ascending), not alphabetical: lower
+      # priorities win tool-name collisions.
       extensionPackageSources = pkgs.lib.concatStringsSep ":" (
         map (name: "@out@/share/pi/extensions/${name}")
           (pkgs.lib.sort
