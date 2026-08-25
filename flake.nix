@@ -328,12 +328,13 @@
         # trailing pnpm-only assert step from the build script.
         postPatch = ''
           cp ${./nix/fabric-package-lock.json} package-lock.json
+          patch -p1 < ${./patches/pi-fabric/resolve-shiki-language-imports.patch}
           sed -i 's/ && pnpm run assert:build-artifacts//' package.json
         '';
 
         npmBuildScript = "build";
         npmDepsFetcherVersion = 2;
-        npmDepsHash = "sha256-ZnuWcwSufOdw0MFEdJaPboFABdw8ndE0wlHR6O5SKHE=";
+        npmDepsHash = "sha256-a1A0HBbTTC/AhT2E1uzbKyDu5U6UpI6jw6Wb3qVkJvA=";
 
         nodejs = pkgs.nodejs_24;
 
