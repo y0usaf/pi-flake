@@ -43,6 +43,13 @@
       flake = false;
     };
 
+    # pi-fabric: programmable tool and agent runtime (QuickJS, MCP, actors,
+    # councils, workflows). Replaces the retired pi-agents extension.
+    fabricSrc = {
+      url = "github:monotykamary/pi-fabric/9e9db6cf528639fc6378a9abd273df6e46892a80";
+      flake = false;
+    };
+
   };
 
   outputs = {
@@ -54,6 +61,7 @@
     ponytailSrc,
     cavemanSrc,
     fffSrc,
+    fabricSrc,
   }: let
     systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
     forAllSystems = nixpkgs.lib.genAttrs systems;
@@ -299,6 +307,51 @@
         meta = with lib; {
           description = fffPkgJson.description;
           homepage = "https://github.com/dmtrKovalenko/fff";
+          license = licenses.mit;
+          platforms = platforms.all;
+        };
+      };
+
+      # pi-fabric: programmable tool and agent runtime (QuickJS, MCP, actors,
+      # councils, workflows). Replaces the retired pi-agents extension. Built
+      # from source with npm (pnpm-lock is not buildNpmPackage-compatible; the
+      # generated package-lock.json is vendored below). The trailing pnpm-only
+      # assert step is dropped — the build's own artifact checks suffice.
+      "pi-fabric" = let
+        fabricPkgJson = builtins.fromJSON (builtins.readFile "${fabricSrc}/package.json");
+      in pkgs.buildNpmPackage {
+        pname = "pi-fabric";
+        version = fabricPkgJson.version;
+        src = fabricSrc;
+
+        # Vendor an npm lockfile (upstream ships pnpm-lock.yaml) and drop the
+        # trailing pnpm-only assert step from the build script.
+        postPatch = ''
+          cp ${./nix/fabric-package-lock.json} package-lock.json
+          sed -i 's/ && pnpm run assert:build-artifacts//' package.json
+        '';
+
+        npmBuildScript = "build";
+        npmDepsFetcherVersion = 2;
+        npmDepsHash = "sha256-ZnuWcwSufOdw0MFEdJaPboFABdw8ndE0wlHR6O5SKHE=";
+
+        nodejs = pkgs.nodejs_24;
+
+        installPhase = ''
+          runHook preInstall
+          chmod +w package-lock.json
+          npm prune --omit=dev
+          mkdir -p $out
+          cp -R dist skills docs package.json README.md LICENSE THIRD_PARTY_NOTICES.md $out/ 2>/dev/null || true
+          cp -R node_modules $out/
+          runHook postInstall
+        '';
+
+        passthru.packageName = fabricPkgJson.name;
+
+        meta = with lib; {
+          description = fabricPkgJson.description;
+          homepage = "https://github.com/monotykamary/pi-fabric";
           license = licenses.mit;
           platforms = platforms.all;
         };
@@ -573,6 +626,15 @@ EOF
         touch $out
       '';
 
+      # pi-fabric: assert the built dist registers the fabric_exec tool and
+      # carries its runtime node_modules (quickjs, shiki, etc.).
+      fabric-built = pkgs.runCommand "pi-fabric-built-check" {} ''
+        grep -q 'fabric_exec' ${self.packages.${system}."pi-fabric"}/dist/index.js
+        test -d ${self.packages.${system}."pi-fabric"}/node_modules/quickjs-emscripten-core
+        test -d ${self.packages.${system}."pi-fabric"}/node_modules/shiki
+        touch $out
+      '';
+
 
       biome-lint = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-flake-biome-lint";
@@ -707,6 +769,7 @@ EOF
         gecko-websearch = self.packages.${system}."pi-gecko-websearch";
         yourshell = self.packages.${system}."pi-yourshell";
         fff = self.packages.${system}."pi-fff";
+        fabric = self.packages.${system}."pi-fabric";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.

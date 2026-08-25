@@ -16,6 +16,23 @@
         "type": "github"
       }
     },
+    "fabricSrc": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1787650141,
+        "narHash": "sha256-N0g8ms01/pEu6qw0WcyhPn0QZfnUe0P3rG4omWhymgQ=",
+        "owner": "monotykamary",
+        "repo": "pi-fabric",
+        "rev": "9e9db6cf528639fc6378a9abd273df6e46892a80",
+        "type": "github"
+      },
+      "original": {
+        "owner": "monotykamary",
+        "repo": "pi-fabric",
+        "rev": "9e9db6cf528639fc6378a9abd273df6e46892a80",
+        "type": "github"
+      }
+    },
     "fffSrc": {
       "flake": false,
       "locked": {
@@ -118,6 +135,7 @@
     "root": {
       "inputs": {
         "cavemanSrc": "cavemanSrc",
+        "fabricSrc": "fabricSrc",
         "fffSrc": "fffSrc",
         "nixpkgs": "nixpkgs",
         "piSrc": "piSrc",

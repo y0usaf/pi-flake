@@ -18,6 +18,11 @@
     dir = "pi-aliases";
     priority = 20;
   };
+  fabric = {
+    stage = "active";
+    source = "vendored";
+    priority = 10;
+  };
   chronobreak = {
     stage = "active";
     source = "inline";
