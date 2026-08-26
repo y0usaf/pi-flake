@@ -334,7 +334,7 @@
 
         npmBuildScript = "build";
         npmDepsFetcherVersion = 2;
-        npmDepsHash = "sha256-a1A0HBbTTC/AhT2E1uzbKyDu5U6UpI6jw6Wb3qVkJvA=";
+        npmDepsHash = "sha256-ZnuWcwSufOdw0MFEdJaPboFABdw8ndE0wlHR6O5SKHE=";
 
         nodejs = pkgs.nodejs_24;
 
