@@ -23,18 +23,6 @@
       flake = false;
     };
 
-    # ponytail: lazy senior dev mode — cuts unnecessary code, keeps safety
-    ponytailSrc = {
-      url = "github:DietrichGebert/ponytail";
-      flake = false;
-    };
-
-    # pi-caveman: why use many token when few do trick (caveman mode)
-    cavemanSrc = {
-      url = "github:jonjonrankin/pi-caveman";
-      flake = false;
-    };
-
     # fff: fast file search SDK; pi-fff extension overrides grep/find with a
     # frecency-ranked fuzzy index. Pinned to the published 0.10.3 commit so the
     # source matches the 0.10.3 prebuilt native binaries fetched from npm.
@@ -58,8 +46,6 @@
     piSrc,
     primeAgentSrc,
     primeBunSrc,
-    ponytailSrc,
-    cavemanSrc,
     fffSrc,
     fabricSrc,
   }: let
@@ -98,8 +84,7 @@
 
       # Collapse the near-identical stdenvNoCC extension packages. Each just
       # copies its package.json plus a few files/dirs into $out and stamps the
-      # standard passthru.packageName + meta. Vendored extensions with postPatch
-      # or tolerant copies (ponytail, caveman) stay explicit below.
+      # standard passthru.packageName + meta.
       mkPiExtension = {pname, dir, copy, homepage ? null}: let
         src = lib.cleanSource dir;
         pkgJson = builtins.fromJSON (builtins.readFile "${dir}/package.json");
@@ -379,79 +364,6 @@
         copy = ["README.md" "src"];
       };
 
-
-      # ponytail: lazy senior dev mode (DietrichGebert/ponytail)
-      "pi-ponytail" = let
-        ponytailPackageJson = builtins.fromJSON (builtins.readFile "${ponytailSrc}/package.json");
-      in
-        pkgs.stdenvNoCC.mkDerivation {
-          pname = "ponytail";
-          version = ponytailPackageJson.version;
-          src = ponytailSrc;
-
-          dontBuild = true;
-
-          patches = [];
-
-          postPatch = ''
-            sed -i '/^function getConfigDir() {/,/^}$/c\
-function getConfigDir() {\
-  return path.join(os.homedir(), ".pi", "agent");\
-}
-' hooks/ponytail-config.js
-            sed -i '/^function getConfigPath() {/,/^}$/c\
-function getConfigPath() {\
-  return path.join(getConfigDir(), "ponytail.json");\
-}
-' hooks/ponytail-config.js
-          '';
-
-          installPhase = ''
-            runHook preInstall
-            mkdir -p "$out"
-            cp package.json LICENSE AGENTS.md "$out"/
-            cp -r pi-extension skills hooks assets "$out"/ 2>/dev/null || true
-            runHook postInstall
-          '';
-
-          passthru.packageName = ponytailPackageJson.name;
-
-          meta = with lib; {
-            description = ponytailPackageJson.description;
-            homepage = "https://github.com/DietrichGebert/ponytail";
-            license = licenses.mit;
-            platforms = platforms.all;
-          };
-        };
-
-      # pi-caveman: why use many token when few do trick (jonjonrankin/pi-caveman)
-      "pi-caveman" = let
-        cavemanPackageJson = builtins.fromJSON (builtins.readFile "${cavemanSrc}/package.json");
-      in
-        pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-caveman";
-          version = cavemanPackageJson.version;
-          src = cavemanSrc;
-
-          dontBuild = true;
-
-          installPhase = ''
-            runHook preInstall
-            mkdir -p "$out"
-            cp package.json LICENSE README.md "$out"/
-            cp -r extensions scripts "$out"/ 2>/dev/null || true
-            runHook postInstall
-          '';
-
-          passthru.packageName = cavemanPackageJson.name;
-
-          meta = with lib; {
-            description = cavemanPackageJson.description;
-            homepage = "https://github.com/jonjonrankin/pi-caveman";
-            license = licenses.mit;
-            platforms = platforms.all;
-          };
-        };
 
       # pi-recap: Claude Code-style session recap above the status bar (L2ncE/pi-recap)
       "pi-recap" = mkPiExtension {
@@ -779,8 +691,6 @@ EOF
         sentinel = self.packages.${system}."pi-sentinel";
         heartbeat = self.packages.${system}."pi-heartbeat";
         "chronobreak" = self.packages.${system}."pi-chronobreak";
-        ponytail = self.packages.${system}."pi-ponytail";
-        caveman = self.packages.${system}."pi-caveman";
         aliases = self.packages.${system}."pi-aliases";
         recap = self.packages.${system}."pi-recap";
         webfetch = self.packages.${system}."pi-webfetch";
