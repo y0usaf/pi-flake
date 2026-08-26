@@ -1,21 +1,5 @@
 {
   "nodes": {
-    "cavemanSrc": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1785889250,
-        "narHash": "sha256-Wi4jT+gWCYuofqde7Fh05YSp4mHDz5b3dmHdhsYH7oE=",
-        "owner": "jonjonrankin",
-        "repo": "pi-caveman",
-        "rev": "8d326c4e562eeb0cdac41700348c6183efc05189",
-        "type": "github"
-      },
-      "original": {
-        "owner": "jonjonrankin",
-        "repo": "pi-caveman",
-        "type": "github"
-      }
-    },
     "fabricSrc": {
       "flake": false,
       "locked": {
@@ -69,44 +53,28 @@
     "piSrc": {
       "flake": false,
       "locked": {
-        "lastModified": 1787330007,
-        "narHash": "sha256-pJzivSySwjMYF3wdvYSFiteIv2JfXwNKzs0Qe4xbNTk=",
+        "lastModified": 1787754330,
+        "narHash": "sha256-Hm9qZEKzwMKpZJ9BgukLiSRmlV8gixdfDVqDwKA8SUM=",
         "owner": "earendil-works",
         "repo": "pi",
-        "rev": "f4585b8bec581d005cbb1edfc07edfcce723d0ae",
+        "rev": "42f7f29ad1cf15d6ec7eb5f41749b2e6ab291eb2",
         "type": "github"
       },
       "original": {
         "owner": "earendil-works",
         "repo": "pi",
-        "rev": "f4585b8bec581d005cbb1edfc07edfcce723d0ae",
-        "type": "github"
-      }
-    },
-    "ponytailSrc": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1786139041,
-        "narHash": "sha256-bGdXvzhWPwGdz3T2Yh2h6lf+3PBRFAfdBxP5pESmCHI=",
-        "owner": "DietrichGebert",
-        "repo": "ponytail",
-        "rev": "2ed6c52c9d7e5e56942508591085fd45dea277d3",
-        "type": "github"
-      },
-      "original": {
-        "owner": "DietrichGebert",
-        "repo": "ponytail",
+        "rev": "42f7f29ad1cf15d6ec7eb5f41749b2e6ab291eb2",
         "type": "github"
       }
     },
     "primeAgentSrc": {
       "flake": false,
       "locked": {
-        "lastModified": 1787346999,
-        "narHash": "sha256-9XOGeZMjAWeoD1vo/4LkuKHNtBawGri/2kcKIZ99Xms=",
+        "lastModified": 1787721195,
+        "narHash": "sha256-PdgkayPQ0Bmmr5ojnaXM6drbmB/p47cNvkwOmj93FGc=",
         "ref": "main",
-        "rev": "8d7deeab5861bf9d77bde3d8511046a5c799818d",
-        "revCount": 4557,
+        "rev": "514633727bf26d74f39f3119c2b0e31a5ceb2a9d",
+        "revCount": 4565,
         "type": "git",
         "url": "https://github.com/PrimeIntellect-ai/prime-agent"
       },
@@ -134,12 +102,10 @@
     },
     "root": {
       "inputs": {
-        "cavemanSrc": "cavemanSrc",
         "fabricSrc": "fabricSrc",
         "fffSrc": "fffSrc",
         "nixpkgs": "nixpkgs",
         "piSrc": "piSrc",
-        "ponytailSrc": "ponytailSrc",
         "primeAgentSrc": "primeAgentSrc",
         "primeBunSrc": "primeBunSrc"
       }

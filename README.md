@@ -86,8 +86,6 @@ Use a flag attrset in your consuming flake:
         webfetch = true;
         "gecko-websearch" = false;
         sentinel = true;
-        ponytail = true;
-        caveman = true;
         recap = true;
       };
     };
@@ -120,8 +118,6 @@ assertion.
             # Option 2: selected extensions
             # extensions = {
             #   webfetch = true;
-            #   ponytail = true;
-            #   caveman = true;
             # };
 
             # Option 3: concrete package
@@ -152,8 +148,6 @@ Active extensions (shipped in `pi-full`):
 | `pi-webfetch` | Fetch a URL and return its content as markdown |
 | `pi-gecko-websearch` | Web search and browsing via headless Gecko browser (Marionette) |
 | `pi-sentinel` | Detects abrupt run endings via a sparse context-free judge, continues the run when the stop was a cutoff |
-| `pi-ponytail` | Lazy senior dev mode — cuts unnecessary code, keeps safety |
-| `pi-caveman` | Terse-response mode with configurable compression levels |
 | `pi-recap` | Claude Code-style session recap: one-line recap above the status bar |
 | `pi-yourshell` | Runs the bash tool through your own `$SHELL` instead of pi's hardcoded bash |
 
@@ -235,8 +229,6 @@ inputs.pi-flake.packages.<system>."pi-chronobreak"
 inputs.pi-flake.packages.<system>."pi-webfetch"
 inputs.pi-flake.packages.<system>."pi-gecko-websearch"
 inputs.pi-flake.packages.<system>."pi-sentinel"
-inputs.pi-flake.packages.<system>."pi-ponytail"
-inputs.pi-flake.packages.<system>."pi-caveman"
 inputs.pi-flake.packages.<system>."pi-recap"
 inputs.pi-flake.packages.<system>."pi-yourshell"
 ```

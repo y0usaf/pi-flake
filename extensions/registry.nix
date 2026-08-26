@@ -74,16 +74,6 @@
     source = "inline";
     dir = "retired/pi-hashline";
   };
-  ponytail = {
-    stage = "active";
-    source = "vendored";
-    priority = 60;
-  };
-  caveman = {
-    stage = "active";
-    source = "vendored";
-    priority = 30;
-  };
   fff = {
     stage = "active";
     source = "vendored";
