@@ -636,6 +636,23 @@ EOF
         touch $out
       '';
 
+      # A nested or sibling pi wrapper can inherit an older bundle through
+      # PI_DEFAULT_PACKAGES. Its duplicate extension names must not collide.
+      pi-nested-bundle = pkgs.runCommand "pi-nested-bundle-check" {} ''
+        set -euo pipefail
+        parent="$TMPDIR/parent/share/pi/extensions/fabric"
+        mkdir -p "$parent"
+        cp -R ${self.packages.${system}.pi-full}/share/pi/extensions/fabric/. "$parent/"
+        output="$TMPDIR/rpc-output"
+        printf '{"id":"state","type":"get_state"}\n' |
+          PI_DEFAULT_PACKAGES="$parent" \
+          timeout 20s ${self.packages.${system}.pi-full}/bin/pi \
+            --no-session --offline --mode rpc >"$output" 2>&1
+        ! grep -q 'conflicts with' "$output"
+        grep -q '"command":"get_state"' "$output"
+        touch "$out"
+      '';
+
 
       biome-lint = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-flake-biome-lint";
@@ -914,8 +931,29 @@ EOF
 
 
 
+          # Child Pi processes inherit this variable. Drop inherited copies of
+          # bundled extension names; different store paths otherwise register
+          # the same tools twice.
+          inherited_default_packages=""
           if [ -n "''${PI_DEFAULT_PACKAGES:-}" ]; then
-            export PI_DEFAULT_PACKAGES="${extensionPackageSources}:''${PI_DEFAULT_PACKAGES}"
+            IFS=: read -r -a inherited_packages <<< "''${PI_DEFAULT_PACKAGES}"
+            for package_source in "''${inherited_packages[@]}"; do
+              case "$package_source" in
+                ${pkgs.lib.concatStringsSep "|" (["__pi_never_matches__"] ++ map (name: "*/share/pi/extensions/${name}") (builtins.attrNames extensions))})
+                  continue
+                  ;;
+              esac
+              if [ -n "$package_source" ]; then
+                if [ -n "$inherited_default_packages" ]; then
+                  inherited_default_packages="$inherited_default_packages:$package_source"
+                else
+                  inherited_default_packages="$package_source"
+                fi
+              fi
+            done
+          fi
+          if [ -n "$inherited_default_packages" ]; then
+            export PI_DEFAULT_PACKAGES="${extensionPackageSources}:$inherited_default_packages"
           else
             export PI_DEFAULT_PACKAGES="${extensionPackageSources}"
           fi
