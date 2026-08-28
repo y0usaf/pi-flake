@@ -342,9 +342,12 @@
         pname = "pi-fabric";
         version = fabricPkgJson.version;
         src = fabricSrc;
+        patches = [./extensions/pi-fabric/patches/resolve-shiki-language-imports.patch];
 
         # Vendor an npm lockfile (upstream ships pnpm-lock.yaml) and drop the
         # trailing pnpm-only assert step from the build script.
+        # Pi's jiti loader cannot resolve Shiki's package-internal lazy imports,
+        # so preload the grammar modules from Fabric's own graph.
         postPatch = ''
           cp ${./nix/fabric-package-lock.json} package-lock.json
           sed -i 's/ && pnpm run assert:build-artifacts//' package.json
@@ -352,7 +355,7 @@
 
         npmBuildScript = "build";
         npmDepsFetcherVersion = 2;
-        npmDepsHash = "sha256-ZnuWcwSufOdw0MFEdJaPboFABdw8ndE0wlHR6O5SKHE=";
+        npmDepsHash = "sha256-a1A0HBbTTC/AhT2E1uzbKyDu5U6UpI6jw6Wb3qVkJvA=";
 
         nodejs = pkgs.nodejs_24;
 
@@ -578,7 +581,42 @@ EOF
         grep -q 'fabric_exec' ${self.packages.${system}."pi-fabric"}/dist/index.js
         test -d ${self.packages.${system}."pi-fabric"}/node_modules/quickjs-emscripten-core
         test -d ${self.packages.${system}."pi-fabric"}/node_modules/shiki
+        test -d ${self.packages.${system}."pi-fabric"}/node_modules/@shikijs/langs
+        grep -R -q 'PRELOADED_LANGUAGE_LOADERS' ${self.packages.${system}."pi-fabric"}/dist/chunks
         touch $out
+      '';
+
+      # Exercise the lazy Shiki import through Pi's jiti extension loader.
+      fabric-shiki-host = pkgs.runCommand "pi-fabric-shiki-host-check" {} ''
+        set -euo pipefail
+        smoke="$TMPDIR/fabric-shiki-smoke"
+        mkdir -p "$smoke"
+        chunk=$(grep -R -l 'var PRELOADED_LANGUAGE_LOADERS' ${self.packages.${system}."pi-fabric"}/dist/chunks | head -1)
+        cat > "$smoke/package.json" <<'JSON'
+{"name":"fabric-shiki-smoke","version":"0.0.0","type":"module","pi":{"extensions":["./index.mjs"]}}
+JSON
+        cat > "$smoke/index.mjs" <<EOF
+import { configureHighlighting, highlightCode } from "$chunk";
+export default function smoke(pi) {
+  pi.on("session_start", async () => {
+    configureHighlighting("github-dark");
+    highlightCode("echo hi", "bash", () => {});
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    if (!highlightCode("echo hi", "bash", () => {})) {
+      throw new Error("Shiki returned no highlighted output");
+    }
+    console.error("FABRIC_SHIKI_HOST_SMOKE_OK");
+  });
+}
+EOF
+        output="$TMPDIR/fabric-shiki-output"
+        printf '{"id":"state","type":"get_state"}\n' |
+          PI_DEFAULT_PACKAGES="$smoke" \
+          ${pkgs.coreutils}/bin/timeout 30s ${self.packages.${system}.pi-full}/bin/pi \
+            --no-session --offline --mode rpc >"$output" 2>&1
+        grep -q 'FABRIC_SHIKI_HOST_SMOKE_OK' "$output"
+        ! grep -q 'Cannot find module.*@shikijs/langs' "$output"
+        touch "$out"
       '';
 
       # A nested or sibling pi wrapper can inherit an older bundle through
