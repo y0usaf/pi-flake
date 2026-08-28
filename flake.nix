@@ -31,6 +31,12 @@
       flake = false;
     };
 
+    # pi-vercel-ai-gateway: explicit Vercel provider routing with native streaming.
+    vercelAiGatewaySrc = {
+      url = "github:Kushalkhemka/pi-vercel-ai-gateway/ac335e4111cbc6cc04ede1e9bcd2a359cb6848fc";
+      flake = false;
+    };
+
     # pi-fabric: programmable tool and agent runtime (QuickJS, MCP, actors,
     # councils, workflows). Replaces the retired pi-agents extension.
     fabricSrc = {
@@ -48,6 +54,7 @@
     primeBunSrc,
     fffSrc,
     fabricSrc,
+    vercelAiGatewaySrc,
   }: let
     systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
     forAllSystems = nixpkgs.lib.genAttrs systems;
@@ -302,6 +309,33 @@
       # from source with npm (pnpm-lock is not buildNpmPackage-compatible; the
       # generated package-lock.json is vendored below). The trailing pnpm-only
       # assert step is dropped — the build's own artifact checks suffice.
+      "pi-vercel-ai-gateway" = let
+        gatewayPkgJson = builtins.fromJSON (builtins.readFile "${vercelAiGatewaySrc}/package.json");
+      in pkgs.buildNpmPackage {
+        pname = "pi-vercel-ai-gateway";
+        version = gatewayPkgJson.version;
+        src = vercelAiGatewaySrc;
+        dontBuild = true;
+        npmDepsFetcherVersion = 2;
+        npmDepsHash = "sha256-dBKsajkvGHljSRKREDJWv9zdDalprvBju1lXMl/Geqg=";
+
+        installPhase = ''
+          runHook preInstall
+          mkdir -p "$out"
+          cp package.json README.md LICENSE "$out"/
+          cp -r src node_modules "$out"/
+          runHook postInstall
+        '';
+
+        passthru.packageName = gatewayPkgJson.name;
+        meta = with lib; {
+          description = gatewayPkgJson.description;
+          homepage = "https://github.com/Kushalkhemka/pi-vercel-ai-gateway";
+          license = licenses.mit;
+          platforms = platforms.all;
+        };
+      };
+
       "pi-fabric" = let
         fabricPkgJson = builtins.fromJSON (builtins.readFile "${fabricSrc}/package.json");
       in pkgs.buildNpmPackage {
@@ -313,7 +347,6 @@
         # trailing pnpm-only assert step from the build script.
         postPatch = ''
           cp ${./nix/fabric-package-lock.json} package-lock.json
-          patch -p1 < ${./patches/pi-fabric/resolve-shiki-language-imports.patch}
           sed -i 's/ && pnpm run assert:build-artifacts//' package.json
         '';
 
@@ -698,6 +731,7 @@ EOF
         yourshell = self.packages.${system}."pi-yourshell";
         fff = self.packages.${system}."pi-fff";
         fabric = self.packages.${system}."pi-fabric";
+        vercel-ai-gateway = self.packages.${system}."pi-vercel-ai-gateway";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.
