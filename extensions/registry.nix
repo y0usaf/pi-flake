@@ -23,6 +23,11 @@
     source = "vendored";
     priority = 10;
   };
+  vercel-ai-gateway = {
+    stage = "active";
+    source = "vendored";
+    priority = 5;
+  };
   chronobreak = {
     stage = "active";
     source = "inline";

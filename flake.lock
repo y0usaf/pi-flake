@@ -107,7 +107,25 @@
         "nixpkgs": "nixpkgs",
         "piSrc": "piSrc",
         "primeAgentSrc": "primeAgentSrc",
-        "primeBunSrc": "primeBunSrc"
+        "primeBunSrc": "primeBunSrc",
+        "vercelAiGatewaySrc": "vercelAiGatewaySrc"
+      }
+    },
+    "vercelAiGatewaySrc": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1787247201,
+        "narHash": "sha256-6idWDeIqYYXlm92jy7RYCYDmX0GFLsV90lqmZ37tW8w=",
+        "owner": "Kushalkhemka",
+        "repo": "pi-vercel-ai-gateway",
+        "rev": "ac335e4111cbc6cc04ede1e9bcd2a359cb6848fc",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Kushalkhemka",
+        "repo": "pi-vercel-ai-gateway",
+        "rev": "ac335e4111cbc6cc04ede1e9bcd2a359cb6848fc",
+        "type": "github"
       }
     }
   },
