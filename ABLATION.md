@@ -51,3 +51,43 @@ this ablation.
 - Checks unchanged (7 gates preserved): biome-lint, kernel-python-wired,
   patch-avoid-network-model-regeneration, patch-default-package-sources-env,
   pi-build, pi-fff-override, telemetry-disabled.
+## Pass 2 — fabric-superseded extensions
+
+Fabric (`pi-fabric`) captures bash, grep/find, web search, and shell
+surface, so bundled extensions covering the same tools are retired.
+Rationale per extension:
+
+| Extension | Stage | Why |
+|-----------|-------|-----|
+| `pi-gecko-websearch` | deleted | 263M vendored Gecko browser; web search is captured by fabric as `extensions.web_search`. |
+| `pi-autoprompt` | deleted | Zero derivation/registry references; dead tree deferred from pass 1. |
+| `pi-yourshell` | retired | Shell wrapper superseded by fabric bash capture. |
+| `pi-sentinel` | retired | Unused monitoring surface. |
+| `pi-heartbeat` | retired | Unused liveness surface. |
+| `pi-aliases` | retired | grep->rg / find->fd wrapping superseded by fabric's captured tools. |
+| `pi-fff` | retired | FFF-backed grep/find override superseded by fabric's captured find/grep. |
+
+Retired sources moved to `extensions/retired/` per the registry contract;
+gecko-websearch and autoprompt sources removed entirely.
+
+## Declarations updated (pass 2)
+
+- `extensions/registry.nix`: yourshell, sentinel, heartbeat, aliases, fff
+  flipped to `stage = "retired"` with `dir = "retired/..."`; gecko-websearch
+  and autoprompt entries removed.
+- `flake.nix`: removed package defs for pi-gecko-websearch, pi-sentinel,
+  pi-heartbeat, pi-yourshell, pi-aliases, pi-fff; dropped their
+  `extensionPackagesFor` entries; dropped the `pi-fff-override` check.
+
+## Exposed derivation set after pass 2 (x86_64-linux)
+
+pi, pi-chronobreak, pi-webfetch, pi-recap, pi-fabric, pi-vercel-ai-gateway,
+prime-agent, prime-bun, pi-full, default.
+
+Checks: 6 gates remain (biome-lint, kernel-python-wired,
+patch-avoid-network-model-regeneration, patch-default-package-sources-env,
+pi-build, telemetry-disabled); `pi-fff-override` removed with pi-fff.
+
+Verification: `nix build .#pi-full` and `nix flake check` pass
+("all checks passed!").
+

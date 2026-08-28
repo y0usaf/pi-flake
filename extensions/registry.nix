@@ -13,10 +13,9 @@
 #         "inline" (first-party tree in this repo, built inline by the root flake).
 {
   aliases = {
-    stage = "active";
+    stage = "retired";
     source = "inline";
-    dir = "pi-aliases";
-    priority = 20;
+    dir = "retired/pi-aliases";
   };
   fabric = {
     stage = "active";
@@ -43,16 +42,9 @@
     priority = 90;
   };
   yourshell = {
-    stage = "active";
+    stage = "retired";
     source = "inline";
-    dir = "pi-yourshell";
-    priority = 100;
-  };
-  gecko-websearch = {
-    stage = "active";
-    source = "inline";
-    dir = "pi-gecko-websearch";
-    priority = 50;
+    dir = "retired/pi-yourshell";
   };
   z-exec = {
     stage = "retired";
@@ -65,16 +57,14 @@
     dir = "retired/pi-fleet";
   };
   sentinel = {
-    stage = "active";
+    stage = "retired";
     source = "inline";
-    dir = "pi-sentinel";
-    priority = 80;
+    dir = "retired/pi-sentinel";
   };
   heartbeat = {
-    stage = "active";
+    stage = "retired";
     source = "inline";
-    dir = "pi-heartbeat";
-    priority = 75;
+    dir = "retired/pi-heartbeat";
   };
   hashline = {
     stage = "retired";
@@ -82,10 +72,9 @@
     dir = "retired/pi-hashline";
   };
   fff = {
-    stage = "active";
+    stage = "retired";
     source = "inline";
-    dir = "pi-fff";
-    priority = 45;
+    dir = "retired/pi-fff";
   };
   recap = {
     stage = "active";
