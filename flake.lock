@@ -87,11 +87,11 @@
     "primeBunSrc": {
       "flake": false,
       "locked": {
-        "lastModified": 1786415380,
-        "narHash": "sha256-FhtGYxtbWEvpqx4gMMSVpoCcScXlVD7waliS2PGxTkY=",
+        "lastModified": 1787382027,
+        "narHash": "sha256-9ZB9rrAGcMgU2fP/gQ1Jiglca0R8J3enopcs4b+1bAA=",
         "owner": "sng-asyncfunc",
         "repo": "prime-bun",
-        "rev": "25e980048030954a76f2070511c5882182b9063f",
+        "rev": "92359f93b1cf2bd22990d1aaefc936aa98828fb2",
         "type": "github"
       },
       "original": {
