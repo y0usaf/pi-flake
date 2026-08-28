@@ -1,0 +1,9 @@
+# Adversarial language/difficulty/flip strata from the original 36-task report.
+updo-policy-alerting
+scc-bounded-memory-spilling
+langchain-request-coalescing
+dateutil-rfc5545-timezone-interop
+dynamodb-toolbox-conditional-attribute-requirements
+drizzle-orm-window-function-builders
+pest-character-class-coalescing
+katex-multicolumn-array-spans

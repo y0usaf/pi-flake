@@ -1,0 +1,299 @@
+import { createGateway } from "@ai-sdk/gateway";
+import {
+  calculateCost,
+  envApiKeyAuth,
+  createAssistantMessageEventStream,
+  type Api,
+  type AssistantMessage,
+  type AssistantMessageEventStream,
+  type Context,
+  type Model,
+  type SimpleStreamOptions,
+  type StopReason,
+  type ToolCall,
+} from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { jsonSchema, streamText, tool } from "ai";
+import { CATALOG_TTL_MS, cachedExplicitModels, discoverExplicitModels, splitExplicitModelId } from "./catalog.js";
+import { toModelMessages } from "./messages.js";
+import { applyActualGatewayCost, applyTokenUsage } from "./usage.js";
+
+const PROVIDER_ID = "vercel-ai-gateway";
+
+function piStopReason(reason: string | undefined, hasToolCalls: boolean): StopReason {
+  if (hasToolCalls || reason === "tool-calls") return "toolUse";
+  if (reason === "length") return "length";
+  if (reason === "error") return "error";
+  return "stop";
+}
+
+function emptyAssistant(model: Model<Api>): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [],
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop",
+    timestamp: Date.now(),
+  };
+}
+
+function streamNativeGateway(
+  model: Model<Api>,
+  context: Context,
+  options?: SimpleStreamOptions,
+): AssistantMessageEventStream {
+  const stream = createAssistantMessageEventStream();
+  const output = emptyAssistant(model);
+
+  void (async () => {
+    try {
+      if (!options?.apiKey) throw new Error("Vercel AI Gateway API key is missing");
+      if (options.signal?.aborted) throw new Error("Request was aborted");
+
+      const { upstreamModelId, provider } = splitExplicitModelId(model.id);
+      const gateway = createGateway({ apiKey: options.apiKey });
+      const tools = Object.fromEntries(
+        (context.tools ?? []).map((definition) => [
+          definition.name,
+          tool({
+            description: definition.description,
+            inputSchema: jsonSchema(definition.parameters as never),
+          }),
+        ]),
+      );
+
+      const result = streamText({
+        model: gateway(upstreamModelId),
+        system: context.systemPrompt,
+        messages: toModelMessages(context),
+        tools: Object.keys(tools).length > 0 ? tools : undefined,
+        maxOutputTokens: Math.min(options.maxTokens ?? model.maxTokens, model.maxTokens),
+        abortSignal: options.signal,
+        providerOptions: {
+          gateway: {
+            only: [provider],
+            caching: "auto",
+            tags: ["client:pi", "route:explicit-provider", `provider:${provider}`],
+          },
+        },
+      });
+
+      stream.push({ type: "start", partial: output });
+      const contentIndexes = new Map<string, number>();
+      const partialToolJson = new Map<string, string>();
+      let finishReason: string | undefined;
+
+      for await (const part of result.fullStream) {
+        if (part.type === "text-start") {
+          output.content.push({ type: "text", text: "" });
+          const contentIndex = output.content.length - 1;
+          contentIndexes.set(`text:${part.id}`, contentIndex);
+          stream.push({ type: "text_start", contentIndex, partial: output });
+        } else if (part.type === "text-delta") {
+          const contentIndex = contentIndexes.get(`text:${part.id}`);
+          if (contentIndex === undefined) continue;
+          const block = output.content[contentIndex];
+          if (block.type !== "text") continue;
+          block.text += part.text;
+          stream.push({ type: "text_delta", contentIndex, delta: part.text, partial: output });
+        } else if (part.type === "text-end") {
+          const contentIndex = contentIndexes.get(`text:${part.id}`);
+          if (contentIndex === undefined) continue;
+          const block = output.content[contentIndex];
+          if (block.type === "text") {
+            stream.push({ type: "text_end", contentIndex, content: block.text, partial: output });
+          }
+        } else if (part.type === "reasoning-start") {
+          output.content.push({ type: "thinking", thinking: "" });
+          const contentIndex = output.content.length - 1;
+          contentIndexes.set(`reasoning:${part.id}`, contentIndex);
+          stream.push({ type: "thinking_start", contentIndex, partial: output });
+        } else if (part.type === "reasoning-delta") {
+          const contentIndex = contentIndexes.get(`reasoning:${part.id}`);
+          if (contentIndex === undefined) continue;
+          const block = output.content[contentIndex];
+          if (block.type !== "thinking") continue;
+          block.thinking += part.text;
+          stream.push({ type: "thinking_delta", contentIndex, delta: part.text, partial: output });
+        } else if (part.type === "reasoning-end") {
+          const contentIndex = contentIndexes.get(`reasoning:${part.id}`);
+          if (contentIndex === undefined) continue;
+          const block = output.content[contentIndex];
+          if (block.type === "thinking") {
+            stream.push({ type: "thinking_end", contentIndex, content: block.thinking, partial: output });
+          }
+        } else if (part.type === "tool-input-start") {
+          const block = {
+            type: "toolCall" as const,
+            id: part.id,
+            name: part.toolName,
+            arguments: {},
+          };
+          output.content.push(block);
+          const contentIndex = output.content.length - 1;
+          contentIndexes.set(`tool:${part.id}`, contentIndex);
+          partialToolJson.set(part.id, "");
+          stream.push({ type: "toolcall_start", contentIndex, partial: output });
+        } else if (part.type === "tool-input-delta") {
+          const contentIndex = contentIndexes.get(`tool:${part.id}`);
+          if (contentIndex === undefined) continue;
+          const accumulated = (partialToolJson.get(part.id) ?? "") + part.delta;
+          partialToolJson.set(part.id, accumulated);
+          const block = output.content[contentIndex];
+          if (block.type === "toolCall") {
+            try { block.arguments = JSON.parse(accumulated); } catch { /* partial JSON */ }
+          }
+          stream.push({ type: "toolcall_delta", contentIndex, delta: part.delta, partial: output });
+        } else if (part.type === "tool-call") {
+          let contentIndex = contentIndexes.get(`tool:${part.toolCallId}`);
+          if (contentIndex === undefined) {
+            output.content.push({
+              type: "toolCall",
+              id: part.toolCallId,
+              name: part.toolName,
+              arguments: part.input as Record<string, unknown>,
+            });
+            contentIndex = output.content.length - 1;
+            stream.push({ type: "toolcall_start", contentIndex, partial: output });
+          }
+          const block = output.content[contentIndex];
+          if (block.type !== "toolCall") continue;
+          block.arguments = part.input as Record<string, unknown>;
+          stream.push({ type: "toolcall_end", contentIndex, toolCall: block as ToolCall, partial: output });
+        } else if (part.type === "finish") {
+          finishReason = part.finishReason;
+        } else if (part.type === "error") {
+          throw part.error;
+        } else if (part.type === "abort") {
+          throw new Error("Request was aborted");
+        }
+      }
+
+      const usage = await result.totalUsage;
+      const providerMetadata = await result.providerMetadata;
+      const generationId = providerMetadata?.gateway?.generationId;
+      if (typeof generationId === "string") output.responseId = generationId;
+      applyTokenUsage(output.usage, usage);
+      calculateCost(model, output.usage);
+      applyActualGatewayCost(output.usage, providerMetadata as never);
+      const hasToolCalls = output.content.some((block) => block.type === "toolCall");
+      output.stopReason = piStopReason(finishReason, hasToolCalls);
+
+      stream.push({
+        type: "done",
+        reason: output.stopReason as "stop" | "length" | "toolUse",
+        message: output,
+      });
+      stream.end();
+    } catch (error) {
+      output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+      output.errorMessage = error instanceof Error ? error.message : String(error);
+      stream.push({ type: "error", reason: output.stopReason, error: output });
+      stream.end();
+    }
+  })();
+
+  return stream;
+}
+
+const GATEWAY_API = "vercel-ai-gateway-native";
+const GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1/ai";
+type DiscoveredModel = Awaited<ReturnType<typeof discoverExplicitModels>>[number];
+type GatewayModel = Model<Api>;
+type GatewayStoredCatalog = {
+  models?: readonly DiscoveredModel[];
+  checkedAt?: number;
+  lastModified?: number;
+  etag?: string;
+};
+type GatewayPublication = {
+  persist?: GatewayStoredCatalog | null;
+  update?: () => void;
+};
+type GatewayRefreshContext = {
+  allowNetwork: boolean;
+  force?: boolean;
+  signal?: AbortSignal;
+  stored?: GatewayStoredCatalog;
+  publish?: (publication: GatewayPublication) => Promise<boolean>;
+};
+
+const FALLBACK_MODEL: GatewayModel = {
+  id: "deepseek/deepseek-v4-flash-0731@runware",
+  name: "DeepSeek V4 Flash 0731 via runware",
+  api: GATEWAY_API,
+  baseUrl: GATEWAY_BASE_URL,
+  provider: PROVIDER_ID,
+  reasoning: true,
+  input: ["text"],
+  cost: { input: 0.08, output: 0.15, cacheRead: 0.01, cacheWrite: 0 },
+  contextWindow: 1_000_000,
+  maxTokens: 384_000,
+};
+
+let dynamicModels: readonly GatewayModel[] = [];
+
+function toGatewayModel(model: DiscoveredModel): GatewayModel {
+  return {
+    ...model,
+    api: GATEWAY_API,
+    baseUrl: GATEWAY_BASE_URL,
+    provider: PROVIDER_ID,
+  };
+}
+
+function cachedGatewayModels(cache: GatewayStoredCatalog | undefined): readonly GatewayModel[] | undefined {
+  const models = cachedExplicitModels(cache);
+  return models?.map(toGatewayModel);
+}
+
+async function refreshGatewayModels(context: GatewayRefreshContext): Promise<void> {
+  const cached = cachedGatewayModels(context.stored);
+  if (cached && context.publish) {
+    if (!(await context.publish({ update: () => { dynamicModels = cached; } }))) return;
+  }
+
+  if (!context.allowNetwork || context.signal?.aborted) return;
+  if (cached && !context.force && context.stored?.checkedAt !== undefined &&
+      Date.now() - context.stored.checkedAt < CATALOG_TTL_MS) return;
+
+  try {
+    const discovered = await discoverExplicitModels({ signal: context.signal });
+    const models = discovered.map(toGatewayModel);
+    if (context.signal?.aborted) return;
+    if (!context.publish) {
+      dynamicModels = models;
+      return;
+    }
+    await context.publish({
+      persist: { models, checkedAt: Date.now(), lastModified: Date.now() },
+      update: () => { dynamicModels = models; },
+    });
+  } catch (error) {
+    if (cached) return;
+    throw error;
+  }
+}
+
+export default function register(pi: ExtensionAPI): void {
+  pi.registerProvider({
+    id: PROVIDER_ID,
+    name: "Vercel AI Gateway",
+    baseUrl: GATEWAY_BASE_URL,
+    auth: { apiKey: envApiKeyAuth("Vercel AI Gateway API key", ["AI_GATEWAY_API_KEY"]) },
+    getModels: () => dynamicModels.length > 0 ? dynamicModels : [FALLBACK_MODEL],
+    refreshModels: refreshGatewayModels,
+    stream: streamNativeGateway,
+    streamSimple: streamNativeGateway,
+  });
+}

@@ -20,12 +20,14 @@
   };
   fabric = {
     stage = "active";
-    source = "vendored";
+    source = "inline";
+    dir = "pi-fabric";
     priority = 10;
   };
   vercel-ai-gateway = {
     stage = "active";
-    source = "vendored";
+    source = "inline";
+    dir = "pi-vercel-ai-gateway";
     priority = 5;
   };
   chronobreak = {
@@ -81,12 +83,13 @@
   };
   fff = {
     stage = "active";
-    source = "vendored";
+    source = "inline";
+    dir = "pi-fff";
     priority = 45;
   };
   recap = {
     stage = "active";
-    source = "vendored";
+    source = "inline";
     dir = "pi-recap";
     priority = 70;
   };

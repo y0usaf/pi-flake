@@ -17,7 +17,12 @@
       "extensions/**/*.cjs",
       "extensions/**/*.json",
       "extensions/**/*.jsonc",
-      "!extensions/**/node_modules"
+      "!extensions/**/node_modules",
+      // Vendored third-party source trees (upstream copies, see registry.nix);
+      // their code follows upstream lint rules, not this repo's.
+      "!extensions/pi-fabric/**",
+      "!extensions/pi-vercel-ai-gateway/**",
+      "!extensions/pi-fff/**"
     ]
   },
   // Formatting is intentionally left to existing tooling; this setup only enables linting.
