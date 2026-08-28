@@ -23,27 +23,6 @@
       flake = false;
     };
 
-    # fff: fast file search SDK; pi-fff extension overrides grep/find with a
-    # frecency-ranked fuzzy index. Pinned to the published 0.10.3 commit so the
-    # source matches the 0.10.3 prebuilt native binaries fetched from npm.
-    fffSrc = {
-      url = "github:dmtrKovalenko/fff/e2cad2f09ea617d4c024f396f21d80e557f23a17";
-      flake = false;
-    };
-
-    # pi-vercel-ai-gateway: explicit Vercel provider routing with native streaming.
-    vercelAiGatewaySrc = {
-      url = "github:Kushalkhemka/pi-vercel-ai-gateway/ac335e4111cbc6cc04ede1e9bcd2a359cb6848fc";
-      flake = false;
-    };
-
-    # pi-fabric: programmable tool and agent runtime (QuickJS, MCP, actors,
-    # councils, workflows). Replaces the retired pi-agents extension.
-    fabricSrc = {
-      url = "github:monotykamary/pi-fabric/9e9db6cf528639fc6378a9abd273df6e46892a80";
-      flake = false;
-    };
-
   };
 
   outputs = {
@@ -52,9 +31,6 @@
     piSrc,
     primeAgentSrc,
     primeBunSrc,
-    fffSrc,
-    fabricSrc,
-    vercelAiGatewaySrc,
   }: let
     systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
     forAllSystems = nixpkgs.lib.genAttrs systems;
@@ -243,7 +219,7 @@
       # grep/find call); override mode keeps the built-in tools authoritative.
       # Native libs are prebuilt npm binaries pinned by sha512 (no Rust build).
       "pi-fff" = let
-        fffPkgJson = builtins.fromJSON (builtins.readFile "${fffSrc}/packages/pi-fff/package.json");
+        fffPkgJson = builtins.fromJSON (builtins.readFile ./extensions/pi-fff/package.json);
         fffFetch = url: hash: pkgs.fetchurl { inherit url hash; };
         fff-bun = fffFetch
           "https://registry.npmjs.org/@ff-labs/fff-bun/-/fff-bun-0.10.3.tgz"
@@ -263,7 +239,7 @@
       in pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-fff";
         version = fffPkgJson.version;
-        src = fffSrc + "/packages/pi-fff";
+        src = ./extensions/pi-fff;
 
         postPatch = ''
           # Default to override mode: register grep/find under the built-in names
@@ -310,12 +286,11 @@
       # generated package-lock.json is vendored below). The trailing pnpm-only
       # assert step is dropped — the build's own artifact checks suffice.
       "pi-vercel-ai-gateway" = let
-        gatewayPkgJson = builtins.fromJSON (builtins.readFile "${vercelAiGatewaySrc}/package.json");
+        gatewayPkgJson = builtins.fromJSON (builtins.readFile ./extensions/pi-vercel-ai-gateway/package.json);
       in pkgs.buildNpmPackage {
         pname = "pi-vercel-ai-gateway";
         version = gatewayPkgJson.version;
-        src = vercelAiGatewaySrc;
-        patches = [./extensions/pi-vercel-ai-gateway/patches/native-provider.patch];
+        src = ./extensions/pi-vercel-ai-gateway;
         dontBuild = true;
         npmDepsFetcherVersion = 2;
         npmDepsHash = "sha256-dBKsajkvGHljSRKREDJWv9zdDalprvBju1lXMl/Geqg=";
@@ -338,12 +313,11 @@
       };
 
       "pi-fabric" = let
-        fabricPkgJson = builtins.fromJSON (builtins.readFile "${fabricSrc}/package.json");
+        fabricPkgJson = builtins.fromJSON (builtins.readFile ./extensions/pi-fabric/package.json);
       in pkgs.buildNpmPackage {
         pname = "pi-fabric";
         version = fabricPkgJson.version;
-        src = fabricSrc;
-        patches = [./extensions/pi-fabric/patches/resolve-shiki-language-imports.patch];
+        src = ./extensions/pi-fabric;
 
         # Vendor an npm lockfile (upstream ships pnpm-lock.yaml) and drop the
         # trailing pnpm-only assert step from the build script.

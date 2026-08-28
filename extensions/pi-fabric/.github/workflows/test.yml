@@ -1,0 +1,46 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install ripgrep
+        # pi's grep tool downloads rg on first use when it is absent; on shared
+        # runners that ad-hoc GitHub Releases download is rate-limited, so
+        # provision rg on PATH up front to keep nested-grep tests hermetic.
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            choco install ripgrep -y --no-progress
+          else
+            sudo apt-get install -y ripgrep
+          fi
+      - name: Type check
+        run: pnpm typecheck
+      - name: Test Windows type-checker regression
+        if: runner.os == 'Windows'
+        run: pnpm exec vitest run tests/type-checker.test.ts
+      - name: Build
+        run: pnpm build
+      - name: Test
+        run: pnpm test
+      - name: Lint (dead code)
+        run: pnpm lint:dead

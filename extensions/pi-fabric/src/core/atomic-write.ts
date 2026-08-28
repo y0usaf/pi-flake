@@ -1,0 +1,98 @@
+import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+
+export interface AtomicWriteOptions {
+  // File mode for the committed file (default 0o600) and for mkdir -p of its
+  // parent directory (default 0o700).
+  mode?: number;
+  dirMode?: number;
+  // Windows transiently rejects rename() with EPERM/EACCES/EEXIST/EBUSY while
+  // an antivirus scan, indexer, or sibling reader probes the destination —
+  // milliseconds of contention, not a policy failure. Retry a bounded number
+  // of times with linear backoff before surfacing the error.
+  renameRetries?: number;
+  renameRetryDelayMs?: number;
+}
+
+const RETRYABLE_RENAME_CODES = new Set(["EPERM", "EACCES", "EEXIST", "EBUSY"]);
+
+const errorCode = (error: unknown): string | undefined =>
+  typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : undefined;
+
+// Portable synchronous sleep for the retry window (Atomics.wait is legal on
+// the Node main thread). If unavailable, retries proceed immediately — still
+// correct, just less cooperative under contention.
+const syncSleep = (() => {
+  try {
+    const buffer = new Int32Array(new SharedArrayBuffer(4));
+    return (ms: number): void => {
+      Atomics.wait(buffer, 0, 0, ms);
+    };
+  } catch {
+    return (): void => undefined;
+  }
+})();
+
+export const renameAtomic = (
+  source: string,
+  target: string,
+  options?: AtomicWriteOptions,
+): void => {
+  const attempts = Math.max(1, options?.renameRetries ?? 8);
+  const delay = options?.renameRetryDelayMs ?? 25;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      fs.renameSync(source, target);
+      return;
+    } catch (error) {
+      const code = errorCode(error);
+      if (attempt === attempts || code === undefined || !RETRYABLE_RENAME_CODES.has(code)) {
+        throw error;
+      }
+      syncSleep(delay * attempt);
+    }
+  }
+};
+
+export const writeFileAtomic = (
+  filePath: string,
+  contents: string,
+  options?: AtomicWriteOptions,
+): void => {
+  fs.mkdirSync(path.dirname(filePath), {
+    recursive: true,
+    mode: options?.dirMode ?? 0o700,
+  });
+  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, contents, {
+      encoding: "utf8",
+      mode: options?.mode ?? 0o600,
+    });
+    renameAtomic(temporary, filePath, options);
+  } finally {
+    // No-op right after a successful rename; removes the temp on failure.
+    fs.rmSync(temporary, { force: true });
+  }
+};
+
+export interface AtomicJsonOptions extends AtomicWriteOptions {
+  // Pretty-print indent for JSON.stringify (default: compact).
+  space?: number;
+  // Some on-disk formats expect a trailing newline (schema state files).
+  newline?: boolean;
+}
+
+export const writeJsonAtomic = (
+  filePath: string,
+  value: unknown,
+  options?: AtomicJsonOptions,
+): void => {
+  const space = options?.space;
+  const serialized =
+    JSON.stringify(value, null, space) + (options?.newline === true ? "\n" : "");
+  writeFileAtomic(filePath, serialized, options);
+};
