@@ -315,6 +315,7 @@
         pname = "pi-vercel-ai-gateway";
         version = gatewayPkgJson.version;
         src = vercelAiGatewaySrc;
+        patches = [./extensions/pi-vercel-ai-gateway/patches/native-provider.patch];
         dontBuild = true;
         npmDepsFetcherVersion = 2;
         npmDepsHash = "sha256-dBKsajkvGHljSRKREDJWv9zdDalprvBju1lXMl/Geqg=";
