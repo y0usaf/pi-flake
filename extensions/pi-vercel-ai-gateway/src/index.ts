@@ -27,6 +27,35 @@ function piStopReason(reason: string | undefined, hasToolCalls: boolean): StopRe
   return "stop";
 }
 
+/** AI SDK AI_APICallError carries structured fields; its .message is the raw body. */
+interface GatewayApiError {
+  name?: string;
+  message?: string;
+  statusCode?: number;
+  isRetryable?: boolean;
+  responseBody?: string;
+}
+
+function firstLine(text: string | undefined, limit = 200): string {
+  if (!text) return "";
+  const line = text.split("\n").find((l) => l.trim().length > 0) ?? "";
+  return line.length > limit ? line.slice(0, limit) + "…" : line;
+}
+
+/** Extract a short, retry-classifiable message from an AI SDK gateway error. */
+function describeGatewayError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const api = error as Error & GatewayApiError;
+  if (api.statusCode === undefined && api.responseBody === undefined) return error.message;
+  let upstream = firstLine(api.responseBody) || firstLine(api.message);
+  try {
+    const parsed = JSON.parse(api.responseBody ?? "") as { error?: { message?: string }; message?: string };
+    upstream = firstLine(parsed.error?.message ?? parsed.message) || upstream;
+  } catch { /* body is not JSON */ }
+  const status = api.statusCode !== undefined ? `HTTP ${api.statusCode}` : "request failed";
+  return `AI gateway ${status}: ${upstream || error.name}`;
+}
+
 function emptyAssistant(model: Model<Api>): AssistantMessage {
   return {
     role: "assistant",
@@ -197,7 +226,7 @@ function streamNativeGateway(
       stream.end();
     } catch (error) {
       output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-      output.errorMessage = error instanceof Error ? error.message : String(error);
+      output.errorMessage = describeGatewayError(error);
       stream.push({ type: "error", reason: output.stopReason, error: output });
       stream.end();
     }
