@@ -36,11 +36,11 @@
     "primeAgentSrc": {
       "flake": false,
       "locked": {
-        "lastModified": 1787721195,
-        "narHash": "sha256-PdgkayPQ0Bmmr5ojnaXM6drbmB/p47cNvkwOmj93FGc=",
+        "lastModified": 1787783191,
+        "narHash": "sha256-KuZry+VXPSkdyhX92sNqyPFtoH5fbltp+FNf0R38YK0=",
         "ref": "main",
-        "rev": "514633727bf26d74f39f3119c2b0e31a5ceb2a9d",
-        "revCount": 4565,
+        "rev": "bc0fa7606abb3b7af0f765319518d255e6ae553d",
+        "revCount": 4568,
         "type": "git",
         "url": "https://github.com/PrimeIntellect-ai/prime-agent"
       },
