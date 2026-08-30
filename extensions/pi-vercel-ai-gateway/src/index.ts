@@ -56,6 +56,41 @@ function describeGatewayError(error: unknown): string {
   return `AI gateway ${status}: ${upstream || error.name}`;
 }
 
+/** Retry transient gateway failures (429/5xx) with exponential backoff, capped. */
+function isRetryableGatewayError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const api = error as Error & GatewayApiError;
+  if (api.isRetryable === true) return true;
+  const status = api.statusCode ?? 0;
+  return status === 408 || status === 429 || (status >= 500 && status < 600);
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("Request was aborted")); }, { once: true });
+  });
+}
+
+const STREAM_MAX_ATTEMPTS = 4;
+const STREAM_RETRY_BASE_MS = 500;
+
+/**
+ * Swallow rejected deferred promises on a failed StreamTextResult.
+ * When the stream errors, totalUsage/providerMetadata/etc. reject; if nobody
+ * awaits them Node raises an unhandled rejection and pi crashes with the raw
+ * AI SDK error dump instead of the clean error event.
+ */
+function swallowStreamResult(result: unknown): void {
+  if (typeof result !== "object" || result === null) return;
+  const r = result as Record<string, unknown>;
+  for (const key of ["totalUsage", "providerMetadata", "finishReason", "steps"]) {
+    const value = r[key];
+    if (value && typeof (value as PromiseLike<unknown>).then === "function") {
+      void Promise.resolve(value as PromiseLike<unknown>).then(undefined, () => {});
+    }
+  }
+}
 function emptyAssistant(model: Model<Api>): AssistantMessage {
   return {
     role: "assistant",
@@ -85,6 +120,9 @@ function streamNativeGateway(
   const output = emptyAssistant(model);
 
   void (async () => {
+    // Latest streamText result; kept outside the try so the catch can swallow
+    // its deferred promises (they reject when the stream errors).
+    let activeResult: unknown;
     try {
       if (!options?.apiKey) throw new Error("Vercel AI Gateway API key is missing");
       if (options.signal?.aborted) throw new Error("Request was aborted");
@@ -101,7 +139,8 @@ function streamNativeGateway(
         ]),
       );
 
-      const result = streamText({
+      // Retry while nothing has streamed; a mid-stream retry would duplicate blocks.
+      const buildStream = () => streamText({
         model: gateway(upstreamModelId),
         system: context.systemPrompt,
         messages: toModelMessages(context),
@@ -117,12 +156,23 @@ function streamNativeGateway(
         },
       });
 
-      stream.push({ type: "start", partial: output });
       const contentIndexes = new Map<string, number>();
       const partialToolJson = new Map<string, string>();
       let finishReason: string | undefined;
+      let started = false;
 
-      for await (const part of result.fullStream) {
+      let result = buildStream();
+      activeResult = result;
+      for (let attempt = 1; ; attempt++) {
+        contentIndexes.clear();
+        partialToolJson.clear();
+        output.content = [];
+        try {
+          for await (const part of result.fullStream) {
+            if (!started) {
+              stream.push({ type: "start", partial: output });
+              started = true;
+            }
         if (part.type === "text-start") {
           output.content.push({ type: "text", text: "" });
           const contentIndex = output.content.length - 1;
@@ -206,6 +256,15 @@ function streamNativeGateway(
         } else if (part.type === "abort") {
           throw new Error("Request was aborted");
         }
+          }
+          break;
+        } catch (error) {
+          swallowStreamResult(result);
+          if (started || attempt >= STREAM_MAX_ATTEMPTS || !isRetryableGatewayError(error)) throw error;
+          await sleep(STREAM_RETRY_BASE_MS * 2 ** (attempt - 1), options.signal);
+          result = buildStream();
+          activeResult = result;
+        }
       }
 
       const usage = await result.totalUsage;
@@ -225,6 +284,7 @@ function streamNativeGateway(
       });
       stream.end();
     } catch (error) {
+      swallowStreamResult(activeResult);
       output.stopReason = options?.signal?.aborted ? "aborted" : "error";
       output.errorMessage = describeGatewayError(error);
       stream.push({ type: "error", reason: output.stopReason, error: output });
