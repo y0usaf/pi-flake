@@ -296,6 +296,7 @@ function streamNativeGateway(
 
 const GATEWAY_API = "vercel-ai-gateway-native";
 const GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1/ai";
+const GATEWAY_DISCOVERY_TIMEOUT_MS = 15_000;
 type DiscoveredModel = Awaited<ReturnType<typeof discoverExplicitModels>>[number];
 type GatewayModel = Model<Api>;
 
@@ -312,8 +313,6 @@ const FALLBACK_MODEL: GatewayModel = {
   maxTokens: 384_000,
 };
 
-let dynamicModels: readonly GatewayModel[] = [];
-
 function toGatewayModel(model: DiscoveredModel): GatewayModel {
   return {
     ...model,
@@ -323,9 +322,10 @@ function toGatewayModel(model: DiscoveredModel): GatewayModel {
   };
 }
 
-
 async function discoverGatewayModels(): Promise<GatewayModel[]> {
-  const discovered = await discoverExplicitModels({});
+  const discovered = await discoverExplicitModels({
+    signal: AbortSignal.timeout(GATEWAY_DISCOVERY_TIMEOUT_MS),
+  });
   return discovered.map(toGatewayModel);
 }
 
@@ -340,7 +340,7 @@ function gatewayProviderConfig(models: readonly GatewayModel[]) {
   };
 }
 
-export default function register(pi: ExtensionAPI): void {
+export default async function register(pi: ExtensionAPI): Promise<void> {
   console.error(`[gw-ext] loaded, registering provider ${PROVIDER_ID}`);
   console.error(`[gw-ext] env key visible: ${Boolean(process.env.AI_GATEWAY_API_KEY)}`);
   try {
@@ -348,10 +348,18 @@ export default function register(pi: ExtensionAPI): void {
     console.error(`[gw-ext] registerProvider succeeded`);
   } catch (error) {
     console.error(`[gw-ext] registerProvider FAILED: ${error}`);
+    return;
   }
 
-  // Live catalog: replace the fallback list once discovery lands.
-  void discoverGatewayModels().then((models) => {
-    if (models.length > 0) pi.registerProvider(PROVIDER_ID, gatewayProviderConfig(models));
-  }).catch(() => {});
+  if (process.env.PI_OFFLINE) return;
+
+  try {
+    const models = await discoverGatewayModels();
+    if (models.length > 0) {
+      pi.registerProvider(PROVIDER_ID, gatewayProviderConfig(models));
+      console.error(`[gw-ext] discovered ${models.length} models`);
+    }
+  } catch (error) {
+    console.error(`[gw-ext] model discovery FAILED, keeping fallback: ${error}`);
+  }
 }
