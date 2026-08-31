@@ -110,6 +110,61 @@ function emptyAssistant(model: Model<Api>): AssistantMessage {
   };
 }
 
+/**
+ * Map a pi thinking level to per-provider gateway options.
+ * The AI Gateway forwards providerOptions under the upstream provider slug
+ * (e.g. "anthropic", "openai") to the underlying provider.
+ */
+const EFFORT_LEVELS: Record<string, string> = {
+  minimal: "minimal",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+  max: "xhigh", // OpenAI effort scale tops out at xhigh
+};
+
+const ANTHROPIC_BUDGETS: Record<string, number> = {
+  minimal: 2048,
+  low: 4096,
+  medium: 10240,
+  high: 16384,
+  xhigh: 32768,
+  max: 64000,
+};
+
+const GOOGLE_BUDGETS: Record<string, number> = {
+  minimal: 512,
+  low: 2048,
+  medium: 8192,
+  high: 24576,
+  xhigh: 32768,
+  max: 32768,
+};
+
+function providerReasoningOptions(
+  provider: string,
+  level: NonNullable<SimpleStreamOptions["reasoning"]>,
+  maxTokens: number,
+): Record<string, Record<string, unknown>> | undefined {
+  if (provider === "anthropic") {
+    // Anthropic requires 1024 <= budgetTokens < max_tokens.
+    const budget = Math.min(ANTHROPIC_BUDGETS[level] ?? ANTHROPIC_BUDGETS.high, Math.max(1024, maxTokens - 1024));
+    return { anthropic: { thinking: { type: "enabled", budgetTokens: budget } } };
+  }
+  if (provider === "google" || provider === "google-vertex") {
+    return {
+      google: {
+        thinkingConfig: { thinkingBudget: GOOGLE_BUDGETS[level] ?? GOOGLE_BUDGETS.high, includeThoughts: true },
+      },
+    };
+  }
+  const effort = EFFORT_LEVELS[level];
+  if (effort === undefined) return undefined;
+  // OpenAI-style providers take a reasoningEffort string.
+  return { [provider]: { reasoningEffort: effort } };
+}
+
 function streamNativeGateway(
   model: Model<Api>,
   context: Context,
@@ -147,6 +202,9 @@ function streamNativeGateway(
         maxOutputTokens: Math.min(options.maxTokens ?? model.maxTokens, model.maxTokens),
         abortSignal: options.signal,
         providerOptions: {
+          ...(options.reasoning
+            ? providerReasoningOptions(provider, options.reasoning, Math.min(options.maxTokens ?? model.maxTokens, model.maxTokens))
+            : {}),
           gateway: {
             only: [provider],
             caching: "auto",
