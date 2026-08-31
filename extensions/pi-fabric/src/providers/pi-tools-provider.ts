@@ -25,6 +25,12 @@ import type {
 } from "../protocol.js";
 import { countContentLines } from "../ui/preview-lines.js";
 import { CapturedToolsProvider } from "./captured-tools-provider.js";
+import {
+  BashCwdDefinitions,
+  PI_BASH_CWD_KEY,
+  resolveBashCwdArgument,
+  withBashCwdSchema,
+} from "./pi-bash-cwd.js";
 import { writeContentForPreview } from "./write-diff-limits.js";
 import { createPreviewWriteToolDefinition } from "./write-preview.js";
 
@@ -172,6 +178,7 @@ export class PiToolsProvider implements FabricProvider {
   readonly #catalog: CapturedToolCatalog | undefined;
   readonly #capturedTools: CapturedToolsProvider | undefined;
   readonly #cwd: string;
+  readonly #bashDefinitions = new BashCwdDefinitions();
 
   constructor(
     cwd: string,
@@ -233,6 +240,7 @@ export class PiToolsProvider implements FabricProvider {
       throw new Error(`Pi tool ${actionName} prepared non-object arguments`);
     }
     const record = prepared as Record<string, unknown>;
+    if (actionName === "bash") return resolveBashCwdArgument(this.#cwd, record);
     const hasPerEditAll = actionName === "edit"
       && Array.isArray(record.edits)
       && record.edits.some(
@@ -242,6 +250,18 @@ export class PiToolsProvider implements FabricProvider {
     return actionName === "edit" && (args.all === true || hasPerEditAll)
       ? expandReplaceAllEdit(this.#cwd, record, args.all === true)
       : record;
+  }
+
+  // The tool definition carrying this call's execution directory. Read-only:
+  // `cwd` stays in the arguments so events, approval, and previews see it, and
+  // pi's bash ignores the extra key.
+  #definitionFor(
+    name: PiCoreToolName,
+    args: Record<string, unknown>,
+  ): ToolDefinition<any, any, any> {
+    if (name !== "bash") return this.#tools[name];
+    const cwd = args[PI_BASH_CWD_KEY];
+    return typeof cwd === "string" ? this.#bashDefinitions.get(cwd) : this.#tools.bash;
   }
 
   async invoke(
@@ -261,7 +281,7 @@ export class PiToolsProvider implements FabricProvider {
       this.#attachPreview(name, result, args, context);
       return this.#normalizeResult(name, result, args);
     }
-    const tool = this.#tools[name];
+    const tool = this.#definitionFor(name, args);
     const runner = this.#catalog?.runner;
     // Without a runner (e.g. before the first tool refresh populated the
     // catalog) fall back to a direct execute — no extension hooks fire, but
@@ -535,10 +555,11 @@ export class PiToolsProvider implements FabricProvider {
     name: PiCoreToolName,
     tool: ToolDefinition<any, any, any>,
   ): FabricActionDescriptor {
+    const inputSchema = name === "bash" ? withBashCwdSchema(tool.parameters) : tool.parameters;
     return {
       name,
       description: tool.description,
-      inputSchema: tool.parameters as unknown as Record<string, unknown>,
+      inputSchema: inputSchema as unknown as Record<string, unknown>,
       risk: riskForTool(name),
       namespace: "builtin",
     };

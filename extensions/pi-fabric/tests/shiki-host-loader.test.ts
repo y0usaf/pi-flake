@@ -46,6 +46,11 @@ beforeEach(() => {
       dispose: () => {},
       codeToHtml: () => "<span>highlighted</span>",
       codeToTokens: () => ({ tokens: [] }),
+      // highlightCode calls codeToTokensBase directly; without it the mock
+      // silently fell into the catch-all plain-text path and the assertions
+      // below only passed through an unrelated double-init import race.
+      codeToTokensBase: (text: string) =>
+        text.split("\n").map((line: string) => [{ content: line, color: "#cccccc" }]),
     };
   });
 });

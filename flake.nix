@@ -258,7 +258,7 @@
 
         npmBuildScript = "build";
         npmDepsFetcherVersion = 2;
-        npmDepsHash = "sha256-a1A0HBbTTC/AhT2E1uzbKyDu5U6UpI6jw6Wb3qVkJvA=";
+        npmDepsHash = "sha256-dZaH8U8FuuCKUUnbbdD10fYR2bCip7VfGJyTaECHHn8=";
 
         nodejs = pkgs.nodejs_24;
 
@@ -447,7 +447,7 @@ EOF
         test -d ${self.packages.${system}."pi-fabric"}/node_modules/quickjs-emscripten-core
         test -d ${self.packages.${system}."pi-fabric"}/node_modules/shiki
         test -d ${self.packages.${system}."pi-fabric"}/node_modules/@shikijs/langs
-        grep -R -q 'PRELOADED_LANGUAGE_LOADERS' ${self.packages.${system}."pi-fabric"}/dist/chunks
+        grep -R -q 'PRELOADED_LANGUAGES' ${self.packages.${system}."pi-fabric"}/dist/chunks
         touch $out
       '';
 
@@ -456,7 +456,7 @@ EOF
         set -euo pipefail
         smoke="$TMPDIR/fabric-shiki-smoke"
         mkdir -p "$smoke"
-        chunk=$(grep -R -l 'var PRELOADED_LANGUAGE_LOADERS' ${self.packages.${system}."pi-fabric"}/dist/chunks | head -1)
+        chunk=$(grep -R -l 'var PRELOADED_LANGUAGES' ${self.packages.${system}."pi-fabric"}/dist/chunks | head -1)
         cat > "$smoke/package.json" <<'JSON'
 {"name":"fabric-shiki-smoke","version":"0.0.0","type":"module","pi":{"extensions":["./index.mjs"]}}
 JSON

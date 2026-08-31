@@ -40,6 +40,8 @@ const EVENT_LABELS: Record<FabricActorHostEvent, string> = {
   message_start: "a user, assistant, or tool message started",
   message_update: "an assistant streaming update",
   message_end: "a user, assistant, or tool message completed",
+  ui_prompt_start: "a blocking user-facing UI prompt opened",
+  ui_prompt_end: "a blocking user-facing UI prompt closed",
   context: "assembled messages before an LLM request",
   before_provider_headers: "outbound provider headers assembled; secrets redacted",
   before_provider_request: "provider payload assembled before sending",

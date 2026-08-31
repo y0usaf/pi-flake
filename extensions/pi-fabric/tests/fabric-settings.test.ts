@@ -822,6 +822,9 @@ describe("FabricSettingsComponent", () => {
         .toMatchObject({ ui: { toolDisplay: "full" } });
       expect(config.ui.toolDisplay).toBe("full");
       expect(onConfigApplied).toHaveBeenCalledOnce();
+      // The saved setting id flows through so consumers can gate downstream
+      // refresh work (transcript re-render) on display-affecting sections.
+      expect(onConfigApplied).toHaveBeenCalledWith("ui.toolDisplay");
       expect(applyFabricMode).toHaveBeenCalledOnce();
     } finally {
       if (inheritedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -1111,6 +1114,336 @@ describe("FabricSettingsComponent", () => {
       if (inheritedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = inheritedAgentDir;
       fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+
+describe("Fabric RPC settings", () => {
+  it("navigates nested sections and persists values through dialog primitives", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-rpc-settings-"));
+    const cwd = path.join(root, "project");
+    const agentDir = path.join(root, "agent");
+    const inheritedAgentDir = process.env.PI_CODING_AGENT_DIR;
+    fs.mkdirSync(cwd, { recursive: true });
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+      const applyFabricMode = vi.fn();
+      const notify = vi.fn();
+      let openedUi = false;
+      let changedDisplay = false;
+      const state = {
+        config,
+        ensure: vi.fn().mockResolvedValue(undefined),
+        reloadConfig: vi.fn(() => Object.assign(config, loadFabricConfig({ cwd, agentDir, projectTrusted: true }))),
+        agents: { claudeModels: vi.fn().mockResolvedValue([]) },
+      } as unknown as FabricState;
+      const select = vi.fn(async (title: string, options: string[]) => {
+        if (title.startsWith("Fabric settings › UI › Tool display")) {
+          changedDisplay = true;
+          return options.find((option) => option.startsWith("full"));
+        }
+        if (title.startsWith("Fabric settings › UI")) {
+          if (!changedDisplay) return options.find((option) => option.startsWith("Tool display"));
+          return "← Back";
+        }
+        if (title.startsWith("Fabric settings")) {
+          if (!openedUi) {
+            openedUi = true;
+            return options.find((option) => option.startsWith("UI ·"));
+          }
+          return "Done";
+        }
+        return undefined;
+      });
+      const context = {
+        mode: "rpc",
+        cwd,
+        isProjectTrusted: () => true,
+        modelRegistry: { getAvailable: () => fakeModelSource.models },
+        ui: { theme, notify, select, input: vi.fn(), custom: vi.fn() },
+      } as unknown as ExtensionContext;
+
+      await openFabricSettings(context, {
+        state,
+        applyFabricMode,
+        capturedTools: { list: () => [] } as unknown as CapturedToolCatalog,
+      });
+
+      expect(select.mock.calls.some(([title]) => String(title).startsWith("Fabric settings › UI"))).toBe(true);
+      expect(JSON.parse(fs.readFileSync(path.join(cwd, ".pi", "fabric.json"), "utf8")))
+        .toMatchObject({ ui: { toolDisplay: "full" } });
+      expect(config.ui.toolDisplay).toBe("full");
+      expect(applyFabricMode).toHaveBeenCalledOnce();
+      expect(notify).toHaveBeenCalledWith("Fabric settings saved.", "info");
+    } finally {
+      if (inheritedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = inheritedAgentDir;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("supports nested numeric, string, and model pickers", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-rpc-agents-"));
+    const cwd = path.join(root, "project");
+    const agentDir = path.join(root, "agent");
+    const inheritedAgentDir = process.env.PI_CODING_AGENT_DIR;
+    fs.mkdirSync(cwd, { recursive: true });
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+      const applyFabricMode = vi.fn();
+      let openedAgents = false;
+      let editedDepth = false;
+      let editedModel = false;
+      let editedVeda = false;
+      const state = {
+        config,
+        ensure: vi.fn().mockResolvedValue(undefined),
+        reloadConfig: vi.fn(() => Object.assign(config, loadFabricConfig({ cwd, agentDir, projectTrusted: true }))),
+        agents: { claudeModels: vi.fn().mockResolvedValue([]) },
+      } as unknown as FabricState;
+      const select = vi.fn(async (title: string, options: string[]) => {
+        if (title.startsWith("Fabric settings › Agents › Default model")) {
+          editedModel = true;
+          return options.find((option) => option.startsWith("gpt-5.5"));
+        }
+        if (title.startsWith("Fabric settings › Agents")) {
+          if (!editedDepth) return options.find((option) => option.startsWith("Max depth"));
+          if (!editedModel) return options.find((option) => option.startsWith("Default model"));
+          if (!editedVeda) return options.find((option) => option.startsWith("Veda backend"));
+          return "← Back";
+        }
+        if (title.startsWith("Fabric settings")) {
+          if (!openedAgents) {
+            openedAgents = true;
+            return options.find((option) => option.startsWith("Agents ·"));
+          }
+          return "Done";
+        }
+        return undefined;
+      });
+      const input = vi.fn(async (title: string) => {
+        if (title.startsWith("Fabric settings › Agents › Max depth")) {
+          editedDepth = true;
+          return "64";
+        }
+        if (title.startsWith("Fabric settings › Agents › Veda backend")) {
+          editedVeda = true;
+          return "codex";
+        }
+        return undefined;
+      });
+      const context = {
+        mode: "rpc",
+        cwd,
+        isProjectTrusted: () => true,
+        modelRegistry: { getAvailable: () => fakeModelSource.models },
+        ui: { theme, notify: vi.fn(), select, input, custom: vi.fn() },
+      } as unknown as ExtensionContext;
+
+      await openFabricSettings(context, {
+        state,
+        applyFabricMode,
+        capturedTools: { list: () => [] } as unknown as CapturedToolCatalog,
+      });
+
+      expect(JSON.parse(fs.readFileSync(path.join(cwd, ".pi", "fabric.json"), "utf8")))
+        .toMatchObject({ agents: { maxDepth: 64, model: "openai/gpt-5.5", veda: { backend: "codex" } } });
+      expect(config.agents.maxDepth).toBe(64);
+      expect(config.agents.model).toBe("openai/gpt-5.5");
+      expect(config.agents.veda.backend).toBe("codex");
+      expect(input).toHaveBeenCalledTimes(2);
+      expect(applyFabricMode).toHaveBeenCalledOnce();
+    } finally {
+      if (inheritedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = inheritedAgentDir;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("edits nested tool allowlists", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-rpc-list-"));
+    const cwd = path.join(root, "project");
+    const agentDir = path.join(root, "agent");
+    const inheritedAgentDir = process.env.PI_CODING_AGENT_DIR;
+    fs.mkdirSync(cwd, { recursive: true });
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+      let openedAgents = false;
+      let openedTools = false;
+      let toggled = false;
+      const state = {
+        config,
+        ensure: vi.fn().mockResolvedValue(undefined),
+        reloadConfig: vi.fn(() => Object.assign(config, loadFabricConfig({ cwd, agentDir, projectTrusted: true }))),
+        agents: { claudeModels: vi.fn().mockResolvedValue([]) },
+      } as unknown as FabricState;
+      const select = vi.fn(async (title: string, options: string[]) => {
+        if (title.startsWith("Fabric settings › Agents › Default tools › ls")) {
+          toggled = true;
+          return options.find((option) => option.startsWith("false"));
+        }
+        if (title.startsWith("Fabric settings › Agents › Default tools")) {
+          if (!toggled) return options.find((option) => option.startsWith("ls ·"));
+          return "← Back";
+        }
+        if (title.startsWith("Fabric settings › Agents")) {
+          if (!openedTools) {
+            openedTools = true;
+            return options.find((option) => option.startsWith("Default tools"));
+          }
+          return "← Back";
+        }
+        if (!openedAgents) {
+          openedAgents = true;
+          return options.find((option) => option.startsWith("Agents ·"));
+        }
+        return "Done";
+      });
+      const context = {
+        mode: "rpc",
+        cwd,
+        isProjectTrusted: () => true,
+        modelRegistry: { getAvailable: () => fakeModelSource.models },
+        ui: { theme, notify: vi.fn(), select, input: vi.fn(), custom: vi.fn() },
+      } as unknown as ExtensionContext;
+
+      await openFabricSettings(context, {
+        state,
+        applyFabricMode: vi.fn(),
+        capturedTools: { list: () => [] } as unknown as CapturedToolCatalog,
+      });
+
+      expect(config.agents.defaultTools).toContain("read");
+      expect(config.agents.defaultTools).not.toContain("ls");
+      expect(JSON.parse(fs.readFileSync(path.join(cwd, ".pi", "fabric.json"), "utf8")))
+        .toMatchObject({ agents: { defaultTools: expect.not.arrayContaining(["ls"]) } });
+    } finally {
+      if (inheritedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = inheritedAgentDir;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("edits the active model compaction threshold", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-rpc-compaction-"));
+    const cwd = path.join(root, "project");
+    const agentDir = path.join(root, "agent");
+    const inheritedAgentDir = process.env.PI_CODING_AGENT_DIR;
+    fs.mkdirSync(cwd, { recursive: true });
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+      let openedCompaction = false;
+      let changed = false;
+      const state = {
+        config,
+        ensure: vi.fn().mockResolvedValue(undefined),
+        reloadConfig: vi.fn(() => Object.assign(config, loadFabricConfig({ cwd, agentDir, projectTrusted: true }))),
+        agents: { claudeModels: vi.fn().mockResolvedValue([]) },
+      } as unknown as FabricState;
+      const select = vi.fn(async (title: string, options: string[]) => {
+        if (title.startsWith("Fabric settings › Compaction › Threshold")) {
+          return options.find((option) => option.startsWith("Custom percent"));
+        }
+        if (title.startsWith("Fabric settings › Compaction")) {
+          if (!changed) return options.find((option) => option.startsWith("Threshold"));
+          return "← Back";
+        }
+        if (!openedCompaction) {
+          openedCompaction = true;
+          return options.find((option) => option.startsWith("Compaction ·"));
+        }
+        return "Done";
+      });
+      const input = vi.fn(async () => {
+        changed = true;
+        return "73";
+      });
+      const context = {
+        mode: "rpc",
+        cwd,
+        model: { provider: "openai", id: "gpt-5.5" },
+        isProjectTrusted: () => true,
+        modelRegistry: { getAvailable: () => fakeModelSource.models },
+        ui: { theme, notify: vi.fn(), select, input, custom: vi.fn() },
+      } as unknown as ExtensionContext;
+
+      await openFabricSettings(context, {
+        state,
+        applyFabricMode: vi.fn(),
+        capturedTools: { list: () => [] } as unknown as CapturedToolCatalog,
+      });
+
+      expect(config.compaction.thresholds["openai/gpt-5.5"]).toBe(0.73);
+      expect(JSON.parse(fs.readFileSync(path.join(cwd, ".pi", "fabric.json"), "utf8")))
+        .toMatchObject({ compaction: { thresholds: { "openai/gpt-5.5": 0.73 } } });
+    } finally {
+      if (inheritedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = inheritedAgentDir;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("switches trusted projects to global save scope", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-rpc-scope-"));
+    const cwd = path.join(root, "project");
+    const agentDir = path.join(root, "agent");
+    const inheritedAgentDir = process.env.PI_CODING_AGENT_DIR;
+    const inheritedFullCodeMode = process.env.PI_FABRIC_FULL_CODE_MODE;
+    fs.mkdirSync(cwd, { recursive: true });
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    delete process.env.PI_FABRIC_FULL_CODE_MODE;
+    try {
+      const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+      const applyFabricMode = vi.fn();
+      let switched = false;
+      let edited = false;
+      const state = {
+        config,
+        ensure: vi.fn().mockResolvedValue(undefined),
+        reloadConfig: vi.fn(() => Object.assign(config, loadFabricConfig({ cwd, agentDir, projectTrusted: true }))),
+        agents: { claudeModels: vi.fn().mockResolvedValue([]) },
+      } as unknown as FabricState;
+      const select = vi.fn(async (title: string, options: string[]) => {
+        if (title.startsWith("Fabric settings › Full code mode")) {
+          edited = true;
+          return options.find((option) => option.startsWith("false"));
+        }
+        if (!switched) {
+          switched = true;
+          return options.find((option) => option.startsWith("Switch save scope"));
+        }
+        if (!edited) return options.find((option) => option.startsWith("Full code mode"));
+        return "Done";
+      });
+      const context = {
+        mode: "rpc",
+        cwd,
+        isProjectTrusted: () => true,
+        modelRegistry: { getAvailable: () => fakeModelSource.models },
+        ui: { theme, notify: vi.fn(), select, input: vi.fn(), custom: vi.fn() },
+      } as unknown as ExtensionContext;
+
+      await openFabricSettings(context, {
+        state,
+        applyFabricMode,
+        capturedTools: { list: () => [] } as unknown as CapturedToolCatalog,
+      });
+
+      expect(JSON.parse(fs.readFileSync(path.join(agentDir, "fabric.json"), "utf8")))
+        .toMatchObject({ fullCodeMode: false });
+      expect(fs.existsSync(path.join(cwd, ".pi", "fabric.json"))).toBe(false);
+      expect(select.mock.calls.some(([title]) => String(title).includes("Global defaults"))).toBe(true);
+    } finally {
+      if (inheritedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = inheritedAgentDir;
+      if (inheritedFullCodeMode === undefined) delete process.env.PI_FABRIC_FULL_CODE_MODE;
+      else process.env.PI_FABRIC_FULL_CODE_MODE = inheritedFullCodeMode;
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 });

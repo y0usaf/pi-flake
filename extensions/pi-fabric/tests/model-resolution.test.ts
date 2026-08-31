@@ -86,14 +86,65 @@ describe("resolveFabricModel", () => {
     });
   });
 
-  it("reports ambiguity when a partial term matches several models", () => {
+  it("resolves the closest match when a partial term matches several models", () => {
     const resolution = resolveFabricModel("gemini", options());
-    expect(resolution.kind).toBe("ambiguous");
-    if (resolution.kind !== "ambiguous") return;
-    expect(resolution.candidates.map((model) => model.id)).toEqual([
-      "gemini-2.5-pro",
-      "gemini-2.5-flash",
-    ]);
+    expect(resolution).toMatchObject({
+      kind: "resolved",
+      model: { provider: "google", id: "gemini-2.5-pro" },
+      via: "closest",
+    });
+  });
+
+  it("prefers the most recently used model between equal-closeness matches", () => {
+    const resolution = resolveFabricModel(
+      "alpha",
+      options({
+        available: [
+          { provider: "test", id: "alpha-one" },
+          { provider: "test", id: "alpha-two" },
+        ],
+        lastUsed: { "test/alpha-one": 100, "test/alpha-two": 50 },
+      }),
+    );
+    expect(resolution).toMatchObject({
+      kind: "resolved",
+      model: { provider: "test", id: "alpha-one" },
+      via: "recent",
+    });
+  });
+
+  it("falls to the highest-sorting key when closeness and recency tie", () => {
+    const resolution = resolveFabricModel(
+      "alpha",
+      options({
+        available: [
+          { provider: "test", id: "alpha-one" },
+          { provider: "test", id: "alpha-two" },
+        ],
+      }),
+    );
+    expect(resolution).toMatchObject({
+      kind: "resolved",
+      model: { provider: "test", id: "alpha-two" },
+      via: "latest",
+    });
+  });
+
+  it("fuzzy-resolves near-miss selectors to the closest model", () => {
+    expect(resolveFabricModel("gemni-2.5-pro", options())).toMatchObject({
+      kind: "resolved",
+      model: { provider: "google", id: "gemini-2.5-pro" },
+      via: "closest",
+    });
+    expect(resolveFabricModel("gmni", options())).toMatchObject({
+      kind: "resolved",
+      model: { provider: "google" },
+      via: "closest",
+    });
+  });
+
+  it("keeps not-found for selectors with no resemblance", () => {
+    expect(resolveFabricModel("zzzz", options())).toEqual({ kind: "not-found", query: "zzzz" });
   });
 
   it("narrows partial matches with a provider filter", () => {

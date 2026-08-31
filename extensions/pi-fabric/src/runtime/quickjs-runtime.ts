@@ -42,6 +42,27 @@ type QuickJsModule = Awaited<ReturnType<typeof newQuickJSWASMModuleFromVariant>>
 
 let quickJsModulePromise: Promise<QuickJsModule> | undefined;
 
+// Static π.<identifier> references (bracket access like π[k] is not provable).
+const PI_REF_PATTERN = /(?:^|[^\w$.])π\.([A-Za-z_$][\w$]*)/g;
+
+// Models routinely reference π.<key> without providing the strings parameter,
+// and the runtime error only lands after a full execution round trip (#68).
+// Reject up front when a referenced key is statically provable missing, before
+// QuickJS is even loaded.
+const missingStringsKeys = (
+  code: string,
+  strings: Record<string, string> | undefined,
+): string[] => {
+  const provided = strings ?? {};
+  const missing: string[] = [];
+  for (const match of code.matchAll(PI_REF_PATTERN)) {
+    const key = match[1];
+    if (key === undefined || key in provided) continue;
+    if (!missing.includes(key)) missing.push(key);
+  }
+  return missing;
+};
+
 const quickJsModule = (): Promise<QuickJsModule> => {
   quickJsModulePromise ??= newQuickJSWASMModuleFromVariant(releaseSyncVariant);
   return quickJsModulePromise;
@@ -117,6 +138,7 @@ const __piArgAliases = {
   bash: {
     cmd: "command", shell: "command", cmdline: "command", script: "command",
     commandLine: "command",
+    workdir: "cwd", directory: "cwd", workingDirectory: "cwd",
   },
   find: {
     query: "pattern", regex: "pattern", search: "pattern", name: "pattern",
@@ -401,7 +423,8 @@ globalThis["π"] = new Proxy(__piStrings, {
     throw new Error(
       "π." + name + " is not defined. π only exposes keys from the fabric_exec strings parameter" +
       (provided.length ? " (provided: " + provided.join(", ") + ")" : " (none provided)") +
-      ". Pass strings: { " + name + ": '...' } to use π." + name + "."
+      ". Pass strings: { " + name + ": '...' } to use π." + name + "." +
+      " For large or quote-heavy content, keep it in top-level strings and reference π." + name + " instead of escaping it inside code."
     );
   },
   ownKeys(target) { return Reflect.ownKeys(target); },
@@ -795,6 +818,22 @@ export class QuickJsRuntime {
         logs: [],
         terminationReason: "aborted",
         error: "Execution cancelled",
+      };
+    }
+    const missingKeys = missingStringsKeys(code, options.strings);
+    if (missingKeys.length > 0) {
+      const provided = Object.keys(options.strings ?? {});
+      return {
+        value: undefined,
+        logs: [],
+        terminationReason: "runtime_error",
+        error:
+          "Pre-execution check: " + missingKeys.map((key) => "π." + key).join(", ")
+          + (missingKeys.length === 1 ? " is referenced in code but its key is missing from the strings parameter"
+            : " are referenced in code but their keys are missing from the strings parameter")
+          + (provided.length ? " (provided: " + provided.join(", ") + ")" : " (none provided)")
+          + ". Add strings: { " + missingKeys.join(": '...', ") + ": '...' } to the fabric_exec arguments, then reference the value as π.<key>."
+          + " For large or quote-heavy content, keep it in top-level strings and reference π.<key> instead of escaping it inside code.",
       };
     }
     if (

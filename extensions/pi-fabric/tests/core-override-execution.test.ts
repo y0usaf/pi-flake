@@ -96,6 +96,39 @@ const setup = (
 };
 
 describe("captured core overrides through Fabric execution", () => {
+  it("fails closed instead of bypassing a bash override that does not support cwd", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-core-bash-cwd-"));
+    const calls: Array<Record<string, unknown>> = [];
+    const override = makeOverride(
+      "bash",
+      Type.Object({ command: Type.String() }, { additionalProperties: false }),
+      calls,
+      "bash-override",
+    );
+    const { catalog, service } = setup(cwd, [override]);
+    try {
+      const result = await service.execute({
+        code: 'return pi.bash({ command: "echo TEST", cwd: "." });',
+        signal: undefined,
+        parentToolCallId: "core-bash-cwd-override",
+        context: makeContext(cwd),
+        onPartial() {},
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Invalid arguments for pi.bash");
+      expect(result.error).toContain("cwd");
+      expect(result.trace.operations[0]).toMatchObject({
+        ref: "pi.bash",
+        failureStage: "validate",
+      });
+      expect(calls).toEqual([]);
+    } finally {
+      catalog.clear();
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("type-checks and invokes additive read forms while preserving shorthand and strings", async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-core-read-"));
     const calls: Array<Record<string, unknown>> = [];

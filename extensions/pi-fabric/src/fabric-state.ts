@@ -308,7 +308,7 @@ export class FabricState {
     });
     if (this.#config) next.schema.mode = this.#config.schema.mode;
     this.#config = next;
-    this.#runtime?.reloadConfig(context);
+    this.#runtime?.reloadConfig(context, next);
   }
 
   async shutdown(): Promise<void> {

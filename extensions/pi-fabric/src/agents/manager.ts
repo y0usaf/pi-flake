@@ -20,6 +20,7 @@ import {
   type ClaudeModelInfo,
 } from "./claude-cli.js";
 import { mapVedaTools, normalizeVedaModel } from "./veda-cli.js";
+import { resolvePiBinary } from "./pi-binary.js";
 import { tokenUsagePayloadFromValue } from "../lifecycle/types.js";
 import type { FabricTokenUsagePayload } from "../lifecycle/types.js";
 import { Semaphore } from "./semaphore.js";
@@ -434,7 +435,7 @@ export class AgentManager {
       options.workerPath ?? fileURLToPath(new URL("../worker.js", import.meta.url));
     this.#fabricExtensionPath =
       options.fabricExtensionPath ?? fileURLToPath(new URL("../index.js", import.meta.url));
-    this.#piBinary = options.piBinary ?? process.env.PI_FABRIC_PI_BINARY ?? "pi";
+    this.#piBinary = resolvePiBinary(options.piBinary);
     this.#claudeBinary =
       options.claudeBinary ?? process.env.PI_FABRIC_CLAUDE_BINARY ?? config.claude.binary;
     this.#vedaBinary =

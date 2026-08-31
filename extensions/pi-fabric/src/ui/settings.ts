@@ -539,6 +539,11 @@ class IntegerInputSubmenu extends Container {
     this.input.focused = true;
     return super.render(width);
   }
+
+  submitRpc(value: string): void {
+    this.input.setValue(value);
+    this.input.handleInput("\r");
+  }
 }
 
 class StringInputSubmenu extends Container {
@@ -576,10 +581,16 @@ class StringInputSubmenu extends Container {
     this.input.focused = true;
     return super.render(width);
   }
+
+  submitRpc(value: string): void {
+    this.input.setValue(value);
+    this.input.handleInput("\r");
+  }
 }
 
 class SelectSubmenu extends Container {
   readonly selectList: SelectList;
+  readonly options: SelectItem[];
 
   constructor(
     theme: Theme,
@@ -591,6 +602,7 @@ class SelectSubmenu extends Container {
     onCancel: () => void,
   ) {
     super();
+    this.options = options;
     this.addChild(new Text(theme.bold(theme.fg("accent", title)), 0, 0));
     if (description) {
       this.addChild(new Spacer(1));
@@ -614,6 +626,13 @@ class SelectSubmenu extends Container {
 
   handleInput(data: string): void {
     this.selectList.handleInput(data);
+  }
+
+  selectRpc(value: string): boolean {
+    const option = this.options.find((candidate) => candidate.value === value);
+    if (!option) return false;
+    this.selectList.onSelect?.(option);
+    return true;
   }
 }
 
@@ -700,6 +719,10 @@ class CompactionThresholdSubmenu extends Container {
   handleInput(data: string): void {
     this.active.handleInput(data);
   }
+
+  completeRpc(selectedValue: string): void {
+    this.done(selectedValue);
+  }
 }
 
 const thinkingSubmenu = (
@@ -767,6 +790,8 @@ const modelPickerSubmenu = (
 
 class SectionSubmenu extends Container {
   readonly settingsList: SettingsList;
+  readonly items: SettingItem[];
+  readonly applyChange: (id: string, newValue: string) => void;
 
   constructor(
     theme: Theme,
@@ -778,6 +803,8 @@ class SectionSubmenu extends Container {
     enableSearch = false,
   ) {
     super();
+    this.items = items;
+    this.applyChange = onChange;
     this.addChild(new Text(theme.bold(theme.fg("accent", title)), 0, 0));
     if (description) {
       this.addChild(new Spacer(1));
@@ -1817,21 +1844,240 @@ export const buildFabricSettingsItems = (
   return markDrillIn(items);
 };
 
+const RPC_BACK = "← Back";
+const RPC_DONE = "Done";
+const RPC_SWITCH_SCOPE = "Switch save scope";
+
+type RpcChoice = {
+  value: string;
+  label: string;
+  description?: string;
+  current?: boolean;
+};
+
+const rpcTitle = (path: string, description?: string): string =>
+  description ? `${path}\n${description}` : path;
+
+const cleanSettingLabel = (label: string): string => label.replace(/\s+›$/, "");
+
+const rpcSettingRow = (item: SettingItem): string => {
+  const label = cleanSettingLabel(item.label);
+  const current = item.currentValue ? ` · ${item.currentValue}` : "";
+  return item.description
+    ? `${label}${current} — ${item.description}`
+    : `${label}${current}`;
+};
+
+const rpcChoiceRow = (choice: RpcChoice): string => {
+  const current = choice.current ? " · Current" : "";
+  return choice.description
+    ? `${choice.label}${current} — ${choice.description}`
+    : `${choice.label}${current}`;
+};
+
+const selectRpcChoice = async (
+  context: ExtensionContext,
+  title: string,
+  choices: RpcChoice[],
+): Promise<string | undefined> => {
+  const rows = choices.map(rpcChoiceRow);
+  const selected = await context.ui.select(title, rows);
+  if (selected === undefined) return undefined;
+  const index = rows.indexOf(selected);
+  return index < 0 ? undefined : choices[index]?.value;
+};
+
+const browseRpcSettings = async (
+  context: ExtensionContext,
+  path: string,
+  description: string | undefined,
+  items: SettingItem[],
+  onChange: (id: string, newValue: string) => void,
+): Promise<void> => {
+  while (true) {
+    const rows = items.map(rpcSettingRow);
+    const selected = await context.ui.select(rpcTitle(path, description), [...rows, RPC_BACK]);
+    if (selected === undefined || selected === RPC_BACK) return;
+    const index = rows.indexOf(selected);
+    const item = index < 0 ? undefined : items[index];
+    if (!item) continue;
+    await editRpcSetting(context, `${path} › ${cleanSettingLabel(item.label)}`, item, onChange);
+  }
+};
+
+const editRpcSetting = async (
+  context: ExtensionContext,
+  path: string,
+  item: SettingItem,
+  onChange: (id: string, newValue: string) => void,
+): Promise<void> => {
+  if (!item.submenu) {
+    const values = item.values ?? [];
+    if (values.length === 0) {
+      context.ui.notify(`${cleanSettingLabel(item.label)} is read-only`, "info");
+      return;
+    }
+    const selected = await selectRpcChoice(
+      context,
+      rpcTitle(path, item.description),
+      unique([item.currentValue, ...values]).map((value) => ({
+        value,
+        label: value,
+        current: value === item.currentValue,
+      })),
+    );
+    if (selected === undefined) return;
+    item.currentValue = selected;
+    onChange(item.id, selected);
+    return;
+  }
+
+  let completed = false;
+  let selectedValue: string | undefined;
+  const component = item.submenu(item.currentValue, (value) => {
+    completed = true;
+    selectedValue = value;
+  });
+
+  if (component instanceof SectionSubmenu) {
+    await browseRpcSettings(
+      context,
+      path,
+      item.description,
+      component.items,
+      (id, value) => {
+        const child = component.items.find((candidate) => candidate.id === id);
+        if (child) child.currentValue = value;
+        component.applyChange(id, value);
+      },
+    );
+    return;
+  }
+
+  if (component instanceof SelectSubmenu) {
+    const selected = await selectRpcChoice(
+      context,
+      rpcTitle(path, item.description),
+      component.options.map((option) => ({
+        value: option.value,
+        label: option.label,
+        ...(option.description ? { description: option.description } : {}),
+        current: option.value === item.currentValue || option.label === item.currentValue,
+      })),
+    );
+    if (selected === undefined || !component.selectRpc(selected)) return;
+  } else if (component instanceof IntegerInputSubmenu) {
+    while (!completed) {
+      const value = await context.ui.input(rpcTitle(path, item.description), component.input.getValue());
+      if (value === undefined) return;
+      if (!/^\d+$/.test(value.trim()) || !Number.isSafeInteger(Number(value.trim()))) {
+        context.ui.notify("Enter a non-negative safe integer.", "warning");
+        continue;
+      }
+      component.submitRpc(value);
+    }
+  } else if (component instanceof StringInputSubmenu) {
+    const value = await context.ui.input(rpcTitle(path, item.description), component.input.getValue());
+    if (value === undefined) return;
+    component.submitRpc(value);
+  } else if (component instanceof CompactionThresholdSubmenu) {
+    const selected = await selectRpcChoice(
+      context,
+      rpcTitle(path, item.description),
+      [
+        { value: COMPACTION_DEFAULT_THRESHOLD_LABEL, label: COMPACTION_DEFAULT_THRESHOLD_LABEL, current: item.currentValue === COMPACTION_DEFAULT_THRESHOLD_LABEL },
+        { value: COMPACTION_PERCENT_OPTION_LABEL, label: COMPACTION_PERCENT_OPTION_LABEL, current: item.currentValue.endsWith("%") },
+        { value: COMPACTION_TOKENS_OPTION_LABEL, label: COMPACTION_TOKENS_OPTION_LABEL, current: item.currentValue.endsWith(" tokens") },
+      ],
+    );
+    if (selected === undefined) return;
+    if (selected === COMPACTION_DEFAULT_THRESHOLD_LABEL) {
+      component.completeRpc(selected);
+    } else {
+      const percent = /^(\d+)%$/.exec(item.currentValue)?.[1] ?? "";
+      const tokenText = /^(.+?) tokens$/.exec(item.currentValue)?.[1];
+      const placeholder = selected === COMPACTION_PERCENT_OPTION_LABEL
+        ? percent
+        : tokenText === undefined ? "" : String(parseFormattedNumericValue(tokenText));
+      const input = await context.ui.input(rpcTitle(path, item.description), placeholder);
+      if (input === undefined || !/^\d+$/.test(input.trim())) return;
+      const numeric = Number(input.trim());
+      component.completeRpc(
+        selected === COMPACTION_PERCENT_OPTION_LABEL
+          ? `${clampCompactionPercentThreshold(numeric)}%`
+          : `${formatTokens(clampCompactionTokenThreshold(numeric))} tokens`,
+      );
+    }
+  } else if (component instanceof FabricModelSelector) {
+    const selected = await selectRpcChoice(
+      context,
+      rpcTitle(path, item.description),
+      component.rpcChoices().map((choice) => ({
+        value: choice.value,
+        label: choice.label,
+        description: choice.description,
+        current: choice.current,
+      })),
+    );
+    if (selected === undefined || !component.selectRpc(selected)) return;
+  } else {
+    context.ui.notify(`${cleanSettingLabel(item.label)} requires terminal UI`, "warning");
+    return;
+  }
+
+  if (!completed || selectedValue === undefined) return;
+  item.currentValue = selectedValue;
+  onChange(item.id, selectedValue);
+};
+
+const openRpcFabricSettings = async (
+  context: ExtensionContext,
+  options: {
+    projectScopeAvailable: boolean;
+    getScope: () => FabricConfigScope;
+    setScope: (scope: FabricConfigScope) => void;
+    itemsForScope: (scope: FabricConfigScope) => SettingItem[];
+    persist: (id: string, value: string) => void;
+  },
+): Promise<void> => {
+  while (true) {
+    const scope = options.getScope();
+    const items = options.itemsForScope(scope);
+    const rows = items.map(rpcSettingRow);
+    const scopeDestination = scope === "project"
+      ? "Project overrides (.pi/fabric.json)"
+      : "Global defaults (~/.pi/agent/fabric.json)";
+    const controls = [
+      ...(options.projectScopeAvailable ? [`${RPC_SWITCH_SCOPE} · ${scope === "project" ? "Global defaults" : "Project overrides"}`] : []),
+      RPC_DONE,
+    ];
+    const selected = await context.ui.select(
+      rpcTitle("Fabric settings", `Editing: ${scopeDestination}`),
+      [...rows, ...controls],
+    );
+    if (selected === undefined || selected === RPC_DONE) return;
+    if (selected.startsWith(RPC_SWITCH_SCOPE)) {
+      options.setScope(scope === "project" ? "global" : "project");
+      continue;
+    }
+    const index = rows.indexOf(selected);
+    const item = index < 0 ? undefined : items[index];
+    if (!item) continue;
+    await editRpcSetting(context, `Fabric settings › ${cleanSettingLabel(item.label)}`, item, options.persist);
+  }
+};
+
 export interface FabricSettingsDeps {
   state: FabricState;
   applyFabricMode: () => void;
   capturedTools: CapturedToolCatalog;
-  onConfigApplied?: () => void;
+  onConfigApplied?: (id: string) => void;
 }
 
 export async function openFabricSettings(
   context: ExtensionContext,
   deps: FabricSettingsDeps,
 ): Promise<void> {
-  if (context.mode !== "tui") {
-    context.ui.notify("Fabric settings are available in TUI mode", "warning");
-    return;
-  }
   await deps.state.ensure(context);
 
   const agentDir = resolveAgentDir();
@@ -1864,8 +2110,17 @@ export async function openFabricSettings(
       return;
     }
     deps.state.reloadConfig(context);
-    Object.assign(settingsConfig, loadFabricConfigForScope(configLocation, saveScope));
-    deps.onConfigApplied?.();
+    // The project-scope view is exactly the merged config reloadConfig just
+    // produced; reuse it instead of reading both fabric.json files a third
+    // time. Global scope differs (it excludes project overrides) and still
+    // needs its own load.
+    Object.assign(
+      settingsConfig,
+      saveScope === "project"
+        ? deps.state.config
+        : loadFabricConfigForScope(configLocation, saveScope),
+    );
+    deps.onConfigApplied?.(id);
     dirty = true;
     changedSections.add(id.split(".")[0] ?? id);
     const list = rootComponent?.settingsList;
@@ -1903,36 +2158,52 @@ export async function openFabricSettings(
     }
   });
 
-  await context.ui.custom<void>(
-    (tui, theme, _keybindings, done) => {
-      const itemsForScope = (scope: FabricConfigScope): SettingItem[] => {
-        settingsConfig = loadFabricConfigForScope(configLocation, scope);
-        return buildFabricSettingsItems(theme, settingsConfig, apply, {
-          keepVisibleCandidates,
-          modelSource,
-          claudeModelSource,
-          ...(activeModelKey ? { activeModelKey } : {}),
-        });
-      };
-      const component = new FabricSettingsComponent(
-        theme,
-        itemsForScope(saveScope),
-        persist,
-        () => done(),
-        {
-          initialSaveScope: saveScope,
-          projectScopeAvailable: projectTrusted,
-          onSaveScopeChange: (scope) => {
-            saveScope = scope;
-            tui.requestRender();
+  const itemsForScope = (scope: FabricConfigScope, theme: Theme): SettingItem[] => {
+    settingsConfig = loadFabricConfigForScope(configLocation, scope);
+    return buildFabricSettingsItems(theme, settingsConfig, apply, {
+      keepVisibleCandidates,
+      modelSource,
+      claudeModelSource,
+      ...(activeModelKey ? { activeModelKey } : {}),
+    });
+  };
+
+  if (context.mode === "rpc") {
+    await openRpcFabricSettings(context, {
+      projectScopeAvailable: projectTrusted,
+      getScope: () => saveScope,
+      setScope: (scope) => {
+        saveScope = scope;
+      },
+      itemsForScope: (scope) => itemsForScope(scope, context.ui.theme),
+      persist,
+    });
+  } else if (context.mode !== "tui") {
+    context.ui.notify("Fabric settings require an interactive UI", "warning");
+    return;
+  } else {
+    await context.ui.custom<void>(
+      (tui, theme, _keybindings, done) => {
+        const component = new FabricSettingsComponent(
+          theme,
+          itemsForScope(saveScope, theme),
+          persist,
+          () => done(),
+          {
+            initialSaveScope: saveScope,
+            projectScopeAvailable: projectTrusted,
+            onSaveScopeChange: (scope) => {
+              saveScope = scope;
+              tui.requestRender();
+            },
+            itemsForSaveScope: (scope) => itemsForScope(scope, theme),
           },
-          itemsForSaveScope: itemsForScope,
-        },
-      );
-      rootComponent = component;
-      return component;
-    },
-  );
+        );
+        rootComponent = component;
+        return component;
+      },
+    );
+  }
 
   if (dirty) {
     deps.applyFabricMode();
