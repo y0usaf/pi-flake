@@ -1,7 +1,6 @@
 import { createGateway } from "@ai-sdk/gateway";
 import {
   calculateCost,
-  envApiKeyAuth,
   createAssistantMessageEventStream,
   type Api,
   type AssistantMessage,
@@ -14,7 +13,7 @@ import {
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { jsonSchema, streamText, tool } from "ai";
-import { CATALOG_TTL_MS, cachedExplicitModels, discoverExplicitModels, splitExplicitModelId } from "./catalog.js";
+import { discoverExplicitModels, splitExplicitModelId } from "./catalog.js";
 import { toModelMessages } from "./messages.js";
 import { applyActualGatewayCost, applyTokenUsage } from "./usage.js";
 
@@ -128,7 +127,7 @@ function streamNativeGateway(
       if (options.signal?.aborted) throw new Error("Request was aborted");
 
       const { upstreamModelId, provider } = splitExplicitModelId(model.id);
-      const gateway = createGateway({ apiKey: options.apiKey });
+      const gateway = createGateway({ apiKey: process.env.AI_GATEWAY_API_KEY ?? options.apiKey });
       const tools = Object.fromEntries(
         (context.tools ?? []).map((definition) => [
           definition.name,
@@ -299,23 +298,6 @@ const GATEWAY_API = "vercel-ai-gateway-native";
 const GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1/ai";
 type DiscoveredModel = Awaited<ReturnType<typeof discoverExplicitModels>>[number];
 type GatewayModel = Model<Api>;
-type GatewayStoredCatalog = {
-  models?: readonly DiscoveredModel[];
-  checkedAt?: number;
-  lastModified?: number;
-  etag?: string;
-};
-type GatewayPublication = {
-  persist?: GatewayStoredCatalog | null;
-  update?: () => void;
-};
-type GatewayRefreshContext = {
-  allowNetwork: boolean;
-  force?: boolean;
-  signal?: AbortSignal;
-  stored?: GatewayStoredCatalog;
-  publish?: (publication: GatewayPublication) => Promise<boolean>;
-};
 
 const FALLBACK_MODEL: GatewayModel = {
   id: "deepseek/deepseek-v4-flash-0731@runware",
@@ -341,48 +323,35 @@ function toGatewayModel(model: DiscoveredModel): GatewayModel {
   };
 }
 
-function cachedGatewayModels(cache: GatewayStoredCatalog | undefined): readonly GatewayModel[] | undefined {
-  const models = cachedExplicitModels(cache);
-  return models?.map(toGatewayModel);
+
+async function discoverGatewayModels(): Promise<GatewayModel[]> {
+  const discovered = await discoverExplicitModels({});
+  return discovered.map(toGatewayModel);
 }
 
-async function refreshGatewayModels(context: GatewayRefreshContext): Promise<void> {
-  const cached = cachedGatewayModels(context.stored);
-  if (cached && context.publish) {
-    if (!(await context.publish({ update: () => { dynamicModels = cached; } }))) return;
-  }
-
-  if (!context.allowNetwork || context.signal?.aborted) return;
-  if (cached && !context.force && context.stored?.checkedAt !== undefined &&
-      Date.now() - context.stored.checkedAt < CATALOG_TTL_MS) return;
-
-  try {
-    const discovered = await discoverExplicitModels({ signal: context.signal });
-    const models = discovered.map(toGatewayModel);
-    if (context.signal?.aborted) return;
-    if (!context.publish) {
-      dynamicModels = models;
-      return;
-    }
-    await context.publish({
-      persist: { models, checkedAt: Date.now(), lastModified: Date.now() },
-      update: () => { dynamicModels = models; },
-    });
-  } catch (error) {
-    if (cached) return;
-    throw error;
-  }
+function gatewayProviderConfig(models: readonly GatewayModel[]) {
+  return {
+    name: "Vercel AI Gateway",
+    baseUrl: GATEWAY_BASE_URL,
+    apiKey: process.env.AI_GATEWAY_API_KEY,
+    api: GATEWAY_API,
+    models: [...models],
+    streamSimple: streamNativeGateway,
+  };
 }
 
 export default function register(pi: ExtensionAPI): void {
-  pi.registerProvider({
-    id: PROVIDER_ID,
-    name: "Vercel AI Gateway",
-    baseUrl: GATEWAY_BASE_URL,
-    auth: { apiKey: envApiKeyAuth("Vercel AI Gateway API key", ["AI_GATEWAY_API_KEY"]) },
-    getModels: () => dynamicModels.length > 0 ? dynamicModels : [FALLBACK_MODEL],
-    refreshModels: refreshGatewayModels,
-    stream: streamNativeGateway,
-    streamSimple: streamNativeGateway,
-  });
+  console.error(`[gw-ext] loaded, registering provider ${PROVIDER_ID}`);
+  console.error(`[gw-ext] env key visible: ${Boolean(process.env.AI_GATEWAY_API_KEY)}`);
+  try {
+    pi.registerProvider(PROVIDER_ID, gatewayProviderConfig([FALLBACK_MODEL]));
+    console.error(`[gw-ext] registerProvider succeeded`);
+  } catch (error) {
+    console.error(`[gw-ext] registerProvider FAILED: ${error}`);
+  }
+
+  // Live catalog: replace the fallback list once discovery lands.
+  void discoverGatewayModels().then((models) => {
+    if (models.length > 0) pi.registerProvider(PROVIDER_ID, gatewayProviderConfig(models));
+  }).catch(() => {});
 }
