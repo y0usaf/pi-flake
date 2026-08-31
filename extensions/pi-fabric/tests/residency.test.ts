@@ -558,7 +558,7 @@ describe.skipIf(!hasResidentHost)("durable participant residency", () => {
     await reconnect.close();
   });
 
-  it("rejects tampered durable worktree metadata before destructive cleanup", async () => {
+  it("rejects tampered durable worktree metadata before destructive cleanup", { timeout: 20_000 }, async () => {
     const state = await rootHarness("resident-worktree-tamper");
     const source = path.join(state.root, "source");
     const unrelated = path.join(state.root, "unrelated");

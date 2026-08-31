@@ -37,20 +37,37 @@ const FILE_HIGHLIGHT_ENTRY_LIMIT = 24;
 const FILE_HIGHLIGHT_CHAR_LIMIT = 4_000_000;
 const CACHE_LIMIT = 192;
 const CACHE_CHAR_LIMIT = 4_000_000;
-// Resolve preloaded grammars from Fabric's module graph. Pi's extension host
-// cannot resolve Shiki's package-internal lazy imports from `shiki/dist`.
-const PRELOADED_LANGUAGE_LOADERS = {
-  bash: () => import("@shikijs/langs/shellscript"),
-  typescript: () => import("@shikijs/langs/typescript"),
-  tsx: () => import("@shikijs/langs/tsx"),
-  javascript: () => import("@shikijs/langs/javascript"),
-  jsx: () => import("@shikijs/langs/jsx"),
-  json: () => import("@shikijs/langs/json"),
-  markdown: () => import("@shikijs/langs/markdown"),
-  yaml: () => import("@shikijs/langs/yaml"),
-  toml: () => import("@shikijs/langs/toml"),
-  css: () => import("@shikijs/langs/css"),
+import bashLang from "@shikijs/langs/bash";
+import typescriptLang from "@shikijs/langs/typescript";
+import tsxLang from "@shikijs/langs/tsx";
+import javascriptLang from "@shikijs/langs/javascript";
+import jsxLang from "@shikijs/langs/jsx";
+import jsonLang from "@shikijs/langs/json";
+import markdownLang from "@shikijs/langs/markdown";
+import yamlLang from "@shikijs/langs/yaml";
+import tomlLang from "@shikijs/langs/toml";
+import cssLang from "@shikijs/langs/css";
+
+// Grammar objects, not id strings: Shiki's internal lazy
+// `import("@shikijs/langs/<id>")` cannot be resolved inside Pi's extension
+// host (same failure class as themes, issue #46). Static imports stay in
+// pi-fabric's own module graph, which the host can resolve.
+const PRELOADED_LANGUAGE_OBJECTS = {
+  bash: bashLang,
+  typescript: typescriptLang,
+  tsx: tsxLang,
+  javascript: javascriptLang,
+  jsx: jsxLang,
+  json: jsonLang,
+  markdown: markdownLang,
+  yaml: yamlLang,
+  toml: tomlLang,
+  css: cssLang,
 } as const;
+
+const PRELOADED_LANGUAGES = Object.keys(PRELOADED_LANGUAGE_OBJECTS) as Array<
+  keyof typeof PRELOADED_LANGUAGE_OBJECTS
+>;
 
 const LANGUAGE_ALIASES = new Map<string, string>([
   ["sh", "bash"],
@@ -321,6 +338,7 @@ export function languageFromPath(filePath: string | undefined): string | undefin
 /** Configure highlighting without loading Shiki until the first code preview needs it. */
 export function configureHighlighting(themePreferenceValue: string, syntaxEnabled = true): void {
   const preference = themePreferenceValue.trim() || "auto";
+  const wasEnabled = enabled;
   enabled = syntaxEnabled;
   if (!enabled) {
     themePreference = preference;
@@ -341,7 +359,13 @@ export function configureHighlighting(themePreferenceValue: string, syntaxEnable
     return;
   }
   const themeChanged = syncEffectiveTheme(preference, observedVariant);
-  if (!themeChanged && (highlighter || initializingTheme)) {
+  // syncEffectiveTheme already rebuilds eagerly on a real theme swap and
+  // highlightCode's requestInit lazily covers a never-initialized highlighter;
+  // the only remaining case that needs an explicit init is re-enabling after
+  // a disable disposed the highlighter. Rebuilding unconditionally here cost
+  // a full 10-grammar shiki init (~80-260ms of main-thread work) on every
+  // /fabric settings save even when nothing display-related had changed.
+  if (!themeChanged && !wasEnabled && !highlighter && !initializingTheme) {
     void initHighlighting(currentTheme, syntaxEnabled);
   }
 }
@@ -365,7 +389,7 @@ export async function initHighlighting(theme: string, syntaxEnabled = true): Pro
     }
     const next = await createHighlighter({
       themes: [themeObject],
-      langs: Object.values(PRELOADED_LANGUAGE_LOADERS),
+      langs: PRELOADED_LANGUAGES.map((id) => PRELOADED_LANGUAGE_OBJECTS[id]),
     });
     if (version !== initVersion) {
       next.dispose();
@@ -378,7 +402,7 @@ export async function initHighlighting(theme: string, syntaxEnabled = true): Pro
     initializingTheme = undefined;
     highlighterGeneration++;
     loadedLanguages.clear();
-    for (const lang of Object.keys(PRELOADED_LANGUAGE_LOADERS)) loadedLanguages.add(lang);
+    for (const lang of PRELOADED_LANGUAGES) loadedLanguages.add(lang);
     notifyReady();
   } catch (error) {
     if (version !== initVersion) return;

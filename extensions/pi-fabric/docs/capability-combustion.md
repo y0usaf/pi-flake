@@ -261,3 +261,9 @@ A tool call that lands after the $\tau$ feedback window raises an open question 
 | `capture.advisory.threshold` | sets the base fire point $\theta$ |
 | `capture.advisory.maxPerSession` | sets the branch hint limit |
 | `capture.advisory.budget` | sets the advisory text limit in tokens |
+
+## Proxy contract (not this furnace)
+
+Skill envelopes that name captured tools (`fovea_sketch`, `ask_user_question`) are ambient instructions, not user intent. The matcher already cuts those regions out, so they cannot ignite a hint.
+
+A separate `pi-fabric-proxy` custom message may remind the model that those bare names are `extensions.*` calls inside `fabric_exec`. That message does not increment `maxPerSession`, does not enter the echo set, and does not burn ash. Replay restores only the per-name "already reminded" set. User prose outside the envelope still belongs to this furnace or to silence.

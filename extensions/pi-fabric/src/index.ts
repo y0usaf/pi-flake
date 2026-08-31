@@ -36,16 +36,25 @@ import {
   expandSkillDirMarkersInSkillBlock,
 } from "./core/skill-dir.js";
 import { coreOverridePromptGuidance } from "./core/core-override-guidance.js";
+import { PI_CORE_TOOL_NAMES } from "./core/pi-tools.js";
 import {
   fabricExecutionKernelGuidance,
   defaultFabricExecutionGuidance,
   fabricSchemaGuidance,
+  extensionToolRosterGuidance,
 } from "./core/system-guidance.js";
 import {
   FABRIC_EXECUTION_GUIDANCE_SLOT,
   resolveFabricModelGuidance,
 } from "./components/model-guidance.js";
 import { restoreSkillsForFullCodePrompt } from "./core/skill-prompt.js";
+import {
+  formatProxyContractReminder,
+  PROXY_CONTRACT_CUSTOM_TYPE,
+  ProxyContractLedger,
+  proxyContractMentionsInSkills,
+  rewritableHiddenCapturedToolNames,
+} from "./core/proxy-contract.js";
 import {
   FabricDirectToolApproval,
   mergeFabricApprovalUsage,
@@ -143,6 +152,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   );
   const capturedTools = new CapturedToolCatalog();
   const capabilityAdvisor = new CapabilityAdvisor();
+  const proxyContract = new ProxyContractLedger();
   const state = new FabricState(
     pi,
     capturedTools,
@@ -300,6 +310,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       fabricOwnsModelTools(),
       fabricOwnsModelTools() ? hiddenCapturedToolNames() : undefined,
     );
+    capturedTools.refresh();
     refreshAdvisorSources();
   };
   const suspendToolCapture = (): void => {
@@ -396,6 +407,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         return namespaces.size > 0 ? [...namespaces] : undefined;
       },
     );
+    proxyContract.restoreFromEntries(context.sessionManager?.getBranch?.() ?? []);
   };
 
   // alwaysRearm means always armed: every session opens with prewalk armed.
@@ -433,6 +445,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     fabricUi.stop();
     suspendToolCapture();
     capabilityAdvisor.reset();
+    proxyContract.reset();
     refreshAdvisorLedger(context);
     if (!compatibilityWarningShown) {
       compatibilityWarningShown = true;
@@ -452,6 +465,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   // budget must track it exactly. Rewind removes abandoned-branch residue.
   pi.on("session_tree", async (_event, context) => {
     capabilityAdvisor.reset();
+    proxyContract.reset();
     refreshAdvisorLedger(context);
     // Pi emits session_tree before it clears and rebuilds the transcript:
     // drop card invalidators from abandoned branches so a later display-mode
@@ -698,6 +712,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     const effectiveFullCodeMode = fullCodeMode || schemaMode === "enforce";
     if (!pi.getActiveTools().includes("fabric_exec")) return;
     const skills = event.systemPromptOptions.skills ?? [];
+    const captureSnapshot = state.cwd ? capturePolicy() : undefined;
     // Pi omits its entire skill catalog when the active tool set lacks a tool
     // named read. Restore that catalog in full code mode with only the loader
     // instruction adapted to Fabric's nested pi.read path.
@@ -726,6 +741,9 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     const overrideGuidance = effectiveFullCodeMode
       ? coreOverridePromptGuidance(capturedTools).trim()
       : undefined;
+    const extensionRoster = effectiveFullCodeMode
+      ? extensionToolRosterGuidance(capturedTools.list(), new Set(PI_CORE_TOOL_NAMES))
+      : undefined;
     // Only turn-stable sections go into the system prompt. Anything derived
     // from the current prompt (skill references, capability advisory) rides
     // the message channel so provider prefix caches never cold-prefill.
@@ -734,6 +752,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       resolvedGuidance.slotText,
       fabricSchemaGuidance(schemaMode),
       overrideGuidance,
+      extensionRoster,
       resolvedGuidance.appendText,
     ].filter((section): section is string => Boolean(section)).join("\n\n");
     // One-shot capability steering: when the prompt's vocabulary matches a
@@ -741,7 +760,6 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     // reaches for extensions.* / mcp.* instead of re-implementing them. Slice
     // membership already encodes visibility (captured tools only while
     // hidden; MCP while mcp.advisory is on), so any non-empty index fires.
-    const captureSnapshot = state.cwd ? capturePolicy() : undefined;
     const advisory =
       captureSnapshot && capabilityAdvisor.hasSources()
         ? capabilityAdvisor.evaluate(event.prompt, captureSnapshot.advisory)
@@ -769,6 +787,38 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
             },
           }
         : {}),
+    };
+  });
+
+  // Ambient skill prose that names hidden captured tools is not user intent,
+  // so the furnace strips it. This sidecar retargets the call site without
+  // spending hint budget, echoing tokens, or burning ash.
+  pi.on("before_agent_start", (event) => {
+    if (!pi.getActiveTools().includes("fabric_exec")) return;
+    const captureSnapshot = state.cwd ? capturePolicy() : undefined;
+    if (
+      !captureSnapshot?.enabled ||
+      !captureSnapshot.hideFromModel ||
+      !fabricOwnsModelTools()
+    ) {
+      return;
+    }
+    const names = rewritableHiddenCapturedToolNames(hiddenCapturedToolNames());
+    if (names.length === 0) return;
+    const mentioned = proxyContractMentionsInSkills(
+      event.prompt,
+      event.systemPrompt,
+      names,
+    );
+    const fresh = proxyContract.take(mentioned);
+    if (fresh.length === 0) return;
+    return {
+      message: {
+        customType: PROXY_CONTRACT_CUSTOM_TYPE,
+        content: formatProxyContractReminder(fresh),
+        display: false,
+        details: { names: fresh, origin: "skill" },
+      },
     };
   });
 

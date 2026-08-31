@@ -359,9 +359,16 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           state,
           applyFabricMode,
           capturedTools,
-          onConfigApplied: () => {
-            deps.refreshCodePreviewSettings?.();
-            deps.refreshToolDisplay?.();
+          // Only card-affecting preferences pay for a transcript refresh:
+          // refreshToolDisplay re-renders every fabric_exec card, so gating it
+          // on the display sections keeps unrelated saves off the transcript.
+          onConfigApplied: (id) => {
+            if (id.startsWith("codePreview.")) {
+              deps.refreshCodePreviewSettings?.();
+              deps.refreshToolDisplay?.();
+            } else if (id === "ui.toolDisplay" || id === "ui.showAgentToolPreview") {
+              deps.refreshToolDisplay?.();
+            }
           },
         });
         return;

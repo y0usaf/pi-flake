@@ -29,6 +29,10 @@ import {
   type FabricProviderListRequest,
   type FabricScopedProviderResult,
 } from "../protocol.js";
+import {
+  formatUnknownActionMessage,
+  repairActionName,
+} from "./action-repair.js";
 import { formatFabricEffectConflict } from "./effect-conflict.js";
 import { stableJsonHash } from "./stable-hash.js";
 import type {
@@ -72,6 +76,8 @@ export interface FabricCallAudit {
   effectConflicts?: FabricEffectConflict[];
   /** Result was pre-launched while the program streamed and served from the speculation store. */
   speculated?: boolean;
+  /** Spelled action name that repaired to the canonical one at resolve (e.g. search → recall). */
+  repairedFrom?: string;
 }
 
 export type FabricRegistryActivityEvent =
@@ -687,9 +693,16 @@ export class ActionRegistry {
         ref,
         context.capabilityView,
       );
-      const descriptor = await provider.describe(actionName, context);
-      if (!descriptor) throw new FabricResolutionError(`Unknown Fabric action: ${ref}`);
-      const action = resolveDescriptor(provider, descriptor);
+      const resolved = await this.#resolveActionDescriptor(
+        provider,
+        actionName,
+        context,
+        context.capabilityView === undefined,
+      );
+      if (!resolved.action) {
+        throw new FabricResolutionError(formatUnknownActionMessage(ref, resolved.suggestions));
+      }
+      const action = resolved.action;
       if (expectedDescriptorHash && actionDescriptorHash(action) !== expectedDescriptorHash) {
         throw new FabricResolutionError(`Fabric capability descriptor changed: ${ref}`);
       }
@@ -715,6 +728,7 @@ export class ActionRegistry {
     // line and what typed calls pragmatically use): walk every provider for
     // a unique action-name match.
     const matches: ResolvedFabricAction[] = [];
+    const declaredNames: string[] = [];
     for (const provider of this.#providerBindings.providers()) {
       let descriptors: FabricActionDescriptor[];
       try {
@@ -723,6 +737,7 @@ export class ActionRegistry {
         continue;
       }
       for (const descriptor of descriptors) {
+        declaredNames.push(descriptor.name);
         if (descriptor.name === ref) matches.push(resolveDescriptor(provider, descriptor));
       }
     }
@@ -733,7 +748,8 @@ export class ActionRegistry {
           matches.map((match) => match.ref).sort().join(", "),
       );
     }
-    throw new FabricResolutionError(`Unknown Fabric action: ${ref}`);
+    const repair = repairActionName(declaredNames, ref);
+    throw new FabricResolutionError(formatUnknownActionMessage(ref, repair.suggestions));
   }
 
   async acquireScoped(
@@ -749,11 +765,17 @@ export class ActionRegistry {
     const releaseBinding = this.#providerBindings.retain([binding.id]);
     let retentionTransferred = false;
     try {
-      const descriptor = await runAbortable(context.signal, () =>
-        provider.describe(actionName, context),
+      const resolved = await this.#resolveActionDescriptor(
+        provider,
+        actionName,
+        context,
+        context.capabilityView === undefined,
       );
-      if (!descriptor) throw new FabricResolutionError(`Unknown Fabric action: ${ref}`);
-      const action = resolveDescriptor(provider, descriptor);
+      if (!resolved.action) {
+        throw new FabricResolutionError(formatUnknownActionMessage(ref, resolved.suggestions));
+      }
+      const action = resolved.action;
+      const providerActionName = resolved.repairedFrom === undefined ? actionName : action.name;
       if (expectedDescriptorHash && actionDescriptorHash(action) !== expectedDescriptorHash) {
         throw new FabricResolutionError(`Fabric capability descriptor changed: ${ref}`);
       }
@@ -765,7 +787,7 @@ export class ActionRegistry {
       }
       const preparedArgs = provider.prepareArguments
         ? await runAbortable(context.signal, () =>
-            provider.prepareArguments!(actionName, args, context),
+            provider.prepareArguments!(providerActionName, args, context),
           )
         : args;
       if (typeof preparedArgs !== "object" || preparedArgs === null || Array.isArray(preparedArgs)) {
@@ -774,7 +796,7 @@ export class ActionRegistry {
       const invalid = validationMessage(action.inputSchema, preparedArgs);
       if (invalid) throw new Error(`Invalid arguments for ${ref}: ${invalid}`);
       const acquired = await runAbortable(context.signal, () =>
-        provider.acquire!(actionName, preparedArgs, context),
+        provider.acquire!(providerActionName, preparedArgs, context),
       );
       if (!acquired || typeof acquired.dispose !== "function") {
         throw new Error(`Scoped acquisition ${ref} did not return a disposer`);
@@ -816,11 +838,17 @@ export class ActionRegistry {
         context.capabilityView,
       );
       endBindingInvocation = this.#providerBindings.beginInvocation(binding.id);
-      const descriptor = await runAbortable(context.signal, () =>
-        provider.describe(actionName, context),
+      const resolved = await this.#resolveActionDescriptor(
+        provider,
+        actionName,
+        context,
+        context.capabilityView === undefined,
       );
-      if (!descriptor) throw new FabricResolutionError(`Unknown Fabric action: ${ref}`);
-      const action = resolveDescriptor(provider, descriptor);
+      if (!resolved.action) {
+        throw new FabricResolutionError(formatUnknownActionMessage(ref, resolved.suggestions));
+      }
+      const action = resolved.action;
+      const providerActionName = resolved.repairedFrom === undefined ? actionName : action.name;
       if (expectedDescriptorHash && actionDescriptorHash(action) !== expectedDescriptorHash) {
         throw new FabricResolutionError(`Fabric capability descriptor changed: ${ref}`);
       }
@@ -839,7 +867,7 @@ export class ActionRegistry {
       failureStage = "prepare";
       const preparedArgs = provider.prepareArguments
         ? await runAbortable(context.signal, () =>
-            provider.prepareArguments!(actionName, args, context),
+            provider.prepareArguments!(providerActionName, args, context),
           )
         : args;
       if (typeof preparedArgs !== "object" || preparedArgs === null || Array.isArray(preparedArgs)) {
@@ -887,6 +915,9 @@ export class ActionRegistry {
           MAX_AUDIT_VALUE_CHARS,
         ) as Record<string, unknown>,
         ...(effectConflicts.length > 0 ? { effectConflicts } : {}),
+        ...(resolved.repairedFrom !== undefined
+          ? { repairedFrom: resolved.repairedFrom }
+          : {}),
       };
       audit = activeAudit;
       invocationActive = true;
@@ -933,7 +964,7 @@ export class ActionRegistry {
         if (!servedFromSpeculation) {
         providerInvoked = true;
         providerValue = await runAbortable(context.signal, () =>
-          provider.invoke(actionName, preparedArgs, {
+          provider.invoke(providerActionName, preparedArgs, {
           ...context,
           nestedToolCallId,
           update(message) {
@@ -1216,6 +1247,54 @@ export class ActionRegistry {
     } finally {
       await Promise.allSettled(temporaryReleases.map((release) => release()));
     }
+  }
+
+  async #declaredActionNames(
+    provider: FabricProvider,
+    context: FabricInvocationContext,
+  ): Promise<string[]> {
+    try {
+      const descriptors = await runAbortable(context.signal, () => provider.list({}, context));
+      return descriptors.map((descriptor) => descriptor.name);
+    } catch {
+      return [];
+    }
+  }
+
+  // Resolve a provider action descriptor, repairing a near-miss action name
+  // (mirroring arg-normalization's prepare-stage argument repair) when the
+  // caller is not pinned to a committed capability view. Committed views are
+  // exact contracts: a pinned miss keeps the plain resolution error.
+  async #resolveActionDescriptor(
+    provider: FabricProvider,
+    actionName: string,
+    context: FabricInvocationContext,
+    allowRepair: boolean,
+  ): Promise<{ action?: ResolvedFabricAction; suggestions: string[]; repairedFrom?: string }> {
+    const descriptor = await runAbortable(context.signal, () =>
+      provider.describe(actionName, context),
+    );
+    if (descriptor) return { action: resolveDescriptor(provider, descriptor), suggestions: [] };
+    if (!allowRepair) return { suggestions: [] };
+    const repair = repairActionName(
+      await this.#declaredActionNames(provider, context),
+      actionName,
+    );
+    if (repair.repaired !== undefined) {
+      const repairedDescriptor = await runAbortable(context.signal, () =>
+        provider.describe(repair.repaired!, context),
+      );
+      if (repairedDescriptor) {
+        return {
+          action: resolveDescriptor(provider, repairedDescriptor),
+          suggestions: [],
+          repairedFrom: actionName,
+        };
+      }
+    }
+    return {
+      suggestions: repair.suggestions.map((name) => `${provider.name}.${name}`),
+    };
   }
 
   #parseRef(

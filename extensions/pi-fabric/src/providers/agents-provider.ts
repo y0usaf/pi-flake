@@ -52,7 +52,12 @@ import type {
 } from "../agents/types.js";
 import type { ThinkingTransferInput } from "../agents/thinking-transfer.js";
 import { DEFAULT_FABRIC_CONFIG, type FabricModelsConfig } from "../config.js";
-import { resolveFabricModel, type FabricModelCandidate } from "../core/model-resolution.js";
+import {
+  FUZZY_RESOLUTION_MARKERS,
+  resolveFabricModel,
+  type FabricModelCandidate,
+} from "../core/model-resolution.js";
+import { loadModelUsage } from "../core/model-usage.js";
 import { AGENTS_ACTION_DESCRIPTORS } from "./agents-actions.js";
 import { actionArgNormalizer } from "./arg-normalization.js";
 import { isFabricThinking } from "../thinking.js";
@@ -605,6 +610,45 @@ export class AgentsProvider implements FabricProvider {
     readonly modelsConfig: () => FabricModelsConfig = () => DEFAULT_FABRIC_CONFIG.models,
   ) {}
 
+  /**
+   * Resolve an explicit Pi-runner model selector against the authenticated
+   * registry, honoring models.aliases and pi-model-sort recency for inexact
+   * terms. Unresolvable selectors pass through verbatim: the child Pi runtime
+   * resolves catalog refresh state and custom ids itself and reports its own
+   * error when nothing matches.
+   */
+  #resolvePiModelArgs(
+    args: Record<string, unknown>,
+    context: FabricInvocationContext,
+  ): Record<string, unknown> {
+    const runner =
+      args.runner === "pi" || args.runner === "claude" || args.runner === "veda"
+        ? args.runner
+        : this.manager.config.runner;
+    if (runner !== "pi") return args;
+    const model = typeof args.model === "string" ? args.model.trim() : "";
+    if (!model) return args;
+    let available: FabricModelCandidate[] = [];
+    try {
+      available = context.extensionContext.modelRegistry.getAvailable().map((candidate) => ({
+        provider: String(candidate.provider),
+        id: String(candidate.id),
+        ...(typeof candidate.name === "string" ? { name: candidate.name } : {}),
+      }));
+    } catch {
+      available = [];
+    }
+    if (available.length === 0) return args;
+    const resolution = resolveFabricModel(model, {
+      aliases: this.modelsConfig().aliases,
+      available,
+      lastUsed: loadModelUsage(),
+    });
+    if (resolution.kind !== "resolved" && resolution.kind !== "already-active") return args;
+    const key = `${resolution.model.provider}/${resolution.model.id}`;
+    return key === model ? args : { ...args, model: key };
+  }
+
   async list(
     request: FabricProviderListRequest,
     _context: FabricInvocationContext,
@@ -656,16 +700,19 @@ export class AgentsProvider implements FabricProvider {
     const model = typeof args.model === "string" ? args.model.trim() : "";
     if (!model) throw new Error("agents.handoff requires an explicit Pi target model");
     const request = runRequest(
-      {
-        ...args,
-        task: handoffTask(args),
-        name:
-          typeof args.name === "string" && args.name.trim()
-            ? args.name
-            : "Trajectory handoff",
-        runner: "pi",
-        model,
-      },
+      this.#resolvePiModelArgs(
+        {
+          ...args,
+          task: handoffTask(args),
+          name:
+            typeof args.name === "string" && args.name.trim()
+              ? args.name
+              : "Trajectory handoff",
+          runner: "pi",
+          model,
+        },
+        context,
+      ),
       context,
       this.manager,
       { allowCwd: false },
@@ -712,7 +759,7 @@ export class AgentsProvider implements FabricProvider {
     switch (actionName) {
       case "run": {
         const handle = await this.manager.spawn(
-          runRequest(args, context, this.manager),
+          runRequest(this.#resolvePiModelArgs(args, context), context, this.manager),
           context.signal,
         );
         this.participants.scheduleRefresh();
@@ -734,7 +781,7 @@ export class AgentsProvider implements FabricProvider {
       case "handoff":
         return this.handoff(args, context);
       case "spawn": {
-        const request = runRequest(args, context, this.manager);
+        const request = runRequest(this.#resolvePiModelArgs(args, context), context, this.manager);
         validateAgentCwdRequest(request);
         const durableRequest = request.residency === "durable" && request.cwd !== undefined
           ? { ...request, cwd: this.manager.resolveCwd(request.cwd) }
@@ -915,6 +962,7 @@ export class AgentsProvider implements FabricProvider {
         const resolution = resolveFabricModel(query, {
           aliases: this.modelsConfig().aliases,
           available,
+          lastUsed: loadModelUsage(),
           ...(currentModel
             ? { current: { provider: currentModel.provider, id: currentModel.id } }
             : {}),
@@ -966,7 +1014,11 @@ export class AgentsProvider implements FabricProvider {
           model: `${resolution.model.provider}/${resolution.model.id}`,
           ...(resolution.model.name ? { name: resolution.model.name } : {}),
           ...(previous ? { previous } : {}),
-          ...(resolution.via !== undefined ? { alias: resolution.via } : {}),
+          ...(resolution.via !== undefined ? { via: resolution.via } : {}),
+          ...(resolution.via !== undefined &&
+          !(FUZZY_RESOLUTION_MARKERS as readonly string[]).includes(resolution.via)
+            ? { alias: resolution.via }
+            : {}),
         };
       }
       case "stop":
@@ -978,10 +1030,11 @@ export class AgentsProvider implements FabricProvider {
           : this.manager.cleanup(id, args.deleteBranch === true);
       }
       case "create": {
-        if (args.scope === "global") {
-          return this.globalActors.create(actorRequest(args, context, this.manager, false));
+        const createArgs = this.#resolvePiModelArgs(args, context);
+        if (createArgs.scope === "global") {
+          return this.globalActors.create(actorRequest(createArgs, context, this.manager, false));
         }
-        const request = actorRequest(args, context, this.manager);
+        const request = actorRequest(createArgs, context, this.manager);
         if (request.residency === "durable") await this.#resident().ensureHost();
         const actor = await this.actorManager.create(request);
         if (actor.residency === "durable") await this.#activateDurableActor(actor);

@@ -28,19 +28,31 @@ vi.mock("../src/fabric-runtime-state.js", () => ({
   },
 }));
 
+// The id the mocked settings dialog reports as just-saved; only display
+// sections are gated through to refreshToolDisplay.
+const settingsSaveId = vi.hoisted(() => ({ current: "ui.toolDisplay" }));
+
 // Replace the settings modal with the real apply path: a successful save calls
 // onConfigApplied, which is the display-mode switch that re-renders the
 // transcript through refreshToolDisplay.
 vi.mock("../src/ui/settings.js", () => ({
   openFabricSettings: vi.fn(async (
     _context: ExtensionContext,
-    deps: { onConfigApplied?: () => void },
+    deps: { onConfigApplied?: (id: string) => void },
   ) => {
-    deps.onConfigApplied?.();
+    deps.onConfigApplied?.(settingsSaveId.current);
   }),
 }));
 
 type ExtensionHandler = (event: unknown, context: unknown) => unknown;
+
+// refresh() drains card invalidations across event-loop turns, so assertions
+// must let the drain run before counting calls.
+const flushDisplayRefresh = async (rounds = 3): Promise<void> => {
+  for (let index = 0; index < rounds; index++) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+};
 
 const plainTheme = {
   fg: (_color: string, text: string) => text,
@@ -165,15 +177,31 @@ describe("Fabric tool display lifecycle", () => {
       sessionManager: { getBranch: () => [], getSessionId: () => "test-session" },
     } as unknown as ExtensionContext;
     await commandHandler!("settings", context);
+    await flushDisplayRefresh();
 
     expect(abandonedInvalidate).not.toHaveBeenCalled();
     expect(activeInvalidate).toHaveBeenCalledOnce();
 
+    // Unrelated settings saves are gated off the transcript entirely: saving a
+    // non-display id (even inside the ui section) must not re-render cards.
+    settingsSaveId.current = "ui.refreshMs";
+    await commandHandler!("settings", context);
+    await flushDisplayRefresh();
+    expect(activeInvalidate).toHaveBeenCalledOnce();
+    settingsSaveId.current = "ui.toolDisplay";
+
     // Abandoned invalidators stay dropped for the rest of the session: a
     // second switch still refreshes only the active card.
     await commandHandler!("settings", context);
+    await flushDisplayRefresh();
     expect(abandonedInvalidate).not.toHaveBeenCalled();
     expect(activeInvalidate).toHaveBeenCalledTimes(2);
+
+    // Code preview preferences are card-affecting and still go through.
+    settingsSaveId.current = "codePreview.toolCallBackground";
+    await commandHandler!("settings", context);
+    await flushDisplayRefresh();
+    expect(activeInvalidate).toHaveBeenCalledTimes(3);
   });
 
   it("does not leak the previous session's preference when a re-bootstrap fails", async () => {

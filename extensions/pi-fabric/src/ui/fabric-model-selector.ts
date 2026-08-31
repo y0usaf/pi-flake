@@ -24,6 +24,13 @@ interface ModelEntry {
   isModel: boolean;
 }
 
+export interface FabricModelSelectorChoice {
+  value: string;
+  label: string;
+  description: string;
+  current: boolean;
+}
+
 export interface FabricModelSelectorOptions {
   theme: Theme;
   source: ModelSource;
@@ -135,6 +142,22 @@ export class FabricModelSelector extends Container implements Focusable {
       this.searchInput.handleInput(keyData);
       this.filterModels(this.searchInput.getValue());
     }
+  }
+
+  rpcChoices(): FabricModelSelectorChoice[] {
+    return this.allEntries.map((entry) => ({
+      value: entry.value,
+      label: entry.id,
+      description: entry.isModel ? `${entry.provider} · ${entry.name}` : entry.name,
+      current: entry.value === this.currentValue,
+    }));
+  }
+
+  selectRpc(value: string): boolean {
+    const entry = this.allEntries.find((candidate) => candidate.value === value);
+    if (!entry) return false;
+    this.handleSelect(entry);
+    return true;
   }
 
   private handleSelect(entry: ModelEntry): void {

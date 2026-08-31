@@ -85,6 +85,41 @@ describe("registered extension tool capture", () => {
     expect(catalog.size).toBe(0);
   });
 
+  it("refresh() repopulates after a suspended-pass clear, as on /reload (#73)", async () => {
+    const fabricTool = tool("fabric_exec");
+    const customTool = tool("deploy_release");
+    const runner = runnerWith(
+      registered(fabricTool, "/extensions/pi-fabric/index.ts"),
+      registered(customTool, "/extensions/pi-deploy/index.ts"),
+    );
+    const catalog = new CapturedToolCatalog();
+    const controller = await installRegisteredToolCapture({
+      anchorDefinition: fabricTool,
+      catalog,
+      initialPolicy: structuredClone(DEFAULT_FABRIC_CONFIG.capture),
+    });
+    controllers.push(controller);
+
+    runner.getAllRegisteredTools();
+    expect(catalog.get("deploy_release")).toBeDefined();
+
+    // session_start suspends capture, then /reload re-registers extensions and
+    // refreshes the tool registry while suspension is still active: the hub
+    // listener runs with enabled:false and clears the catalog.
+    controller.setPolicy({ ...structuredClone(DEFAULT_FABRIC_CONFIG.capture), enabled: false });
+    runner.getAllRegisteredTools();
+    expect(catalog.get("deploy_release")).toBeUndefined();
+
+    // session_start re-enables capture, but setPolicy(enabled) fires nothing —
+    // the catalog would stay empty until restart without a forced refresh.
+    controller.setPolicy(structuredClone(DEFAULT_FABRIC_CONFIG.capture));
+    expect(catalog.get("deploy_release")).toBeUndefined();
+
+    catalog.refresh();
+    expect(catalog.get("deploy_release")).toBeDefined();
+    expect(catalog.get("fabric_exec")).toBeUndefined();
+  });
+
   it("classifies Fovea's graph-navigation tools as read-only", () => {
     const definitions = [
       "fovea_sketch",

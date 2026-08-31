@@ -448,7 +448,15 @@ type PiFindPatternArgument = { pattern?: string; query?: string; regex?: string;
 // aliases belong here (max/start/ctx/ic/...), never primary-field aliases —
 // the primary field comes from the positional string.
 type PiReadOptions = { offset?: number; limit?: number; start?: number; max?: number };
-type PiBashOptions = { timeout?: number; timeoutMs?: number; settle?: boolean };
+// cwd is honored per call by the pi provider, which binds the command to a
+// bash definition rooted there; relative paths resolve from the session cwd.
+// The alias spellings mirror __piArgAliases.bash in quickjs-runtime.ts: the
+// runtime repairs them, so the checker has to accept the same spellings or a
+// repairable call is rejected before it ever reaches the sandbox.
+type PiBashOptions = {
+  timeout?: number; timeoutMs?: number; settle?: boolean;
+  cwd?: string; workdir?: string; directory?: string; workingDirectory?: string;
+};
 type PiGrepOptions = { path?: string; glob?: string; globPattern?: string; ignoreCase?: boolean; ic?: boolean; caseInsensitive?: boolean; literal?: boolean; context?: number; ctx?: number; limit?: number; max?: number };
 type PiFindOptions = { path?: string; limit?: number; max?: number };
 type PiLsOptions = { limit?: number; max?: number };
@@ -595,7 +603,7 @@ interface FabricActorInfo {
   logDir?: string;
 }
 interface FabricModelSwitchRequest {
-  /** provider/id, a models.aliases name, or a search term; resolution tries aliases first, then exact and single partial matches against authenticated models. */
+  /** provider/id, a models.aliases name, or a search term; resolution tries aliases first, then exact matches, then the closest fuzzy match (recency from pi-model-sort breaks ties) against authenticated models. */
   model: string;
   /** Optional provider filter applied before matching (e.g. "anthropic"). */
   provider?: string;
@@ -609,6 +617,8 @@ interface FabricModelSwitchResult {
   previous?: string;
   /** Set when the selector resolved through a configured models.aliases name. */
   alias?: string;
+  /** How the selector resolved: the alias name, or one of closest/recent/latest for inexact picks. Absent for exact provider/id or bare-id matches. */
+  via?: string;
   reason?: "already-active";
 }
 interface FabricActorMessage {

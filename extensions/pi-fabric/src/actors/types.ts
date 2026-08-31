@@ -35,6 +35,8 @@ export const FABRIC_ACTOR_PI_HOST_EVENTS = defineFabricActorPiHostEvents([
   "message_start",
   "message_update",
   "message_end",
+  "ui_prompt_start",
+  "ui_prompt_end",
   "context",
   "before_provider_headers",
   "before_provider_request",

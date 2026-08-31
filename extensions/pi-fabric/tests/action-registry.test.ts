@@ -52,6 +52,34 @@ const context: FabricInvocationContext = {
   update() {},
 };
 
+const actionProvider = (...names: string[]): FabricProvider => ({
+  name: "demo",
+  description: "Demo provider",
+  async list() {
+    return names.map((name) => ({
+      name,
+      description: `demo ${name}`,
+      inputSchema: { type: "object", properties: {} },
+      risk: "read" as const,
+    }));
+  },
+  async describe(name) {
+    return names.includes(name)
+      ? (await this.list({}, context)).find((descriptor) => descriptor.name === name)
+      : undefined;
+  },
+  async invoke(name) {
+    return name;
+  },
+});
+
+const invokeContext = (audits: FabricCallAudit[] = []) => ({
+  ...context,
+  approve: async () => {},
+  audits,
+  maxResultChars: 10_000,
+});
+
 describe("ActionRegistry", () => {
   it("lists, searches, describes, and invokes providers", async () => {
     const registry = new ActionRegistry();
@@ -98,6 +126,64 @@ describe("ActionRegistry", () => {
     );
     await expect(registry.describe("missing", context)).rejects.toThrow(
       "Unknown Fabric action: missing",
+    );
+  });
+
+  it("repairs a near-miss action to the sole semantic synonym", async () => {
+    const registry = new ActionRegistry();
+    registry.register(actionProvider("recall", "expand", "sessions"));
+    const audits: FabricCallAudit[] = [];
+    const result = await registry.invoke("demo.search", {}, invokeContext(audits));
+    expect(result).toBe("recall");
+    expect(audits[0]).toMatchObject({
+      ref: "demo.search",
+      tool: "recall",
+      provider: "demo",
+      repairedFrom: "search",
+      success: true,
+    });
+  });
+
+  it("repairs derived structural near-misses without a synonym table", async () => {
+    const registry = new ActionRegistry();
+    registry.register(actionProvider("checkGoal", "setSteeringMode", "echo", "sessions"));
+    expect(await registry.invoke("demo.check_goal", {}, invokeContext())).toBe("checkGoal");
+    expect(await registry.invoke("demo.setSteerMode", {}, invokeContext())).toBe(
+      "setSteeringMode",
+    );
+    expect(await registry.invoke("demo.ech", {}, invokeContext())).toBe("echo");
+    expect(await registry.invoke("demo.session", {}, invokeContext())).toBe("sessions");
+  });
+
+  it("leaves ambiguous synonyms unrepaired and names the candidates", async () => {
+    const registry = new ActionRegistry();
+    registry.register(actionProvider("ask", "tell"));
+    await expect(registry.invoke("demo.say", {}, invokeContext())).rejects.toThrow(
+      "Unknown Fabric action: demo.say (did you mean: demo.ask, demo.tell?)",
+    );
+    const meshLike = new ActionRegistry();
+    meshLike.register(actionProvider("get", "read"));
+    await expect(meshLike.invoke("demo.fetch", {}, invokeContext())).rejects.toThrow(
+      "(did you mean: demo.get, demo.read?)",
+    );
+  });
+
+  it("keeps the plain unknown-action error when nothing is close", async () => {
+    const registry = new ActionRegistry();
+    registry.register(actionProvider("echo"));
+    const error = await registry.invoke("demo.missing", {}, invokeContext()).then(
+      () => null,
+      (cause: Error) => cause,
+    );
+    expect(error?.message).not.toContain("did you mean");
+    expect(error?.message).toContain("Unknown Fabric action: demo.missing");
+  });
+
+  it("suggests close declared names for bare unknown actions", async () => {
+    const registry = new ActionRegistry();
+    registry.register(actionProvider("recall", "expand", "sessions"));
+    await expect(registry.describe("recal", context)).rejects.toThrow(
+      "Unknown Fabric action: recal (did you mean: recall?)",
     );
   });
 

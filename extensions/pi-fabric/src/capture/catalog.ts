@@ -62,6 +62,15 @@ export class CapturedToolCatalog {
     this.#emit();
   }
 
+  // Re-run the capture pass against the last observed runner. During /reload
+  // the hub listener fires while capture is still suspended, so the catalog
+  // replaces with enabled:false and ends up empty once session_start
+  // re-enables it (#73). This forces a fresh replace with the active policy
+  // without waiting for pi to call getAllRegisteredTools() again.
+  refresh(): void {
+    this.#runner?.getAllRegisteredTools();
+  }
+
   subscribe(listener: () => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
