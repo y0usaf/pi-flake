@@ -23,12 +23,6 @@
     dir = "pi-fabric";
     priority = 10;
   };
-  vercel-ai-gateway = {
-    stage = "active";
-    source = "inline";
-    dir = "pi-vercel-ai-gateway";
-    priority = 5;
-  };
   chronobreak = {
     stage = "active";
     source = "inline";
@@ -81,5 +75,10 @@
     source = "inline";
     dir = "pi-recap";
     priority = 70;
+  };
+  vercel-ai-gateway = {
+    stage = "retired";
+    source = "inline";
+    dir = "retired/pi-vercel-ai-gateway";
   };
 }
