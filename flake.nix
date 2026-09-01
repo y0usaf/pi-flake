@@ -213,33 +213,6 @@
       # from source with npm (pnpm-lock is not buildNpmPackage-compatible; the
       # generated package-lock.json is vendored below). The trailing pnpm-only
       # assert step is dropped — the build's own artifact checks suffice.
-      "pi-vercel-ai-gateway" = let
-        gatewayPkgJson = builtins.fromJSON (builtins.readFile ./extensions/pi-vercel-ai-gateway/package.json);
-      in pkgs.buildNpmPackage {
-        pname = "pi-vercel-ai-gateway";
-        version = gatewayPkgJson.version;
-        src = ./extensions/pi-vercel-ai-gateway;
-        dontBuild = true;
-        npmDepsFetcherVersion = 2;
-        npmDepsHash = "sha256-dBKsajkvGHljSRKREDJWv9zdDalprvBju1lXMl/Geqg=";
-
-        installPhase = ''
-          runHook preInstall
-          mkdir -p "$out"
-          cp package.json README.md LICENSE "$out"/
-          cp -r src node_modules "$out"/
-          runHook postInstall
-        '';
-
-        passthru.packageName = gatewayPkgJson.name;
-        meta = with lib; {
-          description = gatewayPkgJson.description;
-          homepage = "https://github.com/Kushalkhemka/pi-vercel-ai-gateway";
-          license = licenses.mit;
-          platforms = platforms.all;
-        };
-      };
-
       "pi-fabric" = let
         fabricPkgJson = builtins.fromJSON (builtins.readFile ./extensions/pi-fabric/package.json);
       in pkgs.buildNpmPackage {
@@ -628,7 +601,6 @@ EOF
         recap = self.packages.${system}."pi-recap";
         webfetch = self.packages.${system}."pi-webfetch";
         fabric = self.packages.${system}."pi-fabric";
-        vercel-ai-gateway = self.packages.${system}."pi-vercel-ai-gateway";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.

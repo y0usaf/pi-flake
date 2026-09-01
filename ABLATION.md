@@ -91,3 +91,25 @@ pi-build, telemetry-disabled); `pi-fff-override` removed with pi-fff.
 Verification: `nix build .#pi-full` and `nix flake check` pass
 ("all checks passed!").
 
+## Pass 3 — pi-vercel-ai-gateway
+
+Gateway extension retired; sources preserved under
+`extensions/retired/pi-vercel-ai-gateway/`. No replacement lands in-tree:
+nothing else builds or bundles it after this pass.
+
+## Declarations updated (pass 3)
+
+- `extensions/registry.nix`: `vercel-ai-gateway` moved below the active
+  block to `stage = "retired"` with `dir = "retired/pi-vercel-ai-gateway"`.
+- `flake.nix`: removed the `pi-vercel-ai-gateway` package def and its
+  `extensionPackagesFor` entry.
+
+## Exposed derivation set after pass 3 (x86_64-linux)
+
+pi, pi-chronobreak, pi-webfetch, pi-recap, pi-fabric, prime-agent, prime-bun,
+pi-full, default.
+
+Checks: 6 gates (unchanged from pass 2).
+
+Verification: `nix flake check` passes ("all checks passed!").
+
