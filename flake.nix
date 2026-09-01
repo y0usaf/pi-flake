@@ -263,6 +263,71 @@
         homepage = "https://github.com/L2ncE/pi-recap";
       };
 
+      # donsetch: prebuilt DonSeTch binary (dondai44423/donsetch v3.4.4, AGPL-3.0).
+      # Upstream ships an Ubuntu 22.04 glibc binary; interpreter and rpath are
+      # patched explicitly (autoPatchelfHook only sees NEEDED entries, and
+      # libonnxruntime.so is dlopened at runtime). The binary looks up
+      # libonnxruntime.so next to itself, so both live in $out/bin.
+      donsetch = pkgs.stdenvNoCC.mkDerivation {
+        pname = "donsetch";
+        version = "3.4.4";
+        src = pkgs.fetchurl {
+          url = "https://github.com/dondai44423/donsetch/releases/download/v3.4.4/donsetch-linux-x64.tar.gz";
+          hash = "sha256-0x4udaeRMyxMcnPxrPprucuVhbtvlQyR7WIa4E1zXTU=";
+        };
+        nativeBuildInputs = [pkgs.patchelf];
+        dontConfigure = true;
+        dontBuild = true;
+        dontUnpack = true;
+        installPhase = ''
+          runHook preInstall
+          mkdir -p $out/bin
+          tar -xzf $src -C $out/bin
+          install -m755 $out/bin/donsetch $out/bin/donsetch.tmp
+          mv $out/bin/donsetch.tmp $out/bin/donsetch
+          chmod 644 $out/bin/libonnxruntime.so
+          patchelf --set-interpreter ${pkgs.stdenv.cc.bintools.dynamicLinker} $out/bin/donsetch
+          patchelf --set-rpath $out/bin:${pkgs.stdenv.cc.cc.lib}/lib $out/bin/donsetch
+          runHook postInstall
+        '';
+        meta = with lib; {
+          description = "Web fetch, search, and crawl for AI agents. Zero API keys. Chrome-true TLS.";
+          homepage = "https://github.com/dondai44423/donsetch";
+          license = licenses.agpl3Only;
+          platforms = platforms.x86_64;
+          mainProgram = "donsetch";
+        };
+      };
+
+      # pi-donsetch: vendored pi extension (npm:donsetch 3.4.4, verbatim copy
+      # of package.json + pi-extension.ts). Pi's jiti aliases typebox and
+      # @earendil-works/pi-tui, so no node_modules are vendored. binaries/
+      # symlinks the patched binary so the session-start install.js network
+      # fallback never fires.
+      "pi-donsetch" = let
+        pkgJson = builtins.fromJSON (builtins.readFile ./extensions/pi-donsetch/package.json);
+      in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "pi-donsetch";
+          version = pkgJson.version;
+          src = lib.cleanSource ./extensions/pi-donsetch;
+          dontBuild = true;
+          installPhase = ''
+            runHook preInstall
+            mkdir -p $out/binaries
+            cp package.json pi-extension.ts README.md $out/
+            ln -s ${self.packages.${system}.donsetch}/bin/donsetch $out/binaries/donsetch
+            runHook postInstall
+          '';
+          passthru.packageName = pkgJson.name;
+          meta = with lib; {
+            description = pkgJson.description;
+            homepage = "https://github.com/dondai44423/donsetch";
+            license = licenses.agpl3Only;
+            platforms = platforms.x86_64;
+          };
+        };
+
       # pi with default extensions pre-bundled.
       # prime-agent runs the node bundle with a vendored runtime node_modules.
       # zeromq's NAPI addon needs real node (Bun lacks uv_async_init), so the
@@ -552,6 +617,18 @@ EOF
           runHook postInstall
         '';
       };
+    } // lib.optionalAttrs (system == "x86_64-linux") {
+      # donsetch: the patched binary runs and the extension package carries
+      # binaries/donsetch, so the session-start network fallback never fires.
+      donsetch-built = pkgs.runCommand "donsetch-built-check" {} ''
+        b=${self.packages.${system}."pi-donsetch"}/binaries/donsetch
+        re=${pkgs.binutils.bintools}/bin/readelf
+        # interpreter points at the nix glibc, rpath carries gcc's libstdc++
+        grep -q "${pkgs.stdenv.cc.bintools.dynamicLinker}" <($re -p .interp $b)
+        $re -d $b | grep -q "${pkgs.stdenv.cc.cc.lib}/lib"
+        test -x ${self.packages.${system}.donsetch}/bin/donsetch
+        touch $out
+      '';
     });
 
     apps = forAllSystems (system: {
@@ -601,6 +678,7 @@ EOF
         recap = self.packages.${system}."pi-recap";
         webfetch = self.packages.${system}."pi-webfetch";
         fabric = self.packages.${system}."pi-fabric";
+        donsetch = self.packages.${system}."pi-donsetch";
       };
 
     # Default bundle used by pi-full: lifecycle-active extensions only.
