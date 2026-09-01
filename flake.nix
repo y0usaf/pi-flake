@@ -285,7 +285,7 @@
         # Root "build" script chains tui -> ai -> agent -> coding-agent (node bundle).
         npmBuildScript = "build";
         npmDepsFetcherVersion = 2;
-        npmDepsHash = "sha256-1sLVGKQmMfOW2hUNlxf2d2fjdd5EcqFZdhc0y6Wk0X8=";
+        npmDepsHash = "sha256-dUk0oDFErmbAS94losw6xVy+jIC+zk8/L0w1haXH4a4=";
 
         nodejs = pkgs.nodejs_22;
         nativeBuildInputs = with pkgs; [bun pkg-config makeWrapper gcc gnumake python3Minimal];
