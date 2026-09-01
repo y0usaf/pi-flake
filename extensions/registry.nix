@@ -35,6 +35,12 @@
     dir = "pi-webfetch";
     priority = 90;
   };
+  donsetch = {
+    stage = "active";
+    source = "vendored";
+    dir = "pi-donsetch";
+    priority = 95;
+  };
   yourshell = {
     stage = "retired";
     source = "inline";
