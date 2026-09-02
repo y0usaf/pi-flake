@@ -20,7 +20,6 @@
       "!extensions/**/node_modules",
       // Vendored third-party source trees (upstream copies, see registry.nix);
       // their code follows upstream lint rules, not this repo's.
-      "!extensions/pi-fabric/**",
       "!extensions/pi-vercel-ai-gateway/**",
       "!extensions/pi-fff/**"
     ]
