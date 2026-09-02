@@ -201,12 +201,6 @@
       };
 
 
-      "pi-webfetch" = mkPiExtension {
-        pname = "pi-webfetch";
-        dir = ./extensions/pi-webfetch;
-        copy = ["README.md" "src" "vendor"];
-        homepage = "https://github.com/y0usaf/pi-flake";
-      };
 
       # pi-fabric: programmable tool and agent runtime (QuickJS, MCP, actors,
       # councils, workflows). Replaces the retired pi-agents extension. Built
@@ -677,7 +671,6 @@ EOF
       nixpkgs.lib.filterAttrs (name: _: (extensionRegistry.${name}.stage or "active") != "paused" && (extensionRegistry.${name}.stage or "active") != "retired") ({
         "chronobreak" = self.packages.${system}."pi-chronobreak";
         recap = self.packages.${system}."pi-recap";
-        webfetch = self.packages.${system}."pi-webfetch";
         fabric = self.packages.${system}.pi-fabric;
       } // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
         donsetch = self.packages.${system}."pi-donsetch";
