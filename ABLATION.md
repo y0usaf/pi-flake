@@ -91,20 +91,65 @@ pi-build, telemetry-disabled); `pi-fff-override` removed with pi-fff.
 Verification: `nix build .#pi-full` and `nix flake check` pass
 ("all checks passed!").
 
-## Pass 3 — pi-vercel-ai-gateway
+## Pass 3 — pi-vercel-ai-gateway (activated, not retired)
 
-Gateway extension retired; sources preserved under
-`extensions/retired/pi-vercel-ai-gateway/`. No replacement lands in-tree:
-nothing else builds or bundles it after this pass.
+An earlier draft of this section recorded the gateway extension as retired.
+That did not happen: the extension was **vendored and activated** instead.
+Sources live at `extensions/pi-vercel-ai-gateway/` (package.json + src/ +
+vendored package-lock.json), the package def was added to `flake.nix`, and
+`pi-vercel-ai-gateway` is present in `lib.extensionPackagesFor`.
 
-## Declarations updated (pass 3)
+Rationale for activation rather than retirement:
+
+| Aspect | Why active |
+|--------|-----------|
+| Runtime deps | Imports `@ai-sdk/gateway`, `ai` (with `zod` transitively) — none provided by pi or pi-ai, so it needs its own node_modules. |
+| Build | `buildNpmPackage` with `fetchNpmDeps` over the vendored lockfile; `dontNpmBuild` (TS source is loaded by pi's jiti, no build step needed). |
+| Consumers | Registered in `extensionPackagesFor`; bundled by `pi-full` via `defaultExtensionPackagesFor`. |
+| Verification | `nix build .#pi-vercel-ai-gateway` and `nix flake check` pass ("all checks passed!"). |
+
+## Declarations updated (pass 3, corrected)
+
+- `extensions/pi-vercel-ai-gateway/`: vendored verbatim from upstream
+  (Kushalkhemka/pi-vercel-ai-gateway) — package.json, src/ (index.ts,
+  catalog.ts, messages.ts, usage.ts), README.md, LICENSE, package-lock.json.
+- `flake.nix`: added the `pi-vercel-ai-gateway` package def (buildNpmPackage)
+  and its `lib.extensionPackagesFor` entry.
+
+## Exposed derivation set after pass 3 (x86_64-linux)
+
+pi, pi-chronobreak, pi-webfetch, pi-recap, pi-fabric, pi-vercel-ai-gateway,
+prime-agent, prime-bun, pi-full, default.
+
+Checks: 7 gates (biome-lint, kernel-python-wired,
+patch-avoid-network-model-regeneration, patch-default-package-sources-env,
+pi-build, telemetry-disabled, pi-vercel-ai-gateway-build).
+
+Verification: `nix build .#pi-vercel-ai-gateway` and `nix flake check` pass
+("all checks passed!").
+
+## Pass 3 — historical draft (SUPERSEDED)
+
+The draft below claimed `pi-vercel-ai-gateway` was retired in this pass
+(registry moved to `stage = "retired"`, package def removed). That never
+shipped: the extension was **activated** instead — vendored, built via
+`buildNpmPackage`, registered in `extensionPackagesFor`, and verified by
+`nix build .#pi-vercel-ai-gateway` + `nix flake check` ("all checks passed!").
+The corrected record is in "Pass 3 — pi-vercel-ai-gateway (activated, not
+retired)" above; the draft text is preserved verbatim for history only.
+
+<details><summary>Superseded draft (inactive — do not act on)</summary>
+
+
+
+## Declarations updated (pass 3 — superseded draft)
 
 - `extensions/registry.nix`: `vercel-ai-gateway` moved below the active
   block to `stage = "retired"` with `dir = "retired/pi-vercel-ai-gateway"`.
 - `flake.nix`: removed the `pi-vercel-ai-gateway` package def and its
   `extensionPackagesFor` entry.
 
-## Exposed derivation set after pass 3 (x86_64-linux)
+## Exposed derivation set after pass 3 (x86_64-linux) — superseded draft
 
 pi, pi-chronobreak, pi-webfetch, pi-recap, pi-fabric, prime-agent, prime-bun,
 pi-full, default.
@@ -113,3 +158,4 @@ Checks: 6 gates (unchanged from pass 2).
 
 Verification: `nix flake check` passes ("all checks passed!").
 
+</details>
