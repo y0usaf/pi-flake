@@ -83,8 +83,9 @@
     priority = 70;
   };
   vercel-ai-gateway = {
-    stage = "retired";
-    source = "inline";
-    dir = "retired/pi-vercel-ai-gateway";
+    stage = "active";
+    source = "vendored";
+    dir = "pi-vercel-ai-gateway";
+    priority = 55;
   };
 }
