@@ -159,3 +159,29 @@ Checks: 6 gates (unchanged from pass 2).
 Verification: `nix flake check` passes ("all checks passed!").
 
 </details>
+
+## Pass 4 — pi-fabric
+
+Fabric is retired from the default bundle; its source is preserved under
+`extensions/retired/pi-fabric/`. No active in-tree extension consumes Fabric.
+
+## Declarations updated (pass 4)
+
+- `extensions/registry.nix`: `fabric` moved to `stage = "retired"` with
+  `dir = "retired/pi-fabric"`.
+- `flake.nix`: removed the `pi-fabric` package, Fabric checks, and its
+  `extensionPackagesFor` entry; the generic nested-bundle check now uses
+  active `chronobreak`.
+- `biome.jsonc`: removed the obsolete active-source exclusion.
+- `nix/fabric-package-lock.json`: removed with its only consumer.
+
+## Exposed derivation set after pass 4 (x86_64-linux)
+
+pi, pi-chronobreak, pi-recap, pi-vercel-ai-gateway, prime-agent, prime-bun,
+pi-full, default, donsetch, pi-donsetch.
+
+Checks: 8 gates remain (pi-build, pi-nested-bundle, biome-lint,
+telemetry-disabled, kernel-python-wired, patch-avoid-network-model-regeneration,
+patch-default-package-sources-env, donsetch-built).
+
+Verification: `nix build .#pi-full --no-link` and `nix flake check` pass.
