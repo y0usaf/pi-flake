@@ -30,9 +30,9 @@
     priority = 40;
   };
   webfetch = {
-    stage = "active";
+    stage = "retired";
     source = "inline";
-    dir = "pi-webfetch";
+    dir = "retired/pi-webfetch";
     priority = 90;
   };
   donsetch = {
