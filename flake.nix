@@ -257,6 +257,48 @@
         homepage = "https://github.com/L2ncE/pi-recap";
       };
 
+      # pi-vercel-ai-gateway: Vercel AI Gateway provider (Kushalkhemka/pi-vercel-ai-gateway).
+      # Runtime imports @ai-sdk/gateway + ai; node_modules is installed from the
+      # vendored lockfile, so this one is buildNpmPackage, not mkPiExtension.
+      "pi-vercel-ai-gateway" = let
+        pkgJson = builtins.fromJSON (builtins.readFile ./extensions/pi-vercel-ai-gateway/package.json);
+      in pkgs.buildNpmPackage {
+        pname = "pi-vercel-ai-gateway";
+        version = pkgJson.version;
+        src = ./extensions/pi-vercel-ai-gateway;
+
+        postPatch = ''
+          cp ${./extensions/pi-vercel-ai-gateway/package-lock.json} package-lock.json
+        '';
+
+        dontNpmBuild = true;
+        npmDepsFetcherVersion = 2;
+        npmDepsHash = "sha256-dBKsajkvGHljSRKREDJWv9zdDalprvBju1lXMl/Geqg=";
+
+        nodejs = pkgs.nodejs_22;
+        installPhase = ''
+          runHook preInstall
+          # The npmConfigHook materializes node_modules from the fetched deps;
+          # prune --omit=dev must keep runtime deps (all three are in
+          # "dependencies"), verified here before anything is copied.
+          npm prune --omit=dev
+          test -d node_modules/@ai-sdk/gateway
+          test -d node_modules/ai
+          test -d node_modules/zod
+          mkdir -p $out
+          cp -R src package.json README.md LICENSE node_modules $out/
+          runHook postInstall
+        '';
+
+        passthru.packageName = pkgJson.name;
+
+        meta = with lib; {
+          description = pkgJson.description;
+          homepage = "https://github.com/Kushalkhemka/pi-vercel-ai-gateway";
+          license = licenses.mit;
+          platforms = platforms.all;
+        };
+      };
 
       # pi with default extensions pre-bundled.
       # prime-agent runs the node bundle with a vendored runtime node_modules.
@@ -635,6 +677,7 @@ EOF
 
     devShells = forAllSystems (system: let
       pkgs = pkgsFor.${system};
+      lib = pkgs.lib;
 
       canvasNativeDeps = with pkgs; [
         cairo
@@ -672,6 +715,7 @@ EOF
         "chronobreak" = self.packages.${system}."pi-chronobreak";
         recap = self.packages.${system}."pi-recap";
         fabric = self.packages.${system}.pi-fabric;
+        vercel-ai-gateway = self.packages.${system}."pi-vercel-ai-gateway";
       } // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
         donsetch = self.packages.${system}."pi-donsetch";
       });
