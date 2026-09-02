@@ -325,7 +325,11 @@ export default function register(pi: ExtensionAPI): void {
   pi.registerProvider(PROVIDER_ID, {
     name: "Vercel AI Gateway",
     baseUrl: GATEWAY_BASE_URL,
-    apiKey: "$AI_GATEWAY_API_KEY",
+    // Resolve at registration: omp (oh-my-pi) passes extension apiKey values
+    // through verbatim, so "$VAR" reaches the gateway as a literal token and 401s.
+    // pi expands "$VAR" via its configured env; fall back to it when process.env
+    // has no key (e.g. key stored in pi credentials instead of the environment).
+    apiKey: process.env.AI_GATEWAY_API_KEY || "$AI_GATEWAY_API_KEY",
     api: GATEWAY_API,
     models: [FALLBACK_MODEL],
     async refreshModels(context) {
