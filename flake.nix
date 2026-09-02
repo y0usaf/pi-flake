@@ -200,55 +200,6 @@
         homepage = "https://github.com/y0usaf/pi-flake";
       };
 
-
-
-      # pi-fabric: programmable tool and agent runtime (QuickJS, MCP, actors,
-      # councils, workflows). Replaces the retired pi-agents extension. Built
-      # from source with npm (pnpm-lock is not buildNpmPackage-compatible; the
-      # generated package-lock.json is vendored below). The trailing pnpm-only
-      # assert step is dropped — the build's own artifact checks suffice.
-      "pi-fabric" = let
-        fabricPkgJson = builtins.fromJSON (builtins.readFile ./extensions/pi-fabric/package.json);
-      in pkgs.buildNpmPackage {
-        pname = "pi-fabric";
-        version = fabricPkgJson.version;
-        src = ./extensions/pi-fabric;
-
-        # Vendor an npm lockfile (upstream ships pnpm-lock.yaml) and drop the
-        # trailing pnpm-only assert step from the build script.
-        # Pi's jiti loader cannot resolve Shiki's package-internal lazy imports,
-        # so preload the grammar modules from Fabric's own graph.
-        postPatch = ''
-          cp ${./nix/fabric-package-lock.json} package-lock.json
-          sed -i 's/ && pnpm run assert:build-artifacts//' package.json
-        '';
-
-        npmBuildScript = "build";
-        npmDepsFetcherVersion = 2;
-        npmDepsHash = "sha256-dZaH8U8FuuCKUUnbbdD10fYR2bCip7VfGJyTaECHHn8=";
-
-        nodejs = pkgs.nodejs_24;
-
-        installPhase = ''
-          runHook preInstall
-          chmod +w package-lock.json
-          npm prune --omit=dev
-          mkdir -p $out
-          cp -R dist skills docs package.json README.md LICENSE THIRD_PARTY_NOTICES.md $out/ 2>/dev/null || true
-          cp -R node_modules $out/
-          runHook postInstall
-        '';
-
-        passthru.packageName = fabricPkgJson.name;
-
-        meta = with lib; {
-          description = fabricPkgJson.description;
-          homepage = "https://github.com/monotykamary/pi-fabric";
-          license = licenses.mit;
-          platforms = platforms.all;
-        };
-      };
-
       # pi-recap: Claude Code-style session recap above the status bar (L2ncE/pi-recap)
       "pi-recap" = mkPiExtension {
         pname = "pi-recap";
@@ -515,57 +466,13 @@ EOF
     in {
       pi-build = self.packages.${system}.pi;
 
-      # pi-fabric: assert the built dist registers the fabric_exec tool and
-      # carries its runtime node_modules (quickjs, shiki, etc.).
-      fabric-built = pkgs.runCommand "pi-fabric-built-check" {} ''
-        grep -q 'fabric_exec' ${self.packages.${system}."pi-fabric"}/dist/index.js
-        test -d ${self.packages.${system}."pi-fabric"}/node_modules/quickjs-emscripten-core
-        test -d ${self.packages.${system}."pi-fabric"}/node_modules/shiki
-        test -d ${self.packages.${system}."pi-fabric"}/node_modules/@shikijs/langs
-        grep -R -q 'PRELOADED_LANGUAGES' ${self.packages.${system}."pi-fabric"}/dist/chunks
-        touch $out
-      '';
-
-      # Exercise the lazy Shiki import through Pi's jiti extension loader.
-      fabric-shiki-host = pkgs.runCommand "pi-fabric-shiki-host-check" {} ''
-        set -euo pipefail
-        smoke="$TMPDIR/fabric-shiki-smoke"
-        mkdir -p "$smoke"
-        chunk=$(grep -R -l 'var PRELOADED_LANGUAGES' ${self.packages.${system}."pi-fabric"}/dist/chunks | head -1)
-        cat > "$smoke/package.json" <<'JSON'
-{"name":"fabric-shiki-smoke","version":"0.0.0","type":"module","pi":{"extensions":["./index.mjs"]}}
-JSON
-        cat > "$smoke/index.mjs" <<EOF
-import { configureHighlighting, highlightCode } from "$chunk";
-export default function smoke(pi) {
-  pi.on("session_start", async () => {
-    configureHighlighting("github-dark");
-    highlightCode("echo hi", "bash", () => {});
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-    if (!highlightCode("echo hi", "bash", () => {})) {
-      throw new Error("Shiki returned no highlighted output");
-    }
-    console.error("FABRIC_SHIKI_HOST_SMOKE_OK");
-  });
-}
-EOF
-        output="$TMPDIR/fabric-shiki-output"
-        printf '{"id":"state","type":"get_state"}\n' |
-          PI_DEFAULT_PACKAGES="$smoke" \
-          ${pkgs.coreutils}/bin/timeout 30s ${self.packages.${system}.pi-full}/bin/pi \
-            --no-session --offline --mode rpc >"$output" 2>&1
-        grep -q 'FABRIC_SHIKI_HOST_SMOKE_OK' "$output"
-        ! grep -q 'Cannot find module.*@shikijs/langs' "$output"
-        touch "$out"
-      '';
-
       # A nested or sibling pi wrapper can inherit an older bundle through
       # PI_DEFAULT_PACKAGES. Its duplicate extension names must not collide.
       pi-nested-bundle = pkgs.runCommand "pi-nested-bundle-check" {} ''
         set -euo pipefail
-        parent="$TMPDIR/parent/share/pi/extensions/fabric"
+        parent="$TMPDIR/parent/share/pi/extensions/chronobreak"
         mkdir -p "$parent"
-        cp -R ${self.packages.${system}.pi-full}/share/pi/extensions/fabric/. "$parent/"
+        cp -R ${self.packages.${system}.pi-full}/share/pi/extensions/chronobreak/. "$parent/"
         output="$TMPDIR/rpc-output"
         printf '{"id":"state","type":"get_state"}\n' |
           PI_DEFAULT_PACKAGES="$parent" \
@@ -575,7 +482,6 @@ EOF
         grep -q '"command":"get_state"' "$output"
         touch "$out"
       '';
-
 
       biome-lint = pkgs.stdenvNoCC.mkDerivation {
         pname = "pi-flake-biome-lint";
@@ -714,7 +620,6 @@ EOF
       nixpkgs.lib.filterAttrs (name: _: (extensionRegistry.${name}.stage or "active") != "paused" && (extensionRegistry.${name}.stage or "active") != "retired") ({
         "chronobreak" = self.packages.${system}."pi-chronobreak";
         recap = self.packages.${system}."pi-recap";
-        fabric = self.packages.${system}.pi-fabric;
         vercel-ai-gateway = self.packages.${system}."pi-vercel-ai-gateway";
       } // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
         donsetch = self.packages.${system}."pi-donsetch";

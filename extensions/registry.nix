@@ -18,10 +18,9 @@
     dir = "retired/pi-aliases";
   };
   fabric = {
-    stage = "active";
+    stage = "retired";
     source = "inline";
-    dir = "pi-fabric";
-    priority = 10;
+    dir = "retired/pi-fabric";
   };
   chronobreak = {
     stage = "active";
