@@ -22,7 +22,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { createWriteStream, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Text } from "@earendil-works/pi-tui";
 
@@ -30,6 +31,10 @@ import { Text } from "@earendil-works/pi-tui";
 const INIT_TIMEOUT_MS = 10_000;
 const CALL_TIMEOUT_MS = 120_000;
 const SHUTDOWN_GRACE_MS = 2_000;
+
+// Child stderr goes to a log file, never the terminal: raw writes
+// under an active TUI corrupt the frame.
+const serverLog = createWriteStream(join(tmpdir(), "donsetch-mcp.log"), { flags: "a" });
 
 // ── TUI rendering note ──
 // Pi's TUI wraps tool calls in its own green (success) / red (failure)
@@ -159,7 +164,7 @@ function startServer(): Promise<void> {
     });
 
     proc.stderr?.on("data", (chunk: Buffer) => {
-      process.stderr.write(chunk);
+      serverLog.write(chunk);
     });
 
     proc.on("error", (err) => {
@@ -398,11 +403,11 @@ function getFetchStatus(sc: any): string {
 // ── Extension ──
 
 export default function (pi: ExtensionAPI) {
-  pi.on("session_start", async () => {
+  pi.on("session_start", async (_event, ctx) => {
     try {
       await startServer();
     } catch (err: any) {
-      process.stderr.write(`[donsetch] failed to start MCP server: ${err.message}\n`);
+      ctx.ui.notify(`donsetch: failed to start MCP server: ${err.message}`, "error");
       return;
     }
 
@@ -410,13 +415,13 @@ export default function (pi: ExtensionAPI) {
     try {
       toolsResult = await sendRequest("tools/list", {});
     } catch (err: any) {
-      process.stderr.write(`[donsetch] failed to list tools: ${err.message}\n`);
+      ctx.ui.notify(`donsetch: failed to list tools: ${err.message}`, "error");
       return;
     }
 
     const mcpTools: any[] = toolsResult?.tools ?? [];
     if (mcpTools.length === 0) {
-      process.stderr.write("[donsetch] no tools discovered from MCP server\n");
+      ctx.ui.notify("donsetch: no tools discovered from MCP server", "error");
       return;
     }
 
@@ -578,7 +583,7 @@ export default function (pi: ExtensionAPI) {
       });
     }
 
-    process.stderr.write(`[donsetch] ${mcpTools.length} tools registered: ${toolNames.join(", ")}\n`);
+    ctx.ui.setStatus("donsetch", `${mcpTools.length} tools: ${toolNames.join(", ")}`);
   });
 
   pi.on("session_shutdown", () => {
