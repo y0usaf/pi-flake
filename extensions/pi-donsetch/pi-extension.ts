@@ -583,7 +583,7 @@ export default function (pi: ExtensionAPI) {
       });
     }
 
-    ctx.ui.setStatus("donsetch", `${mcpTools.length} tools: ${toolNames.join(", ")}`);
+
   });
 
   pi.on("session_shutdown", () => {
