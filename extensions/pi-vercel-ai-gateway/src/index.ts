@@ -7,17 +7,83 @@ import {
   type AssistantMessageEventStream,
   type Context,
   type Model,
+  type RefreshModelsContext,
   type SimpleStreamOptions,
   type StopReason,
   type ToolCall,
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { jsonSchema, streamText, tool } from "ai";
-import { cachedExplicitModels, discoverExplicitModels, splitExplicitModelId, usableCachedModels } from "./catalog.js";
+import {
+  cachedExplicitModels,
+  discoverExplicitModels,
+  splitExplicitModelId,
+  type CatalogCache,
+  usableCachedModels,
+} from "./catalog.js";
 import { toModelMessages } from "./messages.js";
 import { applyActualGatewayCost, applyTokenUsage } from "./usage.js";
 
 const PROVIDER_ID = "vercel-ai-gateway";
+const GATEWAY_API = "vercel-ai-gateway-native";
+const GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1/ai";
+
+const FALLBACK_MODEL = {
+  id: "deepseek/deepseek-v4-flash-0731@runware",
+  name: "DeepSeek V4 Flash 0731 via runware",
+  reasoning: true,
+  input: ["text" as const],
+  cost: { input: 0.08, output: 0.15, cacheRead: 0.01, cacheWrite: 0 },
+  contextWindow: 1_000_000,
+  maxTokens: 384_000,
+};
+
+type DiscoveredModel = Awaited<ReturnType<typeof discoverExplicitModels>>[number];
+
+type CurrentRefreshContext = {
+  stored?: CatalogCache;
+  publish(publication: {
+    persist?: { models: readonly Model<Api>[]; checkedAt?: number; lastModified?: number } | null;
+  }): Promise<boolean>;
+};
+
+type RefreshControls = Pick<RefreshModelsContext, "allowNetwork" | "force" | "signal">;
+
+function isCurrentRefreshContext(
+  context: RefreshModelsContext,
+): context is RefreshModelsContext & CurrentRefreshContext {
+  return "publish" in context && typeof context.publish === "function";
+}
+
+function toStoredModels(models: readonly DiscoveredModel[]): Model<Api>[] {
+  return models.map((model) => ({
+    ...model,
+    api: GATEWAY_API,
+    baseUrl: GATEWAY_BASE_URL,
+    provider: PROVIDER_ID,
+  }));
+}
+
+async function refreshCatalog(
+  context: RefreshControls,
+  stored: CatalogCache | undefined,
+  persist: (models: readonly DiscoveredModel[], checkedAt: number) => Promise<void>,
+): Promise<DiscoveredModel[]> {
+  const storedModels = cachedExplicitModels(stored);
+  if (!context.allowNetwork) return storedModels ? [...storedModels] : [FALLBACK_MODEL];
+
+  const cached = !context.force ? usableCachedModels(stored) : undefined;
+  if (cached) return [...cached];
+
+  try {
+    const models = await discoverExplicitModels({ signal: context.signal });
+    await persist(models, Date.now());
+    return models;
+  } catch (error) {
+    if (storedModels) return [...storedModels];
+    throw error;
+  }
+}
 
 function piStopReason(reason: string | undefined, hasToolCalls: boolean): StopReason {
   if (hasToolCalls || reason === "tool-calls") return "toolUse";
@@ -255,38 +321,27 @@ function streamNativeGateway(
 export default function register(pi: ExtensionAPI): void {
   pi.registerProvider(PROVIDER_ID, {
     name: "Vercel AI Gateway",
-    baseUrl: "https://ai-gateway.vercel.sh/v1/ai",
+    baseUrl: GATEWAY_BASE_URL,
     apiKey: "$AI_GATEWAY_API_KEY",
-    api: "vercel-ai-gateway-native",
-    models: [
-      {
-        id: "deepseek/deepseek-v4-flash-0731@runware",
-        name: "DeepSeek V4 Flash 0731 via runware",
-        reasoning: true,
-        input: ["text"],
-        cost: { input: 0.08, output: 0.15, cacheRead: 0.01, cacheWrite: 0 },
-        contextWindow: 1_000_000,
-        maxTokens: 384_000,
-      },
-    ],
+    api: GATEWAY_API,
+    models: [FALLBACK_MODEL],
     async refreshModels(context) {
-      const cached = usableCachedModels(await context.store.read());
-      if (cached) return [...cached];
-
-      try {
-        const models = await discoverExplicitModels({ signal: context.signal });
-        await context.store.write({
-          models: models as never,
-          checkedAt: Date.now(),
-          lastModified: Date.now(),
+      if (isCurrentRefreshContext(context)) {
+        return refreshCatalog(context, context.stored, async (models, checkedAt) => {
+          await context.publish({
+            persist: { models: toStoredModels(models), checkedAt, lastModified: checkedAt },
+          });
         });
-        return models;
-      } catch (error) {
-        const stale = await context.store.read();
-        const staleModels = cachedExplicitModels(stale);
-        if (staleModels) return [...staleModels];
-        throw error;
       }
+
+      const stored = await context.store.read();
+      return refreshCatalog(context, stored, async (models, checkedAt) => {
+        await context.store.write({
+          models: toStoredModels(models),
+          checkedAt,
+          lastModified: checkedAt,
+        });
+      });
     },
     streamSimple: streamNativeGateway,
   });
