@@ -191,6 +191,9 @@ function streamNativeGateway(
         tools: Object.keys(tools).length > 0 ? tools : undefined,
         maxOutputTokens: Math.min(options.maxTokens ?? model.maxTokens, model.maxTokens),
         abortSignal: options.signal,
+        // fullStream already carries error parts; streamText's default onError
+        // console.errors them, dumping raw AI SDK stacks into the pi UI.
+        onError: () => {},
         providerOptions: {
           gateway: {
             only: [provider],
