@@ -5,7 +5,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     piSrc = {
-      url = "github:earendil-works/pi/42f7f29ad1cf15d6ec7eb5f41749b2e6ab291eb2";
+      url = "github:earendil-works/pi/6160683a4a8012f0d1cd30c145df18b4ca6f5176";
       flake = false;
     };
 
@@ -191,12 +191,17 @@
 
           # Regenerate after dependency changes:
           #   nix build .#pi 2>&1 | grep 'got:' | awk '{print $2}'
-          npmDepsHash = "sha256-HbyVuaW0XqqgwCszmBcdlsbBrCJxUA1/DvLmIhTgqSE=";
+          npmDepsHash = "sha256-FWl0YimzsnNgv0edeyy7WRtSSWCfr+WirdUbDtjwY68=";
 
           nodejs = pkgs.nodejs_22;
 
           nativeBuildInputs = with pkgs; [bun pkg-config makeWrapper];
           buildInputs = canvasNativeDeps ++ (with pkgs; [zeromq]);
+
+          # Upstream's root build includes chord; build:binary omits it.
+          preBuild = ''
+            npm --prefix packages/chord run build
+          '';
 
           installPhase = ''
             runHook preInstall
@@ -304,7 +309,7 @@
           # Root "build" script chains tui -> ai -> agent -> coding-agent (node bundle).
           npmBuildScript = "build";
           npmDepsFetcherVersion = 2;
-          npmDepsHash = "sha256-dUk0oDFErmbAS94losw6xVy+jIC+zk8/L0w1haXH4a4=";
+          npmDepsHash = "sha256-5YZSNv14K9a/fUuvE+Cv9cQzZzrx3Ea5n9cGrYGgwyI=";
 
           nodejs = pkgs.nodejs_22;
           nativeBuildInputs = with pkgs; [bun pkg-config makeWrapper gcc gnumake python3Minimal];

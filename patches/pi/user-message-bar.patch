@@ -39,10 +39,10 @@ diff -urN /tmp/pi-pristine-1785597426/packages/coding-agent/src/modes/interactiv
  				"bashMode": {
  					"$ref": "#/$defs/colorValue",
  					"description": "Editor border color in bash mode"
-diff -urN /tmp/pi-pristine-1785597426/packages/coding-agent/src/modes/interactive/theme/theme.ts /tmp/pi-mod-1785597426/packages/coding-agent/src/modes/interactive/theme/theme.ts
---- a/packages/coding-agent/src/modes/interactive/theme/theme.ts	2026-08-01 11:17:06.831573936 -0400
-+++ b/packages/coding-agent/src/modes/interactive/theme/theme.ts	2026-08-01 11:17:06.862550393 -0400
-@@ -90,6 +90,7 @@
+diff --git a/packages/coding-agent/src/modes/interactive/theme/theme-json.ts b/packages/coding-agent/src/modes/interactive/theme/theme-json.ts
+--- a/packages/coding-agent/src/modes/interactive/theme/theme-json.ts
++++ b/packages/coding-agent/src/modes/interactive/theme/theme-json.ts
+@@ -82,6 +82,7 @@
  		thinkingHigh: ColorValueSchema,
  		thinkingXhigh: ColorValueSchema,
  		thinkingMax: Type.Optional(ColorValueSchema),
@@ -50,7 +50,10 @@ diff -urN /tmp/pi-pristine-1785597426/packages/coding-agent/src/modes/interactiv
  		// Bash Mode (1 color)
  		bashMode: ColorValueSchema,
  	}),
-@@ -152,6 +153,7 @@
+diff --git a/packages/coding-agent/src/modes/interactive/theme/theme.ts b/packages/coding-agent/src/modes/interactive/theme/theme.ts
+--- a/packages/coding-agent/src/modes/interactive/theme/theme.ts
++++ b/packages/coding-agent/src/modes/interactive/theme/theme.ts
+@@ -87,6 +87,7 @@
  	| "thinkingHigh"
  	| "thinkingXhigh"
  	| "thinkingMax"
@@ -58,7 +61,16 @@ diff -urN /tmp/pi-pristine-1785597426/packages/coding-agent/src/modes/interactiv
  	| "bashMode";
  
  export type ThemeBg =
-@@ -388,6 +390,10 @@
+@@ -98,7 +99,7 @@
+ 	| "toolSuccessBg"
+ 	| "toolErrorBg";
+ 
+-type OptionalThemeColor = "scrollbarTrack" | "scrollbarThumb" | "thinkingMax" | "searchMatchText";
++type OptionalThemeColor = "scrollbarTrack" | "scrollbarThumb" | "thinkingMax" | "searchMatchText" | "userMessageBar";
+ type OptionalThemeBg = "searchMatchBg";
+ 
+ type ColorMode = "truecolor" | "256color";
+@@ -352,6 +353,10 @@
  		return chalk.strikethrough(text);
  	}
  
