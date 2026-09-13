@@ -221,11 +221,11 @@
     "primeBunSrc": {
       "flake": false,
       "locked": {
-        "lastModified": 1786415380,
-        "narHash": "sha256-FhtGYxtbWEvpqx4gMMSVpoCcScXlVD7waliS2PGxTkY=",
+        "lastModified": 1789009556,
+        "narHash": "sha256-WvVlxr6RgxKW3avkzEmii1nsKZSV4tVM1IPl1a1fZwQ=",
         "owner": "sng-asyncfunc",
         "repo": "prime-bun",
-        "rev": "25e980048030954a76f2070511c5882182b9063f",
+        "rev": "f1f360de81bf9d30c2bb539d0b6df1f779691817",
         "type": "github"
       },
       "original": {
