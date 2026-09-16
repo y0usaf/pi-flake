@@ -243,8 +243,9 @@
           homepage = "https://github.com/y0usaf/pi-flake";
         };
 
-        # pi-jev: TypeSafe Jev gate + jev_ask tool. Self-contained: carries its
-        # own client, config, and gate logic, with no runtime dependencies.
+        # pi-jev: TypeSafe Jev gate + output judge + jev_ask tool. Self-contained:
+        # carries its own client, config, and question logic, with no runtime
+        # dependencies.
         "pi-jev" = mkPiExtension {
           pname = "pi-jev";
           dir = ./extensions/pi-jev;

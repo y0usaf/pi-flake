@@ -149,7 +149,7 @@ Active extensions (shipped in `pi-full`):
 | `pi-gecko-websearch` | Web search and browsing via headless Gecko browser (Marionette) |
 | `pi-sentinel` | Detects abrupt run endings via a sparse context-free judge, continues the run when the stop was a cutoff |
 | `pi-recap` | Claude Code-style session recap: one-line recap above the status bar |
-| `pi-jev` | TypeSafe Jev decision layer: judges `bash`/`write`/`edit` before they run (shadow by default) and exposes `jev_ask` for typed calibrated answers |
+| `pi-jev` | TypeSafe Jev decision layer: judges `bash`/`write`/`edit` before they run (shadow by default), reads `bash` output for secrets and failure class after, and exposes `jev_ask` for typed calibrated answers |
 | `pi-yourshell` | Runs the bash tool through your own `$SHELL` instead of pi's hardcoded bash |
 
 ## Extension Lifecycle
