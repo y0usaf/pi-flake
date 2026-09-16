@@ -1,0 +1,24 @@
+{
+  "name": "pi-fusion",
+  "version": "0.1.0",
+  "description": "Devin Fusion-style lead/sidekick orchestration as a Pi model and tool",
+  "homepage": "https://github.com/y0usaf/pi-flake",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/y0usaf/pi-flake.git",
+    "directory": "extensions/pi-fusion"
+  },
+  "keywords": ["pi-package", "pi-extension", "fusion", "multi-agent"],
+  "license": "MIT",
+  "files": ["index.ts", "README.md"],
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  }
+}
