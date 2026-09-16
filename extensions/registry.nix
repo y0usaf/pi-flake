@@ -60,6 +60,12 @@
     source = "inline";
     dir = "retired/pi-sentinel";
   };
+  jev = {
+    stage = "active";
+    source = "inline";
+    dir = "pi-jev";
+    priority = 50;
+  };
   heartbeat = {
     stage = "retired";
     source = "inline";

@@ -1,0 +1,32 @@
+{
+  "name": "@y0usaf/pi-jev",
+  "version": "0.1.0",
+  "description": "TypeSafe Jev as a decision layer for Pi: judges mutating tool calls before they run, and exposes jev_ask for typed calibrated answers instead of prose",
+  "homepage": "https://github.com/y0usaf/pi-flake",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/y0usaf/pi-flake.git",
+    "directory": "extensions/pi-jev"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "typesafe",
+    "jev",
+    "guardrails",
+    "classification"
+  ],
+  "license": "MIT",
+  "files": ["src", "README.md"],
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
