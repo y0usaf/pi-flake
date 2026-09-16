@@ -1,0 +1,28 @@
+{
+  "name": "pi-sentinel",
+  "version": "0.1.0",
+  "description": "Transcript drift auditor for Pi: scores recent turns with TypeSafe Jev and reports where the agent left the user's request",
+  "homepage": "https://github.com/y0usaf/pi-flake",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/y0usaf/pi-flake.git",
+    "directory": "extensions/pi-sentinel"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "typesafe",
+    "jev",
+    "drift",
+    "observability",
+    "audit"
+  ],
+  "license": "MIT",
+  "files": ["src", "README.md"],
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

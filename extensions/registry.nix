@@ -66,6 +66,14 @@
     source = "inline";
     dir = "retired/pi-sentinel";
   };
+  # Transcript drift auditor: the diagnostic half of the Jev pair, dropped in
+  # favour of the pi-jev gate alone. Retired before it ever shipped; the source
+  # is kept for history and can be reanimated by moving it back to extensions/.
+  sentinel-audit = {
+    stage = "retired";
+    source = "inline";
+    dir = "retired/pi-sentinel-audit";
+  };
   jev = {
     stage = "active";
     source = "inline";
