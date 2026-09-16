@@ -40,6 +40,12 @@
     dir = "pi-donsetch";
     priority = 95;
   };
+  fusion = {
+    stage = "testing";
+    source = "inline";
+    dir = "pi-fusion";
+    priority = 80;
+  };
   yourshell = {
     stage = "retired";
     source = "inline";

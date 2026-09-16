@@ -236,6 +236,13 @@
           homepage = "https://github.com/y0usaf/pi-flake";
         };
 
+        "pi-fusion" = mkPiExtension {
+          pname = "pi-fusion";
+          dir = ./extensions/pi-fusion;
+          copy = ["README.md" "index.ts"];
+          homepage = "https://github.com/y0usaf/pi-flake";
+        };
+
         # pi-jev: TypeSafe Jev gate + jev_ask tool. Self-contained: carries its
         # own client, config, and gate logic, with no runtime dependencies.
         "pi-jev" = mkPiExtension {
@@ -681,6 +688,7 @@
     lib.extensionPackagesFor = system:
       nixpkgs.lib.filterAttrs (name: _: (extensionRegistry.${name}.stage or "active") != "paused" && (extensionRegistry.${name}.stage or "active") != "retired") ({
           "chronobreak" = self.packages.${system}."pi-chronobreak";
+          fusion = self.packages.${system}."pi-fusion";
           jev = self.packages.${system}."pi-jev";
           recap = self.packages.${system}."pi-recap";
           vercel-ai-gateway = self.packages.${system}."pi-vercel-ai-gateway";
