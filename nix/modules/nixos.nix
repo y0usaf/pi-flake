@@ -16,20 +16,21 @@ self: {
   testingEnabled =
     lib.filter (name: (extensionRegistry.${name}.stage or "active") == "testing")
     (builtins.attrNames enabledFlagExtensions);
+  hasExtensionFlags = lib.any (enabled: enabled) (builtins.attrValues cfg.extensions);
   selectedExtensions =
     (
       if cfg.full
       then self.lib.defaultExtensionPackagesFor system
-      else enabledFlagExtensions
+      else {}
     )
+    // enabledFlagExtensions
     // cfg.extraExtensions;
 
   hasSelectedExtensions = selectedExtensions != {};
-  hasExtensionFlags = lib.any (enabled: enabled) (builtins.attrValues cfg.extensions);
   usesGeneratedPackage = cfg.package == null;
 
   generatedPackage =
-    if cfg.full && cfg.extraExtensions == {}
+    if cfg.full && cfg.extraExtensions == {} && !hasExtensionFlags
     then self.packages.${system}.pi-full
     else if hasSelectedExtensions
     then
