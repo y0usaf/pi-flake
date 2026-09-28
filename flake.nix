@@ -5,7 +5,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     piSrc = {
-      url = "github:earendil-works/pi/6160683a4a8012f0d1cd30c145df18b4ca6f5176";
+      url = "github:earendil-works/pi/c1449660c83fd00a7c71d5f7e1bd29fafd400550";
       flake = false;
     };
 
@@ -14,6 +14,11 @@
       type = "git";
       url = "https://github.com/PrimeIntellect-ai/prime-agent";
       ref = "main";
+      flake = false;
+    };
+
+    primeAgentCatalogSrc = {
+      url = "github:PrimeIntellect-ai/prime-agent-catalog";
       flake = false;
     };
 
@@ -34,6 +39,7 @@
     nixpkgs,
     piSrc,
     primeAgentSrc,
+    primeAgentCatalogSrc,
     primeBunSrc,
     oh-my-pi,
   }: let
@@ -54,8 +60,6 @@
       ./patches/pi/user-message-bar.patch
       ./patches/pi/tui-overlay-invalidate-guard.patch
     ];
-    # Prime-agent has models.generated.ts committed, so model regeneration
-    # (requires network) is skipped inline in postPatch.
   in {
     packages = forAllSystems (system: let
       pkgs = pkgsFor.${system};
@@ -124,8 +128,6 @@
       # or prime-agent disables them.
       skillDeps = {
         attach-image = [py.pillow prime-agent-runtime];
-        linear = [py.mcp py.httpx prime-agent-runtime];
-        notion = [py.mcp py.httpx prime-agent-runtime];
         websearch = [py.httpx prime-agent-runtime];
       };
       skillDir = primeAgentSrc + "/packages/coding-agent/skills";
@@ -136,7 +138,7 @@
       mkSkill = name:
         py.buildPythonPackage {
           pname =
-            if builtins.elem name ["attach-image" "linear" "notion" "websearch"]
+            if builtins.elem name ["attach-image" "websearch"]
             then resolveName name
             else name;
           version = "0.1.0";
@@ -191,7 +193,7 @@
 
           # Regenerate after dependency changes:
           #   nix build .#pi 2>&1 | grep 'got:' | awk '{print $2}'
-          npmDepsHash = "sha256-FWl0YimzsnNgv0edeyy7WRtSSWCfr+WirdUbDtjwY68=";
+          npmDepsHash = "sha256-k3ApQTjVUqELCxa89I7i9HQAXqpb8wCLqJp7eSaHsyc=";
 
           nodejs = pkgs.nodejs_22;
 
@@ -314,28 +316,25 @@
           version = primeAgentPackageJson.version;
           src = primeAgentSrc;
 
-          # Skip model regeneration: models.generated.ts is committed upstream.
-          # Also vendor a lockfile with resolved+integrity URLs: upstream commits
-          # one that omits them for 243 registry deps, which fetchNpmDeps needs.
+          # Vendor a lockfile with resolved+integrity URLs: upstream commits one
+          # that omits them for registry deps, which fetchNpmDeps needs.
           # Regenerate after primeAgentSrc bumps (see nix/prime-agent-lockfile.sh).
           postPatch = ''
-            sed -i 's|"build": "npm run generate-models && tsgo -p tsconfig.build.json"|"build": "tsgo -p tsconfig.build.json"|' packages/ai/package.json
             cp ${./nix/prime-agent-package-lock.json} package-lock.json
           '';
 
           # Root "build" script chains tui -> ai -> agent -> coding-agent (node bundle).
           npmBuildScript = "build";
           npmDepsFetcherVersion = 2;
-          npmDepsHash = "sha256-5YZSNv14K9a/fUuvE+Cv9cQzZzrx3Ea5n9cGrYGgwyI=";
+          npmDepsHash = "sha256-1sD5uK/DLIAx97xbiD6r/602BJ0LGakCITWTxQakD90=";
 
           nodejs = pkgs.nodejs_22;
           nativeBuildInputs = with pkgs; [bun pkg-config makeWrapper gcc gnumake python3Minimal];
           buildInputs = canvasNativeDeps;
 
-          # Root "build" runs the tsgo+bundle chain but not copy-binary-assets;
-          # that step stages package.json/theme/assets/docs into dist/.
-          postBuild = ''
-            ( cd packages/coding-agent && npm run copy-binary-assets )
+          preBuild = ''
+            node packages/coding-agent/scripts/catalog-assets.mjs generate \
+              --out packages/coding-agent/catalog --catalog-dir ${primeAgentCatalogSrc}
           '';
 
           installPhase = ''
@@ -343,6 +342,7 @@
                       mkdir -p $out/share/pi $out/bin $out/share/node_modules
 
                       cp -R packages/coding-agent/dist/. $out/share/pi/
+                      node packages/coding-agent/scripts/copy-binary-assets.mjs $out/share/pi
 
                       # Node bundle resolves built-ins under packageDir/dist/ (see config.ts
                       # getThemesDir/getExportTemplateDir); our flattened install lacks dist/.
@@ -602,7 +602,7 @@
           dontBuild = true;
           installPhase = ''
             runHook preInstall
-            grep -q '"build": "tsgo -p tsconfig.build.json"' packages/ai/package.json
+            grep -q '"build": "tsc -p tsconfig.build.json"' packages/ai/package.json
             ! grep -q 'generate-models' packages/ai/package.json
             touch $out
             runHook postInstall
