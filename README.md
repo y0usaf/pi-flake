@@ -283,13 +283,18 @@ bump.
 
 Current patch set applied to upstream `pi`:
 
-- `avoid-network-model-regeneration.patch` - Uses checked-in model registry during builds
 - `default-package-sources-env.patch` - Adds non-persistent `PI_DEFAULT_PACKAGES` package sources for Nix-bundled resources
-- `user-message-bar.patch` - Adds an optional theme-gated Crush-style user-message gutter bar
-- `tui-overlay-invalidate-guard.patch` - Guards TUI overlay invalidation
 
 Removed patches and their replacements:
 
+- model regeneration: the build runs upstream's root `build:offline`, which
+  validates the vendored `nix/model-data` (`check:model-data`) instead of
+  fetching, then the bun compile and asset copy from `build:binary`.
+- user-message bar: dropped as cosmetic. `"userMessageBg": ""` in a theme
+  puts user messages on the terminal background instead of a box.
+- TUI overlay invalidate guard: dropped. It came in while pi-interview was
+  bundled; no bundled extension shows overlays now, and upstream's
+  `Component` interface requires `invalidate()`.
 - install telemetry: `PI_TELEMETRY=0` exported by both wrappers and by the
   NixOS module. `isInstallTelemetryEnabled` prefers the env var over settings,
   and gates both `reportInstallTelemetry` and the provider attribution headers

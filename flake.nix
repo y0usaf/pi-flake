@@ -55,10 +55,7 @@
     #   install telemetry  -> PI_TELEMETRY=0 in the wrappers
     #   tree filter cycle  -> "app.tree.filter.cycleBackward": [] in keybindings.json
     piPatches = [
-      ./patches/pi/avoid-network-model-regeneration.patch
       ./patches/pi/default-package-sources-env.patch
-      ./patches/pi/user-message-bar.patch
-      ./patches/pi/tui-overlay-invalidate-guard.patch
     ];
   in {
     packages = forAllSystems (system: let
@@ -187,8 +184,7 @@
             cp ${./nix/model-data}/.manifest.json packages/ai/src/providers/data/
             cp ${./nix/model-data}/*.json packages/ai/src/providers/data/
           '';
-          npmWorkspace = "packages/coding-agent";
-          npmBuildScript = "build:binary";
+          npmBuildScript = "build:offline";
           npmDepsFetcherVersion = 2;
 
           # Regenerate after dependency changes:
@@ -200,9 +196,12 @@
           nativeBuildInputs = with pkgs; [bun pkg-config makeWrapper];
           buildInputs = canvasNativeDeps ++ (with pkgs; [zeromq]);
 
-          # Upstream's root build includes chord; build:binary omits it.
-          preBuild = ''
-            npm --prefix packages/chord run build
+          postBuild = ''
+            (
+              cd packages/coding-agent
+              bun build --compile --no-compile-autoload-bunfig ./src/bun/cli.ts ./src/utils/image-resize-worker.ts --outfile dist/pi
+              npm run copy-binary-assets
+            )
           '';
 
           installPhase = ''
@@ -591,23 +590,6 @@
           grep -q 'PRIME_AGENT_KERNEL_PYTHON' ${self.packages.${system}."prime-agent"}/bin/pi
           touch $out
         '';
-
-        patch-avoid-network-model-regeneration = pkgs.stdenvNoCC.mkDerivation {
-          pname = "pi-patch-avoid-network-model-regeneration";
-          version = packageJson.version;
-          src = piSrc;
-          patches = piPatches;
-          nativeBuildInputs = [pkgs.gnugrep];
-          dontConfigure = true;
-          dontBuild = true;
-          installPhase = ''
-            runHook preInstall
-            grep -q '"build": "tsc -p tsconfig.build.json"' packages/ai/package.json
-            ! grep -q 'generate-models' packages/ai/package.json
-            touch $out
-            runHook postInstall
-          '';
-        };
 
         patch-default-package-sources-env = pkgs.stdenvNoCC.mkDerivation {
           pname = "pi-patch-default-package-sources-env";
