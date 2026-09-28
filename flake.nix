@@ -280,7 +280,7 @@
 
             dontNpmBuild = true;
             npmDepsFetcherVersion = 2;
-            npmDepsHash = "sha256-dBKsajkvGHljSRKREDJWv9zdDalprvBju1lXMl/Geqg=";
+            npmDepsHash = "sha256-1Rq0HKIXiMjy5qVVBvY02SisOdctavEebEtzmPIA9RE=";
 
             nodejs = pkgs.nodejs_22;
             installPhase = ''

@@ -29,14 +29,17 @@
   },
   "dependencies": {
     "@ai-sdk/gateway": "^3.0.0",
-    "@earendil-works/pi-ai": "^0.82.1",
     "ai": "^6.0.0",
     "zod": "^4.1.8"
   },
   "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*"
   },
   "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
     "@earendil-works/pi-coding-agent": {
       "optional": true
     }
