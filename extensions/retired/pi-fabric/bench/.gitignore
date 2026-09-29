@@ -1,7 +1,0 @@
-results
-.cache/
-.runtime/
-vendor/
-.artifacts/
-__pycache__/
-*.pyc

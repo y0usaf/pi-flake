@@ -560,7 +560,6 @@
                 || name == "node_modules"
                 || name == "ref"
                 || name == "result"
-                || name == "retired"
                 || name == "vendor"
                 || lib.hasPrefix "result-" name);
           };

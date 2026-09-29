@@ -1,1 +1,0 @@
-{"name":"pi-webfetch","private":true,"version":"1.0.0","description":"Fetch a URL and return its content as markdown","type":"module","pi":{"extensions":["./src/index.ts"]},"peerDependencies":{"@earendil-works/pi-coding-agent":"*","@sinclair/typebox":"*"}}

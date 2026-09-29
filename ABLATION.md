@@ -35,9 +35,9 @@ surface ablation and the source paths removed with them.
 ## Removed source dirs kept as history (NOT removed in this pass)
 
 Still-dead-but-unbuilt `extensions/retired/` trees with no flake derivation
-(e.g. `pi-rlm`, `sting8k_pi-vcc`, `pi-hashline`, `pi-exec`, `pi-fleet`) are
-retained per the registry contract ("retired source is history"); not part of
-this ablation.
+(e.g. `pi-rlm`, `sting8k_pi-vcc`, `pi-hashline`, `pi-exec`, `pi-fleet`) were
+retained at the time per the registry contract ("retired source is history");
+not part of this ablation. Pass 5 later wiped them.
 
 ## Before/after exposed derivation sets (x86_64-linux)
 
@@ -185,3 +185,19 @@ telemetry-disabled, kernel-python-wired, patch-avoid-network-model-regeneration,
 patch-default-package-sources-env, donsetch-built).
 
 Verification: `nix build .#pi-full --no-link` and `nix flake check` pass.
+
+## Pass 5 — retired/ wiped
+
+All of `extensions/retired/` (219M on disk, 735 tracked files across 26
+trees) was deleted. Git history is now the only archive of retired sources.
+
+- `extensions/registry.nix`: dropped the 11 `stage = "retired"` entries
+  (aliases, fabric, webfetch, yourshell, z-exec, fleet, sentinel,
+  sentinel-audit, heartbeat, hashline, fff); the `retired` stage stays
+  documented for future use.
+- `flake.nix`: dropped the now-dead `retired` exclusion from the biome-lint
+  source filter.
+- `README.md`: the lifecycle table now points at git history instead of
+  `extensions/retired/`.
+
+Verification: `nix flake check --no-build` passes ("all checks passed!").

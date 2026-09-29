@@ -1,9 +1,0 @@
-{
-  "name": "pi-dark-terminal",
-  "version": "0.1.0",
-  "description": "oh-my-pi dark-terminal theme for Pi (ported from can1357/oh-my-pi)",
-  "license": "MIT",
-  "files": ["index.ts", "themes", "package.json"],
-  "pi": { "extensions": ["./index.ts"], "themes": ["./themes"] },
-  "peerDependencies": { "@earendil-works/pi-coding-agent": "*" }
-}

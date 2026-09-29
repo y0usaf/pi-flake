@@ -161,7 +161,7 @@ Active extensions (shipped in `pi-full`):
 | `active` | In the default bundle (`pi-full`) and built by `nix flake check` |
 | `testing` | Built and checked, but excluded from the default bundle; opt-in via `programs.pi.extensions.<name>` (NixOS module emits a warning) |
 | `paused` | Source kept in the tree, but not built, bundled, or checked |
-| `retired` | Source moved to `extensions/retired/`, not built or bundled |
+| `retired` | Removed from the tree; git history is the archive. Not built or bundled |
 
 Promote/demote an extension by editing its `stage` in
 `extensions/registry.nix`; packages, checks, the default bundle, and the NixOS
