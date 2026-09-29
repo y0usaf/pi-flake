@@ -5,7 +5,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     piSrc = {
-      url = "github:earendil-works/pi/c1449660c83fd00a7c71d5f7e1bd29fafd400550";
+      url = "github:earendil-works/pi/4b060d3a98618019adb9985d517516c8e99a2bbe";
       flake = false;
     };
 
@@ -189,17 +189,23 @@
 
           # Regenerate after dependency changes:
           #   nix build .#pi 2>&1 | grep 'got:' | awk '{print $2}'
-          npmDepsHash = "sha256-k3ApQTjVUqELCxa89I7i9HQAXqpb8wCLqJp7eSaHsyc=";
+          npmDepsHash = "sha256-sPHgK2Py1doKhrN/8weHstx88OMOiKh5Pa2bVeTU4eU=";
 
           nodejs = pkgs.nodejs_22;
 
           nativeBuildInputs = with pkgs; [bun pkg-config makeWrapper];
-          buildInputs = canvasNativeDeps ++ (with pkgs; [zeromq]);
+          buildInputs = canvasNativeDeps;
 
+          # Mirror upstream's build:binary entrypoints. The main entry lives in
+          # dist/ so Bun embeds the extra entries at their paths relative to the
+          # package root, which is where config.ts and image-resize.ts look for
+          # the codemode worker and the image-resize worker.
           postBuild = ''
             (
               cd packages/coding-agent
-              bun build --compile --no-compile-autoload-bunfig ./src/bun/cli.ts ./src/utils/image-resize-worker.ts --outfile dist/pi
+              bun build --compile --no-compile-autoload-bunfig \
+                ./dist/bun/cli.js ./src/utils/image-resize-worker.ts ./src/extensions/codemode/worker.ts \
+                --outfile dist/pi
               npm run copy-binary-assets
             )
           '';
@@ -213,11 +219,13 @@
             rm -f $out/share/pi/pi
 
             find . -name 'pi' -exec install -Dm755 {} $out/bin/pi \;
+            # The compiled binary loads photon's wasm from its own directory
+            # (dirname of process.execPath), not from PI_PACKAGE_DIR.
+            install -Dm644 packages/coding-agent/dist/photon_rs_bg.wasm $out/bin/photon_rs_bg.wasm
             wrapProgram $out/bin/pi \
               --set PI_PACKAGE_DIR $out/share/pi \
               --set PI_SKIP_VERSION_CHECK 1 \
-              --set PI_TELEMETRY 0 \
-              --set PI_SYMBOLS ascii
+              --set PI_TELEMETRY 0
 
             runHook postInstall
           '';
