@@ -201,3 +201,55 @@ trees) was deleted. Git history is now the only archive of retired sources.
   `extensions/retired/`.
 
 Verification: `nix flake check --no-build` passes ("all checks passed!").
+
+## Pass 6 — pi-vercel-ai-gateway retired
+
+The vendored gateway provider (Kushalkhemka/pi-vercel-ai-gateway v1.2.1) is
+deleted: 8 tracked files plus ignored `node_modules` (211M on disk). Git
+history is the archive.
+
+It was not a catalog override: it registered provider `vercel-ai-gateway` with
+its own `api` (`vercel-ai-gateway-native`, an AI SDK `streamText` bridge to
+`https://ai-gateway.vercel.sh/v1/ai`) and one model per Gateway endpoint. Deltas
+the built-in provider does not carry:
+
+| Extension behaviour | Built-in `vercel-ai-gateway` provider |
+| --- | --- |
+| `<model>@<slug>` ids pinning `providerOptions.gateway.only` | not present; core's catalog has no `@` ids |
+| AI SDK transport with `gateway: { caching: "auto", tags }` | `anthropic-messages` against `https://ai-gateway.vercel.sh` |
+| Per-generation exact Gateway cost from the response | catalog-estimate costs only |
+| Live endpoint discovery + 24h catalog cache | catalog refreshed into `nix/model-data/` at build time |
+
+### Declarations updated (pass 6)
+
+- `extensions/pi-vercel-ai-gateway/`: deleted (LICENSE, README.md,
+  package.json, package-lock.json, src/{catalog,index,messages,usage}.ts).
+- `extensions/registry.nix`: dropped the `vercel-ai-gateway` entry; the registry
+  is now chronobreak, donsetch, fusion, jev, recap.
+- `flake.nix`: removed the `pi-vercel-ai-gateway` `buildNpmPackage` def
+  (npmDepsHash and the node_modules assertions with it) and its
+  `lib.extensionPackagesFor` entry.
+- `biome.jsonc`: removed the dead vendored-source exclusion.
+- `nix/model-data/vercel-ai-gateway.json`: kept — it is pi's own provider
+  catalog for the built-in provider, not the extension's.
+
+### Consumers outside this repo
+
+`~/finix` lists the deleted source path in three `settings.json` `packages`
+lists (`modules/dev/ai/pi/default.nix:100`, `modules/dev/ai/omp.nix:58`,
+`modules/dev/ai/prime-agent.nix:23`) and selects `@`-suffixed models in
+`enabledModels` plus a `compat.vercelGatewayRouting` override for
+`zai/glm-5.3-flash`. Those entries need the path dropped and the model ids
+retargeted at core's catalog.
+
+### Exposed derivation set after pass 6 (x86_64-linux)
+
+donsetch, omp, omp-full, pi, pi-chronobreak, pi-donsetch, pi-full, pi-fusion,
+pi-jev, pi-recap, prime-agent, prime-bun, default.
+
+Checks: 8 gates (biome-lint, donsetch-built, kernel-python-wired,
+omp-full-built, patch-default-package-sources-env, pi-build, pi-nested-bundle,
+telemetry-disabled).
+
+Verification: `nix flake check` passes ("all checks passed!"); `pi-full` now
+bundles chronobreak, donsetch, jev, recap.

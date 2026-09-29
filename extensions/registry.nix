@@ -42,10 +42,4 @@
     dir = "pi-recap";
     priority = 70;
   };
-  vercel-ai-gateway = {
-    stage = "active";
-    source = "vendored";
-    dir = "pi-vercel-ai-gateway";
-    priority = 55;
-  };
 }
