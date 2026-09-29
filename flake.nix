@@ -589,10 +589,23 @@
         '';
       });
 
-    apps = forAllSystems (system: {
+    apps = forAllSystems (system: let
+      pkgs = pkgsFor.${system};
+    in {
       default = {
         type = "app";
         program = "${self.packages.${system}.pi}/bin/pi";
+      };
+
+      refresh-model-data = {
+        type = "app";
+        program = "${pkgs.writeShellApplication {
+          name = "refresh-model-data";
+          runtimeInputs = with pkgs; [coreutils diffutils nodejs_22];
+          text = ''
+            exec ${./nix/refresh-model-data.sh} ${piSrc} "$@"
+          '';
+        }}/bin/refresh-model-data";
       };
     });
 

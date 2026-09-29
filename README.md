@@ -273,6 +273,29 @@ nix develop -c biome lint .
 nix build .#checks.x86_64-linux.biome-lint
 ```
 
+### Refresh bundled model data
+
+`nix/model-data` is the vendored `packages/ai/src/providers/data` for the
+pinned `piSrc`: the whole catalog content, while the generated shards are
+flat imports of it. New models therefore land without a `piSrc` bump.
+
+```bash
+# hydrate from models.dev and install into nix/model-data
+nix run .#refresh-model-data
+
+# or into another directory, or from another checkout's generator
+nix run .#refresh-model-data -- /tmp/model-data
+nix/refresh-model-data.sh /path/to/pi-src /tmp/model-data
+```
+
+The app copies the pinned checkout to a temp tree, runs upstream's
+`generate-models.ts --strict --data-only` (network: models.dev plus the
+OpenRouter, NVIDIA, Vercel AI Gateway and Radius public catalogs), validates
+with `check:model-data`, prints the model ids added or removed per shard, and
+installs the result. Shards are single-line JSON, so read the printed delta
+instead of the raw diff. Data newer than the snapshot still reaches a running
+pi through the pi.dev catalog overlay (`pi update --models`).
+
 ---
 
 ## Patches
