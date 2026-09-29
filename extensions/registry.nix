@@ -30,12 +30,6 @@
     dir = "pi-fusion";
     priority = 80;
   };
-  jev = {
-    stage = "active";
-    source = "inline";
-    dir = "pi-jev";
-    priority = 50;
-  };
   recap = {
     stage = "active";
     source = "inline";

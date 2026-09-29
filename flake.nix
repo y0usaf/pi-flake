@@ -252,16 +252,6 @@
           homepage = "https://github.com/y0usaf/pi-flake";
         };
 
-        # pi-jev: TypeSafe Jev gate + output judge + jev_ask tool. Self-contained:
-        # carries its own client, config, and question logic, with no runtime
-        # dependencies.
-        "pi-jev" = mkPiExtension {
-          pname = "pi-jev";
-          dir = ./extensions/pi-jev;
-          copy = ["README.md" "src"];
-          homepage = "https://github.com/y0usaf/pi-flake";
-        };
-
         # pi-recap: Claude Code-style session recap above the status bar (L2ncE/pi-recap)
         "pi-recap" = mkPiExtension {
           pname = "pi-recap";
@@ -648,7 +638,6 @@
       nixpkgs.lib.filterAttrs (name: _: (extensionRegistry.${name}.stage or "active") != "paused" && (extensionRegistry.${name}.stage or "active") != "retired") ({
           "chronobreak" = self.packages.${system}."pi-chronobreak";
           fusion = self.packages.${system}."pi-fusion";
-          jev = self.packages.${system}."pi-jev";
           recap = self.packages.${system}."pi-recap";
         }
         // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {

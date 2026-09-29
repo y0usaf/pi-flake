@@ -253,3 +253,53 @@ telemetry-disabled).
 
 Verification: `nix flake check` passes ("all checks passed!"); `pi-full` now
 bundles chronobreak, donsetch, jev, recap.
+
+## Pass 7 — pi-jev retired
+
+Pass 7 deletes the first-party TypeSafe Jev extension, `@y0usaf/pi-jev` 0.1.0.
+It was 8 tracked files with no ignored build output, and `3133c3e` is the last
+commit that has it.
+
+Jev stays reachable. Pi core ships a `typesafe` provider that serves the
+`jev-latest` classifier with `TYPESAFE_API_KEY`, and codemode's
+`models.classify` reaches it. These go with the extension:
+
+| Extension behaviour | After pass 7 |
+| --- | --- |
+| `tool_call` gate on `bash`/`write`/`edit`, four questions per call, shadow mode by default | calls run unjudged |
+| `tool_result` judge on `bash` output: secret leak, failure class, one advice line | output passes through unchanged |
+| `jev_ask` tool | codemode's `models.classify` against `typesafe/jev-latest` |
+| `/jev` command and `jev:` footer status | none |
+
+### Declarations updated (pass 7)
+
+- `extensions/pi-jev/`: deleted (LICENSE, README.md, package.json,
+  src/{client,config,gate,index,output}.ts).
+- `extensions/registry.nix`: dropped the `jev` entry; the registry is now
+  chronobreak, donsetch, fusion, recap.
+- `flake.nix`: removed the `pi-jev` `mkPiExtension` def and its
+  `lib.extensionPackagesFor` entry.
+- `README.md`: dropped the `pi-jev` extension-table row and package line.
+- `nix/model-data/typesafe.json` and the `typesafe/jev` entry in
+  `nix/model-data/cloudflare-workers-ai.json`: kept. Both are pi's own
+  provider catalogs.
+
+### Consumers outside this repo
+
+`~/finix` never names jev. It gets the extension only through `pi-full`
+(`modules/dev/packages.nix:7`), so the next `pi-flake` input update drops it
+without a finix edit. One file stays behind. `~/.pi/agent/pi-jev.json` is the
+extension's user config and only sets `apiKeyFile` to
+`~/Tokens/TYPESAFE_API_KEY.txt`. `.pi` is on the finix persistence allowlist,
+so the file survives reboots with nothing left to read it. Delete it after the
+switch. Until then the running `pi-full` still reads it.
+
+### Exposed derivation set after pass 7 (x86_64-linux)
+
+donsetch, omp, omp-full, pi, pi-chronobreak, pi-donsetch, pi-full, pi-fusion,
+pi-recap, prime-agent, prime-bun, default.
+
+Checks: 8 gates, unchanged from pass 6.
+
+Verification: `nix flake check` passes ("all checks passed!"); `pi-full` now
+bundles chronobreak, donsetch, recap.
