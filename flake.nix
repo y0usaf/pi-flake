@@ -5,7 +5,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     piSrc = {
-      url = "github:earendil-works/pi/4b060d3a98618019adb9985d517516c8e99a2bbe";
+      url = "github:earendil-works/pi/17f3dccbef6c56cbc8cee73dbcfe2bba4f8734f9";
       flake = false;
     };
 
@@ -189,7 +189,7 @@
 
           # Regenerate after dependency changes:
           #   nix build .#pi 2>&1 | grep 'got:' | awk '{print $2}'
-          npmDepsHash = "sha256-sPHgK2Py1doKhrN/8weHstx88OMOiKh5Pa2bVeTU4eU=";
+          npmDepsHash = "sha256-kw4mtmEDO6PpPMAbrGC/6lnZ6FedfjNJ+XVmNsstn4k=";
 
           nodejs = pkgs.nodejs_22;
 
