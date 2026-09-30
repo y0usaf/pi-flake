@@ -260,6 +260,13 @@
           homepage = "https://github.com/L2ncE/pi-recap";
         };
 
+        "pi-rlm" = mkPiExtension {
+          pname = "pi-rlm";
+          dir = ./extensions/pi-rlm;
+          copy = ["README.md" "index.ts"];
+          homepage = "https://github.com/y0usaf/pi-flake";
+        };
+
         # pi with default extensions pre-bundled.
         # prime-agent runs the node bundle with a vendored runtime node_modules.
         # zeromq's NAPI addon needs real node (Bun lacks uv_async_init), so the
@@ -639,6 +646,7 @@
           "chronobreak" = self.packages.${system}."pi-chronobreak";
           fusion = self.packages.${system}."pi-fusion";
           recap = self.packages.${system}."pi-recap";
+          rlm = self.packages.${system}."pi-rlm";
         }
         // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
           donsetch = self.packages.${system}."pi-donsetch";

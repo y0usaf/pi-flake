@@ -1,0 +1,22 @@
+{
+  "name": "pi-rlm",
+  "version": "0.1.0",
+  "description": "Recursive sub-calls for codemode: one-shot model calls and child agents that recurse, report back and take messages",
+  "homepage": "https://github.com/y0usaf/pi-flake",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/y0usaf/pi-flake.git",
+    "directory": "extensions/pi-rlm"
+  },
+  "keywords": ["pi-package", "pi-extension", "codemode", "rlm"],
+  "license": "MIT",
+  "files": ["index.ts", "README.md"],
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}

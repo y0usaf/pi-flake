@@ -36,4 +36,10 @@
     dir = "pi-recap";
     priority = 70;
   };
+  rlm = {
+    stage = "testing";
+    source = "inline";
+    dir = "pi-rlm";
+    priority = 50;
+  };
 }
