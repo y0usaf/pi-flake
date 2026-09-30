@@ -10,15 +10,19 @@ import {
 	type ExtensionContext,
 	type ExtensionToolContext,
 	getAgentDir,
+	rawKeyHint,
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { openView, type RlmDetails, renderRlmMessage, statusWidget } from "./ui.ts";
 
 const MAX_CONCURRENT_CALLS = 8;
 const MAX_RUNNING_CHILDREN = 8;
 const DEFAULT_MAX_DEPTH = 2;
 const STOP_BUDGET_MS = 5000;
+const VIEW_KEY = "alt+r";
+const ANSWER_DETAIL_CHARS = 20000;
 const PREVIEW_CHARS = 300;
 const TRACE_SUFFIX = ".rlm.ndjson";
 const DEPTH_ENTRY = "rlm-depth";
@@ -39,21 +43,26 @@ type ModelRef = { provider: string; id: string };
 type Status = "running" | "done" | "failed" | "cancelled";
 type UI = ExtensionContext["ui"];
 
-interface Scope {
+export interface Scope {
 	depth: number;
 	toParent?: (text: string) => void;
 	children: Map<string, Child>;
 	closed: boolean;
 	carry: Usage;
 	notify: (message: string) => void;
+	changed: () => void;
+	send?: (child: Child, message: string) => Promise<"steered" | "restarted">;
+	cancel?: (child: Child) => Promise<unknown>;
 }
 
-interface Child {
+export interface Child {
 	id: string;
 	name: string;
 	session: AgentSession;
 	sessionManager: SessionManager;
 	scope: Scope;
+	owner: Scope;
+	activity?: string;
 	tracePath: string | undefined;
 	status: Status;
 	counted: boolean;
@@ -400,7 +409,17 @@ export function createRlmExtension(scope: Scope) {
 	return (pi: ExtensionAPI): void => {
 		let ui: UI | undefined;
 		let nextId = 1;
-		if (!scope.toParent) scope.notify = (message) => ui?.notify(message, "warning");
+		const watchers = new Set<() => void>();
+		if (!scope.toParent) {
+			scope.notify = (message) => ui?.notify(message, "warning");
+			scope.changed = () => {
+				for (const watch of watchers) watch();
+			};
+			const view = (ctx: ExtensionContext) => openView(ctx, scope, watchers, { cost: (child) => sessionUsage(child.sessionManager).cost.total });
+			pi.registerMessageRenderer<RlmDetails>("rlm", renderRlmMessage);
+			pi.registerCommand("rlm", { description: "Show this session's rlm children", handler: (_args, ctx) => view(ctx) });
+			pi.registerShortcut(VIEW_KEY, { description: "Show this session's rlm children", handler: (ctx) => view(ctx) });
+		}
 		const pendingNames = new Set<string>();
 		const billIfLive = (signal: AbortSignal | undefined) => (signal?.aborted ? undefined : billScope(scope));
 		const childNote =
@@ -408,10 +427,7 @@ export function createRlmExtension(scope: Scope) {
 				? ` This session is itself a child at depth ${scope.depth}; report to the session that spawned you with to: "parent".`
 				: "";
 
-		const updateStatus = () => {
-			const running = [...scope.children.values()].filter((child) => child.status === "running").length;
-			ui?.setStatus("rlm", running > 0 ? `rlm: ${running} running` : undefined);
-		};
+		const updateStatus = () => scope.changed();
 
 		const onSettle = (child: Child) => {
 			appendTrace(scope.notify, child.tracePath, {
@@ -426,11 +442,26 @@ export function createRlmExtension(scope: Scope) {
 			});
 			updateStatus();
 			if (scope.closed || child.waiters > 0 || child.status === "cancelled") return;
-			pi.sendMessage({ customType: "rlm", content: notice(child), display: true }, { deliverAs: "steer", triggerTurn: true });
+			const last = lastAssistant(child.session);
+			const details: RlmDetails = {
+				kind: "done",
+				id: child.id,
+				name: child.name,
+				status: child.status,
+				ms: (child.endedAt ?? Date.now()) - child.startedAt,
+				cost: sessionUsage(child.sessionManager).cost.total,
+				answer: (last ? replyText(last) : "").slice(0, ANSWER_DETAIL_CHARS),
+				error: child.error ?? null,
+			};
+			pi.sendMessage(
+				{ customType: "rlm", content: notice(child), display: true, details },
+				{ deliverAs: "steer", triggerTurn: true },
+			);
 		};
 
 		pi.on("session_start", (_event, ctx) => {
 			ui = ctx.ui;
+			if (!scope.toParent && ctx.mode === "tui") ctx.ui.setWidget("rlm", statusWidget(scope, watchers, rawKeyHint(VIEW_KEY, "view")));
 			for (const entry of ctx.sessionManager.getEntries()) {
 				if (entry.type !== "custom") continue;
 				if (entry.customType === DEPTH_ENTRY && isDepthEntry(entry.data)) scope.depth = entry.data.depth;
@@ -438,12 +469,49 @@ export function createRlmExtension(scope: Scope) {
 			}
 		});
 
+		const sendTo = async (child: Child, message: string): Promise<"steered" | "restarted"> => {
+			if (child.scope.closed) throw new Error(`rlm_send: child "${child.name}" is being cancelled`);
+			const delivered = child.counted ? "steered" : "restarted";
+			if (delivered === "restarted") reserveChild();
+			appendTrace(scope.notify, child.tracePath, {
+				v: 1,
+				t: "send",
+				id: child.id,
+				ts: new Date().toISOString(),
+				delivered,
+				message,
+			});
+			if (delivered === "steered") {
+				await child.session.steer(message);
+			} else {
+				child.counted = true;
+				beginRun(child);
+				updateStatus();
+				prompt(child, message, onSettle);
+			}
+			return delivered;
+		};
+
+		const cancel = async (child: Child) => {
+			await withinBudget(abortTree(child));
+			const result = snapshot(child);
+			scope.carry = addUsage(scope.carry, billTree(child));
+			disposeTree(child);
+			scope.children.delete(child.id);
+			updateStatus();
+			return result;
+		};
+
+		scope.send = sendTo;
+		scope.cancel = cancel;
+
 		pi.on("agent_start", (_event, ctx) => {
 			if (scope.closed) ctx.abort();
 		});
 
-		pi.on("session_shutdown", async () => {
+		pi.on("session_shutdown", async (_event, ctx) => {
 			scope.closed = true;
+			if (!scope.toParent && ctx.mode === "tui") ctx.ui.setWidget("rlm", undefined);
 			const children = [...scope.children.values()];
 			await withinBudget(Promise.all(children.map(abortTree)).then(() => undefined));
 			for (const child of children) disposeTree(child);
@@ -575,7 +643,12 @@ export function createRlmExtension(scope: Scope) {
 						toParent: (text) => {
 							if (scope.closed) throw new Error("rlm_send: the parent session has ended");
 							pi.sendMessage(
-								{ customType: "rlm", content: `rlm child "${name}" (${id}) says: ${text}`, display: true },
+								{
+									customType: "rlm",
+									content: `rlm child "${name}" (${id}) says: ${text}`,
+									display: true,
+									details: { kind: "message", id, name, text } satisfies RlmDetails,
+								},
 								{ deliverAs: "steer", triggerTurn: true },
 							);
 						},
@@ -583,6 +656,7 @@ export function createRlmExtension(scope: Scope) {
 						closed: false,
 						carry: ZERO_USAGE,
 						notify: scope.notify,
+						changed: scope.changed,
 					};
 					const settingsManager = SettingsManager.create(ctx.cwd);
 					settingsManager.applyOverrides({ defaultTools: ["+codemode"] });
@@ -622,6 +696,7 @@ export function createRlmExtension(scope: Scope) {
 					session,
 					sessionManager,
 					scope: childScope,
+					owner: scope,
 					tracePath,
 					status: "running",
 					counted: true,
@@ -634,7 +709,21 @@ export function createRlmExtension(scope: Scope) {
 				};
 				beginRun(child);
 				scope.children.set(id, child);
+				const setActivity = (activity: string | undefined) => {
+					if (child.activity === activity) return;
+					child.activity = activity;
+					scope.changed();
+				};
 				session.subscribe((event) => {
+					if (event.type === "tool_execution_start") {
+						setActivity(event.parentToolCallId ? `codemode › ${event.toolName}` : event.toolName);
+					} else if (event.type === "tool_execution_end") {
+						setActivity(event.parentToolCallId ? "codemode" : "thinking");
+					} else if (event.type === "turn_start") {
+						setActivity("thinking");
+					} else if (event.type === "message_update" && event.message.role === "assistant") {
+						setActivity("writing");
+					}
 					if (event.type === "agent_start" && !child.counted && !childScope.closed) {
 						child.counted = true;
 						runningChildren++;
@@ -642,6 +731,7 @@ export function createRlmExtension(scope: Scope) {
 						updateStatus();
 						appendTrace(scope.notify, tracePath, { v: 1, t: "wake", id, ts: new Date().toISOString() });
 					} else if (event.type === "agent_settled") {
+						child.activity = undefined;
 						finish(child, undefined, onSettle);
 					}
 				});
@@ -721,26 +811,7 @@ export function createRlmExtension(scope: Scope) {
 					scope.toParent(params.message);
 					delivered = "parent";
 				} else {
-					const child = findChild(scope, params.to, pendingNames);
-					if (child.scope.closed) throw new Error(`rlm_send: child "${child.name}" is being cancelled`);
-					delivered = child.counted ? "steered" : "restarted";
-					if (delivered === "restarted") reserveChild();
-					appendTrace(scope.notify, child.tracePath, {
-						v: 1,
-						t: "send",
-						id: child.id,
-						ts: new Date().toISOString(),
-						delivered,
-						message: params.message,
-					});
-					if (delivered === "steered") {
-						await child.session.steer(params.message);
-					} else {
-						child.counted = true;
-						beginRun(child);
-						updateStatus();
-						prompt(child, params.message, onSettle);
-					}
+					delivered = await sendTo(findChild(scope, params.to, pendingNames), params.message);
 				}
 				return {
 					content: [{ type: "text", text: delivered }],
@@ -759,14 +830,8 @@ export function createRlmExtension(scope: Scope) {
 			outputSchema: SNAPSHOT,
 			exposure: "codemode",
 			async execute(_toolCallId, params, signal) {
-				const child = findChild(scope, params.id, pendingNames);
-				await withinBudget(abortTree(child));
-				const result = snapshot(child);
-				scope.carry = addUsage(scope.carry, billTree(child));
-				disposeTree(child);
-				scope.children.delete(child.id);
+				const result = await cancel(findChild(scope, params.id, pendingNames));
 				const usage = billIfLive(signal);
-				updateStatus();
 				return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, details: undefined, usage };
 			},
 		});
@@ -774,5 +839,5 @@ export function createRlmExtension(scope: Scope) {
 }
 
 export default function rlmExtension(pi: ExtensionAPI): void {
-	createRlmExtension({ depth: 0, children: new Map(), closed: false, carry: ZERO_USAGE, notify: () => {} })(pi);
+	createRlmExtension({ depth: 0, children: new Map(), closed: false, carry: ZERO_USAGE, notify: () => {}, changed: () => {} })(pi);
 }

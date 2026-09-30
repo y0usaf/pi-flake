@@ -263,7 +263,7 @@
         "pi-rlm" = mkPiExtension {
           pname = "pi-rlm";
           dir = ./extensions/pi-rlm;
-          copy = ["README.md" "index.ts"];
+          copy = ["README.md" "index.ts" "ui.ts"];
           homepage = "https://github.com/y0usaf/pi-flake";
         };
 
