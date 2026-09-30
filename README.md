@@ -149,6 +149,7 @@ Active extensions (shipped in `pi-full`):
 | `pi-gecko-websearch` | Web search and browsing via headless Gecko browser (Marionette) |
 | `pi-sentinel` | Detects abrupt run endings via a sparse context-free judge, continues the run when the stop was a cutoff |
 | `pi-recap` | Claude Code-style session recap: one-line recap above the status bar |
+| `pi-rlm` | Recursive sub-calls and child agents for codemode scripts, with a `/rlm` children view |
 | `pi-yourshell` | Runs the bash tool through your own `$SHELL` instead of pi's hardcoded bash |
 
 ## Extension Lifecycle

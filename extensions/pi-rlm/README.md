@@ -9,8 +9,7 @@ that have their own codemode and can start children of their own
 It runs no daemon: children live in this pi process and stop when it exits.
 It caps no spending and retries nothing.
 
-Stage `testing`: enable with `programs.pi.extensions.rlm = true;` or build
-`.#pi-rlm`. `--tools` drops every tool it doesn't name, so a run with
+Ships in `pi-full`. `--tools` drops every tool it doesn't name, so a run with
 `--tools` must list `codemode`, `rlm`, `rlm_spawn`, `rlm_collect`, `rlm_send`
 and `rlm_cancel`; `--exclude-tools` leaves them alone.
 

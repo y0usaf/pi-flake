@@ -37,7 +37,7 @@
     priority = 70;
   };
   rlm = {
-    stage = "testing";
+    stage = "active";
     source = "inline";
     dir = "pi-rlm";
     priority = 50;
