@@ -5,8 +5,10 @@ import {
 	type AgentState,
 	type Conversation,
 	type ConversationId,
+	type ConversationRecord,
 	type ConversationView,
 	type Cursor,
+	type EntryId,
 	type EntryRecord,
 	Harness,
 	type ModelRef,
@@ -82,6 +84,7 @@ export interface DurableController {
 	toggleTasks(): Promise<void>;
 	/** Show and talk to another conversation. */
 	switchConversation(id: ConversationId): Promise<void>;
+	fork(before: EntryId): Promise<void>;
 }
 
 export interface OpenDurableOptions {
@@ -110,7 +113,7 @@ async function firstInput(harness: Harness, id: ConversationId): Promise<{ title
 	let cursor: Cursor | undefined;
 	do {
 		const page = await conversation.entries({}, 256, cursor, context);
-		first = page.items.findLast((entry) => entry.kind === "pi.user") ?? first;
+		first = page.items.findLast((entry) => entry.kind === "pi.user" && entry.conversationId === id) ?? first;
 		cursor = page.next;
 	} while (cursor !== undefined);
 	return titleOf(first);
@@ -184,13 +187,16 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 				...(restricted ? { tools: offered } : {}),
 			},
 		});
-		const label = (id: ConversationId): string => (id === root.id ? "main" : `subagent ${id}`);
+		const label = (record: ConversationRecord): string =>
+			record.id === root.id ? "main" : record.parent !== undefined ? `fork ${record.id}` : `subagent ${record.id}`;
 		const opened = harness;
 		const summaries: ConversationSummary[] = [];
 		let cursor: Cursor | undefined;
 		do {
 			const page = await opened.commit((tx) => tx.scanConversations({}, 256, cursor), context);
-			for (const { id } of page.items) summaries.push({ id, label: label(id), ...(await firstInput(opened, id)) });
+			for (const record of page.items) {
+				summaries.push({ id: record.id, label: label(record), ...(await firstInput(opened, record.id)) });
+			}
 			cursor = page.next;
 		} while (cursor !== undefined);
 		let current: Conversation = root;
@@ -235,7 +241,7 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 			let conversations = state.conversations;
 			for (const change of publication.changes) {
 				if (change.type === "conversation") {
-					conversations = [...conversations, { id: change.value.id, label: label(change.value.id) }];
+					conversations = [...conversations, { id: change.value.id, label: label(change.value) }];
 				} else if (change.type === "entry" && change.value.kind === "pi.user") {
 					const id = change.value.conversationId;
 					conversations = conversations.map((summary) =>
@@ -269,6 +275,14 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 					);
 				}
 			}, fail);
+		};
+		const show = async (next: Conversation): Promise<void> => {
+			const nextState = await next.viewState(context);
+			unsubscribe();
+			conversation.dispose();
+			current = next;
+			conversation = nextState;
+			unsubscribe = nextState.subscribe((value) => update({ conversation: value }));
 		};
 		const agentModel = () => {
 			const ref = agentOf(state.conversation).model;
@@ -341,12 +355,14 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 				command(async () => {
 					const next = await opened.conversation(id, context);
 					if (next === undefined) throw new Error(`Conversation ${id} does not exist`);
-					const nextState = await next.viewState(context);
-					unsubscribe();
-					conversation.dispose();
-					current = next;
-					conversation = nextState;
-					unsubscribe = nextState.subscribe((value) => update({ conversation: value }));
+					await show(next);
+				}),
+			fork: (before) =>
+				command(async () => {
+					const at = (await current.entries({ maxEntryId: (before - 1) as EntryId }, 1, undefined, context)).items[0];
+					const fork = await current.fork(at?.id ?? before, { ownership: { kind: "ownerless" } }, context);
+					if (at === undefined) await fork.reset(undefined, context);
+					await show(fork);
 				}),
 		};
 

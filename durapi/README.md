@@ -4,7 +4,7 @@ A durable coding agent: pi's terminal UI, models, settings, system prompt and co
 [pi-durable](https://github.com/earendil-works/pi/tree/main/packages/durable), so
 a turn cut off by a crash or a lost terminal resumes with `--continue`. It loads
 no pi extensions or pi packages and is not a drop-in `pi`: no session picker,
-`/tree`, forks, prompt templates, images or `/login` (log in with `pi`; the
+`/tree`, prompt templates, images or `/login` (log in with `pi`; the
 credentials are shared).
 
 Forked from pi's experimental durable demo
@@ -37,6 +37,14 @@ One process owns a session; a lock left by a killed process goes stale after 10 
   first user message, and Anthropic models then read the whole prompt as a
   mid-conversation update.
 - Extensions load from `DURAPI_EXTENSIONS`.
+- The editor works like pi's: `/` opens the command menu, `@` completes file
+  paths with `fd` (fetched like pi when missing), and errors, warnings and
+  notices print in the transcript.
+- A fork is a new conversation, since pi-durable has no session tree. Double Esc
+  on an empty, idle editor (unless `doubleEscapeAction` is `none`) or `/fork`
+  picks an earlier user message, continues from just before it in a fork, and
+  puts the message in the editor. `/agents` switches between main, forks and
+  subagents.
 - Imports go through the `@earendil-works/*` source aliases instead of relative
   paths, so the fork lives outside pi's tree.
 

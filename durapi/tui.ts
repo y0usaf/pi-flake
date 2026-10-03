@@ -1,6 +1,7 @@
 import type { AssistantMessage, ToolResultMessage, Usage, UserMessage } from "@earendil-works/pi-ai";
 import type {
 	ConversationId,
+	EntryId,
 	EntryRecord,
 	InboxState,
 	LiveState,
@@ -10,6 +11,7 @@ import type {
 } from "@earendil-works/pi-durable";
 import {
 	Box,
+	CombinedAutocompleteProvider,
 	type Component,
 	Container,
 	type Focusable,
@@ -22,6 +24,7 @@ import {
 	type SelectItem,
 	SelectList,
 	type SelectListTheme,
+	type SlashCommand,
 	Spacer,
 	setCapabilityOverrides,
 	setKeybindings,
@@ -42,11 +45,15 @@ import { DynamicBorder } from "@earendil-works/pi-coding-agent/modes/interactive
 import { formatTokens } from "@earendil-works/pi-coding-agent/modes/interactive/components/footer.ts";
 import { keyText } from "@earendil-works/pi-coding-agent/modes/interactive/components/keybinding-hints.ts";
 import { type StatusIndicator, WorkingStatusIndicator } from "@earendil-works/pi-coding-agent/modes/interactive/components/status-indicator.ts";
+import { ThemedText } from "@earendil-works/pi-coding-agent/modes/interactive/components/themed-text.ts";
 import { ToolExecutionComponent, type ToolRenderers } from "@earendil-works/pi-coding-agent/modes/interactive/components/tool-execution.ts";
 import { UserMessageComponent } from "@earendil-works/pi-coding-agent/modes/interactive/components/user-message.ts";
+import { UserMessageSelectorComponent } from "@earendil-works/pi-coding-agent/modes/interactive/components/user-message-selector.ts";
+import { getModelSearchText } from "@earendil-works/pi-coding-agent/modes/interactive/model-search.ts";
 import { getEditorTheme, getMarkdownTheme, initTheme, theme } from "@earendil-works/pi-coding-agent/modes/interactive/theme/theme.ts";
 import { InteractiveThemeController } from "@earendil-works/pi-coding-agent/modes/interactive/theme/theme-controller.ts";
-import { agentOf, type DurableController, type DurableView, type DurableViewSource } from "./runtime.ts";
+import { ensureTool } from "@earendil-works/pi-coding-agent/utils/tools-manager.ts";
+import { agentOf, type DurableController, type DurableView, type DurableViewSource, type Notice } from "./runtime.ts";
 
 const SELECT_THEME: SelectListTheme = {
 	selectedPrefix: (text) => theme.fg("accent", text),
@@ -66,12 +73,19 @@ class ListSelector extends Container implements Focusable {
 	#list: SelectList;
 	#focused = false;
 
-	constructor(title: string, items: SelectItem[], onSelect: (value: string) => void, onCancel: () => void) {
+	constructor(
+		title: string,
+		items: SelectItem[],
+		onSelect: (value: string) => void,
+		onCancel: () => void,
+		query = "",
+	) {
 		super();
 		this.#items = items;
 		this.#onSelect = onSelect;
 		this.#onCancel = onCancel;
-		this.#list = this.#build(items);
+		this.#input.setValue(query);
+		this.#list = this.#build(this.#filtered());
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(theme.fg("accent", theme.bold(title)), 1, 0));
@@ -97,10 +111,14 @@ class ListSelector extends Container implements Focusable {
 			return;
 		}
 		this.#input.handleInput(data);
+		this.#list = this.#build(this.#filtered());
+	}
+
+	#filtered(): SelectItem[] {
 		const query = this.#input.getValue();
-		const filtered =
-			query.length === 0 ? this.#items : fuzzyFilter(this.#items, query, (item) => `${item.label} ${item.value}`);
-		this.#list = this.#build(filtered);
+		return query.length === 0
+			? this.#items
+			: fuzzyFilter(this.#items, query, (item) => `${item.label} ${item.value}`);
 	}
 
 	#build(items: SelectItem[]): SelectList {
@@ -146,7 +164,7 @@ class CompactionComponent extends Box {
 interface Handlers {
 	submit(text: string): void;
 	followUp(text: string): void;
-	abort(): void;
+	escape(): void;
 	exit(): void;
 	selectModel(): void;
 	cycleThinking(): void;
@@ -161,7 +179,6 @@ class DurableTui {
 	readonly #chat = new Container();
 	readonly #tasks = new Container();
 	readonly #queue = new Container();
-	readonly #notices = new Container();
 	readonly #footer = new Container();
 	readonly #footerStats = new Text("", 1, 0);
 	readonly #footerHints = new Text("", 1, 0);
@@ -181,24 +198,26 @@ class DurableTui {
 	#streaming: AssistantMessageComponent | undefined;
 	#indicator: StatusIndicator | undefined;
 	#statusText = "";
+	#lastNotice = 0;
 	/** Set when the transcript was rebuilt: the next render repaints the screen and shows the end. */
 	#rebuilt = false;
 	#transcript: ScrollView;
 
-	constructor(cwd: string, handlers: Handlers) {
+	constructor(cwd: string, settings: SettingsManager, handlers: Handlers) {
 		this.#cwd = cwd;
 		this.#ui = new TuiAltScreen(new ProcessTerminal(), false, getAgentDir());
 		const keybindings = KeybindingsManager.create();
 		setKeybindings(keybindings);
 		this.#editor = new CustomEditor(this.#ui, getEditorTheme(), keybindings, {
-			paddingX: 1,
+			paddingX: settings.getEditorPaddingX(),
+			autocompleteMaxVisible: settings.getAutocompleteMaxVisible(),
 			embedWorkingStatus: true,
 		});
 		this.#editor.onSubmit = handlers.submit;
-		this.#editor.onEscape = handlers.abort;
+		this.#editor.onEscape = handlers.escape;
 		this.#editor.onCtrlD = handlers.exit;
 		this.#editor.onAction("app.clear", handlers.exit);
-		this.#editor.onAction("app.model.select", handlers.selectModel);
+		this.#editor.onAction("app.model.select", () => handlers.selectModel());
 		this.#editor.onAction("app.thinking.cycle", handlers.cycleThinking);
 		this.#editor.onAction("app.tools.expand", () => {
 			this.#expanded = !this.#expanded;
@@ -224,7 +243,6 @@ class DurableTui {
 		const dock = new VStack([
 			{ component: this.#tasks, shrink: 1, minSize: 0 },
 			{ component: this.#queue, shrink: 1, minSize: 0 },
-			{ component: this.#notices, shrink: 1, minSize: 0 },
 			{ component: this.#editorContainer, shrink: 1, minSize: 3 },
 			{ component: this.#footer, shrink: 1, minSize: 0 },
 		]);
@@ -232,7 +250,6 @@ class DurableTui {
 			this.#chat,
 			this.#tasks,
 			this.#queue,
-			this.#notices,
 			this.#editorContainer,
 			this.#footer,
 		]) {
@@ -249,6 +266,10 @@ class DurableTui {
 
 	get ui(): TuiAltScreen {
 		return this.#ui;
+	}
+
+	get editor(): CustomEditor {
+		return this.#editor;
 	}
 
 	start(): void {
@@ -269,10 +290,18 @@ class DurableTui {
 		this.#streamingCalls.clear();
 	}
 
-	mount(component: Component): void {
+	mount(component: Component, focus: Component = component): void {
 		this.#editorContainer.clear();
 		this.#editorContainer.addChild(component);
-		this.#ui.setFocus(component);
+		this.#ui.setFocus(focus);
+		this.#ui.requestRender();
+	}
+
+	notify(level: Notice["level"], message: string): void {
+		const text = level === "error" ? `Error: ${message}` : level === "warning" ? `Warning: ${message}` : message;
+		const color = level === "info" ? "dim" : level;
+		this.#chat.addChild(new Spacer(1));
+		this.#chat.addChild(new ThemedText(() => theme.fg(color, text), 1, 0));
 		this.#ui.requestRender();
 	}
 
@@ -306,7 +335,11 @@ class DurableTui {
 		}
 		this.#syncTasks(view.tasks);
 		this.#syncQueue((view.conversation.docs["pi.inbox"] ?? { items: [] }) as InboxState);
-		this.#syncNotices(view);
+		for (const notice of view.notices) {
+			if (notice.id <= this.#lastNotice) continue;
+			this.#lastNotice = notice.id;
+			this.notify(notice.level, notice.message);
+		}
 		this.#editor.borderColor = theme.getThinkingBorderColor(agentOf(view.conversation).thinkingLevel ?? "off");
 		this.#syncStatus(live);
 		this.#syncFooter(view);
@@ -344,14 +377,6 @@ class DurableTui {
 			const text =
 				item.mode === "write" ? `<${String(item.entry.kind)}>` : userText(item.content as UserMessage["content"]);
 			this.#queue.addChild(new TruncatedText(theme.fg("muted", `[${item.mode}] ${text}`), 1, 0));
-		}
-	}
-
-	#syncNotices(view: DurableView): void {
-		this.#notices.clear();
-		for (const item of view.notices.slice(-4)) {
-			const color = item.level === "error" ? "error" : item.level === "warning" ? "warning" : "muted";
-			this.#notices.addChild(new TruncatedText(theme.fg(color, item.message), 1, 0));
 		}
 	}
 
@@ -579,8 +604,16 @@ export async function runDurableTui(
 	});
 	let view!: DurableTui;
 
-	const selectModel = (): void => {
+	const selectModel = (query = ""): void => {
 		const snapshot = source.current();
+		const wanted = query.toLowerCase();
+		const matches = snapshot.models.filter((model) =>
+			[`${model.provider}/${model.modelId}`, model.modelId].some((name) => name.toLowerCase() === wanted),
+		);
+		const [match] = matches;
+		if (matches.length === 1 && match !== undefined) {
+			return void controller.setModel({ provider: match.provider, modelId: match.modelId });
+		}
 		const current = agentOf(snapshot.conversation).model;
 		const isCurrent = (model: { provider: string; modelId: string }) =>
 			model.provider === current?.provider && model.modelId === current.modelId;
@@ -600,6 +633,7 @@ export async function runDurableTui(
 				void controller.setModel({ provider: value.slice(0, separator), modelId: value.slice(separator + 1) });
 			},
 			() => view.restoreEditor(),
+			query,
 		);
 		view.mount(selector);
 	};
@@ -623,11 +657,69 @@ export async function runDurableTui(
 		view.mount(selector);
 	};
 
-	view = new DurableTui(source.current().session.cwd, {
+	const forkFrom = (): void => {
+		const messages = source.current().conversation.entries.flatMap((entry) => {
+			const message = entry.model?.[0];
+			return entry.kind === "pi.user" && message?.role === "user"
+				? [{ id: String(entry.id), text: userText(message.content) }]
+				: [];
+		});
+		if (messages.length === 0) return view.notify("info", "No messages to fork from");
+		const selector = new UserMessageSelectorComponent(
+			messages,
+			(id) => {
+				view.restoreEditor();
+				view.editor.setText(messages.find((message) => message.id === id)?.text ?? "");
+				void controller.fork(Number(id) as EntryId);
+			},
+			() => view.restoreEditor(),
+			messages.at(-1)?.id,
+		);
+		view.mount(selector, selector.getMessageList());
+	};
+
+	let lastEscape = 0;
+	const escape = (): void => {
+		const live = (source.current().conversation.docs["pi.live"] ?? {}) as LiveState;
+		if (live.run !== undefined || (live.compactions?.length ?? 0) > 0) return void controller.abort();
+		if (view.editor.getText().trim() || settings.getDoubleEscapeAction() === "none") return;
+		const now = Date.now();
+		if (now - lastEscape < 500) {
+			lastEscape = 0;
+			forkFrom();
+		} else lastEscape = now;
+	};
+
+	const commands: SlashCommand[] = [
+		{
+			name: "model",
+			description: "Select model (opens selector UI)",
+			argumentHint: "<provider/model>",
+			getArgumentCompletions: (prefix) => {
+				const models = fuzzyFilter([...source.current().models], prefix, (model) =>
+					getModelSearchText({ id: model.modelId, provider: model.provider, name: model.name }),
+				);
+				return models.length === 0
+					? null
+					: models.map((model) => ({
+							value: `${model.provider}/${model.modelId}`,
+							label: model.modelId,
+							description: model.provider,
+						}));
+			},
+		},
+		{ name: "fork", description: "Continue from a previous user message in a new conversation" },
+		{ name: "agents", description: "Switch conversation: main, forks and subagents" },
+		{ name: "compact", description: "Manually compact the session context" },
+		{ name: "tasks", description: "Show or hide the task panel" },
+	];
+
+	view = new DurableTui(source.current().session.cwd, settings, {
 		submit: (text) => {
 			const trimmed = text.trim();
 			if (!trimmed) return;
-			if (trimmed === "/model") return selectModel();
+			if (trimmed === "/model" || trimmed.startsWith("/model ")) return selectModel(trimmed.slice(6).trim());
+			if (trimmed === "/fork") return forkFrom();
 			if (trimmed === "/tasks") return void controller.toggleTasks();
 			if (trimmed === "/agents") return selectConversation();
 			if (trimmed === "/compact" || trimmed.startsWith("/compact ")) {
@@ -637,9 +729,9 @@ export async function runDurableTui(
 			void controller.submit(trimmed, "steer");
 		},
 		followUp: (text) => void controller.submit(text, "followUp"),
-		abort: () => void controller.abort(),
+		escape,
 		exit,
-		selectModel,
+		selectModel: () => selectModel(),
 		cycleThinking: () => void controller.cycleThinking(),
 	});
 
@@ -653,6 +745,12 @@ export async function runDurableTui(
 	view.start();
 	themes.applyFromSettings();
 	view.apply(source.current());
+	const autocomplete = (fdPath?: string): void =>
+		view.editor.setAutocompleteProvider(
+			new CombinedAutocompleteProvider(commands, source.current().session.cwd, fdPath ?? null),
+		);
+	autocomplete();
+	void ensureTool("fd", (status) => view.notify(status.type, status.message)).then(autocomplete);
 	await exited;
 	unsubscribe();
 	themes.dispose();
