@@ -54,7 +54,14 @@ export function createHarnessSettings(settingsManager: SettingsManager): Harness
 export function createCodingRegistry(settingsManager: SettingsManager, cwd: string): Registry {
 	const registry = createRegistry();
 	registry.install(CodingTools);
-	registry.install(createPiPrompt(settingsManager, cwd));
+	registry.install(
+		createPiPrompt(settingsManager, cwd, () =>
+			registry
+				.snapshot()
+				.tools()
+				.map(({ tool }) => tool.name),
+		),
+	);
 	return registry;
 }
 

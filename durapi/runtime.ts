@@ -17,6 +17,7 @@ import {
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent/core/model-runtime.ts";
 import { SettingsManager } from "@earendil-works/pi-coding-agent/core/settings-manager.ts";
+import { createCodemode } from "./codemode.ts";
 import {
 	closeAll,
 	configureHarnessHttp,
@@ -28,7 +29,6 @@ import {
 	loadExtensions,
 } from "./harness-setup.ts";
 import { selectSession } from "./sessions.ts";
-import { Subagent } from "./subagent.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -135,7 +135,6 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 		configureHarnessHttp(settingsManager);
 		const settings = createHarnessSettings(settingsManager);
 		const registry = createCodingRegistry(settingsManager, location.cwd);
-		registry.install(Subagent);
 		const host: ExtensionHost = {
 			cwd: location.cwd,
 			settingsManager,
@@ -146,6 +145,13 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 		};
 		const extensionPaths = (process.env.DURAPI_EXTENSIONS ?? "").split(":").filter((path) => path !== "");
 		for (const extension of await loadExtensions(extensionPaths, host)) registry.install(extension);
+		const codemodeSettings = settingsManager.getSettings().codemode;
+		const codemode = createCodemode({
+			tools: () => registry.snapshot().tools().map((entry) => entry.tool),
+			models: modelRuntime,
+			...(codemodeSettings?.inlineBudget === undefined ? {} : { inlineBudget: codemodeSettings.inlineBudget }),
+		});
+		registry.install(codemode.extension);
 
 		const pendingReports: unknown[] = [];
 		let report: (error: unknown) => void = (error) => pendingReports.push(error);
@@ -166,6 +172,7 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 				cwd: location.cwd,
 				...(initial?.model === undefined ? {} : { model: initial.model }),
 				...(initial?.thinkingLevel === undefined ? {} : { thinkingLevel: initial.thinkingLevel }),
+				...(codemodeSettings?.mode === "only" ? { tools: [codemode.tool] } : {}),
 			},
 		});
 		const label = (id: ConversationId): string => (id === root.id ? "main" : `subagent ${id}`);

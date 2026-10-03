@@ -34,6 +34,8 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent/config.ts";
 import { KeybindingsManager } from "@earendil-works/pi-coding-agent/core/keybindings.ts";
 import type { SettingsManager } from "@earendil-works/pi-coding-agent/core/settings-manager.ts";
 import { createAllToolRenderers } from "@earendil-works/pi-coding-agent/core/tools/renderers/index.ts";
+import { codemodeRenderers } from "@earendil-works/pi-coding-agent/extensions/codemode/renderer.ts";
+import { CODEMODE_TOOL_NAME } from "@earendil-works/pi-coding-agent/extensions/codemode/tool.ts";
 import { AssistantMessageComponent } from "@earendil-works/pi-coding-agent/modes/interactive/components/assistant-message.ts";
 import { CustomEditor } from "@earendil-works/pi-coding-agent/modes/interactive/components/custom-editor.ts";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent/modes/interactive/components/dynamic-border.ts";
@@ -151,7 +153,10 @@ interface Handlers {
 }
 
 class DurableTui {
-	static readonly #renderers: Record<string, ToolRenderers> = createAllToolRenderers();
+	static readonly #renderers: Record<string, ToolRenderers> = {
+		...createAllToolRenderers(),
+		[CODEMODE_TOOL_NAME]: codemodeRenderers,
+	};
 	readonly #ui: TuiAltScreen;
 	readonly #chat = new Container();
 	readonly #tasks = new Container();

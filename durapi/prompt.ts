@@ -11,12 +11,14 @@ import { bashToolSystemPromptContribution } from "@earendil-works/pi-coding-agen
 import { editToolSystemPromptContribution } from "@earendil-works/pi-coding-agent/core/tools/edit.ts";
 import { readToolSystemPromptContribution } from "@earendil-works/pi-coding-agent/core/tools/read.ts";
 import { writeToolSystemPromptContribution } from "@earendil-works/pi-coding-agent/core/tools/write.ts";
+import { codemodeToolSystemPromptContribution } from "@earendil-works/pi-coding-agent/extensions/codemode/tool.ts";
 
 const CONTRIBUTIONS = {
 	read: readToolSystemPromptContribution,
 	bash: bashToolSystemPromptContribution,
 	edit: editToolSystemPromptContribution,
 	write: writeToolSystemPromptContribution,
+	codemode: codemodeToolSystemPromptContribution,
 };
 
 /** pi's section order; `buildSystemPromptSections()` omits the ones without content. */
@@ -34,7 +36,7 @@ function leadWithSystemPrompt(messages: readonly Message[]): { readonly messages
  * pi's system prompt as one extension: the sections of `buildSystemPromptSections()` for the request's tools and the
  * conversation's directory. Context files and skills load once per directory, like pi at startup.
  */
-export function createPiPrompt(settings: SettingsManager, fallbackCwd: string) {
+export function createPiPrompt(settings: SettingsManager, fallbackCwd: string, callableTools: () => readonly string[]) {
 	const resources = new Map<
 		string,
 		{
@@ -77,7 +79,7 @@ export function createPiPrompt(settings: SettingsManager, fallbackCwd: string) {
 	};
 	const buildSections = (input: PromptInput): Record<string, string> => {
 		const cwd = input.env?.cwd ?? input.agent.cwd ?? fallbackCwd;
-		const selectedTools = input.agent.tools.map((tool) => tool.name);
+		const selectedTools = [...new Set([...input.agent.tools.map((tool) => tool.name), ...callableTools()])];
 		const snippets: Record<string, string> = {};
 		const guidelines: Record<string, string[]> = {};
 		for (const name of selectedTools) {

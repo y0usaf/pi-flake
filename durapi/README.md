@@ -1,6 +1,6 @@
 # durapi
 
-A durable coding agent: pi's terminal UI, models, settings and system prompt on
+A durable coding agent: pi's terminal UI, models, settings, system prompt and codemode on
 [pi-durable](https://github.com/earendil-works/pi/tree/main/packages/durable), so
 a turn cut off by a crash or a lost terminal resumes with `--continue`. It loads
 no pi extensions or pi packages and is not a drop-in `pi`: no session picker,
@@ -14,7 +14,7 @@ Copyright (c) 2025 Mario Zechner; see [LICENSE](LICENSE).
 ## Run
 
 ```bash
-nix run .#durapi             # pi-durable's read/write/edit/bash and a subagent tool
+nix run .#durapi             # codemode over pi-durable's read/write/edit/bash
 nix run .#durapi-full        # plus the extensions below
 durapi --continue            # resume the newest session for this directory
 ```
@@ -24,6 +24,11 @@ One process owns a session; a lock left by a killed process goes stale after 10 
 
 ## Changes from upstream's demo
 
+- codemode replaces the subagent tool. It is pi's own codemode (sandbox, script
+  API, renderer) with nested calls run against the durable registry. With
+  `codemode.mode: "only"` in `settings.json`, a new session offers the model
+  nothing else. `store()` values live in a conversation document, so they
+  survive restarts. A crash mid-script gives the script an interrupted result.
 - `SYSTEM.md` and `APPEND_SYSTEM.md` apply as in pi: the project's `.pi/` when
   trusted, else `~/.pi/agent/`.
 - The first system message leads every request. pi-durable stores it after the
@@ -58,6 +63,6 @@ with the transcript, not in module variables.
 | `harness-setup.ts` | settings, coding registry, extension loading, environments, initial model |
 | `prompt.ts` | pi's system prompt sections plus SYSTEM.md, leading every request |
 | `sessions.ts` | session directories and the lock |
-| `subagent.ts` | the foreground subagent tool |
+| `codemode.ts` | pi's codemode tool over the durable registry |
 | `tui.ts` | rendering with pi's interactive components |
 | `extensions/` | durapi extensions |
