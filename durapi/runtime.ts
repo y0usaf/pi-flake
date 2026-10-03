@@ -17,12 +17,15 @@ import {
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent/core/model-runtime.ts";
 import { SettingsManager } from "@earendil-works/pi-coding-agent/core/settings-manager.ts";
+import { CODEMODE_TOOL_NAME } from "@earendil-works/pi-coding-agent/extensions/codemode/tool.ts";
 import { createCodemode } from "./codemode.ts";
 import {
+	activeTools,
 	closeAll,
 	configureHarnessHttp,
 	createCodingRegistry,
 	createHarnessSettings,
+	enabledToolNames,
 	ExecutionEnvs,
 	type ExtensionHost,
 	findInitialAgentModel,
@@ -145,13 +148,19 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 		};
 		const extensionPaths = (process.env.DURAPI_EXTENSIONS ?? "").split(":").filter((path) => path !== "");
 		for (const extension of await loadExtensions(extensionPaths, host)) registry.install(extension);
+		const enabled = enabledToolNames(settingsManager);
 		const codemodeSettings = settingsManager.getSettings().codemode;
-		const codemode = createCodemode({
-			tools: () => registry.snapshot().tools().map((entry) => entry.tool),
-			models: modelRuntime,
-			...(codemodeSettings?.inlineBudget === undefined ? {} : { inlineBudget: codemodeSettings.inlineBudget }),
-		});
-		registry.install(codemode.extension);
+		const codemode = enabled.has(CODEMODE_TOOL_NAME)
+			? createCodemode({
+					tools: () => activeTools(registry, enabled),
+					models: modelRuntime,
+					...(codemodeSettings?.inlineBudget === undefined ? {} : { inlineBudget: codemodeSettings.inlineBudget }),
+				})
+			: undefined;
+		if (codemode !== undefined) registry.install(codemode.extension);
+		const offered =
+			codemode !== undefined && codemodeSettings?.mode === "only" ? [codemode.tool] : activeTools(registry, enabled);
+		const restricted = offered.length !== registry.snapshot().tools().length;
 
 		const pendingReports: unknown[] = [];
 		let report: (error: unknown) => void = (error) => pendingReports.push(error);
@@ -172,7 +181,7 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 				cwd: location.cwd,
 				...(initial?.model === undefined ? {} : { model: initial.model }),
 				...(initial?.thinkingLevel === undefined ? {} : { thinkingLevel: initial.thinkingLevel }),
-				...(codemodeSettings?.mode === "only" ? { tools: [codemode.tool] } : {}),
+				...(restricted ? { tools: offered } : {}),
 			},
 		});
 		const label = (id: ConversationId): string => (id === root.id ? "main" : `subagent ${id}`);

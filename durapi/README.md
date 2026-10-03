@@ -25,9 +25,11 @@ One process owns a session; a lock left by a killed process goes stale after 10 
 ## Changes from upstream's demo
 
 - codemode replaces the subagent tool. It is pi's own codemode (sandbox, script
-  API, renderer) with nested calls run against the durable registry. With
-  `codemode.mode: "only"` in `settings.json`, a new session offers the model
-  nothing else. `store()` values live in a conversation document, so they
+  API, renderer) with nested calls run against the durable registry.
+- Tools follow pi's settings. `defaultTools` picks which of read/write/edit/bash
+  are on (all four by default) and turns codemode on (`+codemode`); with
+  `codemode.mode: "only"`, a new session offers the model only codemode, and
+  scripts call the rest. Extension tools are always on. `store()` values live in a conversation document, so they
   survive restarts. A crash mid-script gives the script an interrupted result.
 - `SYSTEM.md` and `APPEND_SYSTEM.md` apply as in pi: the project's `.pi/` when
   trusted, else `~/.pi/agent/`.

@@ -8,13 +8,14 @@ import {
 	type HarnessSettings,
 	type ModelRef,
 	type Registry,
+	type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { applyHttpProxySettings, configureHttpDispatcher } from "@earendil-works/pi-coding-agent/core/http-dispatcher.ts";
 import { findInitialModel, resolveCliModel } from "@earendil-works/pi-coding-agent/core/model-resolver.ts";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent/core/model-runtime.ts";
-import type { SettingsManager } from "@earendil-works/pi-coding-agent/core/settings-manager.ts";
+import { DEFAULT_TOOL_NAMES, type SettingsManager } from "@earendil-works/pi-coding-agent/core/settings-manager.ts";
 import { createPiPrompt } from "./prompt.ts";
 
 /** pi's HTTP setup: proxy, idle timeouts, and one undici for fetch. Without it, some provider streams break off. */
@@ -51,15 +52,24 @@ export function createHarnessSettings(settingsManager: SettingsManager): Harness
 }
 
 /** A registry with pi's coding tools and system prompt. */
+export function enabledToolNames(settingsManager: SettingsManager): ReadonlySet<string> {
+	return new Set(settingsManager.getDefaultTools() ?? DEFAULT_TOOL_NAMES);
+}
+
+export function activeTools(registry: Registry, enabled: ReadonlySet<string>): ToolRegistration[] {
+	return registry
+		.snapshot()
+		.tools()
+		.filter(({ extension, tool }) => extension.name !== CodingTools.name || enabled.has(tool.name))
+		.map(({ tool }) => tool);
+}
+
 export function createCodingRegistry(settingsManager: SettingsManager, cwd: string): Registry {
 	const registry = createRegistry();
 	registry.install(CodingTools);
 	registry.install(
 		createPiPrompt(settingsManager, cwd, () =>
-			registry
-				.snapshot()
-				.tools()
-				.map(({ tool }) => tool.name),
+			activeTools(registry, enabledToolNames(settingsManager)).map((tool) => tool.name),
 		),
 	);
 	return registry;
