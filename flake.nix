@@ -238,6 +238,45 @@
           };
         };
 
+        durapi = pkgs.buildNpmPackage {
+          pname = "durapi";
+          version = packageJson.version;
+          src = piSrc;
+          inherit (self.packages.${system}.pi) postPatch npmDeps;
+          npmDepsFetcherVersion = 2;
+          nodejs = pkgs.nodejs_22;
+          dontNpmBuild = true;
+          nativeBuildInputs = with pkgs; [pkg-config makeWrapper];
+          buildInputs = canvasNativeDeps;
+          installPhase = ''
+            runHook preInstall
+            mkdir -p $out/share/durapi $out/bin
+            cp -R . $out/share/durapi/
+            cp -R ${./durapi} $out/share/durapi/durapi
+            makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/durapi \
+              --add-flags "--disable-warning=ExperimentalWarning" \
+              --add-flags "--import $out/share/durapi/packages/coding-agent/src/experimental/source-resolver.ts" \
+              --add-flags "$out/share/durapi/durapi/main.ts" \
+              --set PI_SKIP_VERSION_CHECK 1 \
+              --set PI_TELEMETRY 0
+            runHook postInstall
+          '';
+          doInstallCheck = true;
+          installCheckPhase = ''
+            runHook preInstallCheck
+            HOME=$TMPDIR ${pkgs.nodejs_22}/bin/node \
+              --import $out/share/durapi/packages/coding-agent/src/experimental/source-resolver.ts \
+              --input-type=module \
+              -e "for (const name of ['runtime', 'tui']) await import('$out/share/durapi/durapi/' + name + '.ts')"
+            runHook postInstallCheck
+          '';
+          meta = with lib; {
+            description = "Durable coding agent on pi-durable, forked from pi's experimental durable demo";
+            homepage = "https://github.com/y0usaf/pi-flake";
+            license = licenses.mit;
+            mainProgram = "durapi";
+          };
+        };
         "pi-chronobreak" = mkPiExtension {
           pname = "pi-chronobreak";
           dir = ./extensions/pi-chronobreak;
@@ -490,6 +529,7 @@
     in
       {
         pi-build = self.packages.${system}.pi;
+        durapi-build = self.packages.${system}.durapi;
 
         # A nested or sibling pi wrapper can inherit an older bundle through
         # PI_DEFAULT_PACKAGES. Its duplicate extension names must not collide.

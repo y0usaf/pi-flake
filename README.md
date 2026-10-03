@@ -10,6 +10,7 @@ extension bundles.
 - `prime-agent` and `prime-bun` variants built from their own sources
 - Pre-configured extension packages with lifecycle stages (active/testing/paused/retired)
 - `pi-full`: base pi with all active extensions bundled
+- `durapi`: a durable coding agent on pi-durable, forked from pi's experimental demo ([durapi/README.md](durapi/README.md))
 - Builder functions for custom extension combinations
 - Flag-driven extension selection for downstream flakes
 - Bundled extensions load automatically via `PI_DEFAULT_PACKAGES` — no `settings.json` edits
@@ -221,6 +222,7 @@ If you want full control:
 - `pi-full` - pi with all active extensions bundled
 - `prime-agent` - Prime Intellect fork, node bundle with vendored runtime node_modules
 - `prime-bun` - Bun-compiled standalone binary, parallel to prime-agent
+- `durapi` - Durable coding agent on pi-durable, run from pi's TypeScript source
 
 ### Extension packages
 
