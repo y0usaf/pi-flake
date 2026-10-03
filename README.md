@@ -223,6 +223,7 @@ If you want full control:
 - `prime-agent` - Prime Intellect fork, node bundle with vendored runtime node_modules
 - `prime-bun` - Bun-compiled standalone binary, parallel to prime-agent
 - `durapi` - Durable coding agent on pi-durable, run from pi's TypeScript source
+- `durapi-full` - durapi with its extensions
 
 ### Extension packages
 

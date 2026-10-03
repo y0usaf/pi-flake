@@ -15,6 +15,7 @@ Copyright (c) 2025 Mario Zechner; see [LICENSE](LICENSE).
 
 ```bash
 nix run .#durapi             # pi-durable's read/write/edit/bash and a subagent tool
+nix run .#durapi-full        # plus the extensions below
 durapi --continue            # resume the newest session for this directory
 ```
 
@@ -43,6 +44,10 @@ reverse order when durapi exits. A module that fails to load stops startup;
 
 State that has to survive a crash belongs in pi-durable documents, committed
 with the transcript, not in module variables.
+
+| Extension | Provides |
+| --- | --- |
+| [donsetch](extensions/donsetch/index.ts) | `web_search`, `web_fetch` and `web_crawl` from the donsetch binary (`DONSETCH_BIN`), rerun after a crash |
 
 ## Layout
 

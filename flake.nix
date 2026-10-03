@@ -277,6 +277,18 @@
             mainProgram = "durapi";
           };
         };
+        durapi-full = let
+          durapi = self.packages.${system}.durapi;
+          extensions = ["donsetch"];
+        in
+          pkgs.runCommand "durapi-full-${durapi.version}" {
+            nativeBuildInputs = [pkgs.makeWrapper];
+            meta = durapi.meta;
+          } ''
+            makeWrapper ${lib.getExe durapi} $out/bin/durapi \
+              --set DURAPI_EXTENSIONS ${lib.concatMapStringsSep ":" (name: "${durapi}/share/durapi/durapi/extensions/${name}/index.ts") extensions} \
+              --set DONSETCH_BIN ${lib.getExe self.packages.${system}.donsetch}
+          '';
         "pi-chronobreak" = mkPiExtension {
           pname = "pi-chronobreak";
           dir = ./extensions/pi-chronobreak;
