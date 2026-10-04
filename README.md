@@ -1,5 +1,12 @@
 # pi-flake
 
+> **Archived.** pi ships its own flake (`github:earendil-works/pi`); build it from there. The extensions and durapi
+> moved to their own repositories: [pi-rlm](https://github.com/y0usaf/pi-rlm),
+> [pi-chronobreak](https://github.com/y0usaf/pi-chronobreak), [pi-recap](https://github.com/y0usaf/pi-recap) (a fork
+> of L2ncE/pi-recap), [pi-donsetch](https://github.com/y0usaf/pi-donsetch) and [durapi](https://github.com/y0usaf/durapi).
+> Load extensions by adding their store paths to `packages` in pi's `settings.json`. prime-agent, prime-bun,
+> pi-fusion and the omp wrapper were dropped; their last versions are in this repository's history.
+
 Nix flake for building [pi](https://github.com/earendil-works/pi) and its forks
 ([prime-agent](https://github.com/PrimeIntellect-ai/prime-agent),
 [prime-bun](https://github.com/sng-asyncfunc/prime-bun)) with optional
